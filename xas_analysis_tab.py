@@ -1036,6 +1036,14 @@ class XASAnalysisTab(tk.Frame):
 
         res = self._results[label]
         self._redraw()
+
+        # ── Push normalized result back to scan → refreshes Spectra tab ──────
+        scan.mu            = res["mu_norm"].copy()
+        scan.e0            = res["e0"]
+        scan.is_normalized = True
+        if self._replot_fn is not None:
+            self._replot_fn()
+
         self._status_lbl.config(
             text=(f"[{engine}]  {label}  |  E\u2080={res['e0']:.1f} eV  |  "
                   f"edge step={res['edge_step']:.4f}  |  "
