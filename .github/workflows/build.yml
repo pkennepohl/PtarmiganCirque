@@ -14,16 +14,16 @@ jobs:
       matrix:
         include:
           - os: windows-latest
-            artifact: ORCA_TDDFT_Viewer-Windows
-            exe_path: dist/ORCA_TDDFT_Viewer.exe
+            artifact: Binah-Windows
+            exe_path: dist/Binah.exe
 
           - os: macos-latest
-            artifact: ORCA_TDDFT_Viewer-macOS
-            exe_path: dist/ORCA_TDDFT_Viewer
+            artifact: Binah-macOS
+            exe_path: dist/Binah
 
           - os: ubuntu-latest
-            artifact: ORCA_TDDFT_Viewer-Linux
-            exe_path: dist/ORCA_TDDFT_Viewer
+            artifact: Binah-Linux
+            exe_path: dist/Binah
 
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
@@ -56,7 +56,7 @@ jobs:
 
       # ── 5. Build with PyInstaller ─────────────────────────────────────────
       - name: Build executable
-        run: pyinstaller orca_viewer.spec
+        run: pyinstaller binah.spec
 
       # ── 6. Upload artifact (available for download from Actions tab) ──────
       - name: Upload artifact

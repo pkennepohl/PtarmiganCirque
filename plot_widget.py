@@ -92,7 +92,7 @@ import json as _json
 import os as _os
 
 _STYLE_CONFIG_PATH = _os.path.join(
-    _os.path.expanduser("~"), ".orca_tddft_viewer_config.json")
+    _os.path.expanduser("~"), ".binah_config.json")
 
 _EXP_STYLE_FACTORY: dict = {
     "linestyle":  "solid",

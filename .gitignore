@@ -10,7 +10,7 @@ build/
 
 # ── PyInstaller ───────────────────────────────────────────────────────────────
 *.spec
-!orca_viewer.spec
+!binah.spec
 
 # ── Virtual environments ──────────────────────────────────────────────────────
 venv/
@@ -20,7 +20,7 @@ env/
 
 # ── User project & config files (not for sharing) ────────────────────────────
 *.otproj
-.orca_tddft_viewer_config.json
+.binah_config.json
 
 # ── Archives ──────────────────────────────────────────────────────────────────
 *.zip

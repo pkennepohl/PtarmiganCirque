@@ -1,4 +1,4 @@
-# ORCA TDDFT Viewer
+# Binah
 
 A desktop application for visualising and analysing TDDFT X-ray absorption spectra computed with [ORCA](https://www.faccts.de/orca/), with support for experimental XAS data overlay.
 
@@ -31,8 +31,8 @@ A desktop application for visualising and analysing TDDFT X-ray absorption spect
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/YOUR_USERNAME/orca-tddft-viewer.git
-cd orca-tddft-viewer
+git clone https://github.com/YOUR_USERNAME/binah.git
+cd binah
 
 # 2. (Recommended) Create a virtual environment
 python -m venv venv
@@ -43,7 +43,7 @@ venv\Scripts\activate           # Windows
 pip install -r requirements.txt
 
 # 4. Run
-python main_app.py
+python binah.py
 ```
 
 > **Note:** The SGM beamline loader (`sgmanalysis`) is optional — the app will work without it if you do not need to load CLS SGM data files.
@@ -56,9 +56,9 @@ Download the latest release for your platform from the [Releases page](../../rel
 
 | Platform | File |
 |----------|------|
-| Windows  | `ORCA_TDDFT_Viewer.exe` |
-| macOS    | `ORCA_TDDFT_Viewer` (app bundle) |
-| Linux    | `ORCA_TDDFT_Viewer` |
+| Windows  | `Binah.exe` |
+| macOS    | `Binah.app` |
+| Linux    | `Binah` |
 
 No Python installation required for the pre-built executables.
 
@@ -68,8 +68,8 @@ No Python installation required for the pre-built executables.
 
 ```bash
 pip install pyinstaller
-pyinstaller orca_viewer.spec
-# Output: dist/ORCA_TDDFT_Viewer(.exe)
+pyinstaller binah.spec
+# Output: dist/Binah(.exe)
 ```
 
 ---
@@ -94,7 +94,7 @@ Use matplotlib mathtext syntax directly in any text field:
 ## File Structure
 
 ```
-main_app.py            — Main application window
+binah.py               — Main application window
 plot_widget.py         — Core plotting widget
 orca_parser.py         — ORCA .out file parser
 experimental_parser.py — Experimental XAS data parser

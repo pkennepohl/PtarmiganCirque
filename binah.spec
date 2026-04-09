@@ -1,11 +1,11 @@
-# orca_viewer.spec  —  PyInstaller build spec for ORCA TDDFT Viewer
-# Build with:  pyinstaller orca_viewer.spec
+# binah.spec  —  PyInstaller build spec for Binah
+# Build with:  pyinstaller binah.spec
 
 import sys
 block_cipher = None
 
 a = Analysis(
-    ['main_app.py'],
+    ['binah.py'],
     pathex=['.'],
     binaries=[],
     datas=[
@@ -69,7 +69,7 @@ exe = EXE(
     a.zipfiles,
     a.datas,
     [],
-    name='ORCA_TDDFT_Viewer',
+    name='Binah',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -90,12 +90,12 @@ exe = EXE(
 if sys.platform == 'darwin':
     app = BUNDLE(
         exe,
-        name='ORCA_TDDFT_Viewer.app',
+        name='Binah.app',
         icon=None,          # Replace with 'icon.icns' if you have one
-        bundle_identifier='ca.ucalgary.orca-tddft-viewer',
+        bundle_identifier='ca.ucalgary.binah',
         info_plist={
             'CFBundleShortVersionString': '1.0.0',
-            'CFBundleDisplayName': 'ORCA TDDFT Viewer',
+            'CFBundleDisplayName': 'Binah',
             'NSHighResolutionCapable': True,
         },
     )
