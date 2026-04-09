@@ -26,7 +26,7 @@ from matplotlib.gridspec import GridSpec
 import matplotlib.ticker as mticker
 
 # ── Persistent config (norm defaults survive restarts) ────────────────────────
-_CONFIG_PATH = os.path.join(os.path.expanduser("~"), ".orca_tddft_viewer_config.json")
+_CONFIG_PATH = os.path.join(os.path.expanduser("~"), ".binah_config.json")
 
 # Hard-coded factory defaults
 _NORM_FACTORY: dict = {
@@ -362,6 +362,7 @@ class XASAnalysisTab(tk.Frame):
 
         # Which scans are selected for overlay
         self._selected_labels: List[str] = []
+        self._click_mode = tk.StringVar(value="")
 
         self._build_ui()
 
@@ -502,59 +503,194 @@ class XASAnalysisTab(tk.Frame):
                      values=["paper", "notebook", "talk", "poster"]
                      ).pack(side=tk.LEFT)
 
-        self._show_bkg_var = tk.BooleanVar(value=True)
-        tk.Checkbutton(pf, text="Show background on mu(E)",
-                       variable=self._show_bkg_var,
-                       font=("", 8)).pack(anchor="w", pady=2)
-        self._show_win_var = tk.BooleanVar(value=True)
-        tk.Checkbutton(pf, text="Show FT window on chi(k)",
+        # ── Show on XANES plot (Athena-style) ─────────────────────────────────
+        lbl("── Show on XANES plot ───────")
+        self._show_raw_var      = tk.BooleanVar(value=True)
+        self._show_preline_var  = tk.BooleanVar(value=True)
+        self._show_postline_var = tk.BooleanVar(value=True)
+        self._show_bkg_var      = tk.BooleanVar(value=False)
+        self._show_norm_var     = tk.BooleanVar(value=True)
+        self._show_deriv_var    = tk.BooleanVar(value=False)
+        self._show_win_var      = tk.BooleanVar(value=True)
+
+        for _txt, _var in [
+            ("\u03bc(E)  raw",         self._show_raw_var),
+            ("Pre-edge fit",           self._show_preline_var),
+            ("Post-edge fit",          self._show_postline_var),
+            ("Background (bkg)",       self._show_bkg_var),
+            ("Normalized \u03bc(E)",   self._show_norm_var),
+            ("Derivative d\u03bc/dE",  self._show_deriv_var),
+        ]:
+            tk.Checkbutton(pf, text=_txt, variable=_var,
+                           command=self._redraw_xanes,
+                           font=("", 8)).pack(anchor="w", pady=1)
+
+        tk.Checkbutton(pf, text="Show FT window on \u03c7(k)",
                        variable=self._show_win_var,
-                       font=("", 8)).pack(anchor="w", pady=2)
+                       font=("", 8)).pack(anchor="w", pady=1)
 
     def _build_plot(self, parent):
         plot_area = tk.Frame(parent)
         plot_area.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=2, pady=2)
 
-        # Toolbar frame at top
-        tb_frame = tk.Frame(plot_area)
-        tb_frame.pack(side=tk.TOP, fill=tk.X)
+        self._plot_nb = ttk.Notebook(plot_area)
+        self._plot_nb.pack(fill=tk.BOTH, expand=True)
 
-        # Figure
-        self._fig = Figure(figsize=(9, 7), dpi=96, facecolor="white")
-        self._fig.subplots_adjust(hspace=0.38, left=0.09, right=0.96,
-                                   top=0.94, bottom=0.07)
-        self._axes: List = []
+        # ── XANES tab ─────────────────────────────────────────────────────────
+        xanes_outer = tk.Frame(self._plot_nb)
+        self._plot_nb.add(xanes_outer, text="  XANES / \u03bc(E)  ")
 
-        self._canvas = FigureCanvasTkAgg(self._fig, master=plot_area)
-        self._canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        self._build_click_toolbar(xanes_outer)
 
-        self.toolbar = NavigationToolbar2Tk(self._canvas, tb_frame)
-        self.toolbar.update()
+        tb_xanes = tk.Frame(xanes_outer)
+        tb_xanes.pack(side=tk.BOTTOM, fill=tk.X)
 
-        self._draw_empty_figure()
+        self._fig_xanes = Figure(figsize=(8, 5), dpi=96, facecolor="white")
+        self._ax_mu = self._fig_xanes.add_subplot(111)
+        self._fig_xanes.subplots_adjust(left=0.10, right=0.96, top=0.93, bottom=0.10)
 
-    def _draw_empty_figure(self):
-        self._fig.clear()
-        self._axes = []
-        gs = GridSpec(3, 1, figure=self._fig,
-                      hspace=0.42, top=0.93, bottom=0.07,
-                      left=0.10, right=0.95)
-        titles = ["mu(E)  — normalized XANES",
-                  "chi(k)  — EXAFS oscillations",
-                  "|chi_tilde(R)|  — Radial distribution"]
-        ylabels = ["mu(E) normalized", "chi(k) * k^n", "|chi_tilde(R)|  (A^-3)"]
-        xlabels = ["Energy (eV)", "k  (A^-1)", "R  (A)"]
-        for i in range(3):
-            ax = self._fig.add_subplot(gs[i])
-            ax.set_title(titles[i], fontsize=9, loc="left", pad=3)
-            ax.set_xlabel(xlabels[i], fontsize=8)
-            ax.set_ylabel(ylabels[i], fontsize=8)
-            ax.tick_params(labelsize=7)
-            ax.text(0.5, 0.45, "No data", transform=ax.transAxes,
-                    ha="center", va="center", fontsize=9, color="lightgray")
-            self._axes.append(ax)
-        _apply_seaborn_style(self._fig)
-        self._canvas.draw_idle()
+        self._canvas_xanes = FigureCanvasTkAgg(self._fig_xanes, master=xanes_outer)
+        self._canvas_xanes.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+
+        self._toolbar_xanes = NavigationToolbar2Tk(self._canvas_xanes, tb_xanes)
+        self._toolbar_xanes.update()
+
+        self._canvas_xanes.mpl_connect('button_press_event', self._on_plot_click)
+
+        # ── EXAFS tab ─────────────────────────────────────────────────────────
+        exafs_outer = tk.Frame(self._plot_nb)
+        self._plot_nb.add(exafs_outer, text="  EXAFS  ")
+
+        tb_exafs = tk.Frame(exafs_outer)
+        tb_exafs.pack(side=tk.BOTTOM, fill=tk.X)
+
+        self._fig_exafs = Figure(figsize=(8, 6), dpi=96, facecolor="white")
+        _gs2 = GridSpec(2, 1, figure=self._fig_exafs,
+                        hspace=0.42, top=0.94, bottom=0.08, left=0.11, right=0.95)
+        self._ax_chi = self._fig_exafs.add_subplot(_gs2[0])
+        self._ax_r   = self._fig_exafs.add_subplot(_gs2[1])
+
+        self._canvas_exafs = FigureCanvasTkAgg(self._fig_exafs, master=exafs_outer)
+        self._canvas_exafs.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+
+        self._toolbar_exafs = NavigationToolbar2Tk(self._canvas_exafs, tb_exafs)
+        self._toolbar_exafs.update()
+
+        self._draw_empty_xanes()
+        self._draw_empty_exafs()
+
+    # ── Click-to-set toolbar ──────────────────────────────────────────────────
+
+    def _build_click_toolbar(self, parent):
+        bar = tk.Frame(parent, bd=1, relief=tk.GROOVE, bg="#ECECEC", pady=3)
+        bar.pack(side=tk.TOP, fill=tk.X, padx=2, pady=(2, 0))
+
+        tk.Label(bar, text="Click to set:", font=("", 8, "bold"),
+                 bg="#ECECEC").pack(side=tk.LEFT, padx=(4, 6))
+
+        self._click_btns: dict = {}
+        _btn_defs = [
+            ("E0",   "#4A4A8A", "white"),
+            ("pre1", "#2C7BB6", "white"),
+            ("pre2", "#2C7BB6", "white"),
+            ("nor1", "#1A9641", "white"),
+            ("nor2", "#1A9641", "white"),
+        ]
+        for _key, _bg, _fg in _btn_defs:
+            _b = tk.Button(bar, text=_key, width=5, font=("", 8),
+                           relief=tk.RAISED, bg=_bg, fg=_fg,
+                           activebackground=_bg, activeforeground=_fg,
+                           command=lambda k=_key: self._set_click_mode(k))
+            _b.pack(side=tk.LEFT, padx=2)
+            self._click_btns[_key] = _b
+
+        tk.Button(bar, text="\u2715 Cancel", font=("", 8), bg="#ECECEC",
+                  command=lambda: self._set_click_mode("")).pack(side=tk.LEFT, padx=6)
+
+        self._click_hint = tk.Label(
+            bar, text="  Select a parameter above, then click on the plot",
+            fg="gray", font=("", 8, "italic"), bg="#ECECEC")
+        self._click_hint.pack(side=tk.LEFT, padx=4)
+
+    def _set_click_mode(self, mode: str):
+        self._click_mode.set(mode)
+        _inactive = {"E0": "#4A4A8A", "pre1": "#2C7BB6", "pre2": "#2C7BB6",
+                     "nor1": "#1A9641", "nor2": "#1A9641"}
+        for _key, _btn in self._click_btns.items():
+            if _key == mode:
+                _btn.config(relief=tk.SUNKEN, font=("", 8, "bold"),
+                            bg="#FFB347", fg="black")
+            else:
+                _btn.config(relief=tk.RAISED, font=("", 8),
+                            bg=_inactive[_key], fg="white")
+        if mode:
+            self._click_hint.config(
+                text=f"  \u2192 Click on plot to set  {mode}  (\u2715 to cancel)",
+                fg="#003399")
+        else:
+            self._click_hint.config(
+                text="  Select a parameter above, then click on the plot",
+                fg="gray")
+
+    def _on_plot_click(self, event):
+        mode = self._click_mode.get()
+        if not mode or event.button != 1:
+            return
+        if getattr(self._toolbar_xanes, 'mode', ''):
+            return
+        if event.inaxes is None or event.xdata is None:
+            return
+
+        x  = event.xdata
+        e0 = self._e0_var.get()
+
+        if mode == "E0":
+            self._e0_var.set(round(x, 1))
+        elif mode == "pre1":
+            self._pre1_var.set(round(min(x - e0, self._pre2_var.get() - 5.0), 1))
+        elif mode == "pre2":
+            self._pre2_var.set(round(max(x - e0, self._pre1_var.get() + 5.0), 1))
+        elif mode == "nor1":
+            self._nor1_var.set(round(min(x - e0, self._nor2_var.get() - 10.0), 1))
+        elif mode == "nor2":
+            self._nor2_var.set(round(max(x - e0, self._nor1_var.get() + 10.0), 1))
+
+        self._set_click_mode("")
+        if self._scan_var.get():
+            self._run()
+
+    # ── Empty-state figures ───────────────────────────────────────────────────
+
+    def _draw_empty_xanes(self):
+        self._ax_mu.clear()
+        self._ax_mu.set_title("\u03bc(E)  \u2014  XANES", fontsize=9, loc="left", pad=3)
+        self._ax_mu.set_xlabel("Energy (eV)", fontsize=8)
+        self._ax_mu.set_ylabel("\u03bc(E)", fontsize=8)
+        self._ax_mu.tick_params(labelsize=7)
+        self._ax_mu.text(0.5, 0.45, "Load a scan and click  \u25b6  Run Analysis",
+                          transform=self._ax_mu.transAxes,
+                          ha="center", va="center", fontsize=9, color="lightgray")
+        if _HAS_SNS:
+            sns.despine(ax=self._ax_mu, offset=4)
+        self._canvas_xanes.draw_idle()
+
+    def _draw_empty_exafs(self):
+        for _ax, _title, _xl, _yl in [
+            (self._ax_chi, "\u03c7(k)  \u2014  EXAFS oscillations",
+             "k  (\u00c5\u207b\u00b9)", "\u03c7(k)\u00b7k\u207f"),
+            (self._ax_r,   "|\u03c7\u0303(R)|  \u2014  Fourier transform",
+             "R  (\u00c5)",    "|\u03c7\u0303(R)|"),
+        ]:
+            _ax.clear()
+            _ax.set_title(_title, fontsize=9, loc="left", pad=3)
+            _ax.set_xlabel(_xl, fontsize=8)
+            _ax.set_ylabel(_yl, fontsize=8)
+            _ax.tick_params(labelsize=7)
+            _ax.text(0.5, 0.45, "No data", transform=_ax.transAxes,
+                     ha="center", va="center", fontsize=9, color="lightgray")
+            if _HAS_SNS:
+                sns.despine(ax=_ax, offset=4)
+        self._canvas_exafs.draw_idle()
 
     # ── Scan list management ─────────────────────────────────────────────────
 
@@ -779,7 +915,8 @@ class XASAnalysisTab(tk.Frame):
         # Refresh Spectra tab
         if self._replot_fn is not None:
             self._replot_fn()
-        self._draw_empty_figure()
+        self._draw_empty_xanes()
+        self._draw_empty_exafs()
         self._status_lbl.config(text="Overlay cleared.", fg="gray")
 
     # ── Analysis ─────────────────────────────────────────────────────────────
@@ -857,6 +994,8 @@ class XASAnalysisTab(tk.Frame):
                     "e0":        e0,
                     "edge_step": float(grp.edge_step),
                     "kw":        kw,
+                    "mu_raw":    mu_raw,
+                    "pre_line":  getattr(grp, "pre_edge", np.zeros_like(energy)),
                 }
                 engine = "larch"
 
@@ -871,7 +1010,7 @@ class XASAnalysisTab(tk.Frame):
 
         if not _HAS_LARCH or not _HAS_LARCH_local or engine.startswith("scipy"):
             # ── scipy fallback ─────────────────────────────────────────────
-            mu_norm, edge_step, _ = normalize_xanes(
+            mu_norm, edge_step, pre_line = normalize_xanes(
                 energy, mu_raw, e0, pre1, pre2, nor1, nor2, nnor)
             k_arr, chi, bkg_e = autobk(energy, mu_norm, e0, rbkg, kmin_bkg)
             if len(k_arr) >= 4:
@@ -887,6 +1026,8 @@ class XASAnalysisTab(tk.Frame):
                 "r": r_arr, "chi_r": chi_r,
                 "chi_r_re": chi_r_re, "chi_r_im": chi_r_im,
                 "e0": e0, "edge_step": edge_step, "kw": kw,
+                "mu_raw":    mu_raw,
+                "pre_line":  pre_line,
             }
 
         # If not already in overlay list, reset to just this scan
@@ -902,119 +1043,202 @@ class XASAnalysisTab(tk.Frame):
             fg="#003366" if engine == "larch" else "#664400")
 
     def _redraw(self):
-        """Redraw all three panels with the current overlay list."""
-        style = self._style_var.get() if _HAS_SNS else "default"
-        context = self._context_var.get() if _HAS_SNS else "paper"
+        self._redraw_xanes()
+        self._redraw_exafs()
 
+    def _redraw_xanes(self):
         if _HAS_SNS:
-            sns.set_theme(style=style, context=context, palette=_PALETTE)
+            sns.set_theme(style=self._style_var.get(),
+                          context=self._context_var.get(), palette=_PALETTE)
 
-        self._fig.clear()
-        self._axes = []
-        gs = GridSpec(3, 1, figure=self._fig,
-                      hspace=0.44, top=0.93, bottom=0.07,
-                      left=0.11, right=0.95)
-
-        ax_mu  = self._fig.add_subplot(gs[0])
-        ax_chi = self._fig.add_subplot(gs[1])
-        ax_r   = self._fig.add_subplot(gs[2])
-        self._axes = [ax_mu, ax_chi, ax_r]
-
-        kw_label = {1: "k^1", 2: "k^2", 3: "k^3"}.get(self._kw_var.get(), "k^n")
+        ax = self._ax_mu
+        ax.clear()
 
         for i, label in enumerate(self._selected_labels):
             res = self._results.get(label)
             if res is None:
                 continue
-            col = _PALETTE[i % len(_PALETTE)]
-            lbl_short = label[:30] + ("\u2026" if len(label) > 30 else "")
+            col   = _PALETTE[i % len(_PALETTE)]
+            lbl_s = label[:30] + ("\u2026" if len(label) > 30 else "")
 
-            # ── mu(E) panel ────────────────────────────────────────────────
-            ax_mu.plot(res["energy"], res["mu_norm"],
-                       color=col, lw=1.6, label=lbl_short, zorder=3)
-            if self._show_bkg_var.get() and res["bkg_e"] is not None:
-                mask = res["energy"] >= res["e0"]
-                ax_mu.plot(res["energy"][mask], res["bkg_e"][mask],
-                           color=col, lw=1.0, ls="--", alpha=0.55,
-                           label=f"bkg {lbl_short}" if i == 0 else "_nolegend_",
-                           zorder=2)
+            energy    = res["energy"]
+            e0        = res["e0"]
+            mu_norm   = res["mu_norm"]
+            mu_raw    = res.get("mu_raw")
+            pre_line  = res.get("pre_line")
+            edge_step = res.get("edge_step", 1.0)
+            bkg_e     = res.get("bkg_e")
+
+            # ── Raw μ(E) ───────────────────────────────────────────────────
+            if self._show_raw_var.get() and mu_raw is not None:
+                ax.plot(energy, mu_raw, color=col, lw=1.2, alpha=0.50,
+                        ls="--",
+                        label=f"\u03bc(E) raw  {lbl_s}" if i == 0 else "_nolegend_")
+
+            # ── Pre-edge fit ───────────────────────────────────────────────
+            if self._show_preline_var.get() and pre_line is not None:
+                ax.plot(energy, pre_line, color="#2C7BB6", lw=1.0,
+                        ls=":", alpha=0.80, zorder=2,
+                        label="Pre-edge fit" if i == 0 else "_nolegend_")
+
+            # ── Post-edge reference (constant at edge_step above pre-edge) ─
+            if self._show_postline_var.get() and pre_line is not None:
+                ax.plot(energy, pre_line + edge_step, color="#1A9641", lw=1.0,
+                        ls=":", alpha=0.80, zorder=2,
+                        label="Post-edge ref" if i == 0 else "_nolegend_")
+
+            # ── Normalized μ(E) ────────────────────────────────────────────
+            if self._show_norm_var.get():
+                ax.plot(energy, mu_norm, color=col, lw=1.8,
+                        label=lbl_s, zorder=4)
+
+            # ── Background ────────────────────────────────────────────────
+            if self._show_bkg_var.get() and bkg_e is not None:
+                _mask = energy >= e0
+                ax.plot(energy[_mask], bkg_e[_mask], color=col, lw=1.0,
+                        ls="--", alpha=0.60, zorder=3,
+                        label="bkg" if i == 0 else "_nolegend_")
+
+            # ── Derivative ────────────────────────────────────────────────
+            if self._show_deriv_var.get():
+                _deriv = np.gradient(mu_norm, energy)
+                _amp   = (np.max(mu_norm) - np.min(mu_norm)) / (np.max(np.abs(_deriv)) + 1e-10)
+                ax.plot(energy, _deriv * _amp, color=col, lw=1.0,
+                        ls="-.", alpha=0.65,
+                        label="d\u03bc/dE (scaled)" if i == 0 else "_nolegend_")
+
+            # ── Normalization region markers (first scan only) ─────────────
             if i == 0:
-                e0 = res["e0"]
-                ax_mu.axvline(e0, color="gray", lw=0.8, ls=":", alpha=0.7,
-                              label=f"E0 = {e0:.1f} eV")
-                # Shade pre/post-edge norm regions
-                p1, p2 = e0 + self._pre1_var.get(), e0 + self._pre2_var.get()
-                n1, n2 = e0 + self._nor1_var.get(), e0 + self._nor2_var.get()
-                ax_mu.axvspan(p1, p2, alpha=0.07, color="steelblue",
-                               label="pre-edge")
-                ax_mu.axvspan(n1, n2, alpha=0.07, color="seagreen",
-                               label="post-edge norm")
+                _p1 = e0 + self._pre1_var.get()
+                _p2 = e0 + self._pre2_var.get()
+                _n1 = e0 + self._nor1_var.get()
+                _n2 = e0 + self._nor2_var.get()
 
-            # ── chi(k) panel ────────────────────────────────────────────────
+                ax.axvline(e0, color="#4A4A8A", lw=1.2, ls="--", alpha=0.85,
+                           label=f"E\u2080 = {e0:.1f} eV", zorder=5)
+
+                ax.axvspan(_p1, _p2, alpha=0.08, color="#2C7BB6",
+                           label="pre-edge region")
+                ax.axvline(_p1, color="#2C7BB6", lw=0.7, ls=":", alpha=0.55)
+                ax.axvline(_p2, color="#2C7BB6", lw=0.7, ls=":", alpha=0.55)
+
+                ax.axvspan(_n1, _n2, alpha=0.08, color="#1A9641",
+                           label="post-edge region")
+                ax.axvline(_n1, color="#1A9641", lw=0.7, ls=":", alpha=0.55)
+                ax.axvline(_n2, color="#1A9641", lw=0.7, ls=":", alpha=0.55)
+
+                if self._show_norm_var.get():
+                    ax.axhline(0, color="gray", lw=0.5, ls="--", alpha=0.40)
+                    ax.axhline(1, color="gray", lw=0.5, ls=":",  alpha=0.40)
+
+        # ── Axis decoration ────────────────────────────────────────────────────
+        ax.set_xlabel("Energy (eV)", fontsize=8)
+        if self._show_norm_var.get() and not self._show_raw_var.get():
+            ax.set_ylabel("\u03bc(E)  normalized", fontsize=8)
+        elif self._show_raw_var.get() and not self._show_norm_var.get():
+            ax.set_ylabel("\u03bc(E)  raw", fontsize=8)
+        else:
+            ax.set_ylabel("\u03bc(E)", fontsize=8)
+
+        ax.set_title("\u03bc(E)  \u2014  XANES", fontsize=9, loc="left", pad=3)
+        ax.tick_params(labelsize=7)
+        ax.xaxis.set_minor_locator(mticker.AutoMinorLocator())
+
+        if self._selected_labels:
+            ax.legend(fontsize=7, loc="lower right", framealpha=0.8)
+        else:
+            ax.text(0.5, 0.45, "Load a scan and click  \u25b6  Run Analysis",
+                    transform=ax.transAxes,
+                    ha="center", va="center", fontsize=9, color="lightgray")
+
+        if _HAS_SNS:
+            sns.despine(ax=ax, offset=4)
+
+        self._canvas_xanes.draw_idle()
+
+    def _redraw_exafs(self):
+        if _HAS_SNS:
+            sns.set_theme(style=self._style_var.get(),
+                          context=self._context_var.get(), palette=_PALETTE)
+
+        ax_chi = self._ax_chi
+        ax_r   = self._ax_r
+        ax_chi.clear()
+        ax_r.clear()
+
+        _kw_label = {1: "k\u00b9", 2: "k\u00b2", 3: "k\u00b3"}.get(
+            self._kw_var.get(), "k\u207f")
+
+        for i, label in enumerate(self._selected_labels):
+            res = self._results.get(label)
+            if res is None:
+                continue
+            col   = _PALETTE[i % len(_PALETTE)]
+            lbl_s = label[:30] + ("\u2026" if len(label) > 30 else "")
+
+            # ── chi(k) ────────────────────────────────────────────────────
             if len(res["k"]) > 1:
-                kw_val = res["kw"]
-                chi_w = res["k"] ** kw_val * res["chi"]
-                ax_chi.plot(res["k"], chi_w, color=col, lw=1.4,
-                            label=lbl_short, zorder=3)
+                _kw_val = res["kw"]
+                _chi_w  = res["k"] ** _kw_val * res["chi"]
+                ax_chi.plot(res["k"], _chi_w, color=col, lw=1.4,
+                            label=lbl_s, zorder=3)
                 if i == 0 and self._show_win_var.get():
-                    # Show FT window
-                    kmin = self._kmin_var.get()
-                    kmax = self._kmax_var.get()
-                    dk   = self._dk_var.get()
-                    k_u  = np.linspace(res["k"][0], res["k"][-1], 400)
-                    win  = np.zeros_like(k_u)
-                    flat = (k_u >= kmin + dk) & (k_u <= kmax - dk)
-                    win[flat] = 1.0
-                    t_in = (k_u >= kmin) & (k_u < kmin + dk)
-                    if t_in.any() and dk > 0:
-                        win[t_in] = 0.5*(1-np.cos(np.pi*(k_u[t_in]-kmin)/dk))
-                    t_out = (k_u > kmax - dk) & (k_u <= kmax)
-                    if t_out.any() and dk > 0:
-                        win[t_out] = 0.5*(1+np.cos(np.pi*(k_u[t_out]-(kmax-dk))/dk))
-                    # Scale window to data amplitude for visibility
-                    chi_amp = np.abs(chi_w).max() if len(chi_w) > 0 else 1.0
-                    ax_chi.fill_between(k_u, -win * chi_amp, win * chi_amp,
+                    _kmin = self._kmin_var.get()
+                    _kmax = self._kmax_var.get()
+                    _dk   = self._dk_var.get()
+                    _k_u  = np.linspace(res["k"][0], res["k"][-1], 400)
+                    _win  = np.zeros_like(_k_u)
+                    _flat = (_k_u >= _kmin + _dk) & (_k_u <= _kmax - _dk)
+                    _win[_flat] = 1.0
+                    _t_in  = (_k_u >= _kmin) & (_k_u < _kmin + _dk)
+                    if _t_in.any() and _dk > 0:
+                        _win[_t_in] = 0.5 * (1 - np.cos(
+                            np.pi * (_k_u[_t_in] - _kmin) / _dk))
+                    _t_out = (_k_u > _kmax - _dk) & (_k_u <= _kmax)
+                    if _t_out.any() and _dk > 0:
+                        _win[_t_out] = 0.5 * (1 + np.cos(
+                            np.pi * (_k_u[_t_out] - (_kmax - _dk)) / _dk))
+                    _amp = np.abs(_chi_w).max() if len(_chi_w) > 0 else 1.0
+                    ax_chi.fill_between(_k_u, -_win * _amp, _win * _amp,
                                         alpha=0.08, color="orange",
                                         label="FT window")
 
-            # ── |chi(R)| panel ─────────────────────────────────────────────
+            # ── |chi(R)| ──────────────────────────────────────────────────
             if len(res["r"]) > 1:
-                rmax = self._rmax_var.get()
-                r_mask = res["r"] <= rmax
-                ax_r.plot(res["r"][r_mask], res["chi_r"][r_mask],
-                          color=col, lw=1.6, label=lbl_short, zorder=3)
-                ax_r.fill_between(res["r"][r_mask], 0, res["chi_r"][r_mask],
+                _rmax   = self._rmax_var.get()
+                _r_mask = res["r"] <= _rmax
+                ax_r.plot(res["r"][_r_mask], res["chi_r"][_r_mask],
+                          color=col, lw=1.6, label=lbl_s, zorder=3)
+                ax_r.fill_between(res["r"][_r_mask], 0,
+                                  res["chi_r"][_r_mask],
                                   alpha=0.12, color=col)
 
-        # ── Labels & formatting ──────────────────────────────────────────────
-        ax_mu.set_xlabel("Energy (eV)", fontsize=8)
-        ax_mu.set_ylabel("mu(E)  normalized", fontsize=8)
-        ax_mu.set_title("mu(E)  — XANES", fontsize=9, loc="left", pad=3)
-        ax_mu.axhline(0, color="gray", lw=0.5, ls="--", alpha=0.4)
-        ax_mu.axhline(1, color="gray", lw=0.5, ls=":", alpha=0.4)
-        if self._selected_labels:
-            ax_mu.legend(fontsize=7, loc="lower right", framealpha=0.8)
-
-        ax_chi.set_xlabel("k  (A^-1)", fontsize=8)
-        ax_chi.set_ylabel(f"chi(k)*{kw_label}  (A^-n)", fontsize=8)
-        ax_chi.set_title("chi(k)  — EXAFS oscillations", fontsize=9, loc="left", pad=3)
-        ax_chi.axhline(0, color="gray", lw=0.5, ls="--", alpha=0.4)
+        ax_chi.set_xlabel("k  (\u00c5\u207b\u00b9)", fontsize=8)
+        ax_chi.set_ylabel(f"\u03c7(k)\u00b7{_kw_label}  (\u00c5\u207b\u207f)", fontsize=8)
+        ax_chi.set_title("\u03c7(k)  \u2014  EXAFS oscillations", fontsize=9,
+                         loc="left", pad=3)
+        ax_chi.axhline(0, color="gray", lw=0.5, ls="--", alpha=0.40)
         if self._selected_labels:
             ax_chi.legend(fontsize=7, loc="upper right", framealpha=0.8)
+        else:
+            ax_chi.text(0.5, 0.45, "No data", transform=ax_chi.transAxes,
+                        ha="center", va="center", fontsize=9, color="lightgray")
 
-        ax_r.set_xlabel("R  (A)", fontsize=8)
-        ax_r.set_ylabel("|chi_tilde(R)|  (A^-n-1)", fontsize=8)
-        ax_r.set_title("|chi_tilde(R)|  — Fourier transform", fontsize=9, loc="left", pad=3)
+        ax_r.set_xlabel("R  (\u00c5)", fontsize=8)
+        ax_r.set_ylabel("|\u03c7\u0303(R)|", fontsize=8)
+        ax_r.set_title("|\u03c7\u0303(R)|  \u2014  Fourier transform", fontsize=9,
+                       loc="left", pad=3)
         ax_r.set_xlim(0, self._rmax_var.get())
         if self._selected_labels:
             ax_r.legend(fontsize=7, loc="upper right", framealpha=0.8)
+        else:
+            ax_r.text(0.5, 0.45, "No data", transform=ax_r.transAxes,
+                      ha="center", va="center", fontsize=9, color="lightgray")
 
-        for ax in self._axes:
-            ax.tick_params(labelsize=7)
-            ax.xaxis.set_minor_locator(mticker.AutoMinorLocator())
+        for _ax in [ax_chi, ax_r]:
+            _ax.tick_params(labelsize=7)
+            _ax.xaxis.set_minor_locator(mticker.AutoMinorLocator())
+            if _HAS_SNS:
+                sns.despine(ax=_ax, offset=4)
 
-        if _HAS_SNS:
-            for ax in self._axes:
-                sns.despine(ax=ax, offset=4, trim=False)
-
-        self._canvas.draw_idle()
+        self._canvas_exafs.draw_idle()
