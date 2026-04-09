@@ -1,7 +1,7 @@
 """
-ORCA TDDFT Viewer - Main Application
-Run with: python main_app.py
-Requires: matplotlib, numpy  (pip install matplotlib numpy)
+Binah - ORCA TDDFT XAS Viewer
+Run with: python binah.py
+Requires: matplotlib, numpy, scipy, xraylarch  (see requirements.txt)
 """
 
 import tkinter as tk
@@ -19,7 +19,7 @@ import project_manager as pm
 class OrcaTDDFTApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("ORCA TDDFT Viewer")
+        self.title("Binah")
         self.geometry("1100x720")
         self.minsize(800, 550)
 
@@ -32,7 +32,7 @@ class OrcaTDDFTApp(tk.Tk):
         self._project_path: str = ""        # path of currently open .otproj (or "")
         self._recent_projects: list = []    # up to 10 recently opened/saved projects
         self._cfg_path = os.path.join(
-            os.path.expanduser("~"), ".orca_tddft_viewer_config.json")
+            os.path.expanduser("~"), ".binah_config.json")
         self._load_recent_projects()
 
         self._build_menu()
@@ -318,9 +318,10 @@ class OrcaTDDFTApp(tk.Tk):
         path = filedialog.askopenfilename(
             title="Load Experimental XAS Scan",
             filetypes=[
-                ("All supported", "*.dat *.prj *.csv *.txt"),
+                ("All supported", "*.dat *.prj *.nor *.csv *.txt"),
                 ("BioXAS XDI (.dat)", "*.dat"),
                 ("Athena project (.prj)", "*.prj"),
+                ("Athena normalized (.nor)", "*.nor"),
                 ("CSV / text", "*.csv *.txt"),
                 ("All files", "*.*"),
             ]
@@ -335,6 +336,12 @@ class OrcaTDDFTApp(tk.Tk):
                 self._load_dat_with_dialog(path)
             elif ext == ".prj":
                 self._load_prj_with_dialog(path)
+            elif ext == ".nor":
+                scans = self._exp_parser.parse_nor(path)
+                for scan in scans:
+                    self._add_exp_scan_to_plot(scan)
+                self._status.set(
+                    f"Loaded {len(scans)} scan(s) from {os.path.basename(path)}")
             else:
                 # Generic CSV / two-column text
                 scan = self._exp_parser.parse_csv(path)
@@ -742,7 +749,7 @@ class OrcaTDDFTApp(tk.Tk):
             return
         warnings = pm.restore_project(doc, self)
         self._project_path = path
-        self.title(f"ORCA TDDFT Viewer — {os.path.basename(path)}")
+        self.title(f"Binah — {os.path.basename(path)}")
         self._add_recent(path)
         n_exp  = len(self._plot._exp_scans)
         n_orca = self._file_listbox.size()
@@ -788,7 +795,7 @@ class OrcaTDDFTApp(tk.Tk):
         self._section_cb.set("")
         self._plot._replot()
         self._xas_tab.refresh_scan_list()
-        self.title("ORCA TDDFT Viewer")
+        self.title("Binah")
         self._status.set("New project started.")
 
     def _save_project(self):
@@ -814,7 +821,7 @@ class OrcaTDDFTApp(tk.Tk):
         try:
             pm.save_project(path, self)
             self._project_path = path
-            self.title(f"ORCA TDDFT Viewer — {os.path.basename(path)}")
+            self.title(f"Binah — {os.path.basename(path)}")
             self._status.set(f"Project saved: {os.path.basename(path)}")
             self._add_recent(path)
         except Exception as exc:
@@ -841,7 +848,7 @@ class OrcaTDDFTApp(tk.Tk):
 
         warnings = pm.restore_project(doc, self)
         self._project_path = path
-        self.title(f"ORCA TDDFT Viewer — {os.path.basename(path)}")
+        self.title(f"Binah — {os.path.basename(path)}")
         self._add_recent(path)
 
         n_exp   = len(self._plot._exp_scans)
@@ -864,8 +871,8 @@ class OrcaTDDFTApp(tk.Tk):
     # ------------------------------------------------------------------ #
     def _show_about(self):
         messagebox.showinfo(
-            "About ORCA TDDFT Viewer",
-            "ORCA TDDFT Viewer\n"
+            "About Binah",
+            "Binah\n"
             "Parses and interactively plots TDDFT spectra\n"
             "from ORCA quantum chemistry output files.\n\n"
             "Supported TDDFT sections:\n"
@@ -876,6 +883,7 @@ class OrcaTDDFTApp(tk.Tk):
             "Experimental XAS overlay:\n"
             "  \u2022 BioXAS XDI .dat files (fluorescence / transmission)\n"
             "  \u2022 Athena/Demeter .prj files (gzip Perl format)\n"
+            "  \u2022 Athena normalized .nor files (XDI export)\n"
             "  \u2022 Generic CSV / two-column text\n\n"
             "Features: Gaussian/Lorentzian broadening,\n"
             "unit switching (nm/eV/cm\u207b\u00b9), \u0394E shift alignment,\n"

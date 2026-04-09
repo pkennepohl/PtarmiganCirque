@@ -331,6 +331,97 @@ class ExperimentalParser:
         )
 
     # ── Dispatch by extension ─────────────────────────────────────────────────
+    # ── .nor (Athena XDI normalized export) ──────────────────────────────────
+    def parse_nor(self, filepath: str) -> List[ExperimentalScan]:
+        """
+        Parse an Athena XDI .nor file (normalized XAS export).
+
+        Header lines start with '#' and carry XDI metadata.
+        Data columns (space-separated, Fortran scientific notation supported):
+            1: energy (eV)
+            2: norm       — normalized mu(E)
+            3: nbkg       — background on norm grid
+            4: flat       — flat-normalized mu(E)   ← preferred
+            5: fbkg       — background on flat grid
+            6: nder       — derivative
+            7: nsec       — 2nd derivative
+
+        Returns a single-element list containing one ExperimentalScan.
+        """
+        col_names: Dict[int, str] = {}   # 0-indexed col → name
+        meta: Dict[str, str] = {}
+
+        with open(filepath, "r", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                if not line.startswith("#"):
+                    break
+                body = line.lstrip("#").strip()
+                if ":" in body:
+                    key, _, val = body.partition(":")
+                    key = key.strip().lower()
+                    val = val.strip()
+                    # Column.N: name
+                    if key.startswith("column."):
+                        try:
+                            idx = int(key.split(".")[1]) - 1   # 0-indexed
+                            col_names[idx] = val.split()[0].lower()
+                        except (ValueError, IndexError):
+                            pass
+                    else:
+                        meta[key] = val
+
+        # numpy handles Fortran scientific notation (0.12345E-01) natively
+        data = np.loadtxt(filepath, comments="#")
+        if data.ndim == 1:
+            data = data.reshape(1, -1)
+        if data.shape[0] == 0:
+            raise ValueError(f"No data rows found in {os.path.basename(filepath)}")
+
+        energy = data[:, 0].astype(float)
+
+        # Prefer 'flat' (Athena flat-normalized), fall back to 'norm', then col 1
+        mu            = None
+        col_used      = "norm"
+        for preferred in ("flat", "norm"):
+            for idx, name in col_names.items():
+                if name == preferred and idx < data.shape[1]:
+                    mu       = data[:, idx].astype(float)
+                    col_used = preferred
+                    break
+            if mu is not None:
+                break
+        if mu is None:
+            mu       = data[:, 1].astype(float) if data.shape[1] > 1 else data[:, 0].astype(float)
+            col_used = "col2"
+
+        # Extract metadata from header
+        e0 = 0.0
+        for e0_key in ("athena.e0", "element.e0", "xdi.e0"):
+            if e0_key in meta:
+                try:
+                    e0 = float(meta[e0_key])
+                    break
+                except ValueError:
+                    pass
+
+        element = meta.get("element.symbol", "")
+        edge    = meta.get("element.edge", "")
+        basename = os.path.splitext(os.path.basename(filepath))[0]
+        if element:
+            label = f"{basename}  ({element} {edge}-edge)" if edge else f"{basename}  ({element})"
+        else:
+            label = basename
+
+        return [ExperimentalScan(
+            label        = label,
+            source_file  = filepath,
+            energy_ev    = energy,
+            mu           = mu,
+            e0           = e0,
+            is_normalized= True,
+            scan_type    = f"normalized ({col_used})",
+        )]
+
     def parse_any(self, filepath: str, **kwargs) -> List[ExperimentalScan]:
         """Auto-detect format and return a list of scans."""
         ext = os.path.splitext(filepath)[1].lower()
@@ -338,6 +429,8 @@ class ExperimentalParser:
             return self.parse_prj(filepath)
         elif ext == ".dat":
             return [self.parse_dat(filepath, **kwargs)]
+        elif ext == ".nor":
+            return self.parse_nor(filepath)
         else:
             return [self.parse_csv(filepath, **kwargs)]
 
