@@ -364,6 +364,9 @@ class XASAnalysisTab(tk.Frame):
         self._selected_labels: List[str] = []
         self._click_mode = tk.StringVar(value="")
 
+        # Scan list panel — BooleanVar per label (visible in overlay)
+        self._scan_vis_vars: dict = {}   # label → tk.BooleanVar
+
         self._build_ui()
 
     # ── Layout ───────────────────────────────────────────────────────────────
@@ -403,12 +406,135 @@ class XASAnalysisTab(tk.Frame):
                                      fg="gray", font=("", 8))
         self._status_lbl.pack(side=tk.LEFT, padx=10)
 
-        # Main body: params left, plot right
+        # Main body: params left, scan list centre-left, plot right
         body = tk.Frame(self)
         body.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
 
         self._build_params(body)
+        self._build_scan_list(body)
         self._build_plot(body)
+
+    def _build_scan_list(self, parent):
+        """Scrollable scan list panel — one row per loaded scan with colour + checkbox."""
+        outer = tk.Frame(parent, width=190, bd=1, relief=tk.SUNKEN)
+        outer.pack(side=tk.LEFT, fill=tk.Y, padx=(2, 0), pady=2)
+        outer.pack_propagate(False)
+
+        hdr = tk.Frame(outer, bg="#003366", pady=3)
+        hdr.pack(fill=tk.X)
+        tk.Label(hdr, text="Loaded Scans", font=("", 8, "bold"),
+                 bg="#003366", fg="white").pack(side=tk.LEFT, padx=6)
+        tk.Button(hdr, text="All", font=("", 7), pady=0, padx=3,
+                  command=self._show_all_scans).pack(side=tk.RIGHT, padx=2)
+        tk.Button(hdr, text="None", font=("", 7), pady=0, padx=3,
+                  command=self._hide_all_scans).pack(side=tk.RIGHT, padx=1)
+
+        # Scrollable inner area
+        _wrap = tk.Frame(outer)
+        _wrap.pack(fill=tk.BOTH, expand=True)
+        _vsb = ttk.Scrollbar(_wrap, orient=tk.VERTICAL)
+        _vsb.pack(side=tk.RIGHT, fill=tk.Y)
+        self._scan_list_canvas = tk.Canvas(_wrap, yscrollcommand=_vsb.set,
+                                            bg="white", highlightthickness=0)
+        self._scan_list_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        _vsb.config(command=self._scan_list_canvas.yview)
+
+        self._scan_list_inner = tk.Frame(self._scan_list_canvas, bg="white")
+        self._scan_list_window = self._scan_list_canvas.create_window(
+            (0, 0), window=self._scan_list_inner, anchor="nw")
+
+        self._scan_list_inner.bind(
+            "<Configure>",
+            lambda _e: self._scan_list_canvas.configure(
+                scrollregion=self._scan_list_canvas.bbox("all")))
+        self._scan_list_canvas.bind(
+            "<Configure>",
+            lambda e: self._scan_list_canvas.itemconfig(
+                self._scan_list_window, width=e.width))
+
+        # Mouse-wheel scrolling
+        def _on_wheel(e):
+            self._scan_list_canvas.yview_scroll(
+                int(-1 * (e.delta / 120)), "units")
+        self._scan_list_canvas.bind("<MouseWheel>", _on_wheel)
+
+    def _rebuild_scan_list_rows(self):
+        """Destroy and recreate all rows in the scan list panel."""
+        for w in self._scan_list_inner.winfo_children():
+            w.destroy()
+
+        scans = self._get_scans()
+        for i, (label, scan, *_) in enumerate(scans):
+            col = _PALETTE[i % len(_PALETTE)]
+
+            # Ensure BooleanVar exists (default visible)
+            if label not in self._scan_vis_vars:
+                self._scan_vis_vars[label] = tk.BooleanVar(value=True)
+            var = self._scan_vis_vars[label]
+
+            row = tk.Frame(self._scan_list_inner, bg="white")
+            row.pack(fill=tk.X, pady=1, padx=2)
+
+            # Colour swatch
+            tk.Label(row, bg=col, width=2, relief=tk.FLAT).pack(side=tk.LEFT, padx=(2, 3))
+
+            # Visibility checkbox
+            cb = tk.Checkbutton(row, variable=var, bg="white", pady=0,
+                                command=lambda lbl=label: self._toggle_scan_vis(lbl))
+            cb.pack(side=tk.LEFT)
+
+            # Clickable label — selects scan + runs analysis
+            short = label if len(label) <= 22 else label[:20] + "…"
+            lbl_w = tk.Label(row, text=short, anchor="w", bg="white",
+                             font=("", 8), cursor="hand2", fg="#003366")
+            lbl_w.pack(side=tk.LEFT, fill=tk.X, expand=True)
+            lbl_w.bind("<Button-1>", lambda _e, lbl=label: self._select_scan(lbl))
+            lbl_w.bind("<Enter>", lambda _e, w=lbl_w: w.config(fg="#0066CC", font=("", 8, "underline")))
+            lbl_w.bind("<Leave>", lambda _e, w=lbl_w: w.config(fg="#003366", font=("", 8)))
+
+        if not scans:
+            tk.Label(self._scan_list_inner, text="No scans loaded",
+                     fg="gray", font=("", 8, "italic"), bg="white").pack(pady=10)
+
+    def _select_scan(self, label: str):
+        """Click on a scan name — select it in combobox, auto-fill E0, run analysis."""
+        self._scan_var.set(label)
+        self._auto_fill_e0()
+        self._run()
+
+    def _toggle_scan_vis(self, label: str):
+        """Checkbox toggled — add or remove from overlay and redraw."""
+        var = self._scan_vis_vars.get(label)
+        if var is None:
+            return
+        if var.get():
+            # Turned on — add to overlay if analysed, else run analysis
+            if label in self._results:
+                if label not in self._selected_labels:
+                    self._selected_labels.append(label)
+                self._redraw()
+            else:
+                self._scan_var.set(label)
+                self._auto_fill_e0()
+                self._run()
+        else:
+            # Turned off — remove from overlay
+            if label in self._selected_labels:
+                self._selected_labels.remove(label)
+            self._redraw()
+
+    def _show_all_scans(self):
+        for label, var in self._scan_vis_vars.items():
+            var.set(True)
+            if label not in self._selected_labels:
+                self._selected_labels.append(label)
+        self._redraw()
+
+    def _hide_all_scans(self):
+        for var in self._scan_vis_vars.values():
+            var.set(False)
+        self._selected_labels.clear()
+        self._redraw()
 
     def _build_params(self, parent):
         pf = tk.Frame(parent, width=210, bd=1, relief=tk.SUNKEN, padx=4, pady=4)
@@ -695,13 +821,20 @@ class XASAnalysisTab(tk.Frame):
     # ── Scan list management ─────────────────────────────────────────────────
 
     def refresh_scan_list(self):
-        """Re-populate the scan combobox from currently loaded experimental scans."""
+        """Re-populate the scan combobox and scan list panel."""
         scans = self._get_scans()
         labels = [lbl for lbl, *_ in scans]
         self._scan_cb["values"] = labels
         if labels and self._scan_var.get() not in labels:
             self._scan_var.set(labels[0])
             self._auto_fill_e0()
+        # Remove vis vars for scans no longer loaded
+        for gone in [l for l in list(self._scan_vis_vars) if l not in labels]:
+            del self._scan_vis_vars[gone]
+            if gone in self._selected_labels:
+                self._selected_labels.remove(gone)
+        # Rebuild the visual list
+        self._rebuild_scan_list_rows()
         n = len(labels)
         self._status_lbl.config(
             text=f"{n} scan{'s' if n != 1 else ''} available.",
@@ -1030,9 +1163,12 @@ class XASAnalysisTab(tk.Frame):
                 "pre_line":  pre_line,
             }
 
-        # If not already in overlay list, reset to just this scan
+        # Ensure scan is marked visible and in the overlay
+        if label not in self._scan_vis_vars:
+            self._scan_vis_vars[label] = tk.BooleanVar(value=True)
+        self._scan_vis_vars[label].set(True)
         if label not in self._selected_labels:
-            self._selected_labels = [label]
+            self._selected_labels.append(label)
 
         res = self._results[label]
         self._redraw()
