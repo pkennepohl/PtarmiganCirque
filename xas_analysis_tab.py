@@ -28,13 +28,28 @@ import matplotlib.ticker as mticker
 # ── Persistent config (norm defaults survive restarts) ────────────────────────
 _CONFIG_PATH = os.path.join(os.path.expanduser("~"), ".binah_config.json")
 
-# Hard-coded factory defaults
+# Hard-coded factory defaults — K-edge (hard X-ray, E0 > 2 keV)
 _NORM_FACTORY: dict = {
     "pre1": -150.0, "pre2": -30.0,
     "nor1":  150.0, "nor2": 400.0, "nnorm": 1,
     "rbkg": 1.0,  "kmin_bkg": 0.5,
     "kmin": 2.0,  "kmax": 12.0, "dk": 1.0, "kw": 2, "rmax": 6.0,
 }
+
+# L-edge factory defaults (soft X-ray, E0 < 2 keV, e.g. Ni L₃ ≈ 853 eV)
+# Pre-edge: fit line in region -30 to -5 eV before edge
+# Post-edge: normalize in +10 to +30 eV above L₃ (below the L₂ edge, ~+17 eV for Ni)
+# AUTOBK / XFTF not applied — k_max ≈ √(0.26 × 17) ≈ 2.1 Å⁻¹ is insufficient
+_NORM_FACTORY_L: dict = {
+    "pre1": -30.0, "pre2": -5.0,
+    "nor1":  10.0, "nor2": 30.0, "nnorm": 1,
+    "rbkg": 1.0, "kmin_bkg": 0.5,
+    "kmin": 0.5, "kmax": 2.0, "dk": 0.3, "kw": 1, "rmax": 3.0,
+}
+
+def _is_l_edge_e0(e0: float) -> bool:
+    """Return True if E0 indicates a soft X-ray / L-edge scan (< 2000 eV)."""
+    return 100 < e0 < 2000
 
 def _load_norm_defaults() -> dict:
     """Load saved norm defaults from config file; fall back to factory values."""
@@ -565,11 +580,18 @@ class XASAnalysisTab(tk.Frame):
         self._nor2_var  = tk.DoubleVar(value=nd["nor2"])
         self._nnor_var  = tk.IntVar(value=nd["nnorm"])
 
-        row("E0 (eV):",    self._e0_var,   7000, 10000, 0.5,  "%.1f")
-        row("pre1 (eV):",  self._pre1_var, -300,  -5,   5.0,  "%.0f")
-        row("pre2 (eV):",  self._pre2_var, -200,  -5,   5.0,  "%.0f")
-        row("nor1 (eV):",  self._nor1_var,   10,  500,  10.0, "%.0f")
-        row("nor2 (eV):",  self._nor2_var,   10, 1000,  10.0, "%.0f")
+        # E0 range covers both L-edges (~100 eV) and heavy-atom K-edges (>30 keV)
+        row("E0 (eV):",    self._e0_var,   100, 40000, 0.5,  "%.1f")
+        row("pre1 (eV):",  self._pre1_var, -300,  -1,   5.0,  "%.0f")
+        row("pre2 (eV):",  self._pre2_var, -200,  -1,   5.0,  "%.0f")
+        row("nor1 (eV):",  self._nor1_var,    1,  500,   5.0, "%.0f")
+        row("nor2 (eV):",  self._nor2_var,    1, 1000,   5.0, "%.0f")
+
+        # Edge-type indicator — updated dynamically in _auto_fill_e0()
+        self._edge_type_lbl = tk.Label(
+            pf, text="", font=("", 8, "bold"), anchor="w",
+            fg="#005500", wraplength=195, justify="left")
+        self._edge_type_lbl.pack(fill=tk.X, pady=(1, 0))
 
         f_nnor = tk.Frame(pf); f_nnor.pack(fill=tk.X, pady=1)
         tk.Label(f_nnor, text="Nor. order:", width=14, anchor="w",
@@ -583,15 +605,15 @@ class XASAnalysisTab(tk.Frame):
                   bg="#003366", fg="white", activebackground="#0055aa",
                   command=self._set_norm_default).pack(fill=tk.X, pady=(4, 2))
 
-        # ── AUTOBK ───────────────────────────────────────────────────────
-        lbl("\u2500\u2500 AUTOBK (background) \u2500\u2500\u2500\u2500\u2500\u2500")
+        # ── AUTOBK ── K-edge only ─────────────────────────────────────────
+        lbl("\u2500\u2500 AUTOBK \u2014 K-edge only \u2500\u2500\u2500\u2500")
         self._rbkg_var     = tk.DoubleVar(value=nd["rbkg"])
         self._kmin_bkg_var = tk.DoubleVar(value=nd["kmin_bkg"])
         row("rbkg (A):",   self._rbkg_var,   0.3, 3.0, 0.1, "%.1f")
         row("kmin_bkg:",   self._kmin_bkg_var, 0, 5.0, 0.5, "%.1f")
 
-        # ── XFTF ─────────────────────────────────────────────────────────
-        lbl("\u2500\u2500 Fourier Transform \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500")
+        # ── XFTF ── K-edge only ───────────────────────────────────────────
+        lbl("\u2500\u2500 FT \u2014 K-edge only \u2500\u2500\u2500\u2500\u2500\u2500\u2500")
         self._kmin_var   = tk.DoubleVar(value=nd["kmin"])
         self._kmax_var   = tk.DoubleVar(value=nd["kmax"])
         self._dk_var     = tk.DoubleVar(value=nd["dk"])
@@ -990,6 +1012,28 @@ class XASAnalysisTab(tk.Frame):
         self._status_lbl.config(
             text=f"E\u2080 = {e0:.1f} eV  (auto-detected via {src})",
             fg="#005500")
+
+        # ── Edge-type detection ───────────────────────────────────────────────
+        is_l = _is_l_edge_e0(e0)
+        if is_l:
+            self._edge_type_lbl.config(
+                text="\u26a0 L-edge (soft X-ray)  —  using tight norm windows",
+                fg="#994400")
+            # Auto-apply L-edge defaults only if the current nor2 still looks
+            # like a K-edge value (> 80 eV) — don't clobber user's manual edits.
+            if self._nor2_var.get() > 80:
+                ld = _NORM_FACTORY_L
+                self._pre1_var.set(ld["pre1"])
+                self._pre2_var.set(ld["pre2"])
+                self._nor1_var.set(ld["nor1"])
+                self._nor2_var.set(ld["nor2"])
+                self._kmin_var.set(ld["kmin"])
+                self._kmax_var.set(ld["kmax"])
+                self._dk_var.set(ld["dk"])
+                self._kw_var.set(ld["kw"])
+        else:
+            self._edge_type_lbl.config(
+                text="K-edge (hard X-ray)", fg="#005500")
 
     # ── Overlay management ───────────────────────────────────────────────────
 
@@ -1426,6 +1470,34 @@ class XASAnalysisTab(tk.Frame):
         ax_r   = self._ax_r
         ax_chi.clear()
         ax_r.clear()
+
+        # ── L-edge guard: EXAFS is physically meaningless for soft X-ray data ──
+        # For a transition-metal L-edge (E0 < 2000 eV) the L₂ edge sits only
+        # ~15–20 eV above L₃, giving k_max ≈ √(0.26 × 17) ≈ 2.1 Å⁻¹ — far
+        # too short for a real EXAFS analysis.  Warn the user and skip plotting.
+        if _is_l_edge_e0(self._e0_var.get()):
+            e0_v  = self._e0_var.get()
+            k_max_est = (0.26246840 * 17.0) ** 0.5   # ~17 eV usable above L₃
+            msg = (f"EXAFS analysis is not applicable\n"
+                   f"for L-edge / soft X-ray data.\n\n"
+                   f"E\u2080 \u2248 {e0_v:.0f} eV — the L\u2082 edge is\n"
+                   f"only ~17 eV above L\u2083, giving\n"
+                   f"k\u2098\u2090\u2093 \u2248 {k_max_est:.1f} \u00c5\u207b\u00b9 "
+                   f"(insufficient for EXAFS).\n\n"
+                   f"Use the \u03bc(E) tab for XANES analysis.")
+            for _ax in [ax_chi, ax_r]:
+                _ax.set_facecolor("#fffff8")
+                _ax.text(0.5, 0.5, msg,
+                         transform=_ax.transAxes,
+                         ha="center", va="center", fontsize=9,
+                         color="#885500", alpha=0.85,
+                         bbox=dict(boxstyle="round,pad=0.6",
+                                   facecolor="#fff8e1", edgecolor="#ccaa00",
+                                   alpha=0.9))
+                _ax.tick_params(left=False, bottom=False,
+                                labelleft=False, labelbottom=False)
+            self._canvas_exafs.draw_idle()
+            return
 
         _kw_label = {1: "k\u00b9", 2: "k\u00b2", 3: "k\u00b3"}.get(
             self._kw_var.get(), "k\u207f")
