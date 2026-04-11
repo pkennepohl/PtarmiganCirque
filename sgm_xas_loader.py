@@ -1602,13 +1602,23 @@ class ExportPanel(ttk.Frame):
 # ══════════════════════════════════════════════════════════════════════════════
 
 class SGMLoaderApp(tk.Tk):
-    """Main window: SGM XAS Stack Loader."""
+    """Main window: SGM XAS Stack Loader.
 
-    def __init__(self):
+    Parameters
+    ----------
+    on_load_cb : callable, optional
+        If provided, a "Send to Binah" button appears in the Export tab.
+        Called with an ExperimentalScan-like object for each exported spectrum.
+        Signature: on_load_cb(scan) where scan has .label, .energy_ev, .mu,
+        .source_file, .e0, .is_normalized, .scan_type attributes.
+    """
+
+    def __init__(self, on_load_cb=None):
         super().__init__()
         self.title("SGM XAS Loader  —  Canadian Light Source")
         self.geometry("1280x760")
         self.resizable(True, True)
+        self._on_load_cb = on_load_cb   # callback → Binah
 
         if not _H5PY:
             messagebox.showwarning(
@@ -1696,6 +1706,17 @@ class SGMLoaderApp(tk.Tk):
             exp_fr,
             get_spectra_cb=lambda: (self._spectra, self._averaged))
         self._export_panel.pack(fill='both', expand=True)
+
+        # "Send to Binah" button — only shown when launched from Binah
+        if self._on_load_cb is not None:
+            _btn_bar = tk.Frame(exp_fr, bg="#003366", pady=4)
+            _btn_bar.pack(fill='x', side='bottom')
+            tk.Button(
+                _btn_bar, text="\u2794  Send to Binah",
+                font=("", 10, "bold"), bg="#FFB347", fg="black",
+                activebackground="#FFA000",
+                command=self._send_to_binah
+            ).pack(padx=8, pady=2)
 
         # Rebuild menu now that _browser is available
         self._build_menu()
@@ -1919,6 +1940,71 @@ class SGMLoaderApp(tk.Tk):
         self._stop_event.set()
         self._set_status("Stopping…")
         self._stop_btn.configure(state='disabled')
+
+    def _send_to_binah(self):
+        """Send processed spectra back to Binah via the on_load_cb callback."""
+        if self._on_load_cb is None:
+            return
+
+        spectra, averaged = self._spectra, self._averaged
+        to_send = []
+
+        if averaged is not None:
+            to_send.append(averaged)
+        elif spectra:
+            to_send.extend(spectra)
+
+        if not to_send:
+            messagebox.showwarning("No data",
+                                   "Process some stacks first, then send to Binah.",
+                                   parent=self)
+            return
+
+        # Build minimal ExperimentalScan-compatible objects and call back
+        try:
+            from experimental_parser import ExperimentalScan
+        except ImportError:
+            # Build a lightweight stand-in with the required attributes
+            from dataclasses import dataclass
+            import numpy as _np
+
+            @dataclass
+            class ExperimentalScan:
+                label: str
+                source_file: str
+                energy_ev: _np.ndarray
+                mu: _np.ndarray
+                e0: float = 0.0
+                is_normalized: bool = False
+                scan_type: str = "SGM"
+
+        n = 0
+        for sp in to_send:
+            mu = sp.signal.copy()
+            mu = mu - mu.min()   # baseline at 0
+            scan = ExperimentalScan(
+                label=sp.label,
+                source_file=sp.stack_path,
+                energy_ev=sp.energy.copy(),
+                mu=mu,
+                e0=0.0,
+                is_normalized=False,
+                scan_type=f"SGM {sp.signal_type}",
+            )
+            try:
+                self._on_load_cb(scan)
+                n += 1
+            except Exception as exc:
+                messagebox.showerror("Send Error",
+                                     f"Failed to send '{sp.label}':\n{exc}",
+                                     parent=self)
+
+        if n:
+            self._set_status(f"Sent {n} spectrum/spectra to Binah.")
+            messagebox.showinfo("Sent to Binah",
+                                f"{n} spectrum/spectra added to Binah.\n"
+                                "Check the Spectra tab.",
+                                parent=self)
 
 
 # ══════════════════════════════════════════════════════════════════════════════

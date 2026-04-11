@@ -10,7 +10,7 @@ import os
 import sys
 
 try:
-    from sgm_xas_loader import SGMStackLoader
+    from sgm_xas_loader import SGMLoaderApp as _SGMLoaderApp
     _HAS_SGM = True
 except Exception:
     _HAS_SGM = False
@@ -593,13 +593,17 @@ class OrcaTDDFTApp(tk.Tk):
     def _load_sgm_stack(self):
         """Open the SGM Stack Loader window."""
         if not _HAS_SGM:
-            messagebox.showerror("SGM Loader",
-                                 "SGM loader not available.\n"
-                                 "Install sgmanalysis:\n"
-                                 "pip install git+https://github.com/Beamlines-CanadianLightSource/SGMPython.git")
+            messagebox.showerror(
+                "SGM Loader",
+                "SGM loader not available.\n\n"
+                "Install sgmanalysis:\n"
+                "pip install git+https://github.com/Beamlines-CanadianLightSource/SGMPython.git")
             return
         try:
-            SGMStackLoader(self, on_load_cb=self._add_exp_scan_to_plot)
+            # SGMLoaderApp is a tk.Tk — launch it as a separate top-level window.
+            # Pass the Binah callback so its "Send to Binah" button works.
+            app = _SGMLoaderApp(on_load_cb=self._add_exp_scan_to_plot)
+            app.mainloop()
         except Exception as e:
             messagebox.showerror("SGM Error", f"Could not open SGM loader:\n{e}")
 
