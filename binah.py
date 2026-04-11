@@ -78,9 +78,8 @@ class OrcaTDDFTApp(tk.Tk):
         file_menu.add_separator()
         file_menu.add_command(label="Load Experimental Data…", accelerator="Ctrl+E",
                               command=self._load_experimental)
-        if _HAS_SGM:
-            file_menu.add_command(label="Load SGM Stack…",
-                                  command=self._load_sgm_stack)
+        file_menu.add_command(label="Load SGM Stack…",
+                              command=self._load_sgm_stack)
         file_menu.add_separator()
         file_menu.add_command(label="Exit", command=self.destroy)
         menubar.add_cascade(label="File", menu=file_menu)
