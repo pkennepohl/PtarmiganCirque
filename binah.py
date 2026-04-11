@@ -9,6 +9,12 @@ from tkinter import ttk, filedialog, messagebox
 import os
 import sys
 
+try:
+    from sgm_xas_loader import SGMStackLoader
+    _HAS_SGM = True
+except Exception:
+    _HAS_SGM = False
+
 from orca_parser import OrcaParser, TDDFTSpectrum, ParseResult, ParseDiagnosis
 from experimental_parser import ExperimentalParser, ExperimentalScan
 from plot_widget import PlotWidget
@@ -72,6 +78,9 @@ class OrcaTDDFTApp(tk.Tk):
         file_menu.add_separator()
         file_menu.add_command(label="Load Experimental Data…", accelerator="Ctrl+E",
                               command=self._load_experimental)
+        if _HAS_SGM:
+            file_menu.add_command(label="Load SGM Stack…",
+                                  command=self._load_sgm_stack)
         file_menu.add_separator()
         file_menu.add_command(label="Exit", command=self.destroy)
         menubar.add_cascade(label="File", menu=file_menu)
@@ -330,7 +339,7 @@ class OrcaTDDFTApp(tk.Tk):
             title="Load Experimental XAS Scan",
             filetypes=[
                 ("All supported", "*.dat *.prj *.nor *.csv *.txt"),
-                ("BioXAS XDI (.dat)", "*.dat"),
+                ("SXRMB / BioXAS (.dat)", "*.dat"),
                 ("Athena project (.prj)", "*.prj"),
                 ("Athena normalized (.nor)", "*.nor"),
                 ("CSV / text", "*.csv *.txt"),
@@ -343,7 +352,9 @@ class OrcaTDDFTApp(tk.Tk):
         ext = os.path.splitext(path)[1].lower()
 
         try:
-            if ext == ".dat":
+            if ext == ".dat" and self._exp_parser.is_sxrmb(path):
+                self._load_sxrmb_with_dialog(path)
+            elif ext == ".dat":
                 self._load_dat_with_dialog(path)
             elif ext == ".prj":
                 self._load_prj_with_dialog(path)
@@ -361,6 +372,64 @@ class OrcaTDDFTApp(tk.Tk):
         except Exception as e:
             messagebox.showerror("Load Error", f"Failed to load experimental file:\n{e}")
             self._status.set("Error loading experimental file.")
+
+    def _load_sxrmb_with_dialog(self, path: str):
+        """Show signal-selection dialog for SXRMB .dat files, then load."""
+        win = tk.Toplevel(self)
+        win.title("SXRMB Import — Select Signal")
+        win.resizable(False, False)
+        win.grab_set()
+
+        hdr = tk.Frame(win, bg="#003366", pady=6)
+        hdr.pack(fill=tk.X)
+        tk.Label(hdr, text="CLS SXRMB Beamline Import",
+                 font=("", 11, "bold"), bg="#003366", fg="white").pack(padx=12)
+        tk.Label(hdr, text=os.path.basename(path),
+                 font=("", 8), bg="#003366", fg="#AACCFF").pack(padx=12)
+
+        body = tk.Frame(win, padx=16, pady=10)
+        body.pack(fill=tk.BOTH)
+
+        tk.Label(body, text="Which signal(s) to load?",
+                 font=("", 9, "bold")).pack(anchor="w", pady=(0, 6))
+
+        _signal_var = tk.StringVar(value="both")
+        for _val, _txt, _desc in [
+            ("tey",  "TEY only",
+             "Total Electron Yield (TEYDetector / I0)"),
+            ("fluor","Fluorescence only",
+             "norm_*Ka1 fluorescence channel"),
+            ("both", "Both TEY and Fluorescence",
+             "Load as two separate scans"),
+        ]:
+            f = tk.Frame(body)
+            f.pack(anchor="w", pady=2)
+            tk.Radiobutton(f, text=_txt, variable=_signal_var, value=_val,
+                           font=("", 9)).pack(side=tk.LEFT)
+            tk.Label(f, text=f"  — {_desc}", font=("", 8),
+                     fg="gray").pack(side=tk.LEFT)
+
+        btn_row = tk.Frame(win, pady=8)
+        btn_row.pack()
+
+        def do_load():
+            sig = _signal_var.get()
+            win.destroy()
+            try:
+                scans = self._exp_parser.parse_sxrmb(path, signal=sig)
+                for scan in scans:
+                    self._add_exp_scan_to_plot(scan)
+                self._status.set(
+                    f"Loaded {len(scans)} SXRMB scan(s) from {os.path.basename(path)}")
+            except Exception as e:
+                messagebox.showerror("SXRMB Load Error",
+                                     f"Failed to load SXRMB file:\n{e}")
+                self._status.set("Error loading SXRMB file.")
+
+        tk.Button(btn_row, text="Load", width=12, bg="#003366", fg="white",
+                  activebackground="#0055aa", command=do_load).pack(side=tk.LEFT, padx=4)
+        tk.Button(btn_row, text="Cancel", width=10,
+                  command=win.destroy).pack(side=tk.LEFT, padx=4)
 
     def _load_dat_with_dialog(self, path: str):
         """Show options dialog for BioXAS .dat files, then load."""
@@ -521,6 +590,19 @@ class OrcaTDDFTApp(tk.Tk):
         y = self.winfo_y() + (self.winfo_height() - win.winfo_height()) // 2
         win.geometry(f"+{x}+{y}")
         win.minsize(400, 200)
+
+    def _load_sgm_stack(self):
+        """Open the SGM Stack Loader window."""
+        if not _HAS_SGM:
+            messagebox.showerror("SGM Loader",
+                                 "SGM loader not available.\n"
+                                 "Install sgmanalysis:\n"
+                                 "pip install git+https://github.com/Beamlines-CanadianLightSource/SGMPython.git")
+            return
+        try:
+            SGMStackLoader(self, on_load_cb=self._add_exp_scan_to_plot)
+        except Exception as e:
+            messagebox.showerror("SGM Error", f"Could not open SGM loader:\n{e}")
 
     def _add_exp_scan_to_plot(self, scan: ExperimentalScan):
         """Forward a loaded experimental scan to the plot widget."""

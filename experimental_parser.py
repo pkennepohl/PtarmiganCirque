@@ -422,6 +422,178 @@ class ExperimentalParser:
             scan_type    = f"normalized ({col_used})",
         )]
 
+    # ── SXRMB beamline .dat ───────────────────────────────────────────────────
+    def parse_sxrmb(self, filepath: str, signal: str = "auto") -> List[ExperimentalScan]:
+        """
+        Parse a CLS SXRMB beamline .dat file.
+
+        Header lines start with '#'.  The column-header line (last # line before data)
+        is tab-separated and names each column.
+
+        Recognised columns:
+          energy  → EnergyFeedback.X  (or EnergyFeedback)
+          I0      → BeamlineI0Detector
+          TEY     → TEYDetector  (raw) or norm_TEYDetector (pre-normalised)
+          fluor   → norm_<Element>Ka1  (e.g. norm_ClKa1, norm_SKa1 …)
+
+        signal = "auto"   → try fluorescence first, fall back to TEY
+        signal = "tey"    → TEY / I0
+        signal = "fluor"  → fluorescence / I0 (first norm_*Ka1 column found)
+        signal = "both"   → return two ExperimentalScan objects (TEY + fluor)
+        """
+        meta: Dict[str, str] = {}
+        col_header_line: str = ""
+
+        with open(filepath, "r", encoding="utf-8", errors="replace") as fh:
+            lines = fh.readlines()
+
+        # Parse header
+        data_start = 0
+        for i, line in enumerate(lines):
+            s = line.strip()
+            if not s.startswith("#"):
+                data_start = i
+                break
+            body = s.lstrip("#").strip()
+            # Last non-empty # line before data = column headers
+            if body and not body.startswith("-"):
+                col_header_line = body
+
+        # Parse column names
+        col_names = [c.strip() for c in col_header_line.split("\t") if c.strip()]
+
+        # Parse data rows
+        data_rows = []
+        for line in lines[data_start:]:
+            s = line.strip()
+            if not s or s.startswith("#"):
+                continue
+            try:
+                vals = [float(v) for v in s.split()]
+                if vals:
+                    data_rows.append(vals)
+            except ValueError:
+                continue
+
+        if not data_rows:
+            raise ValueError(f"No data rows found in SXRMB file: {os.path.basename(filepath)}")
+
+        data = np.array(data_rows)
+
+        def _col(names):
+            """Return index of first matching column name (case-insensitive partial)."""
+            for name in names:
+                for j, c in enumerate(col_names):
+                    if name.lower() in c.lower():
+                        return j
+            return None
+
+        # Identify columns
+        i_energy = _col(["EnergyFeedback.X", "EnergyFeedback"])
+        i_i0     = _col(["BeamlineI0Detector", "I0"])
+        i_tey    = _col(["norm_TEYDetector", "TEYDetector"])
+        # Fluorescence: prefer pre-normalised norm_*Ka1 columns
+        i_fluor  = _col(["norm_ClKa1", "norm_SKa1", "norm_PKa1",
+                          "norm_NiKa1", "norm_TiKa1", "norm_FeKa1",
+                          "norm_CuKa1", "norm_ZnKa1", "norm_MnKa1"])
+        # Fallback: raw *Ka1 columns
+        if i_fluor is None:
+            i_fluor = _col(["ClKa1", "SKa1", "PKa1", "NiKa1", "TiKa1",
+                             "FeKa1", "CuKa1", "ZnKa1", "MnKa1"])
+
+        if i_energy is None:
+            raise ValueError("Could not find energy column in SXRMB file.")
+
+        energy = data[:, i_energy]
+        basename = os.path.splitext(os.path.basename(filepath))[0]
+
+        # Extract edge/element from header metadata
+        edge_str = ""
+        for line in lines:
+            if "Scanned Edge" in line or "Edge:" in line:
+                edge_str = line.split(":")[-1].strip().rstrip()
+                break
+
+        def _norm_signal(raw_col, i0_col):
+            """Divide raw signal by I0 if I0 available."""
+            sig = data[:, raw_col]
+            if i0_col is not None:
+                i0 = data[:, i0_col]
+                i0 = np.where(np.abs(i0) < 1e-6, 1.0, i0)
+                sig = sig / i0
+            # Shift so minimum is 0
+            sig = sig - sig.min()
+            return sig
+
+        results = []
+
+        # TEY scan
+        if signal in ("auto", "tey", "both") and i_tey is not None:
+            tey_col = col_names[i_tey]
+            if "norm_" in tey_col.lower():
+                mu_tey = data[:, i_tey]
+            else:
+                mu_tey = _norm_signal(i_tey, i_i0)
+            mu_tey = mu_tey - mu_tey.min()
+            lbl = f"{basename}  TEY"
+            if edge_str:
+                lbl += f"  ({edge_str})"
+            results.append(ExperimentalScan(
+                label=lbl, source_file=filepath,
+                energy_ev=energy, mu=mu_tey,
+                e0=0.0, is_normalized=False,
+                scan_type="SXRMB TEY",
+            ))
+
+        # Fluorescence scan
+        if signal in ("auto", "fluor", "both") and i_fluor is not None:
+            fluor_col = col_names[i_fluor]
+            if "norm_" in fluor_col.lower():
+                mu_fl = data[:, i_fluor]
+            else:
+                mu_fl = _norm_signal(i_fluor, i_i0)
+            mu_fl = mu_fl - mu_fl.min()
+            lbl = f"{basename}  Fluor ({fluor_col})"
+            if edge_str:
+                lbl += f"  ({edge_str})"
+            results.append(ExperimentalScan(
+                label=lbl, source_file=filepath,
+                energy_ev=energy, mu=mu_fl,
+                e0=0.0, is_normalized=False,
+                scan_type="SXRMB Fluorescence",
+            ))
+
+        # Fallback: auto picked neither
+        if not results and signal == "auto" and i_tey is not None:
+            mu_tey = _norm_signal(i_tey, i_i0)
+            results.append(ExperimentalScan(
+                label=f"{basename}  TEY", source_file=filepath,
+                energy_ev=energy, mu=mu_tey,
+                e0=0.0, is_normalized=False,
+                scan_type="SXRMB TEY",
+            ))
+
+        if not results:
+            raise ValueError(
+                "Could not identify TEY or fluorescence columns in SXRMB file.\n"
+                f"Columns found: {col_names}")
+
+        return results
+
+    @staticmethod
+    def is_sxrmb(filepath: str) -> bool:
+        """Quick check: does this .dat file look like SXRMB output?"""
+        try:
+            with open(filepath, "r", encoding="utf-8", errors="replace") as fh:
+                for line in fh:
+                    if "SXRMB" in line or "CLS SXRMB" in line:
+                        return True
+                    if not line.startswith("#"):
+                        break
+        except Exception:
+            pass
+        return False
+
     def parse_any(self, filepath: str, **kwargs) -> List[ExperimentalScan]:
         """Auto-detect format and return a list of scans."""
         ext = os.path.splitext(filepath)[1].lower()

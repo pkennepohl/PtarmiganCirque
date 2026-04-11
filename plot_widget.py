@@ -1709,12 +1709,18 @@ class PlotWidget(tk.Frame):
             )
             self.ax2.axhline(0, color="darkred", linewidth=0.4, alpha=0.3)
 
-        # ── Match TDDFT y-scale to experimental when overlay is active ────────
-        # After auto-norm, TDDFT data spans 0–1.  Clamp both axes to [0, 1.05]
-        # so the sticks and XAS curve occupy the same visual height.
-        if active_exp and self.ax2 is not None and _auto_norm != 1.0:
-            self.ax.set_ylim(bottom=0, top=1.05)
-            self.ax2.set_ylim(bottom=0, top=1.05)
+        # ── Align y=0 of both axes when experimental overlay is active ───────
+        # Ensure both axes share the same zero position regardless of scale,
+        # so TDDFT sticks and XAS curve both start from the same baseline.
+        if active_exp and self.ax2 is not None:
+            # Get the natural top of each axis after plotting
+            _ax1_bot, _ax1_top = self.ax.get_ylim()
+            _ax2_bot, _ax2_top = self.ax2.get_ylim()
+            # Force bottom to 0 on both (sticks and XAS data never go below 0)
+            _ax1_top = max(_ax1_top, 1e-6)
+            _ax2_top = max(_ax2_top, 1e-6)
+            self.ax.set_ylim(bottom=0, top=_ax1_top)
+            self.ax2.set_ylim(bottom=0, top=_ax2_top)
 
         # ── Axes decoration ───────────────────────────────────────────────────
         self.ax.set_xlabel(
@@ -2403,7 +2409,8 @@ class PlotWidget(tk.Frame):
                 tip.append("Acceptor orbitals (MO\u1d47 \u2192 MO\u1d43):")
                 for fr, to, w2 in shown:
                     bar = "\u2588" * int(w2 * 20 + 0.5)   # mini bar up to 20 chars
-                    tip.append(f"  {fr:3d} \u2192 {to:3d}   {w2*100:5.1f}%  {bar}")
+                    # Display MOs counting from 0 (ORCA stores 1-based indices)
+                    tip.append(f"  {fr-1:3d} \u2192 {to-1:3d}   {w2*100:5.1f}%  {bar}")
                 if len(sorted_t) > len(shown):
                     rest_w = sum(t[2] for t in sorted_t[len(shown):])
                     tip.append(f"  ... {len(sorted_t)-len(shown)} more  ({rest_w*100:.1f}% total)")
