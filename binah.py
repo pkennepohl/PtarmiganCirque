@@ -28,6 +28,7 @@ class OrcaTDDFTApp(tk.Tk):
         self.title("Binah")
         self.geometry("1100x720")
         self.minsize(800, 550)
+        self._sidebar_visible = True
 
         self._parser     = OrcaParser()
         self._exp_parser = ExperimentalParser()
@@ -105,6 +106,12 @@ class OrcaTDDFTApp(tk.Tk):
         bar = tk.Frame(self, bd=1, relief=tk.RAISED, padx=6, pady=4)
         bar.pack(side=tk.TOP, fill=tk.X)
 
+        self._sidebar_btn = tk.Button(
+            bar, text="«", width=2, font=("", 9, "bold"),
+            relief=tk.RAISED, command=self._toggle_sidebar,
+        )
+        self._sidebar_btn.pack(side=tk.LEFT, padx=(0, 6))
+
         tk.Button(bar, text="Open File",  width=10, command=self._open_file).pack(side=tk.LEFT, padx=2)
         tk.Button(bar, text="Reload",     width=8,  command=self._reload_file).pack(side=tk.LEFT, padx=2)
 
@@ -138,10 +145,12 @@ class OrcaTDDFTApp(tk.Tk):
         pane = tk.PanedWindow(spectra_frame, orient=tk.HORIZONTAL,
                               sashwidth=5, sashrelief=tk.RAISED)
         pane.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        self._pane = pane
 
         # --- Left sidebar ---
         sidebar = tk.Frame(pane, width=230, bd=1, relief=tk.SUNKEN)
         pane.add(sidebar, minsize=180)
+        self._sidebar = sidebar
 
         tk.Label(sidebar, text="Loaded Files", font=("", 9, "bold")).pack(anchor="w", padx=4, pady=2)
 
@@ -212,6 +221,19 @@ class OrcaTDDFTApp(tk.Tk):
         bar = tk.Label(self, textvariable=self._status, bd=1, relief=tk.SUNKEN,
                        anchor="w", padx=6, font=("", 8))
         bar.pack(side=tk.BOTTOM, fill=tk.X)
+
+    # ------------------------------------------------------------------ #
+    #  Sidebar toggle                                                       #
+    # ------------------------------------------------------------------ #
+    def _toggle_sidebar(self):
+        if self._sidebar_visible:
+            self._pane.forget(self._sidebar)
+            self._sidebar_visible = False
+            self._sidebar_btn.config(text="»")
+        else:
+            self._pane.insert(0, self._sidebar, minsize=180, width=230)
+            self._sidebar_visible = True
+            self._sidebar_btn.config(text="«")
 
     # ------------------------------------------------------------------ #
     #  ORCA file operations                                                 #
