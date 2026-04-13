@@ -202,6 +202,8 @@ class PlotWidget(tk.Frame):
         self._show_tddft_in_legend  = tk.BooleanVar(value=True)   # TDDFT handles in legend
         self._show_primary_in_legend = tk.BooleanVar(value=True)  # primary TDDFT in legend
         self._custom_title = tk.StringVar(value="")
+        self._custom_x_label  = tk.StringVar(value="")   # blank = auto from unit
+        self._tick_direction  = tk.StringVar(value="out") # "in" / "out" / "both"
 
         # ΔE energy shift (eV) applied to all TDDFT stick positions.
         # _delta_e holds the true (unbounded) value.
@@ -289,10 +291,13 @@ class PlotWidget(tk.Frame):
         self._hover_states: list = []    # actual root numbers (sp.states)
         self._hover_labels: list = []    # transition labels (sp.transition_labels)
 
-        self._build_controls()
+        self._build_spectrum_controls()
         self._build_alignment_controls()
         self._build_view_controls()
-        self._build_title_bar()
+        self._build_axes_controls()
+        self._build_style_controls()
+        self._build_legend_export_controls()
+        self._build_overlay_controls()
         self._build_figure()        # creates self.ax and self.ax2 once
         self._build_overlay_panel()
 
@@ -417,11 +422,10 @@ class PlotWidget(tk.Frame):
         return inner
 
     # ══════════════════════════════════════════════════════════════════════════
-    #  Controls strip (row 1)
+    #  Spectrum controls (row 1) — X unit, broadening, FWHM, display toggles
     # ══════════════════════════════════════════════════════════════════════════
-    def _build_controls(self):
-        ctrl = self._collapsible_bar("Display", bd=1, relief=tk.SUNKEN, padx=4, pady=3)
-        self._ctrl_frame = ctrl   # saved so _update_comb_ui can pack into it
+    def _build_spectrum_controls(self):
+        ctrl = self._collapsible_bar("Spectrum", bd=1, relief=tk.SUNKEN, padx=4, pady=3)
 
         # X-axis unit
         tk.Label(ctrl, text="X axis:").pack(side=tk.LEFT)
@@ -460,80 +464,11 @@ class PlotWidget(tk.Frame):
 
         _sep(ctrl)
 
-        # Toggles
+        # Display toggles
         tk.Checkbutton(ctrl, text="Sticks",      variable=self._show_sticks, command=self._replot).pack(side=tk.LEFT)
         tk.Checkbutton(ctrl, text="Envelope",    variable=self._show_env,    command=self._replot).pack(side=tk.LEFT)
         tk.Checkbutton(ctrl, text="Transitions", variable=self._show_trans,  command=self._replot).pack(side=tk.LEFT)
         tk.Checkbutton(ctrl, text="Normalise",   variable=self._normalise,   command=self._replot).pack(side=tk.LEFT)
-
-        _sep(ctrl)
-
-        # ── Export / pop-out — placed early so they're always visible ────────
-        tk.Button(ctrl, text="Save Fig",   command=self._save_figure,
-                  font=("", 8)).pack(side=tk.LEFT, padx=2)
-        tk.Button(ctrl, text="Export CSV", command=self._export_csv,
-                  font=("", 8)).pack(side=tk.LEFT, padx=2)
-        tk.Button(ctrl, text="\u29c9 Pop Out", command=self._pop_out_graph,
-                  font=("", 8, "bold"), fg="#003399",
-                  relief=tk.RAISED).pack(side=tk.LEFT, padx=(2, 4))
-
-        _sep(ctrl)
-
-        # Legend + label editor
-        tk.Checkbutton(ctrl, text="Legend", variable=self._show_legend,
-                       command=self._toggle_legend).pack(side=tk.LEFT)
-        # Sub-toggle: include/exclude TDDFT entries from the legend
-        tk.Checkbutton(ctrl, text="TDDFT", variable=self._show_tddft_in_legend,
-                       command=self._replot,
-                       font=("", 8), fg="navy").pack(side=tk.LEFT, padx=(0, 2))
-        tk.Button(ctrl, text="Edit Labels\u2026", command=self._open_legend_editor,
-                  font=("", 8)).pack(side=tk.LEFT, padx=(2, 0))
-
-        _sep(ctrl)
-
-        # Grid toggle + background colour picker
-        tk.Checkbutton(ctrl, text="Grid", variable=self._show_grid,
-                       command=self._replot).pack(side=tk.LEFT)
-        self._bg_btn = tk.Button(
-            ctrl, text="Plot BG", font=("", 8),
-            bg=self._bg_colour, relief=tk.RAISED,
-            command=self._choose_bg_colour
-        )
-        self._bg_btn.pack(side=tk.LEFT, padx=(2, 0))
-
-        _sep(ctrl)
-
-        # Style dialogs
-        tk.Button(ctrl, text="TDDFT Style\u2026", command=self._open_tddft_style_dialog,
-                  font=("", 8)).pack(side=tk.LEFT, padx=2)
-        tk.Button(ctrl, text="Fonts\u2026", command=self._open_font_dialog,
-                  font=("", 8)).pack(side=tk.LEFT, padx=2)
-
-        _sep(ctrl)
-
-        # Overlay toggle
-        tk.Checkbutton(ctrl, text="Overlay Mode", variable=self._overlay_mode,
-                       command=self._on_overlay_toggle, fg="darkblue",
-                       font=("", 9, "bold")).pack(side=tk.LEFT, padx=2)
-
-        # ── Combined-spectrum component selector (hidden until a combined spectrum loads)
-        _sep(ctrl)
-        self._comb_frame = tk.Frame(ctrl)
-        # Packed/unpacked dynamically by _update_comb_ui — do not pack here
-        tk.Label(self._comb_frame, text="Components:",
-                 font=("", 9, "bold"), fg="#005580").pack(side=tk.LEFT, padx=(0, 2))
-        tk.Checkbutton(self._comb_frame, text="Total",
-                       variable=self._comb_total, command=self._replot,
-                       fg="#333333").pack(side=tk.LEFT)
-        tk.Checkbutton(self._comb_frame, text="Elec. Dipole (D\u00b2)",
-                       variable=self._comb_d2, command=self._replot,
-                       fg="#1f77b4").pack(side=tk.LEFT)
-        tk.Checkbutton(self._comb_frame, text="Mag. Dipole (m\u00b2)",
-                       variable=self._comb_m2, command=self._replot,
-                       fg="#2ca02c").pack(side=tk.LEFT)
-        tk.Checkbutton(self._comb_frame, text="Elec. Quad. (Q\u00b2)",
-                       variable=self._comb_q2, command=self._replot,
-                       fg="#d62728").pack(side=tk.LEFT)
 
     # ══════════════════════════════════════════════════════════════════════════
     #  Alignment controls (row 2) — ΔE shift, entry unbounded, slider ±20
@@ -649,37 +584,6 @@ class PlotWidget(tk.Frame):
                        command=self._on_inset_labels_toggle,
                        bg="#e8f0e8", font=("", 8)).pack(side=tk.LEFT, padx=(2, 0))
 
-        _sep2()
-
-        # ── Y-axis label visibility + custom text ─────────────────────────
-        tk.Label(bar, text="Y labels:", font=("", 8, "bold"),
-                 bg="#e8f0e8").pack(side=tk.LEFT, padx=(0, 2))
-
-        # Left Y
-        tk.Checkbutton(bar, text="Left:", variable=self._show_left_ylabel,
-                       command=self._replot, bg="#e8f0e8",
-                       font=("", 8)).pack(side=tk.LEFT)
-        self._left_ylabel_entry = tk.Entry(
-            bar, textvariable=self._custom_left_ylabel,
-            width=18, font=("", 8), relief=tk.SUNKEN)
-        self._left_ylabel_entry.pack(side=tk.LEFT, padx=(1, 6))
-        self._left_ylabel_entry.bind("<Return>",   lambda _: self._replot())
-        self._left_ylabel_entry.bind("<FocusOut>", lambda _: self._replot())
-        _ToolTip(self._left_ylabel_entry,
-                 "Custom left Y-axis label.\nLeave blank to use the auto label.")
-
-        # Right Y
-        tk.Checkbutton(bar, text="Right:", variable=self._show_right_ylabel,
-                       command=self._replot, bg="#e8f0e8",
-                       font=("", 8)).pack(side=tk.LEFT)
-        self._right_ylabel_entry = tk.Entry(
-            bar, textvariable=self._custom_right_ylabel,
-            width=18, font=("", 8), relief=tk.SUNKEN)
-        self._right_ylabel_entry.pack(side=tk.LEFT, padx=(1, 4))
-        self._right_ylabel_entry.bind("<Return>",   lambda _: self._replot())
-        self._right_ylabel_entry.bind("<FocusOut>", lambda _: self._replot())
-        _ToolTip(self._right_ylabel_entry,
-                 "Custom right Y-axis label.\nLeave blank to use the auto label.")
 
     def _auto_x(self):
         self._xlim_lo.set("")
@@ -771,18 +675,151 @@ class PlotWidget(tk.Frame):
             self._replot()
 
     # ══════════════════════════════════════════════════════════════════════════
-    #  Title bar
+    #  Axes & Labels (title, X/Y labels, tick direction)
     # ══════════════════════════════════════════════════════════════════════════
-    def _build_title_bar(self):
-        bar = self._collapsible_bar("Title", collapsed=True, padx=4, pady=2)
-        tk.Label(bar, text="Plot title:", font=("", 9)).pack(side=tk.LEFT)
-        entry = tk.Entry(bar, textvariable=self._custom_title, font=("", 10),
-                         relief=tk.FLAT, bg="#f0f0f0", fg="#111111")
-        entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 4))
-        entry.bind("<Return>",   lambda _: self._replot())
-        entry.bind("<FocusOut>", lambda _: self._replot())
-        tk.Button(bar, text="Reset", font=("", 8),
-                  command=self._reset_title).pack(side=tk.LEFT)
+    def _build_axes_controls(self):
+        bg = "#e8e8f8"
+        bar = self._collapsible_bar("Axes & Labels", collapsed=True, padx=4, pady=2, bg=bg)
+
+        def _sep3(): tk.Frame(bar, width=1, bg="#9999bb").pack(
+            side=tk.LEFT, fill=tk.Y, padx=5, pady=2)
+
+        # ── Plot title ────────────────────────────────────────────────────
+        tk.Label(bar, text="Title:", font=("", 9), bg=bg).pack(side=tk.LEFT)
+        title_entry = tk.Entry(bar, textvariable=self._custom_title,
+                               font=("", 9), relief=tk.SUNKEN, width=22, bg="#f8f8ff")
+        title_entry.pack(side=tk.LEFT, padx=(2, 0))
+        title_entry.bind("<Return>",   lambda _: self._replot())
+        title_entry.bind("<FocusOut>", lambda _: self._replot())
+        tk.Button(bar, text="Auto", font=("", 8), bg=bg,
+                  command=self._reset_title).pack(side=tk.LEFT, padx=(2, 0))
+        _ToolTip(title_entry, "Custom plot title.\nLeave blank for auto title.")
+
+        _sep3()
+
+        # ── X axis label ─────────────────────────────────────────────────
+        tk.Label(bar, text="X label:", font=("", 9), bg=bg).pack(side=tk.LEFT)
+        xl_entry = tk.Entry(bar, textvariable=self._custom_x_label,
+                            font=("", 9), relief=tk.SUNKEN, width=18, bg="#f8f8ff")
+        xl_entry.pack(side=tk.LEFT, padx=(2, 0))
+        xl_entry.bind("<Return>",   lambda _: self._replot())
+        xl_entry.bind("<FocusOut>", lambda _: self._replot())
+        tk.Button(bar, text="Auto", font=("", 8), bg=bg,
+                  command=lambda: (self._custom_x_label.set(""), self._replot())
+                  ).pack(side=tk.LEFT, padx=(2, 0))
+        _ToolTip(xl_entry, "Custom X-axis label.\nLeave blank to use the auto label from the unit selection.")
+
+        _sep3()
+
+        # ── Left Y label ─────────────────────────────────────────────────
+        tk.Checkbutton(bar, text="Left Y:", variable=self._show_left_ylabel,
+                       command=self._replot, bg=bg, font=("", 9)).pack(side=tk.LEFT)
+        self._left_ylabel_entry = tk.Entry(
+            bar, textvariable=self._custom_left_ylabel,
+            width=16, font=("", 8), relief=tk.SUNKEN, bg="#f8f8ff")
+        self._left_ylabel_entry.pack(side=tk.LEFT, padx=(2, 4))
+        self._left_ylabel_entry.bind("<Return>",   lambda _: self._replot())
+        self._left_ylabel_entry.bind("<FocusOut>", lambda _: self._replot())
+        _ToolTip(self._left_ylabel_entry,
+                 "Custom left Y-axis label.\nLeave blank to use the auto label.")
+
+        # ── Right Y label ────────────────────────────────────────────────
+        tk.Checkbutton(bar, text="Right Y:", variable=self._show_right_ylabel,
+                       command=self._replot, bg=bg, font=("", 9)).pack(side=tk.LEFT)
+        self._right_ylabel_entry = tk.Entry(
+            bar, textvariable=self._custom_right_ylabel,
+            width=16, font=("", 8), relief=tk.SUNKEN, bg="#f8f8ff")
+        self._right_ylabel_entry.pack(side=tk.LEFT, padx=(2, 0))
+        self._right_ylabel_entry.bind("<Return>",   lambda _: self._replot())
+        self._right_ylabel_entry.bind("<FocusOut>", lambda _: self._replot())
+        _ToolTip(self._right_ylabel_entry,
+                 "Custom right Y-axis label.\nLeave blank to use the auto label.")
+
+        _sep3()
+
+        # ── Tick direction ────────────────────────────────────────────────
+        tk.Label(bar, text="Ticks:", font=("", 9), bg=bg).pack(side=tk.LEFT)
+        for val, lbl in (("out", "Out"), ("in", "In"), ("both", "Both")):
+            tk.Radiobutton(bar, text=lbl, variable=self._tick_direction,
+                           value=val, command=self._replot,
+                           bg=bg, font=("", 9)).pack(side=tk.LEFT, padx=1)
+
+    # ══════════════════════════════════════════════════════════════════════════
+    #  Style (grid, background, TDDFT style, fonts)
+    # ══════════════════════════════════════════════════════════════════════════
+    def _build_style_controls(self):
+        bar = self._collapsible_bar("Style", collapsed=True, padx=4, pady=3)
+
+        tk.Checkbutton(bar, text="Grid", variable=self._show_grid,
+                       command=self._replot).pack(side=tk.LEFT)
+
+        self._bg_btn = tk.Button(
+            bar, text="Plot BG\u2026", font=("", 8),
+            bg=self._bg_colour, relief=tk.RAISED,
+            command=self._choose_bg_colour
+        )
+        self._bg_btn.pack(side=tk.LEFT, padx=(4, 0))
+
+        _sep(bar)
+
+        tk.Button(bar, text="TDDFT Style\u2026", command=self._open_tddft_style_dialog,
+                  font=("", 8)).pack(side=tk.LEFT, padx=2)
+        tk.Button(bar, text="Fonts\u2026", command=self._open_font_dialog,
+                  font=("", 8)).pack(side=tk.LEFT, padx=2)
+
+    # ══════════════════════════════════════════════════════════════════════════
+    #  Legend & Export
+    # ══════════════════════════════════════════════════════════════════════════
+    def _build_legend_export_controls(self):
+        bar = self._collapsible_bar("Legend & Export", collapsed=True, padx=4, pady=3)
+
+        tk.Checkbutton(bar, text="Legend", variable=self._show_legend,
+                       command=self._toggle_legend).pack(side=tk.LEFT)
+        tk.Checkbutton(bar, text="TDDFT", variable=self._show_tddft_in_legend,
+                       command=self._replot,
+                       font=("", 8), fg="navy").pack(side=tk.LEFT, padx=(0, 2))
+        tk.Button(bar, text="Edit Labels\u2026", command=self._open_legend_editor,
+                  font=("", 8)).pack(side=tk.LEFT, padx=(2, 0))
+
+        _sep(bar)
+
+        tk.Button(bar, text="Save Fig",   command=self._save_figure,
+                  font=("", 8)).pack(side=tk.LEFT, padx=2)
+        tk.Button(bar, text="Export CSV", command=self._export_csv,
+                  font=("", 8)).pack(side=tk.LEFT, padx=2)
+        tk.Button(bar, text="\u29c9 Pop Out", command=self._pop_out_graph,
+                  font=("", 8, "bold"), fg="#003399",
+                  relief=tk.RAISED).pack(side=tk.LEFT, padx=(2, 4))
+
+    # ══════════════════════════════════════════════════════════════════════════
+    #  Overlay controls (overlay mode + combined-spectrum components)
+    # ══════════════════════════════════════════════════════════════════════════
+    def _build_overlay_controls(self):
+        bg = "#e8f0f8"
+        bar = self._collapsible_bar("Overlay", collapsed=True, padx=4, pady=3, bg=bg)
+
+        tk.Checkbutton(bar, text="Overlay Mode", variable=self._overlay_mode,
+                       command=self._on_overlay_toggle, fg="darkblue",
+                       bg=bg, font=("", 9, "bold")).pack(side=tk.LEFT, padx=2)
+
+        _sep(bar)
+
+        # Combined-spectrum component selector (packed/unpacked by _update_comb_ui)
+        self._comb_frame = tk.Frame(bar, bg=bg)
+        tk.Label(self._comb_frame, text="Components:",
+                 font=("", 9, "bold"), fg="#005580", bg=bg).pack(side=tk.LEFT, padx=(0, 2))
+        tk.Checkbutton(self._comb_frame, text="Total",
+                       variable=self._comb_total, command=self._replot,
+                       fg="#333333", bg=bg).pack(side=tk.LEFT)
+        tk.Checkbutton(self._comb_frame, text="Elec. Dipole (D\u00b2)",
+                       variable=self._comb_d2, command=self._replot,
+                       fg="#1f77b4", bg=bg).pack(side=tk.LEFT)
+        tk.Checkbutton(self._comb_frame, text="Mag. Dipole (m\u00b2)",
+                       variable=self._comb_m2, command=self._replot,
+                       fg="#2ca02c", bg=bg).pack(side=tk.LEFT)
+        tk.Checkbutton(self._comb_frame, text="Elec. Quad. (Q\u00b2)",
+                       variable=self._comb_q2, command=self._replot,
+                       fg="#d62728", bg=bg).pack(side=tk.LEFT)
 
     def _reset_title(self):
         self._custom_title.set("")
@@ -1802,7 +1839,7 @@ class PlotWidget(tk.Frame):
 
         # ── Axes decoration ───────────────────────────────────────────────────
         self.ax.set_xlabel(
-            self._xlabel(),
+            self._custom_x_label.get().strip() or self._xlabel(),
             fontsize=self._font_xlabel_size.get(),
             fontweight="bold" if self._font_xlabel_bold.get() else "normal")
         _left_lbl = self._custom_left_ylabel.get().strip() or ylabel
@@ -1817,8 +1854,9 @@ class PlotWidget(tk.Frame):
             fontsize=self._font_title_size.get(),
             fontweight="bold" if self._font_title_bold.get() else "normal")
 
-        # Tick label size (both axes) — right axis also respects show/hide checkbox
-        self.ax.tick_params(axis="both", labelsize=self._font_tick_size.get())
+        # Tick label size + direction (both axes)
+        self.ax.tick_params(axis="both", labelsize=self._font_tick_size.get(),
+                            direction=self._tick_direction.get())
         if self.ax2 is not None:
             _show_right = self._show_right_ylabel.get()
             self.ax2.tick_params(
