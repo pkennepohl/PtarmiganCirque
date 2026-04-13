@@ -338,11 +338,89 @@ class PlotWidget(tk.Frame):
         outer.bind("<Configure>", lambda e: outer.after_idle(_update))
         return inner
 
+    def _collapsible_bar(self, title: str, collapsed: bool = False, **kw) -> tk.Frame:
+        """Like _scrollable_bar but wrapped in a slim collapsible header.
+
+        Clicking the header row (or the arrow) toggles the content body.
+        Returns the inner Frame just like _scrollable_bar so call-sites are
+        identical.
+        """
+        hdr_bg = kw.get("bg") or self.cget("bg")
+        # Slightly darken the header relative to the body background
+        section = tk.Frame(self)
+        section.pack(side=tk.TOP, fill=tk.X)
+
+        _state = {"collapsed": collapsed}
+
+        # ── Slim clickable header ─────────────────────────────────────────────
+        hdr = tk.Frame(section, bg=hdr_bg, cursor="hand2")
+        hdr.pack(side=tk.TOP, fill=tk.X)
+
+        arrow = tk.Label(hdr, text="▶" if collapsed else "▼",
+                         font=("", 7), bg=hdr_bg, fg="#555555",
+                         cursor="hand2")
+        arrow.pack(side=tk.LEFT, padx=(3, 1), pady=1)
+        tk.Label(hdr, text=title, font=("", 8, "bold"),
+                 bg=hdr_bg, fg="#333333",
+                 cursor="hand2").pack(side=tk.LEFT, pady=1)
+
+        # ── Body — holds the horizontally-scrollable canvas ───────────────────
+        body = tk.Frame(section)
+
+        bg = kw.get("bg", None)
+        cnv = tk.Canvas(body, highlightthickness=0,
+                        **({"bg": bg} if bg else {}))
+        hbar = ttk.Scrollbar(body, orient="horizontal", command=cnv.xview)
+        cnv.configure(xscrollcommand=hbar.set)
+        cnv.pack(side=tk.TOP, fill=tk.X, expand=True)
+
+        inner = tk.Frame(cnv, **kw)
+        cnv.create_window((0, 0), window=inner, anchor="nw")
+
+        def _update(_event=None):
+            cnv.configure(scrollregion=cnv.bbox("all"))
+            req_h = inner.winfo_reqheight()
+            if req_h > 1:
+                cnv.configure(height=req_h)
+            try:
+                needed = inner.winfo_reqwidth() > body.winfo_width() > 1
+            except Exception:
+                needed = False
+            if needed:
+                hbar.pack(side=tk.BOTTOM, fill=tk.X, before=cnv)
+            else:
+                hbar.pack_forget()
+
+        inner.bind("<Configure>", lambda e: body.after_idle(_update))
+        body.bind("<Configure>", lambda e: body.after_idle(_update))
+
+        # ── Toggle logic ──────────────────────────────────────────────────────
+        def _toggle(_event=None):
+            if _state["collapsed"]:
+                _state["collapsed"] = False
+                arrow.config(text="▼")
+                body.pack(side=tk.TOP, fill=tk.X)
+            else:
+                _state["collapsed"] = True
+                arrow.config(text="▶")
+                body.pack_forget()
+
+        hdr.bind("<Button-1>", _toggle)
+        arrow.bind("<Button-1>", _toggle)
+        for child in hdr.winfo_children():
+            child.bind("<Button-1>", _toggle)
+
+        # Initial state
+        if not collapsed:
+            body.pack(side=tk.TOP, fill=tk.X)
+
+        return inner
+
     # ══════════════════════════════════════════════════════════════════════════
     #  Controls strip (row 1)
     # ══════════════════════════════════════════════════════════════════════════
     def _build_controls(self):
-        ctrl = self._scrollable_bar(bd=1, relief=tk.SUNKEN, padx=4, pady=3)
+        ctrl = self._collapsible_bar("Display", bd=1, relief=tk.SUNKEN, padx=4, pady=3)
         self._ctrl_frame = ctrl   # saved so _update_comb_ui can pack into it
 
         # X-axis unit
@@ -461,7 +539,7 @@ class PlotWidget(tk.Frame):
     #  Alignment controls (row 2) — ΔE shift, entry unbounded, slider ±20
     # ══════════════════════════════════════════════════════════════════════════
     def _build_alignment_controls(self):
-        bar = self._scrollable_bar(bd=1, relief=tk.FLAT, padx=4, pady=2, bg="#f0f0e8")
+        bar = self._collapsible_bar("Alignment", bd=1, relief=tk.FLAT, padx=4, pady=2, bg="#f0f0e8")
 
         tk.Label(bar, text="TDDFT \u0394E shift:", font=("", 9),
                  bg="#f0f0e8").pack(side=tk.LEFT)
@@ -518,7 +596,7 @@ class PlotWidget(tk.Frame):
     #  View-controls bar (row 3) — visibility, axis ranges, inset
     # ══════════════════════════════════════════════════════════════════════════
     def _build_view_controls(self):
-        bar = self._scrollable_bar(bd=1, relief=tk.FLAT, padx=4, pady=2, bg="#e8f0e8")
+        bar = self._collapsible_bar("View", collapsed=True, bd=1, relief=tk.FLAT, padx=4, pady=2, bg="#e8f0e8")
 
         # ── Master visibility ──────────────────────────────────────────────
         tk.Checkbutton(bar, text="Show TDDFT", variable=self._show_tddft,
@@ -696,7 +774,7 @@ class PlotWidget(tk.Frame):
     #  Title bar
     # ══════════════════════════════════════════════════════════════════════════
     def _build_title_bar(self):
-        bar = self._scrollable_bar(padx=4, pady=2)
+        bar = self._collapsible_bar("Title", collapsed=True, padx=4, pady=2)
         tk.Label(bar, text="Plot title:", font=("", 9)).pack(side=tk.LEFT)
         entry = tk.Entry(bar, textvariable=self._custom_title, font=("", 10),
                          relief=tk.FLAT, bg="#f0f0f0", fg="#111111")
