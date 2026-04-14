@@ -712,7 +712,7 @@ class PlotWidget(tk.Frame):
         _sep3()
 
         # ── Left Y label ─────────────────────────────────────────────────
-        tk.Checkbutton(bar, text="Left Y:", variable=self._show_left_ylabel,
+        tk.Checkbutton(bar, text="TDDFT Y:", variable=self._show_left_ylabel,
                        command=self._replot, bg=bg, font=("", 9)).pack(side=tk.LEFT)
         self._left_ylabel_entry = tk.Entry(
             bar, textvariable=self._custom_left_ylabel,
@@ -721,10 +721,10 @@ class PlotWidget(tk.Frame):
         self._left_ylabel_entry.bind("<Return>",   lambda _: self._replot())
         self._left_ylabel_entry.bind("<FocusOut>", lambda _: self._replot())
         _ToolTip(self._left_ylabel_entry,
-                 "Custom left Y-axis label.\nLeave blank to use the auto label.")
+                 "Custom TDDFT (left) Y-axis label.\nLeave blank to use the auto label.")
 
         # ── Right Y label ────────────────────────────────────────────────
-        tk.Checkbutton(bar, text="Right Y:", variable=self._show_right_ylabel,
+        tk.Checkbutton(bar, text="Exp. Y:", variable=self._show_right_ylabel,
                        command=self._replot, bg=bg, font=("", 9)).pack(side=tk.LEFT)
         self._right_ylabel_entry = tk.Entry(
             bar, textvariable=self._custom_right_ylabel,
@@ -733,7 +733,7 @@ class PlotWidget(tk.Frame):
         self._right_ylabel_entry.bind("<Return>",   lambda _: self._replot())
         self._right_ylabel_entry.bind("<FocusOut>", lambda _: self._replot())
         _ToolTip(self._right_ylabel_entry,
-                 "Custom right Y-axis label.\nLeave blank to use the auto label.")
+                 "Custom Exp. (right) Y-axis label.\nLeave blank to use the auto label.")
 
         _sep3()
 
@@ -1024,13 +1024,19 @@ class PlotWidget(tk.Frame):
         ov_scroll.pack(side=tk.RIGHT, fill=tk.Y)
 
     def _make_panel_row(self, parent, label, var, colour, remove_cmd,
-                        style_cmd=None, color_cmd=None, type_label=None):
-        """Create a single checkbox row: [type swatch] [checkbox label] [Style] [✕]
-        type_label (e.g. 'TDDFT' or 'EXP') is shown as white text on the colour swatch.
-        If color_cmd is provided the swatch becomes a clickable colour-picker button.
+                        style_cmd=None, color_cmd=None, type_label=None,
+                        params_entry=None):
+        """Create a single checkbox row with optional expandable per-spectrum controls.
+
+        params_entry: if provided, should be the _tddft_spectra dict entry so we
+        can build inline fwhm/broadening/delta_e/scale controls.
         """
-        row = tk.Frame(parent)
+        outer = tk.Frame(parent)
+        outer.pack(fill=tk.X, anchor="w")
+
+        row = tk.Frame(outer)
         row.pack(fill=tk.X, anchor="w")
+
         _tag = type_label or ""
         if color_cmd:
             swatch = tk.Button(row, bg=colour, relief=tk.RAISED,
@@ -1044,15 +1050,160 @@ class PlotWidget(tk.Frame):
             tk.Label(row, bg=colour, relief=tk.RAISED,
                      text=_tag, fg="white", font=("", 7, "bold"),
                      width=5).pack(side=tk.LEFT, padx=(2, 0))
+
         tk.Checkbutton(
             row, text=label, variable=var, command=self._replot,
-            anchor="w", font=("", 8), wraplength=340, justify=tk.LEFT
+            anchor="w", font=("", 8), wraplength=220, justify=tk.LEFT
         ).pack(side=tk.LEFT, fill=tk.X, expand=True)
+
         if style_cmd:
             tk.Button(row, text="Style\u2026", width=5, font=("", 7),
                       relief=tk.FLAT, command=style_cmd).pack(side=tk.RIGHT, padx=1)
         tk.Button(row, text="\u2715", width=2, font=("", 7), relief=tk.FLAT,
                   command=remove_cmd).pack(side=tk.RIGHT, padx=2)
+
+        # Per-spectrum expandable controls (TDDFT only)
+        if params_entry is not None:
+            detail_frame = tk.Frame(outer, bg="#f0f0f8", padx=6, pady=2)
+            _detail_visible = {"v": False}
+
+            def _toggle_detail():
+                if _detail_visible["v"]:
+                    detail_frame.pack_forget()
+                    _detail_visible["v"] = False
+                    detail_btn.config(text="\u25b6")
+                else:
+                    detail_frame.pack(fill=tk.X, padx=(14, 2))
+                    _detail_visible["v"] = True
+                    detail_btn.config(text="\u25bc")
+
+            detail_btn = tk.Button(row, text="\u25b6", width=2, font=("", 7),
+                                   relief=tk.FLAT, command=_toggle_detail)
+            detail_btn.pack(side=tk.RIGHT, padx=1)
+
+            # Build the detail controls inside detail_frame
+            self._build_per_spectrum_detail(detail_frame, params_entry)
+
+    def _build_per_spectrum_detail(self, frame: tk.Frame, entry: dict):
+        """Build inline per-spectrum parameter controls inside the Data panel row."""
+        bg = "#f0f0f8"
+
+        # Row 1: Broadening + FWHM
+        r1 = tk.Frame(frame, bg=bg)
+        r1.pack(fill=tk.X, pady=(0, 1))
+
+        tk.Label(r1, text="Broadening:", font=("", 8), bg=bg).pack(side=tk.LEFT)
+        for b in ("Gaussian", "Lorentzian"):
+            tk.Radiobutton(r1, text=b, variable=entry["broadening"],
+                           value=b, command=self._replot,
+                           bg=bg, font=("", 8)).pack(side=tk.LEFT, padx=1)
+
+        tk.Frame(r1, width=8, bg=bg).pack(side=tk.LEFT)
+        tk.Label(r1, text="FWHM:", font=("", 8), bg=bg).pack(side=tk.LEFT)
+
+        fwhm_str = tk.StringVar(value=f"{entry['fwhm'].get():.2f}")
+
+        def _fwhm_slider_cb(val):
+            entry["fwhm"].set(float(val))
+            fwhm_str.set(f"{float(val):.2f}")
+            self._replot()
+
+        def _fwhm_entry_cb(*_):
+            try:
+                v = float(fwhm_str.get())
+                if v > 0:
+                    entry["fwhm"].set(v)
+                    fwhm_slider.set(min(20.0, max(0.05, v)))
+                    self._replot()
+            except ValueError:
+                pass
+
+        fwhm_entry = tk.Entry(r1, textvariable=fwhm_str, width=6, font=("Courier", 8))
+        fwhm_entry.pack(side=tk.LEFT, padx=(2, 0))
+        fwhm_entry.bind("<Return>", _fwhm_entry_cb)
+        fwhm_entry.bind("<FocusOut>", _fwhm_entry_cb)
+
+        unit = self._x_unit.get()
+        unit_lbl = "Ha" if unit == "Ha" else ("cm\u207b\u00b9" if unit == "cm\u207b\u00b9" else "eV")
+        tk.Label(r1, text=unit_lbl, font=("", 7), bg=bg, fg="gray").pack(side=tk.LEFT, padx=(1, 4))
+
+        fwhm_slider = tk.Scale(r1, from_=0.05, to=20.0, resolution=0.05,
+                                orient=tk.HORIZONTAL, length=100,
+                                variable=entry["fwhm"], showvalue=False,
+                                bg=bg, command=_fwhm_slider_cb)
+        fwhm_slider.pack(side=tk.LEFT)
+
+        # Row 2: ΔE shift + Scale
+        r2 = tk.Frame(frame, bg=bg)
+        r2.pack(fill=tk.X)
+
+        tk.Label(r2, text="\u0394E shift:", font=("", 8), bg=bg).pack(side=tk.LEFT)
+
+        de_str = tk.StringVar(value=f"{entry['delta_e'].get():+.2f}")
+
+        def _de_slider_cb(val):
+            entry["delta_e"].set(float(val))
+            de_str.set(f"{float(val):+.2f}")
+            self._replot()
+
+        def _de_entry_cb(*_):
+            try:
+                v = float(de_str.get())
+                entry["delta_e"].set(v)
+                de_slider.set(max(-20.0, min(20.0, v)))
+                self._replot()
+            except ValueError:
+                pass
+
+        de_entry = tk.Entry(r2, textvariable=de_str, width=7, font=("Courier", 8))
+        de_entry.pack(side=tk.LEFT, padx=(2, 0))
+        de_entry.bind("<Return>", _de_entry_cb)
+        de_entry.bind("<FocusOut>", _de_entry_cb)
+        tk.Label(r2, text="eV", font=("", 7), bg=bg, fg="gray").pack(side=tk.LEFT, padx=(1, 4))
+
+        de_slider = tk.Scale(r2, from_=-20.0, to=20.0, resolution=0.05,
+                              orient=tk.HORIZONTAL, length=100,
+                              variable=entry["delta_e"], showvalue=False,
+                              bg=bg, command=_de_slider_cb)
+        de_slider.pack(side=tk.LEFT)
+
+        tk.Frame(r2, width=8, bg=bg).pack(side=tk.LEFT)
+        tk.Label(r2, text="Scale:", font=("", 8), bg=bg).pack(side=tk.LEFT)
+
+        sc_str = tk.StringVar(value=f"{entry['scale'].get():.3f}")
+
+        def _sc_slider_cb(val):
+            entry["scale"].set(float(val))
+            sc_str.set(f"{float(val):.3f}")
+            self._replot()
+
+        def _sc_entry_cb(*_):
+            try:
+                v = float(sc_str.get())
+                if v > 0:
+                    entry["scale"].set(v)
+                    sc_slider.set(min(5.0, max(0.01, v)))
+                    self._replot()
+            except ValueError:
+                pass
+
+        sc_entry = tk.Entry(r2, textvariable=sc_str, width=7, font=("Courier", 8))
+        sc_entry.pack(side=tk.LEFT, padx=(2, 0))
+        sc_entry.bind("<Return>", _sc_entry_cb)
+        sc_entry.bind("<FocusOut>", _sc_entry_cb)
+        tk.Label(r2, text="\u00d7", font=("", 8), bg=bg, fg="gray").pack(side=tk.LEFT, padx=(1, 4))
+
+        sc_slider = tk.Scale(r2, from_=0.01, to=5.0, resolution=0.01,
+                              orient=tk.HORIZONTAL, length=100,
+                              variable=entry["scale"], showvalue=False,
+                              bg=bg, command=_sc_slider_cb)
+        sc_slider.pack(side=tk.LEFT)
+
+        tk.Button(r2, text="Reset", font=("", 7), bg=bg,
+                  command=lambda: (entry["scale"].set(1.0),
+                                   sc_str.set("1.000"),
+                                   sc_slider.set(1.0),
+                                   self._replot())).pack(side=tk.LEFT, padx=(4, 0))
 
     def _refresh_panel_content(self):
         """Rebuild all rows: unified TDDFT + EXP table, type shown on colour swatch."""
@@ -1066,6 +1217,7 @@ class PlotWidget(tk.Frame):
                 remove_cmd=lambda idx=i: self._remove_tddft_idx(idx),
                 color_cmd=lambda idx=i: self._pick_tddft_colour(idx),
                 type_label="TDDFT",
+                params_entry=entry,
             )
 
         for i, (label, scan, var, style) in enumerate(self._exp_scans):
@@ -1587,10 +1739,15 @@ class PlotWidget(tk.Frame):
 
         label = getattr(spectrum, "_custom_label", None) or spectrum.display_name()
         entry = {
-            "label":    label,
-            "spectrum": spectrum,
-            "enabled":  tk.BooleanVar(value=True),
-            "color":    "",
+            "label":      label,
+            "spectrum":   spectrum,
+            "enabled":    tk.BooleanVar(value=True),
+            "color":      "",
+            # Per-spectrum parameters (initialised from current global defaults)
+            "fwhm":       tk.DoubleVar(value=self._fwhm.get()),
+            "broadening": tk.StringVar(value=self._broadening.get()),
+            "delta_e":    tk.DoubleVar(value=self._delta_e.get()),
+            "scale":      tk.DoubleVar(value=self._tddft_scale.get()),
         }
         if self._tddft_spectra:
             # Replace the primary (index 0) — keep any overlays intact
@@ -1602,10 +1759,15 @@ class PlotWidget(tk.Frame):
 
     def add_overlay(self, label: str, spectrum: TDDFTSpectrum):
         entry = {
-            "label":    label,
-            "spectrum": spectrum,
-            "enabled":  tk.BooleanVar(value=True),
-            "color":    "",
+            "label":      label,
+            "spectrum":   spectrum,
+            "enabled":    tk.BooleanVar(value=True),
+            "color":      "",
+            # Per-spectrum parameters (initialised from current global defaults)
+            "fwhm":       tk.DoubleVar(value=self._fwhm.get()),
+            "broadening": tk.StringVar(value=self._broadening.get()),
+            "delta_e":    tk.DoubleVar(value=self._delta_e.get()),
+            "scale":      tk.DoubleVar(value=self._tddft_scale.get()),
         }
         self._tddft_spectra.append(entry)
         self._refresh_panel_content()
@@ -1670,10 +1832,11 @@ class PlotWidget(tk.Frame):
             return ev_arr * self._EV_TO_CM
         return ev_arr   # eV
 
-    def _fwhm_in_ev(self) -> float:
-        """Return the current FWHM value converted to eV for broadening."""
+    def _fwhm_in_ev(self, fwhm_override: float = None) -> float:
+        """Return the FWHM value converted to eV for broadening.
+        If fwhm_override is given, use that instead of self._fwhm.get()."""
         unit = self._x_unit.get()
-        fwhm = self._fwhm.get()
+        fwhm = fwhm_override if fwhm_override is not None else self._fwhm.get()
         if unit == "Ha":
             return fwhm * self._HA_TO_EV
         if unit in ("cm\u207b\u00b9", "nm"):
@@ -1692,12 +1855,18 @@ class PlotWidget(tk.Frame):
     # ══════════════════════════════════════════════════════════════════════════
     def _replot(self, *_):
         # ── Determine what to draw ────────────────────────────────────────────
-        tddft_to_draw: List[Tuple[str, TDDFTSpectrum, str]] = []
+        tddft_to_draw: List[Tuple[str, TDDFTSpectrum, str, dict]] = []
         for k, entry in enumerate(self._tddft_spectra):
             if entry["enabled"].get():
                 col = entry["color"] or OVERLAY_COLOURS[k % len(OVERLAY_COLOURS)]
                 lbl = entry["label"]
-                tddft_to_draw.append((lbl, entry["spectrum"], col))
+                params = {
+                    "fwhm":       entry["fwhm"].get() if "fwhm" in entry else self._fwhm.get(),
+                    "broadening": entry["broadening"].get() if "broadening" in entry else self._broadening.get(),
+                    "delta_e":    entry["delta_e"].get() if "delta_e" in entry else self._delta_e.get(),
+                    "scale":      entry["scale"].get() if "scale" in entry else self._tddft_scale.get(),
+                }
+                tddft_to_draw.append((lbl, entry["spectrum"], col, params))
 
         active_exp = [
             (lbl, sc, style.get("color") or EXP_COLOURS[i % len(EXP_COLOURS)], style)
@@ -1736,8 +1905,6 @@ class PlotWidget(tk.Frame):
         multi_tddft = len(tddft_to_draw) > 1
         first_hover_set = False
         ylabel = "Oscillator Strength (f)"
-        delta_e = self._delta_e.get()
-        scale   = self._tddft_scale.get()
         st = self._tddft_style
 
         # ── Collect fresh inset data each replot ─────────────────────────────
@@ -1750,7 +1917,9 @@ class PlotWidget(tk.Frame):
         show_tddft = self._show_tddft.get() and bool(tddft_to_draw)
 
         # ── Draw TDDFT spectra (left axis) ────────────────────────────────────
-        for name, sp, colour in (tddft_to_draw if show_tddft else []):
+        for name, sp, colour, sp_params in (tddft_to_draw if show_tddft else []):
+            delta_e = sp_params["delta_e"]
+            scale   = sp_params["scale"]
             ev_arr = np.array(sp.energies_ev) + delta_e
             is_cd  = sp.is_cd()
             is_comb = sp.is_combined() and not multi_tddft  # component mode only in single view
@@ -1805,7 +1974,9 @@ class PlotWidget(tk.Frame):
                              st["stick_linewidth"], st["stick_alpha"]))
 
                     if self._show_env.get():
-                        x_env, y_env = self._draw_envelope(ev_arr, yp, col_c, True, comp_lbl)
+                        x_env, y_env = self._draw_envelope(ev_arr, yp, col_c, True, comp_lbl,
+                                                            fwhm_override=sp_params["fwhm"],
+                                                            broadening_override=sp_params["broadening"])
                         if x_env is not None:
                             self._inset_plot_data.append(
                                 ("line", x_env, y_env, col_c,
@@ -1853,7 +2024,9 @@ class PlotWidget(tk.Frame):
                          st["stick_linewidth"], st["stick_alpha"]))
 
                 if self._show_env.get():
-                    x_env, y_env = self._draw_envelope(ev_arr, y_plot, colour, multi_tddft, name)
+                    x_env, y_env = self._draw_envelope(ev_arr, y_plot, colour, multi_tddft, name,
+                                                        fwhm_override=sp_params["fwhm"],
+                                                        broadening_override=sp_params["broadening"])
                     if x_env is not None:
                         self._inset_plot_data.append(
                             ("line", x_env, y_env, colour,
@@ -1981,11 +2154,14 @@ class PlotWidget(tk.Frame):
                              y_hi if y_hi is not None else cur[1])
 
         # Corner annotations for any active adjustments
+        # Show global defaults; per-spectrum overrides are visible in the Data panel.
+        _ann_delta_e = self._delta_e.get()
+        _ann_scale   = self._tddft_scale.get()
         ann_lines = []
-        if abs(delta_e) > 1e-4:
-            ann_lines.append(f"\u0394E = {delta_e:+.2f} eV")
-        if abs(scale - 1.0) > 1e-6:
-            ann_lines.append(f"scale \u00d7{scale:.3g}")
+        if abs(_ann_delta_e) > 1e-4:
+            ann_lines.append(f"\u0394E = {_ann_delta_e:+.2f} eV")
+        if abs(_ann_scale - 1.0) > 1e-6:
+            ann_lines.append(f"scale \u00d7{_ann_scale:.3g}")
         if ann_lines:
             self.ax.annotate(
                 "\n".join(ann_lines),
@@ -2065,15 +2241,17 @@ class PlotWidget(tk.Frame):
         self._notify_popouts()
 
     # ─────────────────────────────────────────────────────────────────────────
-    def _draw_envelope(self, ev_arr, y_arr, colour, multi, name):
+    def _draw_envelope(self, ev_arr, y_arr, colour, multi, name,
+                       fwhm_override=None, broadening_override=None):
         """Draw broadened envelope on self.ax; returns (x_grid, env) for inset re-use."""
-        fwhm_ev = self._fwhm_in_ev()
+        fwhm_ev = self._fwhm_in_ev(fwhm_override)
         if fwhm_ev <= 0:
             return None, None
         ev_min  = max(1e-3, ev_arr.min() - 4 * fwhm_ev)
         ev_max  = ev_arr.max() + 4 * fwhm_ev
         ev_grid = np.linspace(ev_min, ev_max, 2000)
-        fn      = gaussian if self._broadening.get() == "Gaussian" else lorentzian
+        broadening = broadening_override if broadening_override is not None else self._broadening.get()
+        fn      = gaussian if broadening == "Gaussian" else lorentzian
         env     = sum(y * fn(ev_grid, c, fwhm_ev) for c, y in zip(ev_arr, y_arr))
         x_grid  = self._ev_to_unit(ev_grid)
         label   = f"{name} (env)" if multi else "Envelope"

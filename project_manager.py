@@ -87,6 +87,11 @@ def save_project(path: str, app) -> None:
             "src_idx":  src_idx,
             "enabled":  bool(_get(entry["enabled"], True)),
             "colour":   entry["color"] or "",
+            # Per-spectrum parameters (new in version 3)
+            "fwhm":       float(_get(entry.get("fwhm"),       _get(plot._fwhm, 1.0))),
+            "broadening": str(  _get(entry.get("broadening"), _get(plot._broadening, "Gaussian"))),
+            "delta_e":    float(_get(entry.get("delta_e"),    _get(plot._delta_e, 0.0))),
+            "scale":      float(_get(entry.get("scale"),      _get(plot._tddft_scale, 1.0))),
         })
 
     # ── 4. Plot-widget state ─────────────────────────────────────────────────
@@ -130,7 +135,7 @@ def save_project(path: str, app) -> None:
     xas_params = xas.get_params()
 
     doc: dict = {
-        "version":       2,
+        "version":       3,
         "orca_files":    orca_files,
         "exp_scans":     exp_scans,
         "tddft_spectra": tddft_spectra_list,
@@ -219,8 +224,11 @@ def restore_project(doc: dict, app) -> list:
             warnings.append(f"Exp scan restore failed ({entry.get('panel_label','?')}): {exc}")
 
     # ── 4. Restore TDDFT spectra ─────────────────────────────────────────────
-    # Supports version 2 format (tddft_spectra list) and version 1 (overlays).
+    # Supports v3 (per-spectrum params), v2 (tddft_spectra, no params),
+    # and v1 (overlays key) for full backward compatibility.
+    import tkinter as _tk
     file_data = getattr(app, "_file_data", {})
+    ps_defaults = doc.get("plot_state", {})   # used as fallback for old files
     tddft_entries = doc.get("tddft_spectra", doc.get("overlays", []))
     for entry in tddft_entries:
         fp  = entry.get("src_file", "")
@@ -231,11 +239,21 @@ def restore_project(doc: dict, app) -> list:
             continue
         sp  = spectra[idx]
         var = _BoolVar_from(app, bool(entry.get("enabled", True)))
+        # Per-spectrum params: use saved value if present, else fall back to
+        # the global plot_state defaults (graceful degradation for v1/v2 files).
+        fwhm       = float(entry.get("fwhm",       ps_defaults.get("fwhm",       1.0)))
+        broadening = str(  entry.get("broadening", ps_defaults.get("broadening", "Gaussian")))
+        delta_e    = float(entry.get("delta_e",    ps_defaults.get("shift",       0.0)))
+        scale      = float(entry.get("scale",      ps_defaults.get("scale",       1.0)))
         plot._tddft_spectra.append({
-            "label":    entry["label"],
-            "spectrum": sp,
-            "enabled":  var,
-            "color":    entry.get("colour", ""),
+            "label":      entry["label"],
+            "spectrum":   sp,
+            "enabled":    var,
+            "color":      entry.get("colour", ""),
+            "fwhm":       _tk.DoubleVar(master=app, value=fwhm),
+            "broadening": _tk.StringVar(master=app, value=broadening),
+            "delta_e":    _tk.DoubleVar(master=app, value=delta_e),
+            "scale":      _tk.DoubleVar(master=app, value=scale),
         })
 
     # ── 5. Restore plot state ────────────────────────────────────────────────
