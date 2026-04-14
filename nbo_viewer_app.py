@@ -4236,6 +4236,7 @@ class NBOViewerApp(tk.Tk):
         self._iso_status.config(text="Computing tracked atom contributions...", fg="gray")
         self.update_idletasks()
 
+        # Initial load — store all atom contribs (not just tracked) so groups work later
         results = []
         for mo_i in range(mo_range_start, mo_range_end):
             comp = compute_mo_composition(mo_data, mo_i,
@@ -4247,8 +4248,8 @@ class NBOViewerApp(tk.Tk):
             else:             lbl = f"L+{delta-1}"
             row = {"mo": mo_i, "label": lbl, "energy": mo_data["energies"][mo_i],
                    "occ": mo_data["occs"][mo_i]}
-            for ak in tracked:
-                ac = comp['atom_contribs'].get(ak, {'s': 0, 'p': 0, 'd': 0, 'f': 0, 'total': 0})
+            # Store all atom contributions so groups can reference any atom
+            for ak, ac in comp['atom_contribs'].items():
                 row[ak] = ac
             results.append(row)
 
@@ -4467,11 +4468,6 @@ class NBOViewerApp(tk.Tk):
 
         def _refresh_range():
             mo_indices = _get_mo_indices()
-            # Collect all atom keys needed: tracked + group members
-            groups = _parse_groups()
-            all_atoms_needed = set(tracked)
-            for _, gkeys in groups:
-                all_atoms_needed.update(gkeys)
 
             refreshed_rows = []
             for mo_i in mo_indices:
@@ -4484,9 +4480,8 @@ class NBOViewerApp(tk.Tk):
                 else:             lbl = f"L+{delta-1}"
                 row = {"mo": mo_i, "label": lbl, "energy": mo_data["energies"][mo_i],
                        "occ": mo_data["occs"][mo_i]}
-                for ak in all_atoms_needed:
-                    c = comp['atom_contribs'].get(ak, {'total': 0, 'd': 0, 'p': 0, 's': 0})
-                    row[ak] = c
+                for ak, ac in comp['atom_contribs'].items():
+                    row[ak] = ac
                 refreshed_rows.append(row)
             _populate_table(refreshed_rows)
 
