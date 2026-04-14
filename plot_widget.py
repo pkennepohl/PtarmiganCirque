@@ -427,10 +427,10 @@ class PlotWidget(tk.Frame):
     def _build_spectrum_controls(self):
         ctrl = self._collapsible_bar("Spectrum", bd=1, relief=tk.SUNKEN, padx=4, pady=3)
 
-        # X-axis unit
+        # X-axis unit  (nm kept for now; moves to secondary axis in a later step)
         tk.Label(ctrl, text="X axis:").pack(side=tk.LEFT)
-        for unit in ("nm", "eV", "cm\u207b\u00b9"):
-            tk.Radiobutton(ctrl, text=unit, variable=self._x_unit,
+        for unit, label in (("eV", "eV"), ("Ha", "Ha"), ("cm\u207b\u00b9", "cm\u207b\u00b9"), ("nm", "nm")):
+            tk.Radiobutton(ctrl, text=label, variable=self._x_unit,
                            value=unit, command=self._on_unit_change).pack(side=tk.LEFT, padx=1)
 
         _sep(ctrl)
@@ -853,8 +853,11 @@ class PlotWidget(tk.Frame):
 
     def _on_fwhm_slider_change(self, val):
         fwhm = float(val)
-        if self._x_unit.get() == "cm\u207b\u00b9":
+        unit = self._x_unit.get()
+        if unit == "cm\u207b\u00b9":
             self._fwhm_str.set(f"{fwhm:.0f}")
+        elif unit == "Ha":
+            self._fwhm_str.set(f"{fwhm:.4f}")
         else:
             self._fwhm_str.set(f"{fwhm:.2f}")
         self._replot()
@@ -875,8 +878,11 @@ class PlotWidget(tk.Frame):
 
     def _sync_fwhm_entry(self):
         fwhm = self._fwhm.get()
-        if self._x_unit.get() == "cm\u207b\u00b9":
+        unit = self._x_unit.get()
+        if unit == "cm\u207b\u00b9":
             self._fwhm_str.set(f"{fwhm:.0f}")
+        elif unit == "Ha":
+            self._fwhm_str.set(f"{fwhm:.4f}")
         else:
             self._fwhm_str.set(f"{fwhm:.2f}")
 
@@ -887,7 +893,13 @@ class PlotWidget(tk.Frame):
             self._fwhm_slider.config(from_=50, to=8000, resolution=50)
             if self._fwhm.get() < 50:
                 self._fwhm.set(3000)
-        else:
+        elif unit == "Ha":
+            self._fwhm_unit_label.config(text="Ha")
+            self._fwhm_slider.config(from_=0.002, to=1.0, resolution=0.001)
+            # Reset if value is clearly from a different unit (e.g. cm⁻¹ range)
+            if self._fwhm.get() > 1.0 or self._fwhm.get() < 0.002:
+                self._fwhm.set(round(1.0 / self._HA_TO_EV, 4))  # ≈ 0.0368 Ha (1 eV)
+        else:   # eV or nm
             self._fwhm_unit_label.config(text="eV")
             self._fwhm_slider.config(from_=0.05, to=20.0, resolution=0.05)
             if self._fwhm.get() > 20:
@@ -1564,26 +1576,36 @@ class PlotWidget(tk.Frame):
     # ══════════════════════════════════════════════════════════════════════════
     #  Unit helpers
     # ══════════════════════════════════════════════════════════════════════════
+    # Conversion constants
+    _HA_TO_EV  = 27.21138602   # 1 Hartree in eV
+    _EV_TO_CM  = 8065.54       # 1 eV in cm⁻¹
+
     def _ev_to_unit(self, ev_arr):
         unit = self._x_unit.get()
         if unit == "nm":
             with np.errstate(divide="ignore"):
                 return np.where(ev_arr > 0, 1239.84 / ev_arr, 0.0)
+        elif unit == "Ha":
+            return ev_arr / self._HA_TO_EV
         elif unit == "cm\u207b\u00b9":
-            return ev_arr * 8065.54
-        return ev_arr
+            return ev_arr * self._EV_TO_CM
+        return ev_arr   # eV
 
     def _fwhm_in_ev(self) -> float:
+        """Return the current FWHM value converted to eV for broadening."""
         unit = self._x_unit.get()
         fwhm = self._fwhm.get()
+        if unit == "Ha":
+            return fwhm * self._HA_TO_EV
         if unit in ("cm\u207b\u00b9", "nm"):
-            return fwhm / 8065.54
-        return fwhm
+            return fwhm / self._EV_TO_CM
+        return fwhm   # already eV
 
     def _xlabel(self) -> str:
         unit = self._x_unit.get()
-        if unit == "nm":    return "Wavelength (nm)"
-        if unit == "eV":    return "Energy (eV)"
+        if unit == "nm":  return "Wavelength (nm)"
+        if unit == "eV":  return "Energy (eV)"
+        if unit == "Ha":  return "Energy (Ha)"
         return "Wavenumber (cm\u207b\u00b9)"
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -1647,20 +1669,10 @@ class PlotWidget(tk.Frame):
         self._inset_plot_data = []
         self._inset_indicator = None   # fig.clear() already destroyed old indicator
 
-        # ── Auto-normalise TDDFT to 0-1 when experimental overlay is present ──
-        # Individual oscillator strengths are tiny (≈1e-3) while experimental
-        # XAS is normalized to 1.  Pre-scan all spectra so the tallest feature
-        # (stick OR envelope peak) reaches 1.0 and the comparison is visual.
+        # TDDFT always plots in true oscillator-strength units on its own axis
+        # (ax).  Experimental scans plot on a separate twin axis (ax2) and
+        # autoscale independently, so no cross-normalisation is needed.
         show_tddft = self._show_tddft.get() and bool(tddft_to_draw)
-        if active_exp and show_tddft and not self._normalise.get():
-            _peak = 0.0
-            for _, _sp, _ in tddft_to_draw:
-                _y = np.array(_sp.fosc if not _sp.is_cd() else _sp.rotatory_strength)
-                if len(_y):
-                    _peak = max(_peak, float(np.abs(_y).max()))
-            _auto_norm = (1.0 / (_peak * scale)) if _peak * scale > 0 else 1.0
-        else:
-            _auto_norm = 1.0
 
         # ── Draw TDDFT spectra (left axis) ────────────────────────────────────
         for name, sp, colour in (tddft_to_draw if show_tddft else []):
@@ -1701,8 +1713,8 @@ class PlotWidget(tk.Frame):
                         yp = (y_c / np.abs(y_c).max()) * scale
                         ylabel = "Normalised Intensity"
                     else:
-                        yp = y_c * scale * _auto_norm
-                        ylabel = ("Rel. Intensity" if active_exp else "Oscillator Strength (f)")
+                        yp = y_c * scale
+                        ylabel = "Oscillator Strength (f)"
 
                     if self._show_sticks.get():
                         ml, sl, bl = self.ax.stem(
@@ -1749,11 +1761,8 @@ class PlotWidget(tk.Frame):
                     ylabel = ("Normalised \u00d7 scale" if abs(scale - 1) > 1e-6
                               else "Normalised Intensity")
                 else:
-                    y_plot = y_arr * scale * _auto_norm
-                    if active_exp:
-                        ylabel = "Rel. Intensity"
-                    else:
-                        ylabel = "Rotatory Strength" if is_cd else "Oscillator Strength (f)"
+                    y_plot = y_arr * scale
+                    ylabel = "Rotatory Strength" if is_cd else "Oscillator Strength (f)"
 
                 if self._show_sticks.get():
                     ml, sl, bl = self.ax.stem(
@@ -1864,6 +1873,7 @@ class PlotWidget(tk.Frame):
                 labelsize=self._font_tick_size.get(),
                 labelcolor="darkred" if _show_right else "none",
                 labelright=_show_right,
+                direction=self._tick_direction.get(),
             )
         self.ax.set_facecolor(self._bg_colour)
         self.fig.patch.set_facecolor(self._bg_colour)
