@@ -2739,8 +2739,8 @@ class PlotWidget(tk.Frame):
                 tip.append("Acceptor orbitals (MO\u1d47 \u2192 MO\u1d43):")
                 for fr, to, w2 in shown:
                     bar = "\u2588" * int(w2 * 20 + 0.5)   # mini bar up to 20 chars
-                    # Display MOs counting from 0 (ORCA stores 1-based indices)
-                    tip.append(f"  {fr-1:3d} \u2192 {to-1:3d}   {w2*100:5.1f}%  {bar}")
+                    # ORCA outputs 0-based MO indices directly — display as-is
+                    tip.append(f"  {fr:3d} \u2192 {to:3d}   {w2*100:5.1f}%  {bar}")
                 if len(sorted_t) > len(shown):
                     rest_w = sum(t[2] for t in sorted_t[len(shown):])
                     tip.append(f"  ... {len(sorted_t)-len(shown)} more  ({rest_w*100:.1f}% total)")
