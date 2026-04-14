@@ -227,11 +227,11 @@ class OrcaTDDFTApp(tk.Tk):
     # ------------------------------------------------------------------ #
     def _toggle_sidebar(self):
         if self._sidebar_visible:
-            self._pane.forget(self._sidebar)
+            self._pane.paneconfigure(self._sidebar, hide=True)
             self._sidebar_visible = False
             self._sidebar_btn.config(text="»")
         else:
-            self._pane.insert(0, self._sidebar, minsize=180, width=230)
+            self._pane.paneconfigure(self._sidebar, hide=False)
             self._sidebar_visible = True
             self._sidebar_btn.config(text="«")
 

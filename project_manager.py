@@ -70,22 +70,23 @@ def save_project(path: str, app) -> None:
             "style":        dict(style),
         })
 
-    # ── 3. TDDFT overlays ───────────────────────────────────────────────────
+    # ── 3. TDDFT spectra (unified list: index 0 = primary, 1+ = overlays) ──
     file_data = getattr(app, "_file_data", {})
-    overlays  = []
-    for label, sp, var, col in plot._overlay_spectra:
+    tddft_spectra_list = []
+    for entry in plot._tddft_spectra:
+        sp = entry["spectrum"]
         src_file, src_idx = "", 0
         for fp, spectra_list in file_data.items():
             for si, s in enumerate(spectra_list):
                 if s is sp:
                     src_file, src_idx = fp, si
                     break
-        overlays.append({
-            "label":    label,
+        tddft_spectra_list.append({
+            "label":    entry["label"],
             "src_file": src_file,
             "src_idx":  src_idx,
-            "enabled":  bool(_get(var, True)),
-            "colour":   col or "",
+            "enabled":  bool(_get(entry["enabled"], True)),
+            "colour":   entry["color"] or "",
         })
 
     # ── 4. Plot-widget state ─────────────────────────────────────────────────
@@ -104,7 +105,6 @@ def save_project(path: str, app) -> None:
         "show_trans":    _get(plot._show_trans, False),
         "show_legend":   _get(plot._show_legend, True),
         "show_grid":     _get(plot._show_grid, False),
-        "overlay_mode":  _get(plot._overlay_mode, False),
         # Appearance
         "bg_colour":     plot._bg_colour,
         "custom_title":  _get(plot._custom_title, ""),
@@ -130,12 +130,12 @@ def save_project(path: str, app) -> None:
     xas_params = xas.get_params()
 
     doc: dict = {
-        "version":    1,
-        "orca_files": orca_files,
-        "exp_scans":  exp_scans,
-        "overlays":   overlays,
-        "plot_state": plot_state,
-        "xas_params": xas_params,
+        "version":       2,
+        "orca_files":    orca_files,
+        "exp_scans":     exp_scans,
+        "tddft_spectra": tddft_spectra_list,
+        "plot_state":    plot_state,
+        "xas_params":    xas_params,
     }
 
     data = json.dumps(doc, indent=2).encode("utf-8")
@@ -167,7 +167,7 @@ def restore_project(doc: dict, app) -> list:
 
     # ── 1. Clear existing state ──────────────────────────────────────────────
     plot._exp_scans.clear()
-    plot._overlay_spectra.clear()
+    plot._tddft_spectra.clear()
     if hasattr(app, "_file_data"):
         app._file_data.clear()
     app._file_section_idx.clear()
@@ -218,18 +218,25 @@ def restore_project(doc: dict, app) -> list:
         except Exception as exc:
             warnings.append(f"Exp scan restore failed ({entry.get('panel_label','?')}): {exc}")
 
-    # ── 4. Restore TDDFT overlays ────────────────────────────────────────────
+    # ── 4. Restore TDDFT spectra ─────────────────────────────────────────────
+    # Supports version 2 format (tddft_spectra list) and version 1 (overlays).
     file_data = getattr(app, "_file_data", {})
-    for entry in doc.get("overlays", []):
+    tddft_entries = doc.get("tddft_spectra", doc.get("overlays", []))
+    for entry in tddft_entries:
         fp  = entry.get("src_file", "")
         idx = entry.get("src_idx", 0)
         spectra = file_data.get(fp, [])
         if not spectra or idx >= len(spectra):
-            warnings.append(f"Overlay spectrum not found (skipped): {entry.get('label','?')}")
+            warnings.append(f"TDDFT spectrum not found (skipped): {entry.get('label','?')}")
             continue
         sp  = spectra[idx]
         var = _BoolVar_from(app, bool(entry.get("enabled", True)))
-        plot._overlay_spectra.append((entry["label"], sp, var, entry.get("colour", "")))
+        plot._tddft_spectra.append({
+            "label":    entry["label"],
+            "spectrum": sp,
+            "enabled":  var,
+            "color":    entry.get("colour", ""),
+        })
 
     # ── 5. Restore plot state ────────────────────────────────────────────────
     ps = doc.get("plot_state", {})
@@ -296,7 +303,6 @@ def _restore_plot_state(ps: dict, plot) -> None:
     _sv(plot._show_trans,   ps.get("show_trans",   False))
     _sv(plot._show_legend,  ps.get("show_legend",  True))
     _sv(plot._show_grid,    ps.get("show_grid",    False))
-    _sv(plot._overlay_mode, ps.get("overlay_mode", False))
 
     # Appearance
     bg = ps.get("bg_colour", "#ffffff")

@@ -1024,22 +1024,26 @@ class PlotWidget(tk.Frame):
         ov_scroll.pack(side=tk.RIGHT, fill=tk.Y)
 
     def _make_panel_row(self, parent, label, var, colour, remove_cmd,
-                        style_cmd=None, color_cmd=None):
-        """Create a single checkbox row: [swatch] [checkbox label] [Style] [✕]
+                        style_cmd=None, color_cmd=None, type_label=None):
+        """Create a single checkbox row: [type swatch] [checkbox label] [Style] [✕]
+        type_label (e.g. 'TDDFT' or 'EXP') is shown as white text on the colour swatch.
         If color_cmd is provided the swatch becomes a clickable colour-picker button.
         """
         row = tk.Frame(parent)
         row.pack(fill=tk.X, anchor="w")
+        _tag = type_label or ""
         if color_cmd:
-            swatch = tk.Button(row, bg=colour, width=2, relief=tk.RAISED,
+            swatch = tk.Button(row, bg=colour, relief=tk.RAISED,
                                cursor="hand2", command=color_cmd,
-                               activebackground=colour)
+                               activebackground=colour,
+                               text=_tag, fg="white", font=("", 7, "bold"),
+                               padx=3, pady=0)
             swatch.pack(side=tk.LEFT, padx=(2, 0))
-            # Show a tooltip hint on hover
             _ToolTip(swatch, "Click to change colour")
         else:
-            tk.Label(row, bg=colour, width=2, relief=tk.RAISED).pack(
-                side=tk.LEFT, padx=(2, 0))
+            tk.Label(row, bg=colour, relief=tk.RAISED,
+                     text=_tag, fg="white", font=("", 7, "bold"),
+                     padx=3).pack(side=tk.LEFT, padx=(2, 0))
         tk.Checkbutton(
             row, text=label, variable=var, command=self._replot,
             anchor="w", font=("", 8), wraplength=340, justify=tk.LEFT
@@ -1051,37 +1055,28 @@ class PlotWidget(tk.Frame):
                   command=remove_cmd).pack(side=tk.RIGHT, padx=2)
 
     def _refresh_panel_content(self):
-        """Rebuild all rows: TDDFT spectra + XAS experimental scans."""
+        """Rebuild all rows: unified TDDFT + EXP table, type shown on colour swatch."""
         for w in self._ov_inner.winfo_children():
             w.destroy()
 
-        # TDDFT section — always show all loaded spectra
-        if self._tddft_spectra:
-            tk.Label(self._ov_inner, text="TDDFT",
-                     font=("", 8, "bold"), fg="navy").pack(anchor="w", padx=4, pady=(2, 0))
-            for i, entry in enumerate(self._tddft_spectra):
-                colour = entry["color"] or OVERLAY_COLOURS[i % len(OVERLAY_COLOURS)]
-                self._make_panel_row(
-                    self._ov_inner, entry["label"], entry["enabled"], colour,
-                    remove_cmd=lambda idx=i: self._remove_tddft_idx(idx),
-                    color_cmd=lambda idx=i: self._pick_tddft_colour(idx),
-                )
+        for i, entry in enumerate(self._tddft_spectra):
+            colour = entry["color"] or OVERLAY_COLOURS[i % len(OVERLAY_COLOURS)]
+            self._make_panel_row(
+                self._ov_inner, entry["label"], entry["enabled"], colour,
+                remove_cmd=lambda idx=i: self._remove_tddft_idx(idx),
+                color_cmd=lambda idx=i: self._pick_tddft_colour(idx),
+                type_label="TDDFT",
+            )
 
-        # XAS experimental scans section
-        if self._exp_scans:
-            if self._tddft_spectra:
-                ttk.Separator(self._ov_inner, orient=tk.HORIZONTAL).pack(
-                    fill=tk.X, pady=(3, 1))
-            tk.Label(self._ov_inner, text="XAS",
-                     font=("", 8, "bold"), fg="darkred").pack(anchor="w", padx=4, pady=(2, 0))
-            for i, (label, scan, var, style) in enumerate(self._exp_scans):
-                colour = style.get("color") or EXP_COLOURS[i % len(EXP_COLOURS)]
-                self._make_panel_row(
-                    self._ov_inner, label, var, colour,
-                    remove_cmd=lambda idx=i: self._remove_exp_scan_idx(idx),
-                    style_cmd=lambda idx=i: self._open_exp_style_dialog(idx),
-                    color_cmd=lambda idx=i: self._pick_exp_colour(idx),
-                )
+        for i, (label, scan, var, style) in enumerate(self._exp_scans):
+            colour = style.get("color") or EXP_COLOURS[i % len(EXP_COLOURS)]
+            self._make_panel_row(
+                self._ov_inner, label, var, colour,
+                remove_cmd=lambda idx=i: self._remove_exp_scan_idx(idx),
+                style_cmd=lambda idx=i: self._open_exp_style_dialog(idx),
+                color_cmd=lambda idx=i: self._pick_exp_colour(idx),
+                type_label="EXP",
+            )
 
         self._ov_inner.update_idletasks()
         self._ov_canvas.configure(scrollregion=self._ov_canvas.bbox("all"))
