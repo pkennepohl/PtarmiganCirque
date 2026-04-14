@@ -191,6 +191,7 @@ class PlotWidget(tk.Frame):
 
         # Controls state
         self._x_unit      = tk.StringVar(value="eV")
+        self._prev_x_unit = "eV"   # tracks previous unit for xlim conversion
         self._broadening  = tk.StringVar(value="Gaussian")
         self._fwhm        = tk.DoubleVar(value=1.0)
         self._fwhm_str    = tk.StringVar(value="1.00")
@@ -886,8 +887,81 @@ class PlotWidget(tk.Frame):
         else:
             self._fwhm_str.set(f"{fwhm:.2f}")
 
+    # ------------------------------------------------------------------
+    #  X-limit conversion when the energy unit is switched
+    # ------------------------------------------------------------------
+    def _convert_xlims(self, old_unit: str, new_unit: str):
+        """Convert stored x-axis limit strings from old_unit to new_unit.
+
+        Empty strings (auto) are left untouched.  nm is special because the
+        axis is inverted (higher energy = lower nm), so lo↔hi are swapped.
+        """
+        def _to_ev(val: float, unit: str) -> float:
+            if unit == "eV":
+                return val
+            if unit == "Ha":
+                return val * self._HA_TO_EV
+            if unit == "cm\u207b\u00b9":
+                return val / self._EV_TO_CM
+            if unit == "nm":
+                return 1239.84 / val   # photon energy in eV
+            return val
+
+        def _from_ev(val_ev: float, unit: str) -> float:
+            if unit == "eV":
+                return val_ev
+            if unit == "Ha":
+                return val_ev / self._HA_TO_EV
+            if unit == "cm\u207b\u00b9":
+                return val_ev * self._EV_TO_CM
+            if unit == "nm":
+                return 1239.84 / val_ev
+            return val_ev
+
+        lo_str = self._xlim_lo.get().strip()
+        hi_str = self._xlim_hi.get().strip()
+
+        if not lo_str and not hi_str:
+            return   # both auto — nothing to do
+
+        try:
+            lo_ev = _to_ev(float(lo_str), old_unit) if lo_str else None
+            hi_ev = _to_ev(float(hi_str), old_unit) if hi_str else None
+        except ValueError:
+            return   # unparseable — leave as-is
+
+        def _fmt(v, unit):
+            if unit == "cm\u207b\u00b9":
+                return f"{v:.0f}"
+            if unit == "Ha":
+                return f"{v:.6f}"
+            if unit == "nm":
+                return f"{v:.1f}"
+            return f"{v:.4f}"
+
+        if new_unit == "nm":
+            # nm axis is inverted: small eV → large nm.
+            # What was the "low" energy bound becomes the "high" nm bound.
+            new_lo = _from_ev(hi_ev, "nm") if hi_ev is not None else ""
+            new_hi = _from_ev(lo_ev, "nm") if lo_ev is not None else ""
+        elif old_unit == "nm":
+            # Coming from nm: invert the swap.
+            # lo_nm corresponds to high energy; hi_nm to low energy.
+            new_lo = _from_ev(hi_ev, new_unit) if hi_ev is not None else ""
+            new_hi = _from_ev(lo_ev, new_unit) if lo_ev is not None else ""
+        else:
+            new_lo = _from_ev(lo_ev, new_unit) if lo_ev is not None else ""
+            new_hi = _from_ev(hi_ev, new_unit) if hi_ev is not None else ""
+
+        self._xlim_lo.set(_fmt(new_lo, new_unit) if new_lo != "" else "")
+        self._xlim_hi.set(_fmt(new_hi, new_unit) if new_hi != "" else "")
+
     def _on_unit_change(self):
         unit = self._x_unit.get()
+
+        # Convert any stored x-axis limits from the previous unit to the new one
+        self._convert_xlims(self._prev_x_unit, unit)
+
         if unit == "cm\u207b\u00b9":
             self._fwhm_unit_label.config(text="cm\u207b\u00b9")
             self._fwhm_slider.config(from_=50, to=8000, resolution=50)
@@ -905,6 +979,7 @@ class PlotWidget(tk.Frame):
             if self._fwhm.get() > 20:
                 self._fwhm.set(1.0)
         self._sync_fwhm_entry()
+        self._prev_x_unit = unit
         self._replot()
 
     # ══════════════════════════════════════════════════════════════════════════
