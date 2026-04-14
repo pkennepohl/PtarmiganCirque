@@ -207,7 +207,7 @@ class PlotWidget(tk.Frame):
 
         # ΔE energy shift (eV) applied to all TDDFT stick positions.
         # _delta_e holds the true (unbounded) value.
-        # _de_slider_var is the slider display var, clamped to ±20 for the widget.
+        # _de_slider_var is the slider display var, clamped to ±200 for the widget.
         self._delta_e       = tk.DoubleVar(value=0.0)
         self._delta_e_str   = tk.StringVar(value="+0.00")
         self._de_slider_var = tk.DoubleVar(value=0.0)
@@ -471,7 +471,7 @@ class PlotWidget(tk.Frame):
         tk.Checkbutton(ctrl, text="Normalise",   variable=self._normalise,   command=self._replot).pack(side=tk.LEFT)
 
     # ══════════════════════════════════════════════════════════════════════════
-    #  Alignment controls (row 2) — ΔE shift, entry unbounded, slider ±20
+    #  Alignment controls (row 2) — ΔE shift, entry unbounded, slider ±200
     # ══════════════════════════════════════════════════════════════════════════
     def _build_alignment_controls(self):
         bar = self._collapsible_bar("Alignment", bd=1, relief=tk.FLAT, padx=4, pady=2, bg="#f0f0e8")
@@ -488,7 +488,7 @@ class PlotWidget(tk.Frame):
         tk.Label(bar, text="eV", font=("", 9), bg="#f0f0e8").pack(side=tk.LEFT, padx=(2, 4))
 
         self._de_slider = tk.Scale(
-            bar, from_=-20.0, to=20.0, resolution=0.05,
+            bar, from_=-200.0, to=200.0, resolution=0.1,
             orient=tk.HORIZONTAL, length=200,
             variable=self._de_slider_var, showvalue=False,
             bg="#f0f0e8",
@@ -621,7 +621,7 @@ class PlotWidget(tk.Frame):
         self._delta_e.set(val)
         self._delta_e_str.set(f"{val:+.2f}")
         # Move slider to clamped representation for visual feedback
-        self._de_slider_var.set(max(-20.0, min(20.0, val)))
+        self._de_slider_var.set(max(-200.0, min(200.0, val)))
         self._replot()
 
     def _reset_delta_e(self):
@@ -1150,7 +1150,7 @@ class PlotWidget(tk.Frame):
             try:
                 v = float(de_str.get())
                 entry["delta_e"].set(v)
-                de_slider.set(max(-20.0, min(20.0, v)))
+                de_slider.set(max(-200.0, min(200.0, v)))
                 self._replot()
             except ValueError:
                 pass
@@ -1161,7 +1161,7 @@ class PlotWidget(tk.Frame):
         de_entry.bind("<FocusOut>", _de_entry_cb)
         tk.Label(r2, text="eV", font=("", 7), bg=bg, fg="gray").pack(side=tk.LEFT, padx=(1, 4))
 
-        de_slider = tk.Scale(r2, from_=-20.0, to=20.0, resolution=0.05,
+        de_slider = tk.Scale(r2, from_=-200.0, to=200.0, resolution=0.1,
                               orient=tk.HORIZONTAL, length=100,
                               variable=entry["delta_e"], showvalue=False,
                               bg=bg, command=_de_slider_cb)
