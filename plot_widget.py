@@ -998,7 +998,7 @@ class PlotWidget(tk.Frame):
 
         hdr = tk.Frame(self._overlay_panel)
         hdr.pack(fill=tk.X)
-        tk.Label(hdr, text="Overlays / Experimental:", font=("", 8, "bold")).pack(side=tk.LEFT)
+        tk.Label(hdr, text="Data", font=("", 8, "bold")).pack(side=tk.LEFT)
         tk.Button(hdr, text="Clear TDDFT", command=self._clear_overlays,
                   width=10, font=("", 8)).pack(side=tk.RIGHT, padx=2)
         tk.Button(hdr, text="Clear Exp.", command=self._clear_exp_scans,
@@ -1051,13 +1051,13 @@ class PlotWidget(tk.Frame):
                   command=remove_cmd).pack(side=tk.RIGHT, padx=2)
 
     def _refresh_panel_content(self):
-        """Rebuild all rows: TDDFT spectra (when >1) + experimental scans."""
+        """Rebuild all rows: TDDFT spectra + XAS experimental scans."""
         for w in self._ov_inner.winfo_children():
             w.destroy()
 
-        # TDDFT section — show all entries when there are multiple spectra loaded
-        if len(self._tddft_spectra) > 1:
-            tk.Label(self._ov_inner, text="TDDFT Spectra:",
+        # TDDFT section — always show all loaded spectra
+        if self._tddft_spectra:
+            tk.Label(self._ov_inner, text="TDDFT",
                      font=("", 8, "bold"), fg="navy").pack(anchor="w", padx=4, pady=(2, 0))
             for i, entry in enumerate(self._tddft_spectra):
                 colour = entry["color"] or OVERLAY_COLOURS[i % len(OVERLAY_COLOURS)]
@@ -1067,12 +1067,12 @@ class PlotWidget(tk.Frame):
                     color_cmd=lambda idx=i: self._pick_tddft_colour(idx),
                 )
 
-        # Experimental scans section
+        # XAS experimental scans section
         if self._exp_scans:
-            if len(self._tddft_spectra) > 1:
+            if self._tddft_spectra:
                 ttk.Separator(self._ov_inner, orient=tk.HORIZONTAL).pack(
                     fill=tk.X, pady=(3, 1))
-            tk.Label(self._ov_inner, text="Experimental Scans (right axis \u2192):",
+            tk.Label(self._ov_inner, text="XAS",
                      font=("", 8, "bold"), fg="darkred").pack(anchor="w", padx=4, pady=(2, 0))
             for i, (label, scan, var, style) in enumerate(self._exp_scans):
                 colour = style.get("color") or EXP_COLOURS[i % len(EXP_COLOURS)]
@@ -1092,7 +1092,7 @@ class PlotWidget(tk.Frame):
         self._refresh_panel_content()
 
     def _update_overlay_panel_visibility(self):
-        should_show = len(self._tddft_spectra) > 1 or bool(self._exp_scans)
+        should_show = bool(self._tddft_spectra) or bool(self._exp_scans)
         if should_show:
             self._overlay_panel.pack(side=tk.TOP, fill=tk.X,
                                      before=self.canvas.get_tk_widget())
