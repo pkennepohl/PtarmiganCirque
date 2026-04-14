@@ -1037,13 +1037,13 @@ class PlotWidget(tk.Frame):
                                cursor="hand2", command=color_cmd,
                                activebackground=colour,
                                text=_tag, fg="white", font=("", 7, "bold"),
-                               padx=3, pady=0)
+                               width=5, pady=0)
             swatch.pack(side=tk.LEFT, padx=(2, 0))
             _ToolTip(swatch, "Click to change colour")
         else:
             tk.Label(row, bg=colour, relief=tk.RAISED,
                      text=_tag, fg="white", font=("", 7, "bold"),
-                     padx=3).pack(side=tk.LEFT, padx=(2, 0))
+                     width=5).pack(side=tk.LEFT, padx=(2, 0))
         tk.Checkbutton(
             row, text=label, variable=var, command=self._replot,
             anchor="w", font=("", 8), wraplength=340, justify=tk.LEFT
