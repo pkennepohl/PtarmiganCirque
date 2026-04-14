@@ -296,7 +296,31 @@ class OrcaTDDFTApp(tk.Tk):
             idx = self._file_listbox._paths.index(path)
             self._file_listbox.selection_clear(0, tk.END)
             self._file_listbox.selection_set(idx)
-            self._switch_to_file(path)
+            # If spectra are already loaded, ask the user what to do
+            if self._plot._tddft_spectra:
+                action = self._ask_replace_or_add(path, spectra)
+                if action == "cancel":
+                    # Remove from listbox/file_data since we're aborting
+                    if short in [self._file_listbox.get(i)
+                                  for i in range(self._file_listbox.size())]:
+                        pos = self._file_listbox._paths.index(path)
+                        self._file_listbox.delete(pos)
+                        self._file_listbox._paths.pop(pos)
+                    self._file_data.pop(path, None)
+                    self._status.set("Load cancelled.")
+                    return
+                elif action == "replace":
+                    self._plot.clear_tddft()
+                    self._switch_to_file(path)
+                else:  # "add"
+                    # Add first section of this file as an overlay
+                    first_sp = spectra[0]
+                    label = f"{short} — {first_sp.display_name()}"
+                    self._plot.add_overlay(label, first_sp)
+                    self._status.set(f"Added as overlay: {label}")
+                    return
+            else:
+                self._switch_to_file(path)
 
         n = len(spectra)
         self._status.set(
@@ -326,6 +350,53 @@ class OrcaTDDFTApp(tk.Tk):
             restore = saved_idx if saved_idx < len(labels) else 0
             self._section_cb.current(restore)
             self._on_section_change()
+
+    def _ask_replace_or_add(self, path: str, spectra: list) -> str:
+        """Show a dialog asking whether to replace or add when spectra are already loaded.
+        Returns 'replace', 'add', or 'cancel'.
+        """
+        win = tk.Toplevel(self)
+        win.title("Load Spectrum")
+        win.resizable(False, False)
+        win.grab_set()
+        win.transient(self)
+
+        result = {"action": "cancel"}
+
+        hdr = tk.Frame(win, bg="#003366", pady=8)
+        hdr.pack(fill=tk.X)
+        tk.Label(hdr, text="Spectra already loaded",
+                 font=("", 11, "bold"), bg="#003366", fg="white").pack(padx=14)
+        tk.Label(hdr, text=os.path.basename(path),
+                 font=("", 8), bg="#003366", fg="#AACCFF").pack(padx=14)
+
+        body = tk.Frame(win, padx=16, pady=12)
+        body.pack(fill=tk.BOTH)
+        tk.Label(body,
+                 text="There are already TDDFT spectra on the plot.\nWhat would you like to do?",
+                 font=("", 9), justify=tk.LEFT).pack(anchor="w", pady=(0, 10))
+
+        btn_frame = tk.Frame(win, pady=8)
+        btn_frame.pack()
+
+        def _choose(action):
+            result["action"] = action
+            win.destroy()
+
+        tk.Button(btn_frame, text="Replace existing",
+                  width=16, bg="#8B0000", fg="white",
+                  activebackground="#AA0000",
+                  command=lambda: _choose("replace")).pack(side=tk.LEFT, padx=6)
+        tk.Button(btn_frame, text="Add as overlay",
+                  width=14, bg="#003d7a", fg="white",
+                  activebackground="#0055aa",
+                  command=lambda: _choose("add")).pack(side=tk.LEFT, padx=6)
+        tk.Button(btn_frame, text="Cancel",
+                  width=10,
+                  command=lambda: _choose("cancel")).pack(side=tk.LEFT, padx=6)
+
+        win.wait_window()
+        return result["action"]
 
     # ------------------------------------------------------------------ #
     #  Section selection                                                    #
@@ -872,7 +943,7 @@ class OrcaTDDFTApp(tk.Tk):
         self._add_recent(path)
         n_exp  = len(self._plot._exp_scans)
         n_orca = self._file_listbox.size()
-        n_ov   = len(self._plot._overlay_spectra)
+        n_ov   = max(0, len(self._plot._tddft_spectra) - 1)
         self._status.set(
             f"Project loaded: {os.path.basename(path)}  |  "
             f"{n_orca} ORCA file(s)  |  {n_exp} exp. scan(s)  |  "
@@ -898,7 +969,7 @@ class OrcaTDDFTApp(tk.Tk):
             return
         # Clear experimental scans
         self._plot._exp_scans.clear()
-        self._plot._overlay_spectra.clear()
+        self._plot.clear_tddft()
         self._plot._refresh_panel_content()
         # Clear ORCA files
         if hasattr(self, "_file_data"):
@@ -972,7 +1043,7 @@ class OrcaTDDFTApp(tk.Tk):
 
         n_exp   = len(self._plot._exp_scans)
         n_orca  = self._file_listbox.size()
-        n_ov    = len(self._plot._overlay_spectra)
+        n_ov    = max(0, len(self._plot._tddft_spectra) - 1)
         msg = (f"Project loaded: {os.path.basename(path)}  |  "
                f"{n_orca} ORCA file(s)  |  {n_exp} exp. scan(s)  |  "
                f"{n_ov} TDDFT overlay(s)")

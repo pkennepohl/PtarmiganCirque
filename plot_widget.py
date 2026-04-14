@@ -175,13 +175,12 @@ class PlotWidget(tk.Frame):
     def __init__(self, parent, **kwargs):
         super().__init__(parent, **kwargs)
 
-        # Current single TDDFT spectrum
-        self.spectrum: Optional[TDDFTSpectrum] = None
-
-        # TDDFT overlay list: [(label, TDDFTSpectrum, enabled_BooleanVar, color_or_None), ...]
-        # color_or_None is "" / None  → use default OVERLAY_COLOURS palette
-        self._overlay_spectra: List[Tuple[str, TDDFTSpectrum, tk.BooleanVar, str]] = []
-        self._overlay_mode = tk.BooleanVar(value=False)
+        # Unified TDDFT spectrum list.
+        # Index 0 = "primary" (replaced by load_spectrum); higher indices = overlays.
+        # Each entry: {"label": str, "spectrum": TDDFTSpectrum,
+        #              "enabled": tk.BooleanVar, "color": str}
+        # color == "" → auto-assign from OVERLAY_COLOURS[index] palette.
+        self._tddft_spectra: List[dict] = []
 
         # Experimental scan list: [(label, ExperimentalScan, enabled_BooleanVar, style_dict), ...]
         self._exp_scans: List[Tuple[str, ExperimentalScan, tk.BooleanVar, dict]] = []
@@ -799,12 +798,6 @@ class PlotWidget(tk.Frame):
         bg = "#e8f0f8"
         bar = self._collapsible_bar("Overlay", collapsed=True, padx=4, pady=3, bg=bg)
 
-        tk.Checkbutton(bar, text="Overlay Mode", variable=self._overlay_mode,
-                       command=self._on_overlay_toggle, fg="darkblue",
-                       bg=bg, font=("", 9, "bold")).pack(side=tk.LEFT, padx=2)
-
-        _sep(bar)
-
         # Combined-spectrum component selector (packed/unpacked by _update_comb_ui)
         self._comb_frame = tk.Frame(bar, bg=bg)
         tk.Label(self._comb_frame, text="Components:",
@@ -827,27 +820,21 @@ class PlotWidget(tk.Frame):
         self._replot()
 
     def _auto_title(self) -> str:
-        if self._overlay_mode.get():
-            n_tddft  = (1 if self.spectrum else 0)
-            n_tddft += sum(1 for _, _, v, _c in self._overlay_spectra if v.get())
-            n_exp    = sum(1 for _, _, v, _ in self._exp_scans if v.get())
-            parts = []
-            if n_tddft > 1:
-                parts.append(f"{n_tddft} TDDFT")
-            elif n_tddft == 1 and self.spectrum:
-                parts.append(getattr(self.spectrum, "_custom_label", None) or
-                              self.spectrum.display_name())
+        n_tddft = sum(1 for e in self._tddft_spectra if e["enabled"].get())
+        n_exp   = sum(1 for _, _, v, _ in self._exp_scans if v.get())
+        if n_tddft > 1:
+            parts = [f"{n_tddft} TDDFT"]
             if n_exp:
                 parts.append(f"{n_exp} Exp.")
-            return ("Overlay: " + ", ".join(parts)) if parts else ""
-        if self.spectrum:
-            n_exp = sum(1 for _, _, v, _ in self._exp_scans if v.get())
-            base  = getattr(self.spectrum, "_custom_label", None) or self.spectrum.display_name()
+            return "Overlay: " + ", ".join(parts)
+        elif n_tddft == 1:
+            entry = next(e for e in self._tddft_spectra if e["enabled"].get())
+            sp    = entry["spectrum"]
+            base  = getattr(sp, "_custom_label", None) or sp.display_name()
             return (f"{base} + {n_exp} Exp. scan{'s' if n_exp > 1 else ''}"
                     if n_exp else base)
-        if self._exp_scans:
-            n = sum(1 for _, _, v, _ in self._exp_scans if v.get())
-            return f"Experimental scan{'s' if n > 1 else ''}"
+        elif n_exp:
+            return f"Experimental scan{'s' if n_exp > 1 else ''}"
         return ""
 
     # ── FWHM two-way binding ──────────────────────────────────────────────────
@@ -1064,25 +1051,25 @@ class PlotWidget(tk.Frame):
                   command=remove_cmd).pack(side=tk.RIGHT, padx=2)
 
     def _refresh_panel_content(self):
-        """Rebuild all rows: TDDFT overlays (if in overlay mode) + experimental scans."""
+        """Rebuild all rows: TDDFT spectra (when >1) + experimental scans."""
         for w in self._ov_inner.winfo_children():
             w.destroy()
 
-        # TDDFT overlay section
-        if self._overlay_mode.get() and self._overlay_spectra:
-            tk.Label(self._ov_inner, text="TDDFT Overlays:",
+        # TDDFT section — show all entries when there are multiple spectra loaded
+        if len(self._tddft_spectra) > 1:
+            tk.Label(self._ov_inner, text="TDDFT Spectra:",
                      font=("", 8, "bold"), fg="navy").pack(anchor="w", padx=4, pady=(2, 0))
-            for i, (label, sp, var, col) in enumerate(self._overlay_spectra):
-                colour = col or OVERLAY_COLOURS[(i + 1) % len(OVERLAY_COLOURS)]
+            for i, entry in enumerate(self._tddft_spectra):
+                colour = entry["color"] or OVERLAY_COLOURS[i % len(OVERLAY_COLOURS)]
                 self._make_panel_row(
-                    self._ov_inner, label, var, colour,
-                    remove_cmd=lambda idx=i: self._remove_overlay_idx(idx),
-                    color_cmd=lambda idx=i: self._pick_overlay_colour(idx),
+                    self._ov_inner, entry["label"], entry["enabled"], colour,
+                    remove_cmd=lambda idx=i: self._remove_tddft_idx(idx),
+                    color_cmd=lambda idx=i: self._pick_tddft_colour(idx),
                 )
 
         # Experimental scans section
         if self._exp_scans:
-            if self._overlay_mode.get() and self._overlay_spectra:
+            if len(self._tddft_spectra) > 1:
                 ttk.Separator(self._ov_inner, orient=tk.HORIZONTAL).pack(
                     fill=tk.X, pady=(3, 1))
             tk.Label(self._ov_inner, text="Experimental Scans (right axis \u2192):",
@@ -1105,7 +1092,7 @@ class PlotWidget(tk.Frame):
         self._refresh_panel_content()
 
     def _update_overlay_panel_visibility(self):
-        should_show = self._overlay_mode.get() or bool(self._exp_scans)
+        should_show = len(self._tddft_spectra) > 1 or bool(self._exp_scans)
         if should_show:
             self._overlay_panel.pack(side=tk.TOP, fill=tk.X,
                                      before=self.canvas.get_tk_widget())
@@ -1113,6 +1100,7 @@ class PlotWidget(tk.Frame):
             self._overlay_panel.pack_forget()
 
     def _on_overlay_toggle(self):
+        """Legacy stub — overlay mode is now implicit from list length."""
         self._refresh_panel_content()
         self._replot()
 
@@ -1308,21 +1296,25 @@ class PlotWidget(tk.Frame):
             self._refresh_panel_content()
             self._replot()
 
-    def _pick_overlay_colour(self, idx: int):
-        """Open the system colour-wheel for a TDDFT overlay swatch."""
+    def _pick_tddft_colour(self, idx: int):
+        """Open the system colour-wheel for a TDDFT spectrum swatch."""
         from tkinter import colorchooser
-        lbl, sp, var, cur_col = self._overlay_spectra[idx]
-        default_col = OVERLAY_COLOURS[(idx + 1) % len(OVERLAY_COLOURS)]
-        init_col    = cur_col or default_col
+        entry = self._tddft_spectra[idx]
+        default_col = OVERLAY_COLOURS[idx % len(OVERLAY_COLOURS)]
+        init_col    = entry["color"] or default_col
         result = colorchooser.askcolor(
             color=init_col,
-            title=f"Colour — {lbl[:40]}",
+            title=f"Colour — {entry['label'][:40]}",
             parent=self,
         )
         if result and result[1]:
-            self._overlay_spectra[idx] = (lbl, sp, var, result[1])
+            self._tddft_spectra[idx]["color"] = result[1]
             self._refresh_panel_content()
             self._replot()
+
+    # Legacy alias kept so any external calls still work
+    def _pick_overlay_colour(self, idx: int):
+        self._pick_tddft_colour(idx + 1)   # old idx was 0-based within overlay_spectra
 
     def _open_exp_style_dialog(self, idx: int):
         """Per-scan experimental plot style."""
@@ -1499,36 +1491,27 @@ class PlotWidget(tk.Frame):
 
         entries = []
 
-        # Primary spectrum
+        # TDDFT spectra (unified list: index 0 = primary, 1+ = overlays)
         _local_show_primary = tk.BooleanVar(value=self._show_primary_in_legend.get())
-        if self.spectrum:
-            pf = tk.Frame(win, padx=8)
-            pf.pack(fill=tk.X, pady=2)
-            tk.Label(pf, text="Primary:", width=10, anchor="e",
-                     font=("", 8, "bold")).pack(side=tk.LEFT)
-            pe = tk.Entry(pf, width=46, font=("", 9))
-            pe.insert(0, getattr(self.spectrum, "_custom_label", None) or
-                      self.spectrum.display_name())
-            pe.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 0))
-            tk.Checkbutton(pf, text="Show in legend", variable=_local_show_primary,
-                           font=("", 8)).pack(side=tk.LEFT, padx=(6, 0))
-            entries.append(("primary", pe))
-
-        # TDDFT overlays
-        if self._overlay_spectra:
-            ttk.Separator(win, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=8, pady=4)
-            tk.Label(win, text="TDDFT Overlays:", font=("", 8, "bold")).pack(anchor="w", padx=10)
-            for i, (label, sp, var, _ov_col) in enumerate(self._overlay_spectra):
-                col = _ov_col or OVERLAY_COLOURS[(i + 1) % len(OVERLAY_COLOURS)]
-                of = tk.Frame(win, padx=8)
-                of.pack(fill=tk.X, pady=1)
-                tk.Label(of, bg=col, width=2, relief=tk.RAISED).pack(side=tk.LEFT)
-                tk.Label(of, text=f"  #{i+1}", width=4, anchor="e",
-                         font=("", 8)).pack(side=tk.LEFT)
-                oe = tk.Entry(of, width=55, font=("", 9))
-                oe.insert(0, label)
-                oe.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 0))
-                entries.append(("overlay", i, oe))
+        if self._tddft_spectra:
+            tk.Label(win, text="TDDFT Spectra:", font=("", 8, "bold")).pack(anchor="w", padx=10)
+            for i, entry in enumerate(self._tddft_spectra):
+                col = entry["color"] or OVERLAY_COLOURS[i % len(OVERLAY_COLOURS)]
+                sp  = entry["spectrum"]
+                tf  = tk.Frame(win, padx=8)
+                tf.pack(fill=tk.X, pady=1)
+                tk.Label(tf, bg=col, width=2, relief=tk.RAISED).pack(side=tk.LEFT)
+                prefix = "Primary" if i == 0 else f"  #{i}"
+                tk.Label(tf, text=prefix, width=8, anchor="e",
+                         font=("", 8, "bold" if i == 0 else "normal")).pack(side=tk.LEFT)
+                te = tk.Entry(tf, width=46, font=("", 9))
+                te.insert(0, getattr(sp, "_custom_label", None) or entry["label"])
+                te.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 0))
+                if i == 0:
+                    tk.Checkbutton(tf, text="Show in legend",
+                                   variable=_local_show_primary,
+                                   font=("", 8)).pack(side=tk.LEFT, padx=(6, 0))
+                entries.append(("tddft", i, te))
 
         # Experimental scans
         if self._exp_scans:
@@ -1561,14 +1544,12 @@ class PlotWidget(tk.Frame):
         def apply():
             for entry_info in entries:
                 kind = entry_info[0]
-                if kind == "primary":
-                    new = entry_info[1].get().strip()
-                    self.spectrum._custom_label = new if new else None
-                elif kind == "overlay":
+                if kind == "tddft":
                     _, idx, e = entry_info
                     new = e.get().strip()
-                    lbl, sp, var, _oc = self._overlay_spectra[idx]
-                    self._overlay_spectra[idx] = (new if new else lbl, sp, var, _oc)
+                    old_lbl = self._tddft_spectra[idx]["label"]
+                    self._tddft_spectra[idx]["label"] = new if new else old_lbl
+                    self._tddft_spectra[idx]["spectrum"]._custom_label = new if new else None
                 elif kind == "exp":
                     _, idx, e = entry_info
                     new = e.get().strip()
@@ -1592,7 +1573,6 @@ class PlotWidget(tk.Frame):
     #  Public API
     # ══════════════════════════════════════════════════════════════════════════
     def load_spectrum(self, spectrum: TDDFTSpectrum):
-        self.spectrum = spectrum
         if not self._custom_title.get().strip():
             self._custom_title.set(spectrum.display_name())
         if spectrum.is_xas:
@@ -1609,13 +1589,30 @@ class PlotWidget(tk.Frame):
             if self._fwhm.get() < 50:
                 self._fwhm.set(3000)
         self._sync_fwhm_entry()
+
+        label = getattr(spectrum, "_custom_label", None) or spectrum.display_name()
+        entry = {
+            "label":    label,
+            "spectrum": spectrum,
+            "enabled":  tk.BooleanVar(value=True),
+            "color":    "",
+        }
+        if self._tddft_spectra:
+            # Replace the primary (index 0) — keep any overlays intact
+            self._tddft_spectra[0] = entry
+        else:
+            self._tddft_spectra.append(entry)
+        self._refresh_panel_content()
         self._replot()
 
     def add_overlay(self, label: str, spectrum: TDDFTSpectrum):
-        var = tk.BooleanVar(value=True)
-        self._overlay_spectra.append((label, spectrum, var, ""))
-        if not self._overlay_mode.get():
-            self._overlay_mode.set(True)
+        entry = {
+            "label":    label,
+            "spectrum": spectrum,
+            "enabled":  tk.BooleanVar(value=True),
+            "color":    "",
+        }
+        self._tddft_spectra.append(entry)
         self._refresh_panel_content()
         self._replot()
 
@@ -1626,11 +1623,15 @@ class PlotWidget(tk.Frame):
         self._refresh_panel_content()
         self._replot()
 
-    def _remove_overlay_idx(self, idx: int):
-        if 0 <= idx < len(self._overlay_spectra):
-            self._overlay_spectra.pop(idx)
+    def _remove_tddft_idx(self, idx: int):
+        if 0 <= idx < len(self._tddft_spectra):
+            self._tddft_spectra.pop(idx)
             self._refresh_panel_content()
             self._replot()
+
+    # Legacy alias — old callers used 0-based overlay index (skipping primary)
+    def _remove_overlay_idx(self, idx: int):
+        self._remove_tddft_idx(idx + 1)
 
     def _remove_exp_scan_idx(self, idx: int):
         if 0 <= idx < len(self._exp_scans):
@@ -1639,7 +1640,15 @@ class PlotWidget(tk.Frame):
             self._replot()
 
     def _clear_overlays(self):
-        self._overlay_spectra.clear()
+        """Remove all overlay spectra (indices 1+), keeping the primary (index 0)."""
+        if len(self._tddft_spectra) > 1:
+            del self._tddft_spectra[1:]
+        self._refresh_panel_content()
+        self._replot()
+
+    def clear_tddft(self):
+        """Remove ALL TDDFT spectra including the primary."""
+        self._tddft_spectra.clear()
         self._refresh_panel_content()
         self._replot()
 
@@ -1689,15 +1698,11 @@ class PlotWidget(tk.Frame):
     def _replot(self, *_):
         # ── Determine what to draw ────────────────────────────────────────────
         tddft_to_draw: List[Tuple[str, TDDFTSpectrum, str]] = []
-        if self.spectrum:
-            name = (getattr(self.spectrum, "_custom_label", None) or
-                    self.spectrum.display_name())
-            tddft_to_draw.append((name, self.spectrum, OVERLAY_COLOURS[0]))
-        if self._overlay_mode.get():
-            for k, (lbl, sp, var, _ov_col) in enumerate(self._overlay_spectra):
-                if var.get():
-                    col = _ov_col or OVERLAY_COLOURS[(k + 1) % len(OVERLAY_COLOURS)]
-                    tddft_to_draw.append((lbl, sp, col))
+        for k, entry in enumerate(self._tddft_spectra):
+            if entry["enabled"].get():
+                col = entry["color"] or OVERLAY_COLOURS[k % len(OVERLAY_COLOURS)]
+                lbl = entry["label"]
+                tddft_to_draw.append((lbl, entry["spectrum"], col))
 
         active_exp = [
             (lbl, sc, style.get("color") or EXP_COLOURS[i % len(EXP_COLOURS)], style)
@@ -2016,9 +2021,10 @@ class PlotWidget(tk.Frame):
             h2, l2 = (self.ax2.get_legend_handles_labels()
                       if active_exp and self.ax2 is not None else ([], []))
             # Filter primary TDDFT from h1/l1 when its toggle is off
-            if self.spectrum and not self._show_primary_in_legend.get():
-                _primary_lbl = (getattr(self.spectrum, "_custom_label", None)
-                                or self.spectrum.display_name())
+            if self._tddft_spectra and not self._show_primary_in_legend.get():
+                _sp0 = self._tddft_spectra[0]["spectrum"]
+                _primary_lbl = (getattr(_sp0, "_custom_label", None)
+                                or self._tddft_spectra[0]["label"])
                 _pairs = [(h, l) for h, l in zip(h1, l1) if l != _primary_lbl]
                 h1 = [p[0] for p in _pairs]
                 l1 = [p[1] for p in _pairs]
@@ -2570,7 +2576,8 @@ class PlotWidget(tk.Frame):
         cm  = self._hover_cm[idx] if idx < len(self._hover_cm) else ev * 8065.54
         nm  = 1239.84 / ev if ev > 0 else 0
         fy  = self._hover_y[idx]
-        lbl = "R" if (self.spectrum and self.spectrum.is_cd()) else "f"
+        _sp0 = self._tddft_spectra[0]["spectrum"] if self._tddft_spectra else None
+        lbl = "R" if (_sp0 and _sp0.is_cd()) else "f"
 
         delta_e = self._delta_e.get()
 
@@ -2590,9 +2597,9 @@ class PlotWidget(tk.Frame):
             tip.append(f"{ev:.4f} eV  |  {nm:.2f} nm  |  {cm:.0f} cm\u207b\u00b9")
         tip.append(f"{lbl} = {fy:.6f}")
 
-        if (self.spectrum and self.spectrum.excited_states and
-                idx < len(self.spectrum.excited_states)):
-            es = self.spectrum.excited_states[idx]
+        if (_sp0 and _sp0.excited_states and
+                idx < len(_sp0.excited_states)):
+            es = _sp0.excited_states[idx]
             if not es.transitions:
                 tip.append("\u2500" * 28)
                 tip.append("(no CI vectors in output file)")
@@ -2661,10 +2668,11 @@ class PlotWidget(tk.Frame):
         in single-spectrum view (not overlay mode)."""
         if self._comb_frame is None:
             return
+        _sp0 = self._tddft_spectra[0]["spectrum"] if self._tddft_spectra else None
         is_comb = (
-            self.spectrum is not None
-            and self.spectrum.is_combined()
-            and not self._overlay_mode.get()
+            _sp0 is not None
+            and _sp0.is_combined()
+            and len(self._tddft_spectra) == 1
         )
         if is_comb:
             self._comb_frame.pack(side=tk.LEFT)
@@ -2896,7 +2904,7 @@ class PlotWidget(tk.Frame):
                             f"Saved to:\n{path}\n\n{fmt_hint}")
 
     def _export_csv(self):
-        sp = self.spectrum
+        sp = self._tddft_spectra[0]["spectrum"] if self._tddft_spectra else None
         if not sp:
             return
         path = filedialog.asksaveasfilename(
