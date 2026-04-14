@@ -2047,6 +2047,95 @@ def _cclib_build_cube(out_path: str, spin: int, iorb: int,
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+#  Scrollable frame helper (for small-screen resilience)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class _ScrollableFrame(tk.Frame):
+    """
+    A tk.Frame whose content can scroll vertically (and optionally
+    horizontally).  Place child widgets inside ``self.interior``.
+
+    Usage::
+
+        sf = _ScrollableFrame(parent)
+        sf.pack(fill=tk.BOTH, expand=True)
+        tk.Label(sf.interior, text="hello").pack()
+    """
+
+    def __init__(self, parent, hscroll: bool = False, **kw):
+        super().__init__(parent, **kw)
+        self._canvas = tk.Canvas(self, highlightthickness=0, bd=0)
+        self._vsb = ttk.Scrollbar(self, orient=tk.VERTICAL,
+                                   command=self._canvas.yview)
+        self._canvas.config(yscrollcommand=self._vsb.set)
+
+        if hscroll:
+            self._hsb = ttk.Scrollbar(self, orient=tk.HORIZONTAL,
+                                       command=self._canvas.xview)
+            self._canvas.config(xscrollcommand=self._hsb.set)
+            self._hsb.pack(side=tk.BOTTOM, fill=tk.X)
+        else:
+            self._hsb = None
+
+        self._vsb.pack(side=tk.RIGHT, fill=tk.Y)
+        self._canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        self.interior = tk.Frame(self._canvas)
+        self._win_id = self._canvas.create_window(
+            (0, 0), window=self.interior, anchor="nw")
+
+        # Keep the interior width in sync with the canvas width so that
+        # pack(fill=tk.X) inside the interior works properly.
+        self._canvas.bind("<Configure>", self._on_canvas_configure)
+        self.interior.bind("<Configure>", self._on_interior_configure)
+
+        # Mousewheel scrolling (Windows + macOS + Linux)
+        self._canvas.bind("<Enter>", self._bind_wheel)
+        self._canvas.bind("<Leave>", self._unbind_wheel)
+
+    def _on_canvas_configure(self, event):
+        self._canvas.itemconfigure(self._win_id, width=event.width)
+
+    def _on_interior_configure(self, event):
+        self._canvas.config(scrollregion=self._canvas.bbox("all"))
+
+    def _bind_wheel(self, _event):
+        self._canvas.bind_all("<MouseWheel>", self._on_mousewheel)
+        self._canvas.bind_all("<Button-4>", self._on_mousewheel_linux)
+        self._canvas.bind_all("<Button-5>", self._on_mousewheel_linux)
+
+    def _unbind_wheel(self, _event):
+        self._canvas.unbind_all("<MouseWheel>")
+        self._canvas.unbind_all("<Button-4>")
+        self._canvas.unbind_all("<Button-5>")
+
+    def _on_mousewheel(self, event):
+        self._canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+    def _on_mousewheel_linux(self, event):
+        if event.num == 4:
+            self._canvas.yview_scroll(-1, "units")
+        elif event.num == 5:
+            self._canvas.yview_scroll(1, "units")
+
+
+def _clamp_geometry(win, default_w, default_h, min_w=400, min_h=300):
+    """
+    Set a window's geometry to *default_w × default_h* but never bigger than
+    the user's screen, and enforce a minsize.
+    """
+    try:
+        sw = win.winfo_screenwidth()
+        sh = win.winfo_screenheight()
+    except Exception:
+        sw, sh = 1920, 1080
+    w = min(default_w, sw - 40)
+    h = min(default_h, sh - 80)
+    win.geometry(f"{w}x{h}")
+    win.minsize(min(min_w, w), min(min_h, h))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 #  Application
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -2055,8 +2144,7 @@ class NBOViewerApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("NBO Analysis Viewer v2")
-        self.geometry("1350x860")
-        self.minsize(1000, 680)
+        _clamp_geometry(self, 1350, 860, 800, 500)
 
         # State
         self._files:  Dict[str, Path] = {}       # display_name → .out path
@@ -2375,7 +2463,9 @@ class NBOViewerApp(tk.Tk):
         self._mo_homo_idx = 0
 
     def _build_iso_render_controls(self, p):
-        gc = tk.LabelFrame(p, text="Render controls", padx=6, pady=4)
+        _rc_sf = _ScrollableFrame(p)
+        _rc_sf.pack(fill=tk.BOTH, expand=True, padx=0, pady=0)
+        gc = tk.LabelFrame(_rc_sf.interior, text="Render controls", padx=6, pady=4)
         gc.pack(fill=tk.X, padx=4, pady=4)
 
         r1 = tk.Frame(gc); r1.pack(fill=tk.X, pady=2)
@@ -2899,8 +2989,7 @@ class NBOViewerApp(tk.Tk):
             return
         win = tk.Toplevel(self)
         win.title("Manage Hydrogen Atoms")
-        win.geometry("380x500")
-        win.minsize(300, 300)
+        _clamp_geometry(win, 380, 500, 300, 300)
 
         tk.Label(win, text="Check individual H atoms to show (even when 'Show H' is off):",
                  font=("", 9), wraplength=360, justify=tk.LEFT).pack(padx=8, pady=(8, 4))
@@ -2978,8 +3067,7 @@ class NBOViewerApp(tk.Tk):
 
         win = tk.Toplevel(self)
         win.title("Element Colours")
-        win.geometry("720x480")
-        win.minsize(600, 400)
+        _clamp_geometry(win, 720, 480, 400, 300)
 
         tk.Label(win, text="Click any element to change its colour. Changes apply immediately.",
                  font=("", 10), fg="#333").pack(padx=8, pady=(8, 4))
@@ -3382,8 +3470,7 @@ class NBOViewerApp(tk.Tk):
 
         win = tk.Toplevel(self)
         win.title("MO Coefficients Not Found")
-        win.geometry("620x400")
-        win.resizable(True, True)
+        _clamp_geometry(win, 620, 400, 400, 300)
 
         tk.Label(win, text="MOLECULAR ORBITALS section not found",
                  font=("", 11, "bold"), fg="#cc0000").pack(pady=(14, 2))
@@ -3764,7 +3851,7 @@ class NBOViewerApp(tk.Tk):
         reoriented = self._reorient_R is not None
         title_suffix = " [Re-oriented]" if reoriented else ""
         win.title(f"Atom AO Breakdown — {mo_label}{title_suffix}")
-        win.geometry("700x500")
+        _clamp_geometry(win, 700, 500, 400, 350)
 
         tk.Label(win, text=f"{mo_label}{title_suffix}  —  Per-Atom Orbital Contributions",
                  font=("", 11, "bold")).pack(pady=6)
@@ -3905,8 +3992,7 @@ class NBOViewerApp(tk.Tk):
         reoriented = self._reorient_R is not None
         title_suffix = " [Re-oriented]" if reoriented else ""
         win.title(f"Summed Atom AO Breakdown — {mo_label}{title_suffix}")
-        win.geometry("760x560")
-        win.minsize(620, 420)
+        _clamp_geometry(win, 760, 560, 500, 400)
 
         tk.Label(
             win,
@@ -4084,8 +4170,7 @@ class NBOViewerApp(tk.Tk):
         # Open the table window
         win = tk.Toplevel(self)
         win.title(f"Atom Contributions — {', '.join(tracked[:5])}{'...' if len(tracked) > 5 else ''}")
-        win.geometry("1100x500")
-        win.minsize(600, 300)
+        _clamp_geometry(win, 1100, 500, 600, 300)
 
         # Build treeview columns: MO#, Label, Energy, Occ, then per-atom Total(s/p/d)
         base_cols = ("MO#", "Label", "Energy (Eh)", "Occ")
@@ -4238,10 +4323,14 @@ class NBOViewerApp(tk.Tk):
 
         win = tk.Toplevel(self)
         win.title("MO Energy Diagram")
-        win.geometry("1480x920")
-        win.minsize(900, 600)
+        _clamp_geometry(win, 1480, 920, 700, 500)
 
-        top = tk.LabelFrame(win, text="1. MO selection", padx=6, pady=4)
+        # Wrap in scrollable frame for small screens
+        _sf2 = _ScrollableFrame(win)
+        _sf2.pack(fill=tk.BOTH, expand=True)
+        _win_body2 = _sf2.interior
+
+        top = tk.LabelFrame(_win_body2, text="1. MO selection", padx=6, pady=4)
         top.pack(fill=tk.X, padx=6, pady=(6, 3))
 
         rng_row = tk.Frame(top)
@@ -4280,7 +4369,7 @@ class NBOViewerApp(tk.Tk):
         mo_sb.pack(fill=tk.X)
         mo_check_vars: Dict[int, tk.BooleanVar] = {}
 
-        mid = tk.Frame(win)
+        mid = tk.Frame(_win_body2)
         mid.pack(fill=tk.X, padx=6, pady=3)
 
         targets_frame = tk.LabelFrame(mid, text="2. Targets", padx=6, pady=4)
@@ -4349,7 +4438,7 @@ class NBOViewerApp(tk.Tk):
         )
         contrib_status.pack(fill=tk.X, pady=(2, 0))
 
-        plot_frame = tk.LabelFrame(win, text="5. Diagram", padx=4, pady=4)
+        plot_frame = tk.LabelFrame(_win_body2, text="5. Diagram", padx=4, pady=4)
         plot_frame.pack(fill=tk.BOTH, expand=True, padx=6, pady=(3, 6))
         fig = Figure(figsize=(10, 6), dpi=100)
         ax = fig.add_subplot(111)
@@ -4359,7 +4448,7 @@ class NBOViewerApp(tk.Tk):
         toolbar.update()
 
         status = tk.Label(
-            win,
+            _win_body2,
             text="Pick MOs, targets, and contributors, then build the classic diagram.",
             fg="gray",
             anchor="w",
@@ -5004,8 +5093,7 @@ class NBOViewerApp(tk.Tk):
 
             pop = tk.Toplevel(win)
             pop.title("MO Energy Diagram - Large View")
-            pop.geometry("1700x1000")
-            pop.minsize(1000, 700)
+            _clamp_geometry(pop, 1700, 1000, 800, 500)
 
             top_bar = tk.Frame(pop)
             top_bar.pack(fill=tk.X, padx=6, pady=(6, 0))
@@ -5230,7 +5318,7 @@ class NBOViewerApp(tk.Tk):
                   command=lambda: contrib_lb.selection_clear(0, tk.END)
                   ).pack(side=tk.LEFT)
 
-        btn_row = tk.Frame(win)
+        btn_row = tk.Frame(_win_body2)
         btn_row.pack(fill=tk.X, padx=6, pady=(0, 6), before=status)
         tk.Button(btn_row, text="Build diagram", bg="#1a3c6e", fg="white",
                   font=("", 9, "bold"), command=_build
@@ -5281,11 +5369,15 @@ class NBOViewerApp(tk.Tk):
 
         win = tk.Toplevel(self)
         win.title("MO Energy Diagram")
-        win.geometry("1250x780")
-        win.minsize(900, 600)
+        _clamp_geometry(win, 1250, 780, 700, 500)
+
+        # Wrap everything in a scrollable frame so controls survive small screens
+        _sf = _ScrollableFrame(win)
+        _sf.pack(fill=tk.BOTH, expand=True)
+        _win_body = _sf.interior
 
         # ── Top: MO range + checklist of MOs ────────────────────────────
-        top = tk.LabelFrame(win, text="1. MO selection", padx=6, pady=4)
+        top = tk.LabelFrame(_win_body, text="1. MO selection", padx=6, pady=4)
         top.pack(fill=tk.X, padx=6, pady=(6, 3))
 
         rng_row = tk.Frame(top); rng_row.pack(fill=tk.X)
@@ -5297,6 +5389,17 @@ class NBOViewerApp(tk.Tk):
         to_var = tk.IntVar(value=min(nmo - 1, homo_idx + 5))
         ttk.Spinbox(rng_row, textvariable=to_var, from_=0, to=nmo - 1,
                     width=6).pack(side=tk.LEFT, padx=(2, 8))
+
+        # Manual MO entry row
+        manual_row = tk.Frame(top); manual_row.pack(fill=tk.X, pady=(4, 0))
+        tk.Label(manual_row, text="Manual MOs:", font=("", 8)
+                 ).pack(side=tk.LEFT)
+        mo_entry_var = tk.StringVar(value="")
+        tk.Entry(manual_row, textvariable=mo_entry_var, width=40,
+                 font=("", 8)).pack(side=tk.LEFT, padx=(4, 4), fill=tk.X, expand=True)
+        tk.Label(manual_row,
+                 text="(comma/space sep, ranges ok: 100-110, 115, 120)",
+                 font=("", 7), fg="#666666").pack(side=tk.LEFT)
 
         # MO checklist (scrollable)
         mo_list_frame = tk.Frame(top)
@@ -5349,7 +5452,7 @@ class NBOViewerApp(tk.Tk):
         _populate_mo_checks()
 
         # ── Middle: atoms + contributor mode + style ────────────────────
-        mid = tk.Frame(win); mid.pack(fill=tk.X, padx=6, pady=3)
+        mid = tk.Frame(_win_body); mid.pack(fill=tk.X, padx=6, pady=3)
 
         atoms_frame = tk.LabelFrame(mid, text="2. Atoms (type or check)",
                                     padx=6, pady=4)
@@ -5420,7 +5523,7 @@ class NBOViewerApp(tk.Tk):
                      width=4, state="readonly").pack(side=tk.LEFT, padx=2)
 
         # ── Plot canvas ─────────────────────────────────────────────────
-        plot_frame = tk.LabelFrame(win, text="4. Diagram", padx=4, pady=4)
+        plot_frame = tk.LabelFrame(_win_body, text="4. Diagram", padx=4, pady=4)
         plot_frame.pack(fill=tk.BOTH, expand=True, padx=6, pady=(3, 6))
 
         from matplotlib.figure import Figure
@@ -5433,7 +5536,7 @@ class NBOViewerApp(tk.Tk):
         toolbar = NavigationToolbar2Tk(canvas, plot_frame)
         toolbar.update()
 
-        status = tk.Label(win, text="Pick atoms, click Build diagram.",
+        status = tk.Label(_win_body, text="Pick atoms, click Build diagram.",
                           fg="gray", anchor="w")
         status.pack(fill=tk.X, padx=6, pady=(0, 4))
 
@@ -5456,10 +5559,42 @@ class NBOViewerApp(tk.Tk):
             cmap = cm.get_cmap("tab20", max(20, total))
             return cmap(idx % cmap.N)
 
+        def _parse_manual_mos():
+            """Parse the manual MO entry: supports comma/space sep, ranges (e.g. 100-110, 115)."""
+            raw = mo_entry_var.get().strip()
+            if not raw:
+                return []
+            result = set()
+            # Split on commas, semicolons, and whitespace
+            for tok in raw.replace(",", " ").replace(";", " ").split():
+                tok = tok.strip()
+                if not tok:
+                    continue
+                if "-" in tok and not tok.startswith("-"):
+                    # Range like "100-110"
+                    parts = tok.split("-", 1)
+                    try:
+                        lo, hi = int(parts[0]), int(parts[1])
+                        for i in range(max(0, lo), min(nmo, hi + 1)):
+                            result.add(i)
+                    except ValueError:
+                        pass
+                else:
+                    try:
+                        v = int(tok)
+                        if 0 <= v < nmo:
+                            result.add(v)
+                    except ValueError:
+                        pass
+            return sorted(result)
+
         def _build():
-            picked_mos = sorted([i for i, v in mo_check_vars.items() if v.get()])
+            # Merge: ticked checkboxes + manually typed MOs
+            from_checks = sorted([i for i, v in mo_check_vars.items() if v.get()])
+            from_manual = _parse_manual_mos()
+            picked_mos = sorted(set(from_checks) | set(from_manual))
             if not picked_mos:
-                status.config(text="No MOs ticked.", fg="#993300")
+                status.config(text="No MOs selected — tick checkboxes or type MO numbers.", fg="#993300")
                 return
             picked_atoms = _gather_atoms()
             if not picked_atoms:
@@ -5670,7 +5805,7 @@ class NBOViewerApp(tk.Tk):
                 status.config(text=f"Save failed: {exc}", fg="#993300")
 
         # ── Action buttons ──────────────────────────────────────────────
-        btn_row = tk.Frame(win); btn_row.pack(fill=tk.X, padx=6, pady=(0, 6))
+        btn_row = tk.Frame(_win_body); btn_row.pack(fill=tk.X, padx=6, pady=(0, 6))
         tk.Button(btn_row, text="Build diagram", bg="#1a3c6e", fg="white",
                   font=("", 9, "bold"), command=_build
                   ).pack(side=tk.LEFT, padx=2)
@@ -5927,8 +6062,7 @@ class NBOViewerApp(tk.Tk):
 
         win = tk.Toplevel(self)
         win.title(f"Orbital Viewer — {cube.get('comment', 'MO')[:60]}")
-        win.geometry("1000x800")
-        win.minsize(500, 400)
+        _clamp_geometry(win, 1000, 800, 500, 400)
         win.configure(bg=bg_col)
 
         # ── State for text / fonts ────────────────────────────────────────
@@ -6188,11 +6322,14 @@ class NBOViewerApp(tk.Tk):
 
         win = tk.Toplevel(self)
         win.title("Re-orient Molecule")
-        win.geometry("520x560")
-        win.resizable(True, True)
+        _clamp_geometry(win, 520, 560, 400, 350)
+
+        _ro_sf = _ScrollableFrame(win)
+        _ro_sf.pack(fill=tk.BOTH, expand=True)
+        _ro = _ro_sf.interior
 
         # ── Instruction text ──────────────────────────────────────────────
-        info = tk.Label(win, text=(
+        info = tk.Label(_ro, text=(
             "Re-orient the molecule so orbital labels (dxy, dz², etc.) are meaningful.\n"
             "1. Pick the metal center → becomes the origin\n"
             "2. Pick an atom that defines the +X axis direction\n"
@@ -6201,10 +6338,10 @@ class NBOViewerApp(tk.Tk):
         ), justify="left", font=("", 9), wraplength=480, padx=10, pady=6)
         info.pack(fill=tk.X)
 
-        ttk.Separator(win).pack(fill=tk.X, pady=2)
+        ttk.Separator(_ro).pack(fill=tk.X, pady=2)
 
         # ── Atom list ─────────────────────────────────────────────────────
-        list_frame = tk.Frame(win)
+        list_frame = tk.Frame(_ro)
         list_frame.pack(fill=tk.BOTH, expand=True, padx=6, pady=4)
 
         cols = ("idx", "elem", "x", "y", "z")
@@ -6231,7 +6368,7 @@ class NBOViewerApp(tk.Tk):
         tree.tag_configure("metal", foreground="#FFD700")
 
         # ── Selection entries ─────────────────────────────────────────────
-        sel_frame = tk.Frame(win)
+        sel_frame = tk.Frame(_ro)
         sel_frame.pack(fill=tk.X, padx=6, pady=4)
 
         center_var = tk.StringVar(value="")
@@ -6267,7 +6404,7 @@ class NBOViewerApp(tk.Tk):
                   ).grid(row=2, column=2, padx=4)
 
         # ── Buttons ───────────────────────────────────────────────────────
-        btn_frame = tk.Frame(win)
+        btn_frame = tk.Frame(_ro)
         btn_frame.pack(fill=tk.X, padx=6, pady=6)
 
         tk.Button(btn_frame, text="Apply Re-orientation", font=("", 10, "bold"),
@@ -6282,7 +6419,7 @@ class NBOViewerApp(tk.Tk):
                   command=lambda: _export_xyz()
                   ).pack(side=tk.RIGHT, padx=4)
 
-        status_lbl = tk.Label(win, text="", font=("", 9), fg="green")
+        status_lbl = tk.Label(_ro, text="", font=("", 9), fg="green")
         status_lbl.pack(fill=tk.X, padx=6)
 
         # ── Helper closures ───────────────────────────────────────────────
@@ -6386,7 +6523,7 @@ class NBOViewerApp(tk.Tk):
 
             cwin = tk.Toplevel(win)
             cwin.title(f"Composition Comparison — MO {iorb}")
-            cwin.geometry("750x500")
+            _clamp_geometry(cwin, 750, 500, 450, 350)
 
             tk.Label(cwin, text=f"MO {iorb} — Orbital Decomposition Before vs After Re-orientation",
                      font=("", 11, "bold")).pack(pady=6)
