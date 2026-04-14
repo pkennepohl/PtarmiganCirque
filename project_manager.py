@@ -92,6 +92,11 @@ def save_project(path: str, app) -> None:
             "broadening": str(  _get(entry.get("broadening"), _get(plot._broadening, "Gaussian"))),
             "delta_e":    float(_get(entry.get("delta_e"),    _get(plot._delta_e, 0.0))),
             "scale":      float(_get(entry.get("scale"),      _get(plot._tddft_scale, 1.0))),
+            # Per-spectrum component toggles
+            "comb_total": bool(_get(entry.get("comb_total"), True)),
+            "comb_d2":    bool(_get(entry.get("comb_d2"),    False)),
+            "comb_m2":    bool(_get(entry.get("comb_m2"),    False)),
+            "comb_q2":    bool(_get(entry.get("comb_q2"),    False)),
         })
 
     # ── 4. Plot-widget state ─────────────────────────────────────────────────
@@ -135,7 +140,7 @@ def save_project(path: str, app) -> None:
     xas_params = xas.get_params()
 
     doc: dict = {
-        "version":       3,
+        "version":       4,
         "orca_files":    orca_files,
         "exp_scans":     exp_scans,
         "tddft_spectra": tddft_spectra_list,
@@ -254,6 +259,10 @@ def restore_project(doc: dict, app) -> list:
             "broadening": _tk.StringVar(master=app, value=broadening),
             "delta_e":    _tk.DoubleVar(master=app, value=delta_e),
             "scale":      _tk.DoubleVar(master=app, value=scale),
+            "comb_total": _tk.BooleanVar(master=app, value=bool(entry.get("comb_total", True))),
+            "comb_d2":    _tk.BooleanVar(master=app, value=bool(entry.get("comb_d2",    False))),
+            "comb_m2":    _tk.BooleanVar(master=app, value=bool(entry.get("comb_m2",    False))),
+            "comb_q2":    _tk.BooleanVar(master=app, value=bool(entry.get("comb_q2",    False))),
         })
 
     # ── 5. Restore plot state ────────────────────────────────────────────────

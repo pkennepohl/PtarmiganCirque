@@ -798,22 +798,8 @@ class PlotWidget(tk.Frame):
         bg = "#e8f0f8"
         bar = self._collapsible_bar("Overlay", collapsed=True, padx=4, pady=3, bg=bg)
 
-        # Combined-spectrum component selector (packed/unpacked by _update_comb_ui)
-        self._comb_frame = tk.Frame(bar, bg=bg)
-        tk.Label(self._comb_frame, text="Components:",
-                 font=("", 9, "bold"), fg="#005580", bg=bg).pack(side=tk.LEFT, padx=(0, 2))
-        tk.Checkbutton(self._comb_frame, text="Total",
-                       variable=self._comb_total, command=self._replot,
-                       fg="#333333", bg=bg).pack(side=tk.LEFT)
-        tk.Checkbutton(self._comb_frame, text="Elec. Dipole (D\u00b2)",
-                       variable=self._comb_d2, command=self._replot,
-                       fg="#1f77b4", bg=bg).pack(side=tk.LEFT)
-        tk.Checkbutton(self._comb_frame, text="Mag. Dipole (m\u00b2)",
-                       variable=self._comb_m2, command=self._replot,
-                       fg="#2ca02c", bg=bg).pack(side=tk.LEFT)
-        tk.Checkbutton(self._comb_frame, text="Elec. Quad. (Q\u00b2)",
-                       variable=self._comb_q2, command=self._replot,
-                       fg="#d62728", bg=bg).pack(side=tk.LEFT)
+        # Component toggles moved to per-spectrum detail panel — nothing here now.
+        self._comb_frame = None
 
     def _reset_title(self):
         self._custom_title.set("")
@@ -1204,6 +1190,28 @@ class PlotWidget(tk.Frame):
                                    sc_str.set("1.000"),
                                    sc_slider.set(1.0),
                                    self._replot())).pack(side=tk.LEFT, padx=(4, 0))
+
+        # Row 3: Component toggles (only for combined spectra)
+        sp = entry["spectrum"]
+        if sp.is_combined():
+            r3 = tk.Frame(frame, bg=bg)
+            r3.pack(fill=tk.X, pady=(2, 0))
+            tk.Label(r3, text="Components:", font=("", 8, "bold"), bg=bg).pack(side=tk.LEFT)
+            tk.Checkbutton(r3, text="Total", variable=entry["comb_total"],
+                           command=self._replot, bg=bg, font=("", 8),
+                           fg="#333333").pack(side=tk.LEFT, padx=(4, 1))
+            if sp.fosc_d2:
+                tk.Checkbutton(r3, text="Elec. Dipole (D\u00b2)",
+                               variable=entry["comb_d2"], command=self._replot,
+                               bg=bg, font=("", 8), fg="#1f77b4").pack(side=tk.LEFT, padx=1)
+            if sp.fosc_m2:
+                tk.Checkbutton(r3, text="Mag. Dipole (m\u00b2)",
+                               variable=entry["comb_m2"], command=self._replot,
+                               bg=bg, font=("", 8), fg="#2ca02c").pack(side=tk.LEFT, padx=1)
+            if sp.fosc_q2:
+                tk.Checkbutton(r3, text="Elec. Quad. (Q\u00b2)",
+                               variable=entry["comb_q2"], command=self._replot,
+                               bg=bg, font=("", 8), fg="#d62728").pack(side=tk.LEFT, padx=1)
 
     def _refresh_panel_content(self):
         """Rebuild all rows: unified TDDFT + EXP table, type shown on colour swatch."""
@@ -1748,6 +1756,11 @@ class PlotWidget(tk.Frame):
             "broadening": tk.StringVar(value=self._broadening.get()),
             "delta_e":    tk.DoubleVar(value=self._delta_e.get()),
             "scale":      tk.DoubleVar(value=self._tddft_scale.get()),
+            # Per-spectrum component toggles (for combined spectra)
+            "comb_total": tk.BooleanVar(value=True),
+            "comb_d2":    tk.BooleanVar(value=False),
+            "comb_m2":    tk.BooleanVar(value=False),
+            "comb_q2":    tk.BooleanVar(value=False),
         }
         if self._tddft_spectra:
             # Replace the primary (index 0) — keep any overlays intact
@@ -1768,6 +1781,11 @@ class PlotWidget(tk.Frame):
             "broadening": tk.StringVar(value=self._broadening.get()),
             "delta_e":    tk.DoubleVar(value=self._delta_e.get()),
             "scale":      tk.DoubleVar(value=self._tddft_scale.get()),
+            # Per-spectrum component toggles (for combined spectra)
+            "comb_total": tk.BooleanVar(value=True),
+            "comb_d2":    tk.BooleanVar(value=False),
+            "comb_m2":    tk.BooleanVar(value=False),
+            "comb_q2":    tk.BooleanVar(value=False),
         }
         self._tddft_spectra.append(entry)
         self._refresh_panel_content()
@@ -1865,6 +1883,10 @@ class PlotWidget(tk.Frame):
                     "broadening": entry["broadening"].get() if "broadening" in entry else self._broadening.get(),
                     "delta_e":    entry["delta_e"].get() if "delta_e" in entry else self._delta_e.get(),
                     "scale":      entry["scale"].get() if "scale" in entry else self._tddft_scale.get(),
+                    "comb_total": entry.get("comb_total") or self._comb_total,
+                    "comb_d2":    entry.get("comb_d2")    or self._comb_d2,
+                    "comb_m2":    entry.get("comb_m2")    or self._comb_m2,
+                    "comb_q2":    entry.get("comb_q2")    or self._comb_q2,
                 }
                 tddft_to_draw.append((lbl, entry["spectrum"], col, params))
 
@@ -1922,7 +1944,7 @@ class PlotWidget(tk.Frame):
             scale   = sp_params["scale"]
             ev_arr = np.array(sp.energies_ev) + delta_e
             is_cd  = sp.is_cd()
-            is_comb = sp.is_combined() and not multi_tddft  # component mode only in single view
+            is_comb = sp.is_combined()
             if len(ev_arr) == 0:
                 continue
             x_arr = self._ev_to_unit(ev_arr)
@@ -1940,13 +1962,13 @@ class PlotWidget(tk.Frame):
                     "q2":    "#d62728",      # red
                 }
                 comp_defs = []
-                if self._comb_total.get():
+                if sp_params["comb_total"].get():
                     comp_defs.append(("total", np.array(sp.fosc),    COMB_COLS["total"], "Total"))
-                if self._comb_d2.get() and sp.fosc_d2:
+                if sp_params["comb_d2"].get() and sp.fosc_d2:
                     comp_defs.append(("d2",    np.array(sp.fosc_d2), COMB_COLS["d2"],   "D\u00b2 (elec. dip.)"))
-                if self._comb_m2.get() and sp.fosc_m2:
+                if sp_params["comb_m2"].get() and sp.fosc_m2:
                     comp_defs.append(("m2",    np.array(sp.fosc_m2), COMB_COLS["m2"],   "m\u00b2 (mag. dip.)"))
-                if self._comb_q2.get() and sp.fosc_q2:
+                if sp_params["comb_q2"].get() and sp.fosc_q2:
                     comp_defs.append(("q2",    np.array(sp.fosc_q2), COMB_COLS["q2"],   "Q\u00b2 (elec. quad.)"))
 
                 if not comp_defs:
@@ -2837,20 +2859,8 @@ class PlotWidget(tk.Frame):
             pass   # silently ignore if legend was removed mid-drag
 
     def _update_comb_ui(self):
-        """Show the component checkboxes only when a combined spectrum is loaded
-        in single-spectrum view (not overlay mode)."""
-        if self._comb_frame is None:
-            return
-        _sp0 = self._tddft_spectra[0]["spectrum"] if self._tddft_spectra else None
-        is_comb = (
-            _sp0 is not None
-            and _sp0.is_combined()
-            and len(self._tddft_spectra) == 1
-        )
-        if is_comb:
-            self._comb_frame.pack(side=tk.LEFT)
-        else:
-            self._comb_frame.pack_forget()
+        """No-op — component toggles now live in each spectrum's detail panel."""
+        pass
 
     # ══════════════════════════════════════════════════════════════════════════
     #  Export
