@@ -2408,8 +2408,11 @@ class PlotWidget(tk.Frame):
                 auto_yhi = float(np.max(exp_ys)) * 1.08
             else:
                 auto_ylo, auto_yhi = 0.0, 1.1
-            # Override user-supplied Y (which was for TDDFT) with the exp range
-            yl, yh = auto_ylo, auto_yhi
+            # Only fall back to auto range when user hasn't set explicit limits
+            if yl is None:
+                yl = auto_ylo
+            if yh is None:
+                yh = auto_yhi
 
         # ── Apply zoom limits ────────────────────────────────────────────────
         inset_ax.set_xlim(xl, xh)
