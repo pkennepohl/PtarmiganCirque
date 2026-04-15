@@ -4236,6 +4236,7 @@ class NBOViewerApp(tk.Tk):
         self._iso_status.config(text="Computing tracked atom contributions...", fg="gray")
         self.update_idletasks()
 
+        # Initial load — store all atom contribs (not just tracked) so groups work later
         results = []
         for mo_i in range(mo_range_start, mo_range_end):
             comp = compute_mo_composition(mo_data, mo_i,
@@ -4247,8 +4248,8 @@ class NBOViewerApp(tk.Tk):
             else:             lbl = f"L+{delta-1}"
             row = {"mo": mo_i, "label": lbl, "energy": mo_data["energies"][mo_i],
                    "occ": mo_data["occs"][mo_i]}
-            for ak in tracked:
-                ac = comp['atom_contribs'].get(ak, {'s': 0, 'p': 0, 'd': 0, 'f': 0, 'total': 0})
+            # Store all atom contributions so groups can reference any atom
+            for ak, ac in comp['atom_contribs'].items():
                 row[ak] = ac
             results.append(row)
 
@@ -4306,18 +4307,112 @@ class NBOViewerApp(tk.Tk):
         ttk.Spinbox(ctrl, textvariable=min_pct_var, from_=0.0, to=100.0,
                     increment=0.5, width=5, format="%.1f").pack(side=tk.LEFT)
 
+        # Manual MO list entry
+        ctrl2 = tk.Frame(win)
+        ctrl2.pack(fill=tk.X, padx=4, pady=(0, 2))
+        tk.Label(ctrl2, text="Manual MOs:", font=("", 8)).pack(side=tk.LEFT)
+        manual_mo_var = tk.StringVar(value="")
+        tk.Entry(ctrl2, textvariable=manual_mo_var, width=35, font=("", 8)
+                 ).pack(side=tk.LEFT, padx=(4, 4), fill=tk.X, expand=True)
+        tk.Label(ctrl2, text="(comma/space sep, ranges ok: 191-202, 205)",
+                 font=("", 7), fg="#666").pack(side=tk.LEFT)
+
+        # Atom grouping
+        grp_frame = tk.Frame(win)
+        grp_frame.pack(fill=tk.X, padx=4, pady=(0, 2))
+        tk.Label(grp_frame, text="Atom groups (sum):", font=("", 8)).pack(side=tk.LEFT)
+        grp_entry_var = tk.StringVar(value="")
+        tk.Entry(grp_frame, textvariable=grp_entry_var, width=50, font=("", 8)
+                 ).pack(side=tk.LEFT, padx=(4, 4), fill=tk.X, expand=True)
+        tk.Label(grp_frame, text='e.g. "Phosphines=P4,P5; Ligand=C6,C7,C8"',
+                 font=("", 7), fg="#666").pack(side=tk.LEFT)
+
         def _fmt_cell(val: float, threshold: float) -> str:
             return f"{val:.1f}" if val >= threshold else "-"
 
+        def _parse_manual_mos_local():
+            """Parse manual MO entry: comma/space sep, ranges ok."""
+            raw = manual_mo_var.get().strip()
+            if not raw:
+                return []
+            result = set()
+            for tok in raw.replace(",", " ").replace(";", " ").split():
+                tok = tok.strip()
+                if not tok:
+                    continue
+                if "-" in tok and not tok.startswith("-"):
+                    parts = tok.split("-", 1)
+                    try:
+                        lo, hi = int(parts[0]), int(parts[1])
+                        for i in range(max(0, lo), min(nmo, hi + 1)):
+                            result.add(i)
+                    except ValueError:
+                        pass
+                else:
+                    try:
+                        v = int(tok)
+                        if 0 <= v < nmo:
+                            result.add(v)
+                    except ValueError:
+                        pass
+            return sorted(result)
+
+        def _parse_groups():
+            """Parse atom grouping: 'Phosphines=P4,P5; Ligand=C6,C7,C8'"""
+            raw = grp_entry_var.get().strip()
+            if not raw:
+                return []
+            groups = []  # [(name, [atom_keys])]
+            for part in raw.split(";"):
+                part = part.strip()
+                if not part:
+                    continue
+                if "=" in part:
+                    name, atoms_str = part.split("=", 1)
+                    name = name.strip()
+                    atom_keys = [a.strip() for a in atoms_str.split(",") if a.strip()]
+                else:
+                    # No name — treat the whole thing as a list
+                    atom_keys = [a.strip() for a in part.split(",") if a.strip()]
+                    name = "+".join(atom_keys)
+                groups.append((name, atom_keys))
+            return groups
+
+        def _rebuild_columns():
+            """Rebuild the treeview columns based on current tracked atoms + groups."""
+            groups = _parse_groups()
+
+            new_atom_cols = []
+            for ak in tracked:
+                new_atom_cols.extend([f"{ak} total", f"{ak} d%", f"{ak} p%", f"{ak} s%"])
+            for gname, _ in groups:
+                new_atom_cols.extend([f"{gname} total", f"{gname} d%", f"{gname} p%", f"{gname} s%"])
+            new_all = base_cols + tuple(new_atom_cols)
+
+            tree["columns"] = new_all
+            for col in new_all:
+                w = 50 if col not in base_cols else (45, 60, 85, 40)[base_cols.index(col)]
+                tree.heading(col, text=col, anchor="center")
+                tree.column(col, width=w, anchor="center", stretch=False)
+            return groups
+
         def _populate_table(rows):
+            groups = _rebuild_columns()
             for item in tree.get_children():
                 tree.delete(item)
 
             threshold = float(min_pct_var.get())
             shown_rows = 0
             for row in rows:
-                meets_threshold = any(row.get(ak, {}).get('total', 0.0) >= threshold for ak in tracked)
-                if not meets_threshold:
+                # Check threshold against individual atoms AND groups
+                meets = any(row.get(ak, {}).get('total', 0.0) >= threshold for ak in tracked)
+                if not meets and groups:
+                    for gname, gkeys in groups:
+                        gtot = sum(row.get(ak, {}).get('total', 0.0) for ak in gkeys if ak in row)
+                        if gtot >= threshold:
+                            meets = True
+                            break
+                if not meets:
                     continue
 
                 vals = [
@@ -4332,6 +4427,17 @@ class NBOViewerApp(tk.Tk):
                     vals.append(_fmt_cell(ac['d'], threshold))
                     vals.append(_fmt_cell(ac['p'], threshold))
                     vals.append(_fmt_cell(ac['s'], threshold))
+                # Grouped columns: sum contributions of member atoms
+                for gname, gkeys in groups:
+                    gs = sum(row.get(ak, {}).get('s', 0.0) for ak in gkeys if ak in row)
+                    gp = sum(row.get(ak, {}).get('p', 0.0) for ak in gkeys if ak in row)
+                    gd = sum(row.get(ak, {}).get('d', 0.0) for ak in gkeys if ak in row)
+                    gf = sum(row.get(ak, {}).get('f', 0.0) for ak in gkeys if ak in row)
+                    gt = gs + gp + gd + gf
+                    vals.append(_fmt_cell(gt, threshold))
+                    vals.append(_fmt_cell(gd, threshold))
+                    vals.append(_fmt_cell(gp, threshold))
+                    vals.append(_fmt_cell(gs, threshold))
 
                 tag = "homo" if row["label"] == "HOMO" else \
                       "lumo" if row["label"] == "LUMO" else \
@@ -4339,16 +4445,32 @@ class NBOViewerApp(tk.Tk):
                 tree.insert("", tk.END, values=tuple(vals), tags=(tag,))
                 shown_rows += 1
 
+            n_grp = len(groups)
+            grp_info = f"  |  {n_grp} groups" if n_grp else ""
             info_var.set(
                 f"Tracked: {', '.join(tracked)}  |  {shown_rows} shown  |  "
-                f"min = {threshold:.1f}%  |  HOMO = MO {homo_idx}"
+                f"min = {threshold:.1f}%  |  HOMO = MO {homo_idx}{grp_info}"
             )
 
+        def _get_mo_indices():
+            """Combine range + manual entry."""
+            manual = _parse_manual_mos_local()
+            if manual:
+                # If manual MOs are specified, use those
+                rng_start = max(0, from_var.get())
+                rng_end   = min(nmo, to_var.get() + 1)
+                from_range = set(range(rng_start, rng_end))
+                return sorted(from_range | set(manual))
+            else:
+                rng_start = max(0, from_var.get())
+                rng_end   = min(nmo, to_var.get() + 1)
+                return list(range(rng_start, rng_end))
+
         def _refresh_range():
-            rng_start = max(0, from_var.get())
-            rng_end   = min(nmo, to_var.get() + 1)
+            mo_indices = _get_mo_indices()
+
             refreshed_rows = []
-            for mo_i in range(rng_start, rng_end):
+            for mo_i in mo_indices:
                 comp = compute_mo_composition(mo_data, mo_i,
                                               reorient_R=self._reorient_R)
                 delta = mo_i - homo_idx
@@ -4358,9 +4480,8 @@ class NBOViewerApp(tk.Tk):
                 else:             lbl = f"L+{delta-1}"
                 row = {"mo": mo_i, "label": lbl, "energy": mo_data["energies"][mo_i],
                        "occ": mo_data["occs"][mo_i]}
-                for ak in tracked:
-                    c = comp['atom_contribs'].get(ak, {'total': 0, 'd': 0, 'p': 0, 's': 0})
-                    row[ak] = c
+                for ak, ac in comp['atom_contribs'].items():
+                    row[ak] = ac
                 refreshed_rows.append(row)
             _populate_table(refreshed_rows)
 
