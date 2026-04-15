@@ -57,7 +57,7 @@ def save_project(path: str, app) -> None:
 
     # ── 2. Experimental scans (data embedded — no re-parse needed on load) ──
     exp_scans = []
-    for label, scan, var, style in plot._exp_scans:
+    for label, scan, var, style, in_legend in plot._exp_scans:
         exp_scans.append({
             "panel_label":  label,
             "scan_label":   scan.label,
@@ -68,6 +68,7 @@ def save_project(path: str, app) -> None:
             "scan_type":    scan.scan_type,
             "enabled":      bool(_get(var, True)),
             "style":        dict(style),
+            "in_legend":    bool(_get(in_legend, True)),
         })
 
     # ── 3. TDDFT spectra (unified list: index 0 = primary, 1+ = overlays) ──
@@ -97,6 +98,14 @@ def save_project(path: str, app) -> None:
             "comb_d2":    bool(_get(entry.get("comb_d2"),    False)),
             "comb_m2":    bool(_get(entry.get("comb_m2"),    False)),
             "comb_q2":    bool(_get(entry.get("comb_q2"),    False)),
+            # Per-spectrum display toggles (new in version 5)
+            "show_sticks": bool(_get(entry.get("show_sticks"), True)),
+            "show_env":    bool(_get(entry.get("show_env"),    True)),
+            "show_trans":  bool(_get(entry.get("show_trans"),  False)),
+            # Per-spectrum style dict (new in version 5)
+            "style":       dict(entry["style"]) if "style" in entry else {},
+            # Legend inclusion (new in version 5)
+            "in_legend":   bool(_get(entry.get("in_legend"), True)),
         })
 
     # ── 4. Plot-widget state ─────────────────────────────────────────────────
@@ -140,7 +149,7 @@ def save_project(path: str, app) -> None:
     xas_params = xas.get_params()
 
     doc: dict = {
-        "version":       4,
+        "version":       5,
         "orca_files":    orca_files,
         "exp_scans":     exp_scans,
         "tddft_spectra": tddft_spectra_list,
@@ -220,11 +229,12 @@ def restore_project(doc: dict, app) -> list:
                 is_normalized=True,
                 scan_type=entry.get("scan_type", "normalized"),
             )
-            style   = dict(entry.get("style", {}))
-            enabled = bool(entry.get("enabled", True))
-            var     = _BoolVar_from(app, enabled)
+            style     = dict(entry.get("style", {}))
+            enabled   = bool(entry.get("enabled", True))
+            var       = _BoolVar_from(app, enabled)
+            in_legend = _BoolVar_from(app, bool(entry.get("in_legend", True)))
 
-            plot._exp_scans.append((entry["panel_label"], scan, var, style))
+            plot._exp_scans.append((entry["panel_label"], scan, var, style, in_legend))
         except Exception as exc:
             warnings.append(f"Exp scan restore failed ({entry.get('panel_label','?')}): {exc}")
 
@@ -250,6 +260,10 @@ def restore_project(doc: dict, app) -> list:
         broadening = str(  entry.get("broadening", ps_defaults.get("broadening", "Gaussian")))
         delta_e    = float(entry.get("delta_e",    ps_defaults.get("shift",       0.0)))
         scale      = float(entry.get("scale",      ps_defaults.get("scale",       1.0)))
+        from plot_widget import _default_tddft_style as _dtdft_style
+        saved_style = dict(entry.get("style") or {})
+        restored_style = _dtdft_style()
+        restored_style.update(saved_style)   # merge: saved overrides defaults
         plot._tddft_spectra.append({
             "label":      entry["label"],
             "spectrum":   sp,
@@ -263,6 +277,14 @@ def restore_project(doc: dict, app) -> list:
             "comb_d2":    _tk.BooleanVar(master=app, value=bool(entry.get("comb_d2",    False))),
             "comb_m2":    _tk.BooleanVar(master=app, value=bool(entry.get("comb_m2",    False))),
             "comb_q2":    _tk.BooleanVar(master=app, value=bool(entry.get("comb_q2",    False))),
+            # Per-spectrum display toggles (v5; defaults match global for v1-v4 files)
+            "show_sticks": _tk.BooleanVar(master=app, value=bool(entry.get("show_sticks", True))),
+            "show_env":    _tk.BooleanVar(master=app, value=bool(entry.get("show_env",    True))),
+            "show_trans":  _tk.BooleanVar(master=app, value=bool(entry.get("show_trans",  False))),
+            # Per-spectrum style dict (v5; merged with defaults for v1-v4 files)
+            "style":       restored_style,
+            # Legend inclusion (v5; default=True for old files)
+            "in_legend":   _tk.BooleanVar(master=app, value=bool(entry.get("in_legend", True))),
         })
 
     # ── 5. Restore plot state ────────────────────────────────────────────────

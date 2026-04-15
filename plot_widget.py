@@ -103,6 +103,7 @@ _EXP_STYLE_FACTORY: dict = {
 }
 _TDDFT_STYLE_FACTORY: dict = {
     "env_linewidth":   2.0,
+    "env_linestyle":   "solid",
     "env_fill":        True,
     "env_fill_alpha":  0.10,
     "stick_linewidth": 1.2,
@@ -244,6 +245,7 @@ class PlotWidget(tk.Frame):
 
         # Master visibility toggles
         self._show_tddft = tk.BooleanVar(value=True)
+        self._tddft_on_left = tk.StringVar(value="left")  # "left" or "right"
 
         # Manual axis-range overrides (empty string = auto-scale)
         self._xlim_lo = tk.StringVar(value="")
@@ -291,13 +293,7 @@ class PlotWidget(tk.Frame):
         self._hover_states: list = []    # actual root numbers (sp.states)
         self._hover_labels: list = []    # transition labels (sp.transition_labels)
 
-        self._build_spectrum_controls()
-        self._build_alignment_controls()
-        self._build_view_controls()
-        self._build_axes_controls()
-        self._build_style_controls()
-        self._build_legend_export_controls()
-        self._build_overlay_controls()
+        self._build_global_controls()
         self._build_figure()        # creates self.ax and self.ax2 once
         self._build_overlay_panel()
 
@@ -422,12 +418,179 @@ class PlotWidget(tk.Frame):
         return inner
 
     # ══════════════════════════════════════════════════════════════════════════
-    #  Spectrum controls (row 1) — X unit, broadening, FWHM, display toggles
+    #  Global controls — single always-visible compact panel (replaces 6 bars)
+    # ══════════════════════════════════════════════════════════════════════════
+    def _build_global_controls(self):
+        """Single always-visible compact control panel (replaces 6 collapsible bars)."""
+        F9 = ("", 9)
+        F10 = ("", 10)
+
+        def _vsep(bar):
+            tk.Frame(bar, width=1, bg="#aaaaaa").pack(side=tk.LEFT, fill=tk.Y, padx=5, pady=2)
+
+        outer = tk.Frame(self, bd=1, relief=tk.RIDGE)
+        outer.pack(side=tk.TOP, fill=tk.X, padx=2, pady=(2, 1))
+
+        # ── Row 0: Display & Quick Actions ───────────────────────────────────────
+        r0 = tk.Frame(outer, padx=4, pady=3)
+        r0.pack(side=tk.TOP, fill=tk.X)
+
+        tk.Label(r0, text="X axis:", font=F9).pack(side=tk.LEFT)
+        for unit, label in (("eV", "eV"), ("Ha", "Ha"), ("cm\u207b\u00b9", "cm\u207b\u00b9")):
+            tk.Radiobutton(r0, text=label, variable=self._x_unit,
+                           value=unit, command=self._on_unit_change,
+                           font=F9).pack(side=tk.LEFT, padx=1)
+
+        _vsep(r0)
+        tk.Checkbutton(r0, text="Normalise", variable=self._normalise,
+                       command=self._replot, font=F9).pack(side=tk.LEFT, padx=2)
+        _vsep(r0)
+        tk.Checkbutton(r0, text="Show TDDFT", variable=self._show_tddft,
+                       command=self._replot, font=F9, fg="navy",
+                       activeforeground="navy").pack(side=tk.LEFT, padx=2)
+        _vsep(r0)
+        tk.Checkbutton(r0, text="Grid", variable=self._show_grid,
+                       command=self._replot, font=F9).pack(side=tk.LEFT, padx=2)
+        _vsep(r0)
+        self._bg_btn = tk.Button(r0, text="Plot BG\u2026", font=F9,
+                                 bg=self._bg_colour, relief=tk.RAISED,
+                                 command=self._choose_bg_colour)
+        self._bg_btn.pack(side=tk.LEFT, padx=2)
+        tk.Button(r0, text="Fonts\u2026", command=self._open_font_dialog,
+                  font=F9).pack(side=tk.LEFT, padx=2)
+
+        # Right side of row 0 — export/pop-out
+        tk.Button(r0, text="\u29c9 Pop Out", command=self._pop_out_graph,
+                  font=(F9[0], F9[1], "bold"), fg="#003399",
+                  relief=tk.RAISED).pack(side=tk.RIGHT, padx=(2, 4))
+        tk.Button(r0, text="Export CSV", command=self._export_csv,
+                  font=F9).pack(side=tk.RIGHT, padx=2)
+        tk.Button(r0, text="Save Fig", command=self._save_figure,
+                  font=F9).pack(side=tk.RIGHT, padx=2)
+
+        # ── Row 1: Axis ranges + Y-swap + ticks ──────────────────────────────────
+        r1 = tk.Frame(outer, padx=4, pady=2)
+        r1.pack(side=tk.TOP, fill=tk.X)
+
+        tk.Label(r1, text="X:", font=F9).pack(side=tk.LEFT)
+        _exlo = tk.Entry(r1, textvariable=self._xlim_lo, width=8, font=("Courier", 9))
+        _exlo.pack(side=tk.LEFT, padx=(2, 0))
+        _exlo.bind("<Return>",   lambda e: self._replot())
+        _exlo.bind("<FocusOut>", lambda e: self._replot())
+        tk.Label(r1, text="\u2192", font=F9).pack(side=tk.LEFT, padx=1)
+        _exhi = tk.Entry(r1, textvariable=self._xlim_hi, width=8, font=("Courier", 9))
+        _exhi.pack(side=tk.LEFT)
+        _exhi.bind("<Return>",   lambda e: self._replot())
+        _exhi.bind("<FocusOut>", lambda e: self._replot())
+        tk.Button(r1, text="Auto X", font=F9, command=self._auto_x).pack(side=tk.LEFT, padx=(3, 0))
+
+        _vsep(r1)
+
+        tk.Label(r1, text="Y (TDDFT):", font=F9).pack(side=tk.LEFT)
+        _eylo = tk.Entry(r1, textvariable=self._ylim_lo, width=7, font=("Courier", 9))
+        _eylo.pack(side=tk.LEFT, padx=(2, 0))
+        _eylo.bind("<Return>",   lambda e: self._replot())
+        _eylo.bind("<FocusOut>", lambda e: self._replot())
+        tk.Label(r1, text="\u2192", font=F9).pack(side=tk.LEFT, padx=1)
+        _eyhi = tk.Entry(r1, textvariable=self._ylim_hi, width=7, font=("Courier", 9))
+        _eyhi.pack(side=tk.LEFT)
+        _eyhi.bind("<Return>",   lambda e: self._replot())
+        _eyhi.bind("<FocusOut>", lambda e: self._replot())
+        tk.Button(r1, text="Auto Y", font=F9, command=self._auto_y).pack(side=tk.LEFT, padx=(3, 0))
+
+        _vsep(r1)
+
+        tk.Label(r1, text="TDDFT axis:", font=F9).pack(side=tk.LEFT)
+        tk.Radiobutton(r1, text="Left", variable=self._tddft_on_left,
+                       value="left",  command=self._replot, font=F9).pack(side=tk.LEFT, padx=1)
+        tk.Radiobutton(r1, text="Right", variable=self._tddft_on_left,
+                       value="right", command=self._replot, font=F9).pack(side=tk.LEFT, padx=1)
+
+        _vsep(r1)
+
+        tk.Label(r1, text="Ticks:", font=F9).pack(side=tk.LEFT)
+        for val, lbl in (("out", "Out"), ("in", "In"), ("both", "Both")):
+            tk.Radiobutton(r1, text=lbl, variable=self._tick_direction,
+                           value=val, command=self._replot, font=F9).pack(side=tk.LEFT, padx=1)
+
+        # ── Row 2: Axis labels ────────────────────────────────────────────────────
+        r2 = tk.Frame(outer, padx=4, pady=2)
+        r2.pack(side=tk.TOP, fill=tk.X)
+
+        tk.Label(r2, text="X label:", font=F9).pack(side=tk.LEFT)
+        _xle = tk.Entry(r2, textvariable=self._custom_x_label, font=("", 9),
+                        relief=tk.SUNKEN, width=18, bg="#f8f8ff")
+        _xle.pack(side=tk.LEFT, padx=(2, 0))
+        _xle.bind("<Return>",   lambda _: self._replot())
+        _xle.bind("<FocusOut>", lambda _: self._replot())
+        tk.Button(r2, text="Auto", font=F9,
+                  command=lambda: (self._custom_x_label.set(""), self._replot())
+                  ).pack(side=tk.LEFT, padx=(2, 4))
+
+        _vsep(r2)
+
+        tk.Checkbutton(r2, text="TDDFT Y:", variable=self._show_left_ylabel,
+                       command=self._replot, font=F9).pack(side=tk.LEFT)
+        self._left_ylabel_entry = tk.Entry(r2, textvariable=self._custom_left_ylabel,
+                                           width=16, font=("", 9), relief=tk.SUNKEN, bg="#f8f8ff")
+        self._left_ylabel_entry.pack(side=tk.LEFT, padx=(2, 4))
+        self._left_ylabel_entry.bind("<Return>",   lambda _: self._replot())
+        self._left_ylabel_entry.bind("<FocusOut>", lambda _: self._replot())
+
+        _vsep(r2)
+
+        tk.Checkbutton(r2, text="Exp Y:", variable=self._show_right_ylabel,
+                       command=self._replot, font=F9).pack(side=tk.LEFT)
+        self._right_ylabel_entry = tk.Entry(r2, textvariable=self._custom_right_ylabel,
+                                            width=16, font=("", 9), relief=tk.SUNKEN, bg="#f8f8ff")
+        self._right_ylabel_entry.pack(side=tk.LEFT, padx=(2, 0))
+        self._right_ylabel_entry.bind("<Return>",   lambda _: self._replot())
+        self._right_ylabel_entry.bind("<FocusOut>", lambda _: self._replot())
+
+        # ── Row 3: Legend + Inset + Clear buttons ─────────────────────────────
+        r3 = tk.Frame(outer, padx=4, pady=2)
+        r3.pack(side=tk.TOP, fill=tk.X)
+
+        tk.Checkbutton(r3, text="Legend", variable=self._show_legend,
+                       command=self._toggle_legend, font=F9).pack(side=tk.LEFT)
+        tk.Button(r3, text="Edit Labels\u2026", command=self._open_legend_editor,
+                  font=F9).pack(side=tk.LEFT, padx=(4, 2))
+
+        _vsep(r3)
+
+        self._inset_btn = tk.Button(r3, text="+ Add Inset\u2026",
+                                    font=(F9[0], F9[1], "bold"),
+                                    fg="darkgreen", command=self._open_inset_dialog)
+        self._inset_btn.pack(side=tk.LEFT, padx=2)
+        tk.Checkbutton(r3, text="Inset labels", variable=self._inset_show_labels,
+                       command=self._on_inset_labels_toggle,
+                       font=F9).pack(side=tk.LEFT, padx=(2, 0))
+
+        # Clear buttons — right-justified to mirror Save/Export on row 0
+        tk.Button(r3, text="Clear Exp.", command=self._clear_exp_scans,
+                  font=F9).pack(side=tk.RIGHT, padx=(2, 4))
+        tk.Button(r3, text="Clear TDDFT", command=self._clear_overlays,
+                  font=F9).pack(side=tk.RIGHT, padx=2)
+
+        # ── Hidden widgets — never packed but referenced by other code paths ───────
+        self._fwhm_unit_label = tk.Label(self, text="eV", width=5, anchor="w")
+        self._fwhm_slider = tk.Scale(
+            self, from_=0.05, to=20.0, resolution=0.05,
+            orient=tk.HORIZONTAL, length=140,
+            variable=self._fwhm, showvalue=False,
+            command=self._on_fwhm_slider_change
+        )
+        self._comb_frame = None
+
+    # ══════════════════════════════════════════════════════════════════════════
+    #  Spectrum controls (row 1) — X unit + Normalise
+    #  (Broadening / FWHM / ΔE / Scale / Sticks / Env / Trans are now
+    #   per-spectrum settings accessed via each row's "Style…" button.)
     # ══════════════════════════════════════════════════════════════════════════
     def _build_spectrum_controls(self):
         ctrl = self._collapsible_bar("Spectrum", bd=1, relief=tk.SUNKEN, padx=4, pady=3)
 
-        # X-axis unit  (nm kept for now; moves to secondary axis in a later step)
+        # X-axis unit
         tk.Label(ctrl, text="X axis:").pack(side=tk.LEFT)
         for unit, label in (("eV", "eV"), ("Ha", "Ha"), ("cm\u207b\u00b9", "cm\u207b\u00b9"), ("nm", "nm")):
             tk.Radiobutton(ctrl, text=label, variable=self._x_unit,
@@ -435,40 +598,19 @@ class PlotWidget(tk.Frame):
 
         _sep(ctrl)
 
-        # Broadening
-        tk.Label(ctrl, text="Broadening:").pack(side=tk.LEFT)
-        for b in ("Gaussian", "Lorentzian"):
-            tk.Radiobutton(ctrl, text=b, variable=self._broadening,
-                           value=b, command=self._replot).pack(side=tk.LEFT, padx=1)
+        tk.Checkbutton(ctrl, text="Normalise", variable=self._normalise,
+                       command=self._replot).pack(side=tk.LEFT)
 
-        _sep(ctrl)
-
-        # FWHM — entry + slider
-        tk.Label(ctrl, text="FWHM:").pack(side=tk.LEFT)
-        self._fwhm_entry = tk.Entry(ctrl, textvariable=self._fwhm_str, width=7,
-                                    font=("Courier", 9))
-        self._fwhm_entry.pack(side=tk.LEFT, padx=(2, 0))
-        self._fwhm_entry.bind("<Return>",   self._on_fwhm_entry_commit)
-        self._fwhm_entry.bind("<FocusOut>", self._on_fwhm_entry_commit)
-
-        self._fwhm_unit_label = tk.Label(ctrl, text="eV", width=5, anchor="w")
-        self._fwhm_unit_label.pack(side=tk.LEFT)
-
+        # Hidden widgets kept so existing code paths (_on_unit_change, load_spectrum,
+        # project_manager) can still call .config() / .set() without crashing.
+        # They are never packed so they never appear on screen.
+        self._fwhm_unit_label = tk.Label(self, text="eV", width=5, anchor="w")
         self._fwhm_slider = tk.Scale(
-            ctrl, from_=0.05, to=20.0, resolution=0.05,
+            self, from_=0.05, to=20.0, resolution=0.05,
             orient=tk.HORIZONTAL, length=140,
             variable=self._fwhm, showvalue=False,
             command=self._on_fwhm_slider_change
         )
-        self._fwhm_slider.pack(side=tk.LEFT, padx=2)
-
-        _sep(ctrl)
-
-        # Display toggles
-        tk.Checkbutton(ctrl, text="Sticks",      variable=self._show_sticks, command=self._replot).pack(side=tk.LEFT)
-        tk.Checkbutton(ctrl, text="Envelope",    variable=self._show_env,    command=self._replot).pack(side=tk.LEFT)
-        tk.Checkbutton(ctrl, text="Transitions", variable=self._show_trans,  command=self._replot).pack(side=tk.LEFT)
-        tk.Checkbutton(ctrl, text="Normalise",   variable=self._normalise,   command=self._replot).pack(side=tk.LEFT)
 
     # ══════════════════════════════════════════════════════════════════════════
     #  Alignment controls (row 2) — ΔE shift, entry unbounded, slider ±200
@@ -807,7 +949,7 @@ class PlotWidget(tk.Frame):
 
     def _auto_title(self) -> str:
         n_tddft = sum(1 for e in self._tddft_spectra if e["enabled"].get())
-        n_exp   = sum(1 for _, _, v, _ in self._exp_scans if v.get())
+        n_exp   = sum(1 for _, _, v, _, _ in self._exp_scans if v.get())
         if n_tddft > 1:
             parts = [f"{n_tddft} TDDFT"]
             if n_exp:
@@ -930,27 +1072,33 @@ class PlotWidget(tk.Frame):
         self._xlim_hi.set(_fmt(new_hi, new_unit) if new_hi != "" else "")
 
     def _on_unit_change(self):
-        unit = self._x_unit.get()
+        unit     = self._x_unit.get()
+        old_unit = self._prev_x_unit
 
         # Convert any stored x-axis limits from the previous unit to the new one
-        self._convert_xlims(self._prev_x_unit, unit)
+        self._convert_xlims(old_unit, unit)
 
-        if unit == "cm\u207b\u00b9":
-            self._fwhm_unit_label.config(text="cm\u207b\u00b9")
-            self._fwhm_slider.config(from_=50, to=8000, resolution=50)
-            if self._fwhm.get() < 50:
-                self._fwhm.set(3000)
-        elif unit == "Ha":
-            self._fwhm_unit_label.config(text="Ha")
-            self._fwhm_slider.config(from_=0.002, to=1.0, resolution=0.001)
-            # Reset if value is clearly from a different unit (e.g. cm⁻¹ range)
-            if self._fwhm.get() > 1.0 or self._fwhm.get() < 0.002:
-                self._fwhm.set(round(1.0 / self._HA_TO_EV, 4))  # ≈ 0.0368 Ha (1 eV)
-        else:   # eV or nm
-            self._fwhm_unit_label.config(text="eV")
-            self._fwhm_slider.config(from_=0.05, to=20.0, resolution=0.05)
-            if self._fwhm.get() > 20:
-                self._fwhm.set(1.0)
+        # ── Convert all stored FWHM values from old unit to new unit ──────────
+        # Global FWHM
+        new_global_fwhm = self._convert_fwhm_value(self._fwhm.get(), old_unit, unit)
+
+        # Per-spectrum FWHM values
+        for e in self._tddft_spectra:
+            converted = self._convert_fwhm_value(e["fwhm"].get(), old_unit, unit)
+            e["fwhm"].set(round(converted, 6))
+
+        # ── Update global FWHM slider bounds for the new unit ─────────────────
+        lo, hi, res = self._fwhm_slider_range(unit)
+        fwhm_unit_label = (
+            "cm\u207b\u00b9" if unit in ("cm\u207b\u00b9", "nm") else
+            "Ha"              if unit == "Ha" else
+            "eV"
+        )
+        self._fwhm_unit_label.config(text=fwhm_unit_label)
+        self._fwhm_slider.config(from_=lo, to=hi, resolution=res)
+
+        # Clamp converted value to the new slider range and apply
+        self._fwhm.set(max(lo, min(hi, new_global_fwhm)))
         self._sync_fwhm_entry()
         self._prev_x_unit = unit
         self._replot()
@@ -979,23 +1127,13 @@ class PlotWidget(tk.Frame):
     #  Overlay panel
     # ══════════════════════════════════════════════════════════════════════════
     def _build_overlay_panel(self):
-        self._overlay_panel = tk.Frame(self, bd=1, relief=tk.RIDGE, padx=4, pady=3)
-        # Not packed yet
-
-        hdr = tk.Frame(self._overlay_panel)
-        hdr.pack(fill=tk.X)
-        tk.Label(hdr, text="Data", font=("", 8, "bold")).pack(side=tk.LEFT)
-        tk.Button(hdr, text="Clear TDDFT", command=self._clear_overlays,
-                  width=10, font=("", 8)).pack(side=tk.RIGHT, padx=2)
-        tk.Button(hdr, text="Clear Exp.", command=self._clear_exp_scans,
-                  width=9, font=("", 8)).pack(side=tk.RIGHT, padx=2)
-        tk.Button(hdr, text="Edit Labels\u2026", command=self._open_legend_editor,
-                  width=9, font=("", 8)).pack(side=tk.RIGHT, padx=2)
+        self._overlay_panel = tk.Frame(self, bd=1, relief=tk.RIDGE, padx=4, pady=2)
+        # Not packed yet — _update_overlay_panel_visibility() handles show/hide
 
         container = tk.Frame(self._overlay_panel)
         container.pack(fill=tk.BOTH, expand=True)
 
-        self._ov_canvas = tk.Canvas(container, height=90, bd=0, highlightthickness=0)
+        self._ov_canvas = tk.Canvas(container, height=26, bd=0, highlightthickness=0)
         ov_scroll = ttk.Scrollbar(container, orient=tk.VERTICAL,
                                   command=self._ov_canvas.yview)
         self._ov_inner = tk.Frame(self._ov_canvas)
@@ -1004,23 +1142,25 @@ class PlotWidget(tk.Frame):
             lambda e: self._ov_canvas.configure(
                 scrollregion=self._ov_canvas.bbox("all"))
         )
-        self._ov_canvas.create_window((0, 0), window=self._ov_inner, anchor="nw")
+        self._ov_win_id = self._ov_canvas.create_window(
+            (0, 0), window=self._ov_inner, anchor="nw")
+        # Stretch inner frame to fill canvas width whenever the panel resizes
+        self._ov_canvas.bind(
+            "<Configure>",
+            lambda e: self._ov_canvas.itemconfig(self._ov_win_id, width=e.width))
         self._ov_canvas.configure(yscrollcommand=ov_scroll.set)
         self._ov_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         ov_scroll.pack(side=tk.RIGHT, fill=tk.Y)
 
     def _make_panel_row(self, parent, label, var, colour, remove_cmd,
                         style_cmd=None, color_cmd=None, type_label=None,
-                        params_entry=None):
-        """Create a single checkbox row with optional expandable per-spectrum controls.
+                        legend_var=None):
+        """Create a single checkbox row in the Data panel.
 
-        params_entry: if provided, should be the _tddft_spectra dict entry so we
-        can build inline fwhm/broadening/delta_e/scale controls.
+        legend_var: if provided, a BooleanVar that controls whether this
+        spectrum appears in the plot legend.  Shown as a small ✓/– toggle.
         """
-        outer = tk.Frame(parent)
-        outer.pack(fill=tk.X, anchor="w")
-
-        row = tk.Frame(outer)
+        row = tk.Frame(parent)
         row.pack(fill=tk.X, anchor="w")
 
         _tag = type_label or ""
@@ -1039,8 +1179,26 @@ class PlotWidget(tk.Frame):
 
         tk.Checkbutton(
             row, text=label, variable=var, command=self._replot,
-            anchor="w", font=("", 8), wraplength=220, justify=tk.LEFT
+            anchor="w", font=("", 8), wraplength=200, justify=tk.LEFT
         ).pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        # Legend toggle — small button, toggles BooleanVar on click
+        if legend_var is not None:
+            def _toggle_legend(_v=legend_var, _r=row):
+                _v.set(not _v.get())
+                _update_legend_btn()
+                self._replot()
+
+            _leg_btn = tk.Button(row, width=2, font=("", 8), relief=tk.FLAT,
+                                 command=_toggle_legend)
+
+            def _update_legend_btn(_v=legend_var, _b=_leg_btn):
+                _b.config(text="\u2713" if _v.get() else "\u2013",
+                          fg="#006600" if _v.get() else "#999999")
+
+            _update_legend_btn()
+            _leg_btn.pack(side=tk.RIGHT, padx=(1, 0))
+            _ToolTip(_leg_btn, "Toggle legend entry")
 
         if style_cmd:
             tk.Button(row, text="Style\u2026", width=5, font=("", 7),
@@ -1048,198 +1206,226 @@ class PlotWidget(tk.Frame):
         tk.Button(row, text="\u2715", width=2, font=("", 7), relief=tk.FLAT,
                   command=remove_cmd).pack(side=tk.RIGHT, padx=2)
 
-        # Per-spectrum expandable controls (TDDFT only)
-        if params_entry is not None:
-            detail_frame = tk.Frame(outer, bg="#f0f0f8", padx=6, pady=2)
-            _detail_visible = {"v": False}
-
-            def _toggle_detail():
-                if _detail_visible["v"]:
-                    detail_frame.pack_forget()
-                    _detail_visible["v"] = False
-                    detail_btn.config(text="\u25b6")
-                else:
-                    detail_frame.pack(fill=tk.X, padx=(14, 2))
-                    _detail_visible["v"] = True
-                    detail_btn.config(text="\u25bc")
-
-            detail_btn = tk.Button(row, text="\u25b6", width=2, font=("", 7),
-                                   relief=tk.FLAT, command=_toggle_detail)
-            detail_btn.pack(side=tk.RIGHT, padx=1)
-
-            # Build the detail controls inside detail_frame
-            self._build_per_spectrum_detail(detail_frame, params_entry)
-
-    def _build_per_spectrum_detail(self, frame: tk.Frame, entry: dict):
-        """Build inline per-spectrum parameter controls inside the Data panel row."""
-        bg = "#f0f0f8"
-
-        # Row 1: Broadening + FWHM
-        r1 = tk.Frame(frame, bg=bg)
-        r1.pack(fill=tk.X, pady=(0, 1))
-
-        tk.Label(r1, text="Broadening:", font=("", 8), bg=bg).pack(side=tk.LEFT)
-        for b in ("Gaussian", "Lorentzian"):
-            tk.Radiobutton(r1, text=b, variable=entry["broadening"],
-                           value=b, command=self._replot,
-                           bg=bg, font=("", 8)).pack(side=tk.LEFT, padx=1)
-
-        tk.Frame(r1, width=8, bg=bg).pack(side=tk.LEFT)
-        tk.Label(r1, text="FWHM:", font=("", 8), bg=bg).pack(side=tk.LEFT)
-
-        fwhm_str = tk.StringVar(value=f"{entry['fwhm'].get():.2f}")
-
-        def _fwhm_slider_cb(val):
-            entry["fwhm"].set(float(val))
-            fwhm_str.set(f"{float(val):.2f}")
-            self._replot()
-
-        def _fwhm_entry_cb(*_):
-            try:
-                v = float(fwhm_str.get())
-                if v > 0:
-                    entry["fwhm"].set(v)
-                    fwhm_slider.set(min(20.0, max(0.05, v)))
-                    self._replot()
-            except ValueError:
-                pass
-
-        fwhm_entry = tk.Entry(r1, textvariable=fwhm_str, width=6, font=("Courier", 8))
-        fwhm_entry.pack(side=tk.LEFT, padx=(2, 0))
-        fwhm_entry.bind("<Return>", _fwhm_entry_cb)
-        fwhm_entry.bind("<FocusOut>", _fwhm_entry_cb)
-
-        unit = self._x_unit.get()
-        unit_lbl = "Ha" if unit == "Ha" else ("cm\u207b\u00b9" if unit == "cm\u207b\u00b9" else "eV")
-        tk.Label(r1, text=unit_lbl, font=("", 7), bg=bg, fg="gray").pack(side=tk.LEFT, padx=(1, 4))
-
-        fwhm_slider = tk.Scale(r1, from_=0.05, to=20.0, resolution=0.05,
-                                orient=tk.HORIZONTAL, length=100,
-                                variable=entry["fwhm"], showvalue=False,
-                                bg=bg, command=_fwhm_slider_cb)
-        fwhm_slider.pack(side=tk.LEFT)
-
-        # Row 2: ΔE shift + Scale
-        r2 = tk.Frame(frame, bg=bg)
-        r2.pack(fill=tk.X)
-
-        tk.Label(r2, text="\u0394E shift:", font=("", 8), bg=bg).pack(side=tk.LEFT)
-
-        de_str = tk.StringVar(value=f"{entry['delta_e'].get():+.2f}")
-
-        def _de_slider_cb(val):
-            entry["delta_e"].set(float(val))
-            de_str.set(f"{float(val):+.2f}")
-            self._replot()
-
-        def _de_entry_cb(*_):
-            try:
-                v = float(de_str.get())
-                entry["delta_e"].set(v)
-                de_slider.set(max(-200.0, min(200.0, v)))
-                self._replot()
-            except ValueError:
-                pass
-
-        de_entry = tk.Entry(r2, textvariable=de_str, width=7, font=("Courier", 8))
-        de_entry.pack(side=tk.LEFT, padx=(2, 0))
-        de_entry.bind("<Return>", _de_entry_cb)
-        de_entry.bind("<FocusOut>", _de_entry_cb)
-        tk.Label(r2, text="eV", font=("", 7), bg=bg, fg="gray").pack(side=tk.LEFT, padx=(1, 4))
-
-        de_slider = tk.Scale(r2, from_=-200.0, to=200.0, resolution=0.1,
-                              orient=tk.HORIZONTAL, length=100,
-                              variable=entry["delta_e"], showvalue=False,
-                              bg=bg, command=_de_slider_cb)
-        de_slider.pack(side=tk.LEFT)
-
-        tk.Frame(r2, width=8, bg=bg).pack(side=tk.LEFT)
-        tk.Label(r2, text="Scale:", font=("", 8), bg=bg).pack(side=tk.LEFT)
-
-        sc_str = tk.StringVar(value=f"{entry['scale'].get():.3f}")
-
-        def _sc_slider_cb(val):
-            entry["scale"].set(float(val))
-            sc_str.set(f"{float(val):.3f}")
-            self._replot()
-
-        def _sc_entry_cb(*_):
-            try:
-                v = float(sc_str.get())
-                if v > 0:
-                    entry["scale"].set(v)
-                    sc_slider.set(min(5.0, max(0.01, v)))
-                    self._replot()
-            except ValueError:
-                pass
-
-        sc_entry = tk.Entry(r2, textvariable=sc_str, width=7, font=("Courier", 8))
-        sc_entry.pack(side=tk.LEFT, padx=(2, 0))
-        sc_entry.bind("<Return>", _sc_entry_cb)
-        sc_entry.bind("<FocusOut>", _sc_entry_cb)
-        tk.Label(r2, text="\u00d7", font=("", 8), bg=bg, fg="gray").pack(side=tk.LEFT, padx=(1, 4))
-
-        sc_slider = tk.Scale(r2, from_=0.01, to=5.0, resolution=0.01,
-                              orient=tk.HORIZONTAL, length=100,
-                              variable=entry["scale"], showvalue=False,
-                              bg=bg, command=_sc_slider_cb)
-        sc_slider.pack(side=tk.LEFT)
-
-        tk.Button(r2, text="Reset", font=("", 7), bg=bg,
-                  command=lambda: (entry["scale"].set(1.0),
-                                   sc_str.set("1.000"),
-                                   sc_slider.set(1.0),
-                                   self._replot())).pack(side=tk.LEFT, padx=(4, 0))
-
-        # Row 3: Component toggles (only for combined spectra)
-        sp = entry["spectrum"]
-        if sp.is_combined():
-            r3 = tk.Frame(frame, bg=bg)
-            r3.pack(fill=tk.X, pady=(2, 0))
-            tk.Label(r3, text="Components:", font=("", 8, "bold"), bg=bg).pack(side=tk.LEFT)
-            tk.Checkbutton(r3, text="Total", variable=entry["comb_total"],
-                           command=self._replot, bg=bg, font=("", 8),
-                           fg="#333333").pack(side=tk.LEFT, padx=(4, 1))
-            if sp.fosc_d2:
-                tk.Checkbutton(r3, text="Elec. Dipole (D\u00b2)",
-                               variable=entry["comb_d2"], command=self._replot,
-                               bg=bg, font=("", 8), fg="#1f77b4").pack(side=tk.LEFT, padx=1)
-            if sp.fosc_m2:
-                tk.Checkbutton(r3, text="Mag. Dipole (m\u00b2)",
-                               variable=entry["comb_m2"], command=self._replot,
-                               bg=bg, font=("", 8), fg="#2ca02c").pack(side=tk.LEFT, padx=1)
-            if sp.fosc_q2:
-                tk.Checkbutton(r3, text="Elec. Quad. (Q\u00b2)",
-                               variable=entry["comb_q2"], command=self._replot,
-                               bg=bg, font=("", 8), fg="#d62728").pack(side=tk.LEFT, padx=1)
 
     def _refresh_panel_content(self):
-        """Rebuild all rows: unified TDDFT + EXP table, type shown on colour swatch."""
+        """Rebuild the data panel as a unified grid table — TDDFT and EXP share columns."""
         for w in self._ov_inner.winfo_children():
             w.destroy()
 
+        have_rows = bool(self._tddft_spectra) or bool(self._exp_scans)
+        if not have_rows:
+            self._ov_canvas.configure(height=26)
+            self._update_overlay_panel_visibility()
+            return
+
+        # ── Unified column layout ─────────────────────────────────────────────
+        # 0  : color swatch (T/E indicator)
+        # 1  : ☐ Label  (expands)
+        # 2  : Lgd toggle
+        # 3  : Line/Env style  OptionMenu   — envelope linestyle (TDDFT) / linestyle (EXP)
+        # 4  : LW entry                     — envelope linewidth (TDDFT) / linewidth (EXP)
+        # 5  : ☐ Env  (TDDFT only; blank for EXP)
+        # 6  : ☐ Stk  (TDDFT only; blank for EXP)
+        # 7  : ☐ Trans (TDDFT only; blank for EXP)
+        # 8  : Style… button
+        # 9  : ✕ remove
+
+        tbl = tk.Frame(self._ov_inner)
+        tbl.pack(fill=tk.X, expand=True, padx=2)
+        # Label column expands; give the fixed columns a consistent minimum width
+        tbl.columnconfigure(1, weight=1, minsize=280)
+        for _c in (0, 2, 3, 4, 5, 6, 7, 8, 9):
+            tbl.columnconfigure(_c, minsize=30)
+
+        HDR_BG = "#e8e8e8"
+        # Inter-column padding — horizontal only; rows stay tight (pady=0)
+        CPX = (5, 5)   # standard cell padx
+        SPX = (4, 2)   # swatch (col 0)
+        RPX = (4, 6)   # remove button (col 9)
+
+        F8  = ("", 8)
+        F9  = ("", 9)
+        FHD = ("", 8, "bold")
+
+        # ── Header row ────────────────────────────────────────────────────────
+        hdr_specs = [
+            (0, "",       "center", SPX),
+            (1, "Label",  "w",      (6, 4)),
+            (2, "Lgd",    "center", CPX),
+            (3, "Style",  "center", CPX),
+            (4, "LW",     "center", CPX),
+            (5, "Env",    "center", CPX),
+            (6, "Stk",    "center", CPX),
+            (7, "Trans",  "center", CPX),
+            (8, "",       "center", CPX),
+            (9, "",       "center", RPX),
+        ]
+        for col, txt, anch, px in hdr_specs:
+            tk.Label(tbl, text=txt, font=FHD, bg=HDR_BG, fg="#444444",
+                     anchor=anch, padx=4
+                     ).grid(row=0, column=col, sticky="ew", ipady=1, padx=px)
+
+        # ── Helper: legend toggle button ──────────────────────────────────────
+        def _make_leg_btn(parent, legend_var, grid_row, grid_col):
+            b = tk.Button(parent, width=2, font=F9, relief=tk.FLAT)
+            def _refresh_btn(_b=b, _v=legend_var):
+                _b.config(text="\u2713" if _v.get() else "\u2013",
+                          fg="#006600" if _v.get() else "#999999")
+            def _toggle(_b=b, _v=legend_var):
+                _v.set(not _v.get())
+                _refresh_btn()
+                self._replot()
+            b.config(command=_toggle)
+            _refresh_btn()
+            b.grid(row=grid_row, column=grid_col, padx=CPX, pady=0, sticky="ew")
+            return b
+
+        # ── Helper: linestyle OptionMenu ──────────────────────────────────────
+        def _make_ls_menu(parent, ls_var, grid_row, grid_col):
+            om = tk.OptionMenu(parent, ls_var, "solid", "dashed", "dotted", "dashdot")
+            om.config(font=F8, width=7, pady=0, highlightthickness=0)
+            om["menu"].config(font=F8)
+            om.grid(row=grid_row, column=grid_col, padx=CPX, pady=0, sticky="ew")
+            return om
+
+        # ── Helper: linewidth entry ────────────────────────────────────────────
+        def _make_lw_entry(parent, lw_var, grid_row, grid_col):
+            e = tk.Entry(parent, textvariable=lw_var, width=4,
+                         font=("Courier", 8), justify="center")
+            e.grid(row=grid_row, column=grid_col, padx=CPX, pady=0, sticky="ew")
+            return e
+
+        # ── TDDFT rows ────────────────────────────────────────────────────────
         for i, entry in enumerate(self._tddft_spectra):
             colour = entry["color"] or OVERLAY_COLOURS[i % len(OVERLAY_COLOURS)]
-            self._make_panel_row(
-                self._ov_inner, entry["label"], entry["enabled"], colour,
-                remove_cmd=lambda idx=i: self._remove_tddft_idx(idx),
-                color_cmd=lambda idx=i: self._pick_tddft_colour(idx),
-                type_label="TDDFT",
-                params_entry=entry,
-            )
+            r = i + 1   # row 0 = header
 
-        for i, (label, scan, var, style) in enumerate(self._exp_scans):
+            # Col 0: swatch
+            tk.Button(tbl, bg=colour, relief=tk.RAISED, width=3,
+                      text="T", fg="white", font=("", 7, "bold"),
+                      activebackground=colour, cursor="hand2",
+                      command=lambda idx=i: self._pick_tddft_colour(idx)
+                      ).grid(row=r, column=0, padx=SPX, pady=0, sticky="w")
+
+            # Col 1: enable + label
+            tk.Checkbutton(tbl, text=entry["label"], variable=entry["enabled"],
+                           command=self._replot, anchor="w", font=F9,
+                           wraplength=300, justify=tk.LEFT
+                           ).grid(row=r, column=1, sticky="ew", padx=(6, 4), pady=0)
+
+            # Col 2: legend toggle
+            _make_leg_btn(tbl, entry["in_legend"], r, 2)
+
+            # Col 3: envelope linestyle
+            _st = entry["style"]
+            _ls_v = tk.StringVar(value=_st.get("env_linestyle", "solid"))
+            def _tddft_ls_cb(s, v, *_):
+                s["env_linestyle"] = v.get()
+                self._replot()
+            _ls_v.trace_add("write", lambda *_, s=_st, v=_ls_v: _tddft_ls_cb(s, v))
+            _make_ls_menu(tbl, _ls_v, r, 3)
+
+            # Col 4: envelope linewidth
+            _lw_v = tk.DoubleVar(value=_st.get("env_linewidth", 2.0))
+            def _tddft_lw_cb(s, v, *_):
+                try:
+                    s["env_linewidth"] = float(v.get())
+                    self._replot()
+                except Exception:
+                    pass
+            _lw_v.trace_add("write", lambda *_, s=_st, v=_lw_v: _tddft_lw_cb(s, v))
+            _make_lw_entry(tbl, _lw_v, r, 4)
+
+            # Col 5: Env toggle
+            tk.Checkbutton(tbl, text="", variable=entry["show_env"],
+                           command=self._replot
+                           ).grid(row=r, column=5, padx=CPX, pady=0, sticky="ew")
+
+            # Col 6: Stk toggle
+            tk.Checkbutton(tbl, text="", variable=entry["show_sticks"],
+                           command=self._replot
+                           ).grid(row=r, column=6, padx=CPX, pady=0, sticky="ew")
+
+            # Col 7: Trans toggle
+            tk.Checkbutton(tbl, text="", variable=entry["show_trans"],
+                           command=self._replot
+                           ).grid(row=r, column=7, padx=CPX, pady=0, sticky="ew")
+
+            # Col 8: Style…
+            tk.Button(tbl, text="Style\u2026", font=F8, relief=tk.FLAT,
+                      command=lambda idx=i: self._open_tddft_spectrum_style_dialog(idx)
+                      ).grid(row=r, column=8, padx=CPX, pady=0, sticky="ew")
+
+            # Col 9: ✕
+            tk.Button(tbl, text="\u2715", font=F8, relief=tk.FLAT,
+                      command=lambda idx=i: self._remove_tddft_idx(idx)
+                      ).grid(row=r, column=9, padx=RPX, pady=0, sticky="e")
+
+        # ── EXP rows ─────────────────────────────────────────────────────────
+        offset = len(self._tddft_spectra) + 1   # +1 for header row
+        for i, (label, scan, var, style, in_legend) in enumerate(self._exp_scans):
             colour = style.get("color") or EXP_COLOURS[i % len(EXP_COLOURS)]
-            self._make_panel_row(
-                self._ov_inner, label, var, colour,
-                remove_cmd=lambda idx=i: self._remove_exp_scan_idx(idx),
-                style_cmd=lambda idx=i: self._open_exp_style_dialog(idx),
-                color_cmd=lambda idx=i: self._pick_exp_colour(idx),
-                type_label="EXP",
-            )
+            r = offset + i
+
+            # Col 0: swatch
+            tk.Button(tbl, bg=colour, relief=tk.RAISED, width=3,
+                      text="E", fg="white", font=("", 7, "bold"),
+                      activebackground=colour, cursor="hand2",
+                      command=lambda idx=i: self._pick_exp_colour(idx)
+                      ).grid(row=r, column=0, padx=SPX, pady=0, sticky="w")
+
+            # Col 1: enable + label
+            tk.Checkbutton(tbl, text=label, variable=var,
+                           command=self._replot, anchor="w", font=F9,
+                           wraplength=300, justify=tk.LEFT
+                           ).grid(row=r, column=1, sticky="ew", padx=(6, 4), pady=0)
+
+            # Col 2: legend toggle
+            _make_leg_btn(tbl, in_legend, r, 2)
+
+            # Col 3: linestyle
+            _ls_v = tk.StringVar(value=style.get("linestyle", "solid"))
+            def _exp_ls_cb(s, v, *_):
+                s["linestyle"] = v.get()
+                self._replot()
+            _ls_v.trace_add("write", lambda *_, s=style, v=_ls_v: _exp_ls_cb(s, v))
+            _make_ls_menu(tbl, _ls_v, r, 3)
+
+            # Col 4: linewidth
+            _lw_v = tk.DoubleVar(value=style.get("linewidth", 1.8))
+            def _exp_lw_cb(s, v, *_):
+                try:
+                    s["linewidth"] = float(v.get())
+                    self._replot()
+                except Exception:
+                    pass
+            _lw_v.trace_add("write", lambda *_, s=style, v=_lw_v: _exp_lw_cb(s, v))
+            _make_lw_entry(tbl, _lw_v, r, 4)
+
+            # Cols 5-7: blank (TDDFT-only toggles)
+            for _bc in (5, 6, 7):
+                tk.Label(tbl, text="").grid(row=r, column=_bc, padx=CPX, pady=0)
+
+            # Col 8: Style…
+            tk.Button(tbl, text="Style\u2026", font=F8, relief=tk.FLAT,
+                      command=lambda idx=i: self._open_exp_style_dialog(idx)
+                      ).grid(row=r, column=8, padx=CPX, pady=0, sticky="ew")
+
+            # Col 9: ✕
+            tk.Button(tbl, text="\u2715", font=F8, relief=tk.FLAT,
+                      command=lambda idx=i: self._remove_exp_scan_idx(idx)
+                      ).grid(row=r, column=9, padx=RPX, pady=0, sticky="e")
 
         self._ov_inner.update_idletasks()
         self._ov_canvas.configure(scrollregion=self._ov_canvas.bbox("all"))
+        # ── Dynamic canvas height ──────────────────────────────────────────────
+        # Measure actual required height after layout, then clamp to ~6 rows max.
+        # This makes the panel collapse when few items are loaded and grow as
+        # more are added, without ever exceeding the 6-row threshold.
+        actual_h = self._ov_inner.winfo_reqheight()
+        _MAX_H   = 155   # ≈ header (26 px) + 6 data rows (~21 px each)
+        _MIN_H   = 26    # at least one row visible
+        self._ov_canvas.configure(height=max(_MIN_H, min(actual_h, _MAX_H)))
         self._update_overlay_panel_visibility()
 
     # Alias kept for external callers
@@ -1338,6 +1524,232 @@ class PlotWidget(tk.Frame):
     # ══════════════════════════════════════════════════════════════════════════
     #  Style dialogs
     # ══════════════════════════════════════════════════════════════════════════
+
+    def _open_tddft_spectrum_style_dialog(self, idx: int):
+        """Per-spectrum TDDFT style: display toggles, broadening, scale, components, plot style."""
+        entry = self._tddft_spectra[idx]
+        sp    = entry["spectrum"]
+        st    = entry["style"]
+
+        win = tk.Toplevel(self)
+        win.title("TDDFT Spectrum Style")
+        win.resizable(False, False)
+        win.grab_set()
+
+        # ── Header ──────────────────────────────────────────────────────────
+        hdr = tk.Frame(win, bg="#003366", padx=10, pady=6)
+        hdr.pack(fill=tk.X)
+        tk.Label(hdr, text="TDDFT Spectrum Style",
+                 bg="#003366", fg="white", font=("", 10, "bold")).pack(anchor="w")
+        lbl_text = entry["label"][:60] + ("\u2026" if len(entry["label"]) > 60 else "")
+        tk.Label(hdr, text=lbl_text, bg="#003366", fg="#aaccff",
+                 font=("", 8)).pack(anchor="w")
+
+        body = tk.Frame(win, padx=12, pady=8)
+        body.pack(fill=tk.BOTH)
+
+        # ── Display toggles ─────────────────────────────────────────────────
+        disp_frame = tk.LabelFrame(body, text="Display", padx=8, pady=4)
+        disp_frame.pack(fill=tk.X, pady=(0, 6))
+
+        show_sticks = tk.BooleanVar(value=entry["show_sticks"].get())
+        show_env    = tk.BooleanVar(value=entry["show_env"].get())
+        show_trans  = tk.BooleanVar(value=entry["show_trans"].get())
+
+        tk.Checkbutton(disp_frame, text="Sticks",      variable=show_sticks).pack(side=tk.LEFT, padx=4)
+        tk.Checkbutton(disp_frame, text="Envelope",    variable=show_env).pack(side=tk.LEFT, padx=4)
+        tk.Checkbutton(disp_frame, text="Transitions", variable=show_trans).pack(side=tk.LEFT, padx=4)
+
+        # ── Broadening & scale ───────────────────────────────────────────────
+        brd_frame = tk.LabelFrame(body, text="Broadening & Scale", padx=8, pady=4)
+        brd_frame.pack(fill=tk.X, pady=(0, 6))
+
+        # Broadening type
+        br_row = tk.Frame(brd_frame)
+        br_row.grid(row=0, column=0, columnspan=4, sticky="w")
+        tk.Label(br_row, text="Broadening:").pack(side=tk.LEFT)
+        broadening = tk.StringVar(value=entry["broadening"].get())
+        for b in ("Gaussian", "Lorentzian"):
+            tk.Radiobutton(br_row, text=b, variable=broadening,
+                           value=b).pack(side=tk.LEFT, padx=3)
+
+        # FWHM — unit and slider range match the current X axis
+        _xu = self._x_unit.get()
+        _fwhm_unit = "cm\u207b\u00b9" if _xu in ("cm\u207b\u00b9", "nm") else ("Ha" if _xu == "Ha" else "eV")
+        _fwhm_lo, _fwhm_hi, _fwhm_res = self._fwhm_slider_range(_xu)
+        fwhm_v = tk.DoubleVar(value=entry["fwhm"].get())
+        _slider_row(brd_frame, "FWHM:", fwhm_v, _fwhm_lo, _fwhm_hi, _fwhm_res, row=1, unit=_fwhm_unit)
+
+        # ΔE shift
+        de_v = tk.DoubleVar(value=entry["delta_e"].get())
+        _slider_row(brd_frame, "\u0394E:", de_v, -200.0, 200.0, 0.1, row=2, unit="eV")
+
+        # Scale
+        scale_v = tk.DoubleVar(value=entry["scale"].get())
+        _slider_row(brd_frame, "Scale:", scale_v, 0.01, 5.0, 0.01, row=3, unit="\u00d7")
+
+        # ── Components (combined spectra only) ──────────────────────────────
+        if sp.is_combined():
+            comb_frame = tk.LabelFrame(body, text="Components", padx=8, pady=4)
+            comb_frame.pack(fill=tk.X, pady=(0, 6))
+
+            comb_total = tk.BooleanVar(value=entry["comb_total"].get())
+            tk.Checkbutton(comb_frame, text="Total", variable=comb_total,
+                           fg="#333333").pack(side=tk.LEFT, padx=4)
+            comb_d2 = tk.BooleanVar(value=entry["comb_d2"].get())
+            if sp.fosc_d2:
+                tk.Checkbutton(comb_frame, text="Elec. Dipole (D\u00b2)",
+                               variable=comb_d2, fg="#1f77b4").pack(side=tk.LEFT, padx=4)
+            comb_m2 = tk.BooleanVar(value=entry["comb_m2"].get())
+            if sp.fosc_m2:
+                tk.Checkbutton(comb_frame, text="Mag. Dipole (m\u00b2)",
+                               variable=comb_m2, fg="#2ca02c").pack(side=tk.LEFT, padx=4)
+            comb_q2 = tk.BooleanVar(value=entry["comb_q2"].get())
+            if sp.fosc_q2:
+                tk.Checkbutton(comb_frame, text="Elec. Quad. (Q\u00b2)",
+                               variable=comb_q2, fg="#d62728").pack(side=tk.LEFT, padx=4)
+        else:
+            comb_total = comb_d2 = comb_m2 = comb_q2 = None
+
+        # ── Envelope style ───────────────────────────────────────────────────
+        env_frame = tk.LabelFrame(body, text="Envelope", padx=8, pady=4)
+        env_frame.pack(fill=tk.X, pady=(0, 6))
+
+        env_lw  = tk.DoubleVar(value=st.get("env_linewidth",  2.0))
+        env_fill = tk.BooleanVar(value=st.get("env_fill",     True))
+        env_fa  = tk.DoubleVar(value=st.get("env_fill_alpha", 0.10))
+
+        _slider_row(env_frame, "Line width:", env_lw, 0.5, 5.0, 0.1, row=0, unit="pt")
+        fill_row = tk.Frame(env_frame)
+        fill_row.grid(row=1, column=0, columnspan=4, sticky="w", pady=2)
+        tk.Checkbutton(fill_row, text="Fill area under curve",
+                       variable=env_fill).pack(side=tk.LEFT)
+        _slider_row(env_frame, "Fill opacity:", env_fa, 0.0, 0.50, 0.01, row=2)
+
+        # ── Sticks style ─────────────────────────────────────────────────────
+        stk_frame = tk.LabelFrame(body, text="Sticks (stems)", padx=8, pady=4)
+        stk_frame.pack(fill=tk.X, pady=(0, 6))
+
+        stk_lw   = tk.DoubleVar(value=st.get("stick_linewidth",  1.2))
+        stk_alph = tk.DoubleVar(value=st.get("stick_alpha",      0.75))
+        stk_ms   = tk.DoubleVar(value=st.get("stick_markersize", 4))
+        stk_mkr  = tk.BooleanVar(value=st.get("stick_markers",   True))
+
+        _slider_row(stk_frame, "Line width:", stk_lw,   0.5, 4.0, 0.1,  row=0, unit="pt")
+        _slider_row(stk_frame, "Opacity:",    stk_alph, 0.1, 1.0, 0.05, row=1)
+        mkr_row = tk.Frame(stk_frame)
+        mkr_row.grid(row=2, column=0, columnspan=4, sticky="w", pady=2)
+        tk.Checkbutton(mkr_row, text="Show tip markers (dots)",
+                       variable=stk_mkr).pack(side=tk.LEFT)
+        _slider_row(stk_frame, "Marker size:", stk_ms, 1, 12, 1, row=3, unit="px")
+
+        # ── Snapshot original state for Cancel revert ────────────────────────
+        _orig = {
+            "show_sticks": entry["show_sticks"].get(),
+            "show_env":    entry["show_env"].get(),
+            "show_trans":  entry["show_trans"].get(),
+            "broadening":  entry["broadening"].get(),
+            "fwhm":        entry["fwhm"].get(),
+            "delta_e":     entry["delta_e"].get(),
+            "scale":       entry["scale"].get(),
+            "comb_total":  entry["comb_total"].get() if "comb_total" in entry else True,
+            "comb_d2":     entry["comb_d2"].get()    if "comb_d2"    in entry else False,
+            "comb_m2":     entry["comb_m2"].get()    if "comb_m2"    in entry else False,
+            "comb_q2":     entry["comb_q2"].get()    if "comb_q2"    in entry else False,
+            "style":       dict(entry["style"]),
+        }
+
+        # ── Buttons ─────────────────────────────────────────────────────────
+        def _read_dialog():
+            return {
+                "show_sticks": show_sticks.get(),
+                "show_env":    show_env.get(),
+                "show_trans":  show_trans.get(),
+                "broadening":  broadening.get(),
+                "fwhm":        fwhm_v.get(),
+                "delta_e":     de_v.get(),
+                "scale":       scale_v.get(),
+                "comb_total":  comb_total.get() if comb_total else True,
+                "comb_d2":     comb_d2.get()    if comb_d2    else False,
+                "comb_m2":     comb_m2.get()    if comb_m2    else False,
+                "comb_q2":     comb_q2.get()    if comb_q2    else False,
+                "style": {
+                    "env_linewidth":    env_lw.get(),
+                    "env_fill":         env_fill.get(),
+                    "env_fill_alpha":   env_fa.get(),
+                    "stick_linewidth":  stk_lw.get(),
+                    "stick_alpha":      stk_alph.get(),
+                    "stick_markersize": int(stk_ms.get()),
+                    "stick_markers":    stk_mkr.get(),
+                },
+            }
+
+        def _apply_vals(vals, target_entry):
+            target_entry["show_sticks"].set(vals["show_sticks"])
+            target_entry["show_env"].set(vals["show_env"])
+            target_entry["show_trans"].set(vals["show_trans"])
+            target_entry["broadening"].set(vals["broadening"])
+            target_entry["fwhm"].set(vals["fwhm"])
+            target_entry["delta_e"].set(vals["delta_e"])
+            target_entry["scale"].set(vals["scale"])
+            if "comb_total" in target_entry:
+                target_entry["comb_total"].set(vals["comb_total"])
+                target_entry["comb_d2"].set(vals["comb_d2"])
+                target_entry["comb_m2"].set(vals["comb_m2"])
+                target_entry["comb_q2"].set(vals["comb_q2"])
+            target_entry["style"].update(vals["style"])
+
+        def _do_apply():
+            """Apply current dialog values to this spectrum (no close)."""
+            _apply_vals(_read_dialog(), entry)
+            self._replot()
+
+        def _do_apply_all():
+            """Apply current dialog values to every TDDFT spectrum (no close)."""
+            vals = _read_dialog()
+            for e in self._tddft_spectra:
+                _apply_vals(vals, e)
+            self._replot()
+
+        def _do_save():
+            """Apply and close."""
+            _do_apply()
+            win.destroy()
+
+        def _do_cancel():
+            """Revert to state at dialog-open time, then close."""
+            _apply_vals(_orig, entry)
+            self._replot()
+            win.destroy()
+
+        def _do_set_default():
+            vals = _read_dialog()
+            _TDDFT_STYLE_DEFAULTS.update(vals["style"])
+            _apply_vals(vals, entry)
+            _save_style_config()
+            self._replot()
+            messagebox.showinfo("Default saved",
+                "Style saved as default for new TDDFT spectra.",
+                parent=win)
+
+        btn = tk.Frame(win)
+        btn.pack(pady=(4, 10))
+        tk.Button(btn, text="Apply",               width=12,
+                  command=_do_apply).pack(side=tk.LEFT, padx=3)
+        tk.Button(btn, text="Apply to ALL TDDFT",  width=18,
+                  bg="#004400", fg="white",
+                  command=_do_apply_all).pack(side=tk.LEFT, padx=3)
+        tk.Button(btn, text="Set as Default",      width=14,
+                  bg="#003366", fg="white",
+                  command=_do_set_default).pack(side=tk.LEFT, padx=3)
+        tk.Button(btn, text="Save",                width=8,
+                  command=_do_save).pack(side=tk.LEFT, padx=3)
+        tk.Button(btn, text="Cancel",              width=8,
+                  command=_do_cancel).pack(side=tk.LEFT, padx=3)
+
+        win.protocol("WM_DELETE_WINDOW", _do_cancel)   # X button reverts too
+        _centre_window(win, self)
+
     def _open_tddft_style_dialog(self):
         """Global TDDFT plot style: envelope and sticks."""
         win = tk.Toplevel(self)
@@ -1355,10 +1767,10 @@ class PlotWidget(tk.Frame):
         env_fill = tk.BooleanVar(value=st["env_fill"])
         env_fa  = tk.DoubleVar(value=st["env_fill_alpha"])
 
-        _slider_row(env_frame, "Line width:", env_lw, 0.5, 5.0, 0.1, row=0)
+        _slider_row(env_frame, "Line width:", env_lw, 0.5, 5.0, 0.1, row=0, unit="pt")
 
         fill_row = tk.Frame(env_frame)
-        fill_row.grid(row=1, column=0, columnspan=3, sticky="w", pady=2)
+        fill_row.grid(row=1, column=0, columnspan=4, sticky="w", pady=2)
         tk.Checkbutton(fill_row, text="Fill area under curve",
                        variable=env_fill).pack(side=tk.LEFT)
         _slider_row(env_frame, "Fill opacity:", env_fa, 0.0, 0.50, 0.01, row=2)
@@ -1372,73 +1784,73 @@ class PlotWidget(tk.Frame):
         stk_ms   = tk.DoubleVar(value=st["stick_markersize"])
         stk_mkr  = tk.BooleanVar(value=st.get("stick_markers", True))
 
-        _slider_row(stk_frame, "Line width:",   stk_lw,   0.5, 4.0, 0.1, row=0)
+        _slider_row(stk_frame, "Line width:",   stk_lw,   0.5, 4.0, 0.1,  row=0, unit="pt")
         _slider_row(stk_frame, "Opacity:",      stk_alph, 0.1, 1.0, 0.05, row=1)
 
         mkr_row = tk.Frame(stk_frame)
-        mkr_row.grid(row=2, column=0, columnspan=3, sticky="w", pady=2)
+        mkr_row.grid(row=2, column=0, columnspan=4, sticky="w", pady=2)
         tk.Checkbutton(mkr_row, text="Show tip markers (dots)",
                        variable=stk_mkr).pack(side=tk.LEFT)
 
-        _slider_row(stk_frame, "Marker size:",  stk_ms,   1,   12,  1,    row=3)
+        _slider_row(stk_frame, "Marker size:",  stk_ms,   1,   12,  1,    row=3, unit="px")
+
+        # ── Snapshot for Cancel revert ───────────────────────────────────────
+        _orig_st = dict(st)
 
         # ── Buttons ─────────────────────────────────────────────────────────
         def _read_dialog():
             return {
-                "env_linewidth":   env_lw.get(),
-                "env_fill":        env_fill.get(),
-                "env_fill_alpha":  env_fa.get(),
-                "stick_linewidth": stk_lw.get(),
-                "stick_alpha":     stk_alph.get(),
+                "env_linewidth":    env_lw.get(),
+                "env_fill":         env_fill.get(),
+                "env_fill_alpha":   env_fa.get(),
+                "stick_linewidth":  stk_lw.get(),
+                "stick_alpha":      stk_alph.get(),
                 "stick_markersize": int(stk_ms.get()),
-                "stick_markers":   stk_mkr.get(),
+                "stick_markers":    stk_mkr.get(),
             }
 
-        def apply():
+        def _do_apply():
             st.update(_read_dialog())
+            self._replot()
+
+        def _do_save():
+            _do_apply()
+            win.destroy()
+
+        def _do_cancel():
+            st.update(_orig_st)
             self._replot()
             win.destroy()
 
-        def set_as_default():
+        def _do_set_default():
             vals = _read_dialog()
             _TDDFT_STYLE_DEFAULTS.update(vals)
             st.update(vals)
-            _save_style_config()    # persist to disk for next restart
+            _save_style_config()
             self._replot()
             messagebox.showinfo("Default saved",
                 "TDDFT style saved as default.\n"
                 "All new computational spectra will use these settings.",
                 parent=win)
 
-        def reset():
-            # Restore the hard-coded factory defaults (not the saved ones)
-            factory = {
-                "env_linewidth": 2.0, "env_fill": True, "env_fill_alpha": 0.10,
-                "stick_linewidth": 1.2, "stick_alpha": 0.75,
-                "stick_markersize": 4, "stick_markers": True,
-            }
-            env_lw.set(factory["env_linewidth"])
-            env_fill.set(factory["env_fill"])
-            env_fa.set(factory["env_fill_alpha"])
-            stk_lw.set(factory["stick_linewidth"])
-            stk_alph.set(factory["stick_alpha"])
-            stk_ms.set(factory["stick_markersize"])
-            stk_mkr.set(factory["stick_markers"])
-
         btn = tk.Frame(win)
-        btn.pack(pady=(0, 10))
-        tk.Button(btn, text="Apply",          width=12, command=apply).pack(side=tk.LEFT, padx=4)
+        btn.pack(pady=(4, 10))
+        tk.Button(btn, text="Apply",          width=12,
+                  command=_do_apply).pack(side=tk.LEFT, padx=4)
         tk.Button(btn, text="Set as Default", width=14, bg="#003366", fg="white",
-                  command=set_as_default).pack(side=tk.LEFT, padx=4)
-        tk.Button(btn, text="Factory Reset",  width=12, command=reset).pack(side=tk.LEFT, padx=4)
-        tk.Button(btn, text="Cancel",         width=10, command=win.destroy).pack(side=tk.LEFT, padx=4)
+                  command=_do_set_default).pack(side=tk.LEFT, padx=4)
+        tk.Button(btn, text="Save",           width=8,
+                  command=_do_save).pack(side=tk.LEFT, padx=4)
+        tk.Button(btn, text="Cancel",         width=8,
+                  command=_do_cancel).pack(side=tk.LEFT, padx=4)
 
+        win.protocol("WM_DELETE_WINDOW", _do_cancel)
         _centre_window(win, self)
 
     def _pick_exp_colour(self, idx: int):
         """Open the system colour-wheel directly from the panel swatch."""
         from tkinter import colorchooser
-        label, scan, var, style = self._exp_scans[idx]
+        label, scan, var, style, in_legend = self._exp_scans[idx]
         auto_col  = EXP_COLOURS[idx % len(EXP_COLOURS)]
         init_col  = style.get("color") or auto_col
         result    = colorchooser.askcolor(
@@ -1473,7 +1885,7 @@ class PlotWidget(tk.Frame):
 
     def _open_exp_style_dialog(self, idx: int):
         """Per-scan experimental plot style."""
-        label, scan, var, style = self._exp_scans[idx]
+        label, scan, var, style, in_legend = self._exp_scans[idx]
 
         win = tk.Toplevel(self)
         win.title(f"Exp. Scan Style")
@@ -1496,14 +1908,14 @@ class PlotWidget(tk.Frame):
             row=0, column=0, sticky="w", pady=(0, 4))
         ls_var = tk.StringVar(value=style["linestyle"])
         ls_frame = tk.Frame(body)
-        ls_frame.grid(row=0, column=1, columnspan=3, sticky="w")
+        ls_frame.grid(row=0, column=1, columnspan=4, sticky="w")
         for display, value in LS_OPTIONS:
             tk.Radiobutton(ls_frame, text=display, variable=ls_var,
                            value=value).pack(side=tk.LEFT, padx=4)
 
         # ── Line width ──────────────────────────────────────────────────────
         lw_var = tk.DoubleVar(value=style["linewidth"])
-        _slider_row(body, "Line width:", lw_var, 0.5, 5.0, 0.1, row=1)
+        _slider_row(body, "Line width:", lw_var, 0.5, 5.0, 0.1, row=1, unit="pt")
 
         # ── Color ───────────────────────────────────────────────────────────
         auto_col = EXP_COLOURS[idx % len(EXP_COLOURS)]
@@ -1547,16 +1959,15 @@ class PlotWidget(tk.Frame):
         alpha_var = tk.DoubleVar(value=style["fill_alpha"])
 
         fill_frame = tk.Frame(body)
-        fill_frame.grid(row=4, column=1, columnspan=3, sticky="w")
+        fill_frame.grid(row=4, column=1, columnspan=4, sticky="w")
         tk.Checkbutton(fill_frame, text="Show fill", variable=fill_var).pack(side=tk.LEFT)
 
         _slider_row(body, "Fill opacity:", alpha_var, 0.0, 0.5, 0.01, row=5)
 
-        # ── Buttons ─────────────────────────────────────────────────────────
-        def _validate_col():
-            # Color comes from the colour-wheel so it's always valid hex or "".
-            return col_var.get().strip()
+        # ── Snapshot original state for Cancel revert ────────────────────────
+        _orig_style = dict(style)
 
+        # ── Buttons ─────────────────────────────────────────────────────────
         def _read_dialog():
             return {
                 "linestyle":  ls_var.get(),
@@ -1566,38 +1977,40 @@ class PlotWidget(tk.Frame):
                 "fill_alpha": alpha_var.get(),
             }
 
-        def apply():
-            raw_col = _validate_col()
-            if raw_col is None:
-                return
-            vals = _read_dialog()
-            style.update(vals)
+        def _do_apply():
+            """Apply to this scan without closing."""
+            style.update(_read_dialog())
             self._refresh_panel_content()
             self._replot()
-            win.destroy()
 
-        def apply_to_all():
+        def _do_apply_all():
             """Push line/fill style to every exp scan — NEVER changes colours."""
             vals = _read_dialog()
-            for _lbl, _sc, _var, _st in self._exp_scans:
+            for _lbl, _sc, _var, _st, _il in self._exp_scans:
                 _st["linestyle"]  = vals["linestyle"]
                 _st["linewidth"]  = vals["linewidth"]
                 _st["fill"]       = vals["fill"]
                 _st["fill_alpha"] = vals["fill_alpha"]
-                # colour is intentionally NOT touched — every scan keeps its own
+            self._refresh_panel_content()
+            self._replot()
+
+        def _do_save():
+            _do_apply()
+            win.destroy()
+
+        def _do_cancel():
+            style.update(_orig_style)
             self._refresh_panel_content()
             self._replot()
             win.destroy()
 
-        def set_as_default():
+        def _do_set_default():
             vals = _read_dialog()
-            # Don't save the per-scan colour as the default colour —
-            # new scans should still get auto-assigned colours.
             saved = dict(vals)
-            saved["color"] = ""
+            saved["color"] = ""   # don't save per-scan colour as the global default
             _EXP_STYLE_DEFAULTS.update(saved)
-            style.update(vals)      # apply colour to this scan only
-            _save_style_config()    # persist to disk for next restart
+            style.update(vals)
+            _save_style_config()
             self._refresh_panel_content()
             self._replot()
             messagebox.showinfo("Default saved",
@@ -1605,31 +2018,22 @@ class PlotWidget(tk.Frame):
                 "All new scans loaded from now on will use these settings.",
                 parent=win)
 
-        def reset_defaults():
-            # Restore hard-coded factory defaults
-            factory = {"linestyle": "solid", "linewidth": 1.8,
-                       "fill": True, "fill_alpha": 0.06, "color": ""}
-            ls_var.set(factory["linestyle"])
-            lw_var.set(factory["linewidth"])
-            col_var.set(factory["color"])
-            fill_var.set(factory["fill"])
-            alpha_var.set(factory["fill_alpha"])
-
         btn = tk.Frame(win)
-        btn.pack(pady=(0, 10))
-        tk.Button(btn, text="Apply",            width=12,
-                  command=apply).pack(side=tk.LEFT, padx=3)
+        btn.pack(pady=(4, 10))
+        tk.Button(btn, text="Apply",             width=12,
+                  command=_do_apply).pack(side=tk.LEFT, padx=3)
         tk.Button(btn, text="Apply to ALL Exp.", width=16,
                   bg="#004400", fg="white",
-                  command=apply_to_all).pack(side=tk.LEFT, padx=3)
-        tk.Button(btn, text="Set as Default",   width=14,
+                  command=_do_apply_all).pack(side=tk.LEFT, padx=3)
+        tk.Button(btn, text="Set as Default",    width=14,
                   bg="#003366", fg="white",
-                  command=set_as_default).pack(side=tk.LEFT, padx=3)
-        tk.Button(btn, text="Factory Reset",    width=12,
-                  command=reset_defaults).pack(side=tk.LEFT, padx=3)
-        tk.Button(btn, text="Cancel",           width=10,
-                  command=win.destroy).pack(side=tk.LEFT, padx=3)
+                  command=_do_set_default).pack(side=tk.LEFT, padx=3)
+        tk.Button(btn, text="Save",              width=8,
+                  command=_do_save).pack(side=tk.LEFT, padx=3)
+        tk.Button(btn, text="Cancel",            width=8,
+                  command=_do_cancel).pack(side=tk.LEFT, padx=3)
 
+        win.protocol("WM_DELETE_WINDOW", _do_cancel)
         _centre_window(win, self)
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -1643,6 +2047,20 @@ class PlotWidget(tk.Frame):
 
         tk.Label(win, text="Edit legend labels below. Leave blank to hide that entry.",
                  font=("", 9), fg="gray").pack(anchor="w", padx=10, pady=(8, 2))
+
+        # ── Plot title ────────────────────────────────────────────────────────
+        title_frame = tk.Frame(win, padx=10)
+        title_frame.pack(fill=tk.X, pady=(0, 4))
+        tk.Label(title_frame, text="Plot title:", font=("", 9, "bold"),
+                 width=12, anchor="e").pack(side=tk.LEFT)
+        _title_entry = tk.Entry(title_frame, font=("", 9), width=50, bg="#f8f8ff",
+                                relief=tk.SUNKEN)
+        _title_entry.insert(0, self._custom_title.get())
+        _title_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 0))
+        tk.Button(title_frame, text="Auto", font=("", 8),
+                  command=lambda: (_title_entry.delete(0, tk.END),)
+                  ).pack(side=tk.LEFT, padx=(4, 0))
+        ttk.Separator(win, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=8, pady=(4, 2))
 
         entries = []
 
@@ -1673,7 +2091,7 @@ class PlotWidget(tk.Frame):
             ttk.Separator(win, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=8, pady=4)
             tk.Label(win, text="Experimental Scans:", font=("", 8, "bold"),
                      fg="darkred").pack(anchor="w", padx=10)
-            for i, (label, scan, var, style) in enumerate(self._exp_scans):
+            for i, (label, scan, var, style, il) in enumerate(self._exp_scans):
                 col = style.get("color") or EXP_COLOURS[i % len(EXP_COLOURS)]
                 ef = tk.Frame(win, padx=8)
                 ef.pack(fill=tk.X, pady=1)
@@ -1708,11 +2126,12 @@ class PlotWidget(tk.Frame):
                 elif kind == "exp":
                     _, idx, e = entry_info
                     new = e.get().strip()
-                    lbl, scan, var, style = self._exp_scans[idx]
-                    self._exp_scans[idx] = (new if new else lbl, scan, var, style)
-            # Push legend-visibility choices back to the real variables
+                    lbl, scan, var, style, il = self._exp_scans[idx]
+                    self._exp_scans[idx] = (new if new else lbl, scan, var, style, il)
+            # Push legend-visibility + title choices back to the real variables
             self._show_legend.set(_local_show_legend.get())
             self._show_primary_in_legend.set(_local_show_primary.get())
+            self._custom_title.set(_title_entry.get().strip())
             # Destroy dialog BEFORE replot so the modal grab is released first
             win.destroy()
             self._refresh_panel_content()
@@ -1731,18 +2150,32 @@ class PlotWidget(tk.Frame):
         if not self._custom_title.get().strip():
             self._custom_title.set(spectrum.display_name())
         if spectrum.is_xas:
-            self._fwhm_slider.config(from_=0.05, to=20.0, resolution=0.05)
-            self._fwhm_unit_label.config(text="eV")
             if self._x_unit.get() == "nm":
+                # Switching away from nm — convert FWHM from nm (cm⁻¹ space) → eV
+                converted = self._convert_fwhm_value(self._fwhm.get(), "nm", "eV")
                 self._x_unit.set("eV")
-            if self._fwhm.get() > 20:
-                self._fwhm.set(1.0)
+                self._prev_x_unit = "eV"
+                lo, hi, res = self._fwhm_slider_range("eV")
+                self._fwhm_slider.config(from_=lo, to=hi, resolution=res)
+                self._fwhm_unit_label.config(text="eV")
+                self._fwhm.set(max(lo, min(hi, converted)))
+            else:
+                # Already in an energy unit — just make sure slider range is correct
+                cur = self._x_unit.get()
+                lo, hi, res = self._fwhm_slider_range(cur)
+                self._fwhm_slider.config(from_=lo, to=hi, resolution=res)
+                fwhm_lbl = "Ha" if cur == "Ha" else "eV"
+                self._fwhm_unit_label.config(text=fwhm_lbl)
         else:
-            self._fwhm_slider.config(from_=100, to=8000, resolution=100)
-            self._fwhm_unit_label.config(text="cm\u207b\u00b9")
+            # UV-Vis — switch to nm, store FWHM in cm⁻¹ space
+            old_unit = self._prev_x_unit
             self._x_unit.set("nm")
-            if self._fwhm.get() < 50:
-                self._fwhm.set(3000)
+            self._prev_x_unit = "nm"
+            lo, hi, res = 100, 8000, 100   # narrow cm⁻¹ range suitable for UV-Vis
+            self._fwhm_slider.config(from_=lo, to=hi, resolution=res)
+            self._fwhm_unit_label.config(text="cm\u207b\u00b9")
+            converted = self._convert_fwhm_value(self._fwhm.get(), old_unit, "nm")
+            self._fwhm.set(max(lo, min(hi, converted)) if converted >= lo else 3000)
         self._sync_fwhm_entry()
 
         label = getattr(spectrum, "_custom_label", None) or spectrum.display_name()
@@ -1761,6 +2194,14 @@ class PlotWidget(tk.Frame):
             "comb_d2":    tk.BooleanVar(value=False),
             "comb_m2":    tk.BooleanVar(value=False),
             "comb_q2":    tk.BooleanVar(value=False),
+            # Per-spectrum display toggles
+            "show_sticks": tk.BooleanVar(value=self._show_sticks.get()),
+            "show_env":    tk.BooleanVar(value=self._show_env.get()),
+            "show_trans":  tk.BooleanVar(value=self._show_trans.get()),
+            # Per-spectrum style (independent copy of global defaults)
+            "style":       _default_tddft_style(),
+            # Legend inclusion
+            "in_legend":   tk.BooleanVar(value=True),
         }
         if self._tddft_spectra:
             # Replace the primary (index 0) — keep any overlays intact
@@ -1786,15 +2227,24 @@ class PlotWidget(tk.Frame):
             "comb_d2":    tk.BooleanVar(value=False),
             "comb_m2":    tk.BooleanVar(value=False),
             "comb_q2":    tk.BooleanVar(value=False),
+            # Per-spectrum display toggles
+            "show_sticks": tk.BooleanVar(value=self._show_sticks.get()),
+            "show_env":    tk.BooleanVar(value=self._show_env.get()),
+            "show_trans":  tk.BooleanVar(value=self._show_trans.get()),
+            # Per-spectrum style (independent copy of global defaults)
+            "style":       _default_tddft_style(),
+            # Legend inclusion
+            "in_legend":   tk.BooleanVar(value=True),
         }
         self._tddft_spectra.append(entry)
         self._refresh_panel_content()
         self._replot()
 
     def add_exp_scan(self, label: str, scan: ExperimentalScan):
-        var   = tk.BooleanVar(value=True)
-        style = _default_exp_style()
-        self._exp_scans.append((label, scan, var, style))
+        var        = tk.BooleanVar(value=True)
+        style      = _default_exp_style()
+        in_legend  = tk.BooleanVar(value=True)
+        self._exp_scans.append((label, scan, var, style, in_legend))
         self._refresh_panel_content()
         self._replot()
 
@@ -1850,6 +2300,36 @@ class PlotWidget(tk.Frame):
             return ev_arr * self._EV_TO_CM
         return ev_arr   # eV
 
+    # ── FWHM unit helpers ─────────────────────────────────────────────────────
+
+    @staticmethod
+    def _fwhm_slider_range(unit: str):
+        """Return (lo, hi, resolution) for the FWHM slider in *unit* space.
+        Ranges correspond to ≈0.05 eV – 20 eV broadening in each unit."""
+        if unit in ("cm\u207b\u00b9", "nm"):
+            return 400, 160000, 400
+        if unit == "Ha":
+            return 0.002, 0.74, 0.001
+        return 0.05, 20.0, 0.05   # eV (default)
+
+    def _convert_fwhm_value(self, value: float, from_unit: str, to_unit: str) -> float:
+        """Convert a FWHM value from one display-unit space to another."""
+        if from_unit == to_unit:
+            return value
+        # Step 1 — convert to eV
+        if from_unit == "Ha":
+            ev = value * self._HA_TO_EV
+        elif from_unit in ("cm\u207b\u00b9", "nm"):
+            ev = value / self._EV_TO_CM
+        else:
+            ev = value   # already eV
+        # Step 2 — convert from eV to target unit
+        if to_unit == "Ha":
+            return ev / self._HA_TO_EV
+        if to_unit in ("cm\u207b\u00b9", "nm"):
+            return ev * self._EV_TO_CM
+        return ev   # eV
+
     def _fwhm_in_ev(self, fwhm_override: float = None) -> float:
         """Return the FWHM value converted to eV for broadening.
         If fwhm_override is given, use that instead of self._fwhm.get()."""
@@ -1887,12 +2367,20 @@ class PlotWidget(tk.Frame):
                     "comb_d2":    entry.get("comb_d2")    or self._comb_d2,
                     "comb_m2":    entry.get("comb_m2")    or self._comb_m2,
                     "comb_q2":    entry.get("comb_q2")    or self._comb_q2,
+                    # Per-spectrum display toggles (fall back to global if absent)
+                    "show_sticks": entry.get("show_sticks") or self._show_sticks,
+                    "show_env":    entry.get("show_env")    or self._show_env,
+                    "show_trans":  entry.get("show_trans")  or self._show_trans,
+                    # Per-spectrum style (fall back to global style dict if absent)
+                    "style":       entry.get("style")       or self._tddft_style,
+                    # Legend inclusion
+                    "in_legend":   entry.get("in_legend")   or tk.BooleanVar(value=True),
                 }
                 tddft_to_draw.append((lbl, entry["spectrum"], col, params))
 
         active_exp = [
-            (lbl, sc, style.get("color") or EXP_COLOURS[i % len(EXP_COLOURS)], style)
-            for i, (lbl, sc, var, style) in enumerate(self._exp_scans)
+            (lbl, sc, style.get("color") or EXP_COLOURS[i % len(EXP_COLOURS)], style, in_legend)
+            for i, (lbl, sc, var, style, in_legend) in enumerate(self._exp_scans)
             if var.get()
         ]
 
@@ -1904,19 +2392,27 @@ class PlotWidget(tk.Frame):
         self.ax = self.fig.add_subplot(111)
 
         # Create twin axis only when experimental scans are active
+        _tddft_left = self._tddft_on_left.get() == "left"
         if active_exp:
             self.ax2 = self.ax.twinx()
-            # Tell the toolbar to navigate ax only — never ax2.
-            # Without this the toolbar tries to zoom both axes simultaneously,
-            # which with the shared x-axis creates conflicting updates → no zoom.
             self.ax2.set_navigate(False)
-            # Raise ax above ax2 so its hover annotation is always visible.
-            # Hide ax's background patch so it doesn't blank out ax2's data.
-            self.ax.set_zorder(self.ax2.get_zorder() + 1)
-            self.ax.patch.set_visible(False)
+            if _tddft_left:
+                ax_t = self.ax   # TDDFT on left
+                ax_e = self.ax2  # EXP on right
+                self.ax.set_zorder(self.ax2.get_zorder() + 1)
+                self.ax.patch.set_visible(False)
+            else:
+                ax_t = self.ax2  # TDDFT on right
+                ax_e = self.ax   # EXP on left
+                self.ax2.set_zorder(self.ax.get_zorder() + 1)
+                self.ax2.patch.set_visible(False)
+                self.ax.patch.set_visible(True)
         else:
             self.ax2 = None
             self.ax.patch.set_visible(True)
+            _tddft_left = True
+            ax_t = self.ax
+            ax_e = None
 
         if not tddft_to_draw and not active_exp:
             self.toolbar.update()
@@ -1927,7 +2423,6 @@ class PlotWidget(tk.Frame):
         multi_tddft = len(tddft_to_draw) > 1
         first_hover_set = False
         ylabel = "Oscillator Strength (f)"
-        st = self._tddft_style
 
         # ── Collect fresh inset data each replot ─────────────────────────────
         self._inset_plot_data = []
@@ -1940,6 +2435,13 @@ class PlotWidget(tk.Frame):
 
         # ── Draw TDDFT spectra (left axis) ────────────────────────────────────
         for name, sp, colour, sp_params in (tddft_to_draw if show_tddft else []):
+            # Resolve per-spectrum style + display toggles
+            _st         = sp_params["style"]
+            _show_sticks = sp_params["show_sticks"]
+            _show_env    = sp_params["show_env"]
+            _show_trans  = sp_params["show_trans"]
+            _in_legend   = sp_params["in_legend"]
+
             delta_e = sp_params["delta_e"]
             scale   = sp_params["scale"]
             ev_arr = np.array(sp.energies_ev) + delta_e
@@ -1982,32 +2484,33 @@ class PlotWidget(tk.Frame):
                         yp = y_c * scale
                         ylabel = "Oscillator Strength (f)"
 
-                    if self._show_sticks.get():
-                        ml, sl, bl = self.ax.stem(
+                    if _show_sticks.get():
+                        ml, sl, bl = ax_t.stem(
                             x_arr, yp, linefmt=col_c, markerfmt="o", basefmt=" ",
                             label=comp_lbl
                         )
-                        ml.set_markersize(st["stick_markersize"] if st.get("stick_markers", True) else 0)
+                        ml.set_markersize(_st["stick_markersize"] if _st.get("stick_markers", True) else 0)
                         ml.set_color(col_c)
-                        _plt.setp(sl, linewidth=st["stick_linewidth"],
-                                  alpha=st["stick_alpha"], color=col_c)
+                        _plt.setp(sl, linewidth=_st["stick_linewidth"],
+                                  alpha=_st["stick_alpha"], color=col_c)
                         self._inset_plot_data.append(
                             ("sticks", x_arr.copy(), yp.copy(), col_c,
-                             st["stick_linewidth"], st["stick_alpha"]))
+                             _st["stick_linewidth"], _st["stick_alpha"]))
 
-                    if self._show_env.get():
+                    if _show_env.get():
                         x_env, y_env = self._draw_envelope(ev_arr, yp, col_c, True, comp_lbl,
                                                             fwhm_override=sp_params["fwhm"],
-                                                            broadening_override=sp_params["broadening"])
+                                                            broadening_override=sp_params["broadening"],
+                                                            style=_st, ax=ax_t)
                         if x_env is not None:
                             self._inset_plot_data.append(
                                 ("line", x_env, y_env, col_c,
-                                 st["env_linewidth"], "solid", 0.9))
-                            if st["env_fill"]:
+                                 _st["env_linewidth"], "solid", 0.9))
+                            if _st["env_fill"]:
                                 self._inset_plot_data.append(
-                                    ("fill", x_env, y_env, col_c, st["env_fill_alpha"]))
+                                    ("fill", x_env, y_env, col_c, _st["env_fill_alpha"]))
 
-                    if self._show_trans.get() and sp.excited_states and k == 0:
+                    if _show_trans.get() and sp.excited_states and k == 0:
                         self._draw_transition_labels(x_arr, yp, sp)
 
                     # Hover data from the first/primary component
@@ -2032,32 +2535,34 @@ class PlotWidget(tk.Frame):
                     y_plot = y_arr * scale
                     ylabel = "Rotatory Strength" if is_cd else "Oscillator Strength (f)"
 
-                if self._show_sticks.get():
-                    ml, sl, bl = self.ax.stem(
+                if _show_sticks.get():
+                    ml, sl, bl = ax_t.stem(
                         x_arr, y_plot, linefmt=colour, markerfmt="o", basefmt=" ",
-                        label=name if multi_tddft else None
+                        label=name if _in_legend.get() else None
                     )
-                    ml.set_markersize(st["stick_markersize"] if st.get("stick_markers", True) else 0)
+                    ml.set_markersize(_st["stick_markersize"] if _st.get("stick_markers", True) else 0)
                     ml.set_color(colour)
-                    _plt.setp(sl, linewidth=st["stick_linewidth"],
-                              alpha=st["stick_alpha"], color=colour)
+                    _plt.setp(sl, linewidth=_st["stick_linewidth"],
+                              alpha=_st["stick_alpha"], color=colour)
                     self._inset_plot_data.append(
                         ("sticks", x_arr.copy(), y_plot.copy(), colour,
-                         st["stick_linewidth"], st["stick_alpha"]))
+                         _st["stick_linewidth"], _st["stick_alpha"]))
 
-                if self._show_env.get():
-                    x_env, y_env = self._draw_envelope(ev_arr, y_plot, colour, multi_tddft, name,
+                if _show_env.get():
+                    x_env, y_env = self._draw_envelope(ev_arr, y_plot, colour,
+                                                        _in_legend.get(), name,
                                                         fwhm_override=sp_params["fwhm"],
-                                                        broadening_override=sp_params["broadening"])
+                                                        broadening_override=sp_params["broadening"],
+                                                        style=_st, ax=ax_t)
                     if x_env is not None:
                         self._inset_plot_data.append(
                             ("line", x_env, y_env, colour,
-                             st["env_linewidth"], "solid", 0.9))
-                        if st["env_fill"]:
+                             _st["env_linewidth"], "solid", 0.9))
+                        if _st["env_fill"]:
                             self._inset_plot_data.append(
-                                ("fill", x_env, y_env, colour, st["env_fill_alpha"]))
+                                ("fill", x_env, y_env, colour, _st["env_fill_alpha"]))
 
-                if self._show_trans.get() and sp.excited_states and not multi_tddft:
+                if _show_trans.get() and sp.excited_states and not multi_tddft:
                     self._draw_transition_labels(x_arr, y_plot, sp)
 
                 if not first_hover_set:
@@ -2069,9 +2574,9 @@ class PlotWidget(tk.Frame):
                     self._hover_labels = list(sp.transition_labels)
                     first_hover_set = True
 
-        # ── Draw experimental scans (right twin axis) ─────────────────────────
-        if active_exp and self.ax2 is not None:
-            for lbl, scan, colour, style in active_exp:
+        # ── Draw experimental scans (twin axis) ─────────────────────────
+        if active_exp and ax_e is not None:
+            for lbl, scan, colour, style, in_legend in active_exp:
                 ev_exp = scan.energy_ev
                 mu_exp = scan.mu
                 if len(ev_exp) == 0:
@@ -2079,11 +2584,12 @@ class PlotWidget(tk.Frame):
                 x_exp = self._ev_to_unit(ev_exp)
                 ls    = style.get("linestyle", "solid")
                 lw    = style.get("linewidth", 1.8)
-                self.ax2.plot(x_exp, mu_exp, color=colour, linewidth=lw,
-                              linestyle=ls, alpha=0.9, label=lbl)
+                ax_e.plot(x_exp, mu_exp, color=colour, linewidth=lw,
+                          linestyle=ls, alpha=0.9,
+                          label=lbl if in_legend.get() else None)
                 if style.get("fill", True):
                     fa = style.get("fill_alpha", 0.06)
-                    self.ax2.fill_between(x_exp, 0, mu_exp, alpha=fa, color=colour)
+                    ax_e.fill_between(x_exp, 0, mu_exp, alpha=fa, color=colour)
                 self._inset_plot_data.append(
                     ("exp", x_exp.copy(), mu_exp.copy(), colour, lw, ls, 0.9,
                      style.get("fill", True), style.get("fill_alpha", 0.06)))
@@ -2091,30 +2597,30 @@ class PlotWidget(tk.Frame):
             _right_lbl = (self._custom_right_ylabel.get().strip()
                           or "\u03bc(E) \u2014 normalized XAS")
             _show_right = self._show_right_ylabel.get()
-            self.ax2.set_ylabel(
+            ax_e.set_ylabel(
                 _right_lbl if _show_right else "",
                 fontsize=self._font_ylabel_size.get(),
                 fontweight="bold" if self._font_ylabel_bold.get() else "normal",
                 color="darkred")
-            self.ax2.tick_params(
+            ax_e.tick_params(
                 axis="y",
                 labelcolor="darkred" if _show_right else "none",
                 labelright=_show_right,
             )
-            self.ax2.axhline(0, color="darkred", linewidth=0.4, alpha=0.3)
+            ax_e.axhline(0, color="darkred", linewidth=0.4, alpha=0.3)
 
         # ── Align y=0 of both axes when experimental overlay is active ───────
         # Ensure both axes share the same zero position regardless of scale,
         # so TDDFT sticks and XAS curve both start from the same baseline.
-        if active_exp and self.ax2 is not None:
+        if active_exp and ax_e is not None:
             # Get the natural top of each axis after plotting
-            _ax1_bot, _ax1_top = self.ax.get_ylim()
-            _ax2_bot, _ax2_top = self.ax2.get_ylim()
+            _ax1_bot, _ax1_top = ax_t.get_ylim()
+            _ax2_bot, _ax2_top = ax_e.get_ylim()
             # Force bottom to 0 on both (sticks and XAS data never go below 0)
             _ax1_top = max(_ax1_top, 1e-6)
             _ax2_top = max(_ax2_top, 1e-6)
-            self.ax.set_ylim(bottom=0, top=_ax1_top)
-            self.ax2.set_ylim(bottom=0, top=_ax2_top)
+            ax_t.set_ylim(bottom=0, top=_ax1_top)
+            ax_e.set_ylim(bottom=0, top=_ax2_top)
 
         # ── Axes decoration ───────────────────────────────────────────────────
         self.ax.set_xlabel(
@@ -2122,7 +2628,7 @@ class PlotWidget(tk.Frame):
             fontsize=self._font_xlabel_size.get(),
             fontweight="bold" if self._font_xlabel_bold.get() else "normal")
         _left_lbl = self._custom_left_ylabel.get().strip() or ylabel
-        self.ax.set_ylabel(
+        ax_t.set_ylabel(
             _left_lbl if self._show_left_ylabel.get() else "",
             fontsize=self._font_ylabel_size.get(),
             fontweight="bold" if self._font_ylabel_bold.get() else "normal")
@@ -2145,6 +2651,7 @@ class PlotWidget(tk.Frame):
                 labelright=_show_right,
                 direction=self._tick_direction.get(),
             )
+
         self.ax.set_facecolor(self._bg_colour)
         self.fig.patch.set_facecolor(self._bg_colour)
         self.ax.axhline(0, color="gray", linewidth=0.5, linestyle="--", alpha=0.5)
@@ -2171,26 +2678,9 @@ class PlotWidget(tk.Frame):
             self.ax.set_xlim(x_lo if x_lo is not None else cur[0],
                              x_hi if x_hi is not None else cur[1])
         if y_lo is not None or y_hi is not None:
-            cur = self.ax.get_ylim()
-            self.ax.set_ylim(y_lo if y_lo is not None else cur[0],
-                             y_hi if y_hi is not None else cur[1])
-
-        # Corner annotations for any active adjustments
-        # Show global defaults; per-spectrum overrides are visible in the Data panel.
-        _ann_delta_e = self._delta_e.get()
-        _ann_scale   = self._tddft_scale.get()
-        ann_lines = []
-        if abs(_ann_delta_e) > 1e-4:
-            ann_lines.append(f"\u0394E = {_ann_delta_e:+.2f} eV")
-        if abs(_ann_scale - 1.0) > 1e-6:
-            ann_lines.append(f"scale \u00d7{_ann_scale:.3g}")
-        if ann_lines:
-            self.ax.annotate(
-                "\n".join(ann_lines),
-                xy=(0.01, 0.97), xycoords="axes fraction",
-                fontsize=8, color="gray", va="top",
-                bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="gray", alpha=0.7)
-            )
+            cur = ax_t.get_ylim()
+            ax_t.set_ylim(y_lo if y_lo is not None else cur[0],
+                          y_hi if y_hi is not None else cur[1])
 
         # ── Layout first so legend bbox coords are stable ─────────────────────
         self.fig.tight_layout(pad=2.5)
@@ -2210,22 +2700,14 @@ class PlotWidget(tk.Frame):
 
         if self._show_legend.get():
             # h1/l1 = TDDFT handles (left axis); h2/l2 = exp handles (right axis)
-            h1, l1 = self.ax.get_legend_handles_labels()
-            h2, l2 = (self.ax2.get_legend_handles_labels()
-                      if active_exp and self.ax2 is not None else ([], []))
-            # Filter primary TDDFT from h1/l1 when its toggle is off
-            if self._tddft_spectra and not self._show_primary_in_legend.get():
-                _sp0 = self._tddft_spectra[0]["spectrum"]
-                _primary_lbl = (getattr(_sp0, "_custom_label", None)
-                                or self._tddft_spectra[0]["label"])
-                _pairs = [(h, l) for h, l in zip(h1, l1) if l != _primary_lbl]
-                h1 = [p[0] for p in _pairs]
-                l1 = [p[1] for p in _pairs]
-            # Honour "TDDFT in legend" sub-toggle
-            if self._show_tddft_in_legend.get():
-                all_h, all_l = h1 + h2, l1 + l2
-            else:
-                all_h, all_l = h2, l2
+            # Per-entry legend inclusion is already handled at draw time via in_legend
+            # vars — entries with in_legend=False were drawn with label=None so they
+            # don't appear in get_legend_handles_labels() at all.
+            h1, l1 = ax_t.get_legend_handles_labels()
+            h2, l2 = (ax_e.get_legend_handles_labels()
+                      if active_exp and ax_e is not None else ([], []))
+            # Per-spectrum in_legend vars control inclusion; combine both axes
+            all_h, all_l = h1 + h2, l1 + l2
             if all_h:
                 _leg_fs = self._font_legend_size.get()
                 if self._legend_bbox is not None:
@@ -2264,8 +2746,9 @@ class PlotWidget(tk.Frame):
 
     # ─────────────────────────────────────────────────────────────────────────
     def _draw_envelope(self, ev_arr, y_arr, colour, multi, name,
-                       fwhm_override=None, broadening_override=None):
-        """Draw broadened envelope on self.ax; returns (x_grid, env) for inset re-use."""
+                       fwhm_override=None, broadening_override=None, style=None, ax=None):
+        """Draw broadened envelope on ax (default self.ax); returns (x_grid, env) for inset re-use."""
+        ax = ax if ax is not None else self.ax
         fwhm_ev = self._fwhm_in_ev(fwhm_override)
         if fwhm_ev <= 0:
             return None, None
@@ -2277,13 +2760,14 @@ class PlotWidget(tk.Frame):
         env     = sum(y * fn(ev_grid, c, fwhm_ev) for c, y in zip(ev_arr, y_arr))
         x_grid  = self._ev_to_unit(ev_grid)
         label   = f"{name} (env)" if multi else "Envelope"
-        st      = self._tddft_style
+        st      = style if style is not None else self._tddft_style
 
-        self.ax.plot(x_grid, env, color=colour, linewidth=st["env_linewidth"],
-                     alpha=0.9, label=label if multi else None)
+        ax.plot(x_grid, env, color=colour, linewidth=st["env_linewidth"],
+                linestyle=st.get("env_linestyle", "solid"),
+                alpha=0.9, label=label if multi else None)
         if st["env_fill"]:
-            self.ax.fill_between(x_grid, 0, env,
-                                 alpha=st["env_fill_alpha"], color=colour)
+            ax.fill_between(x_grid, 0, env,
+                            alpha=st["env_fill_alpha"], color=colour)
         return x_grid, env
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -3140,24 +3624,57 @@ def _sep(parent):
 
 
 def _slider_row(parent, label: str, var: tk.DoubleVar,
-                lo: float, hi: float, res: float, row: int):
-    """One label + slider + live readout, laid out in a grid."""
+                lo: float, hi: float, res: float, row: int, unit: str = ""):
+    """Label | editable numeric entry [unit] | slider — all in a 4-column grid.
+
+    Columns: 0 = label, 1 = entry, 2 = unit label, 3 = slider.
+    The entry is editable: type a value and press Enter (or click away) to commit.
+    """
+    fmt = (lambda v: f"{v:.2f}") if res < 1 else (lambda v: f"{int(v)}")
+
     tk.Label(parent, text=label, font=("", 9)).grid(
         row=row, column=0, sticky="e", padx=(0, 4), pady=2)
-    sl = tk.Scale(parent, from_=lo, to=hi, resolution=res,
-                  orient=tk.HORIZONTAL, length=180,
-                  variable=var, showvalue=False)
-    sl.grid(row=row, column=1, sticky="w")
-    # Live numeric label
-    lbl = tk.Label(parent, textvariable=tk.StringVar(), width=6,
-                   font=("Courier", 9), anchor="w")
-    lbl.grid(row=row, column=2, sticky="w", padx=(4, 0))
 
-    def _update_lbl(*_):
-        v = var.get()
-        lbl.config(text=f"{v:.2f}" if res < 1 else f"{int(v)}")
-    var.trace_add("write", _update_lbl)
-    _update_lbl()
+    # ── Editable numeric entry ───────────────────────────────────────────────
+    _busy = [False]   # guard against circular update
+    entry_var = tk.StringVar(value=fmt(var.get()))
+
+    entry = tk.Entry(parent, textvariable=entry_var, width=7,
+                     font=("Courier", 9), justify="right")
+    entry.grid(row=row, column=1, sticky="ew", padx=(0, 2))
+
+    # Unit label (column 2)
+    tk.Label(parent, text=unit, font=("", 8), fg="gray",
+             anchor="w", width=4).grid(row=row, column=2, sticky="w")
+
+    # ── Slider (column 3) ────────────────────────────────────────────────────
+    sl = tk.Scale(parent, from_=lo, to=hi, resolution=res,
+                  orient=tk.HORIZONTAL, length=160,
+                  variable=var, showvalue=False)
+    sl.grid(row=row, column=3, sticky="w")
+
+    # Keep entry in sync when slider moves
+    def _var_to_entry(*_):
+        if not _busy[0]:
+            entry_var.set(fmt(var.get()))
+
+    var.trace_add("write", _var_to_entry)
+
+    # Commit typed value → var + slider
+    def _entry_to_var(*_):
+        try:
+            v = float(entry_var.get().replace(",", "."))
+            v = max(lo, min(hi, v))
+            _busy[0] = True
+            var.set(v)
+            entry_var.set(fmt(v))
+            _busy[0] = False
+        except ValueError:
+            entry_var.set(fmt(var.get()))   # revert to last good value
+
+    entry.bind("<Return>",   _entry_to_var)
+    entry.bind("<FocusOut>", _entry_to_var)
+    _var_to_entry()   # initialise display
 
 
 def _centre_window(win: tk.Toplevel, parent: tk.Widget):
