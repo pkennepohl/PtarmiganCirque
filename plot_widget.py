@@ -204,7 +204,7 @@ class PlotWidget(tk.Frame):
         self._show_primary_in_legend = tk.BooleanVar(value=True)  # primary TDDFT in legend
         self._custom_title = tk.StringVar(value="")
         self._custom_x_label  = tk.StringVar(value="")   # blank = auto from unit
-        self._tick_direction  = tk.StringVar(value="out") # "in" / "out" / "both"
+        self._tick_direction  = tk.StringVar(value="in")  # "in" / "out" / "both"
 
         # ΔE energy shift (eV) applied to all TDDFT stick positions.
         # _delta_e holds the true (unbounded) value.
@@ -246,14 +246,17 @@ class PlotWidget(tk.Frame):
         # Master visibility toggles
         self._show_tddft = tk.BooleanVar(value=True)
         self._tddft_on_left = tk.StringVar(value="left")  # "left" or "right"
-        self._show_nm_axis  = tk.BooleanVar(value=False)  # secondary nm axis (cm⁻¹ mode only)
-        self._nm_axis_cb    = None                         # reference to the checkbox widget
+        self._show_nm_axis   = tk.BooleanVar(value=False)  # secondary nm axis (cm⁻¹ mode only)
+        self._nm_axis_cb     = None                        # reference to the checkbox widget
+        self._custom_nm_label = tk.StringVar(value="\u03bb (nm)")  # label for the top nm axis
 
         # Manual axis-range overrides (empty string = auto-scale)
         self._xlim_lo = tk.StringVar(value="")
         self._xlim_hi = tk.StringVar(value="")
-        self._ylim_lo = tk.StringVar(value="")   # left / TDDFT axis
+        self._ylim_lo = tk.StringVar(value="")    # left / TDDFT axis
         self._ylim_hi = tk.StringVar(value="")
+        self._ylim_exp_lo = tk.StringVar(value="")  # right / Exp axis
+        self._ylim_exp_hi = tk.StringVar(value="")
 
         # Font controls — sizes and bold toggles for each text element
         self._font_title_size   = tk.IntVar(value=11)
@@ -451,10 +454,6 @@ class PlotWidget(tk.Frame):
         tk.Checkbutton(r0, text="Normalise", variable=self._normalise,
                        command=self._replot, font=F9).pack(side=tk.LEFT, padx=2)
         _vsep(r0)
-        tk.Checkbutton(r0, text="Show TDDFT", variable=self._show_tddft,
-                       command=self._replot, font=F9, fg="navy",
-                       activeforeground="navy").pack(side=tk.LEFT, padx=2)
-        _vsep(r0)
         tk.Checkbutton(r0, text="Grid", variable=self._show_grid,
                        command=self._replot, font=F9).pack(side=tk.LEFT, padx=2)
         _vsep(r0)
@@ -502,7 +501,23 @@ class PlotWidget(tk.Frame):
         _eyhi.pack(side=tk.LEFT)
         _eyhi.bind("<Return>",   lambda e: self._replot())
         _eyhi.bind("<FocusOut>", lambda e: self._replot())
-        tk.Button(r1, text="Auto Y", font=F9, command=self._auto_y).pack(side=tk.LEFT, padx=(3, 0))
+        tk.Button(r1, text="Auto", font=F9, command=self._auto_y).pack(side=tk.LEFT, padx=(3, 0))
+
+        _vsep(r1)
+
+        tk.Label(r1, text="Y (Exp):", font=F9).pack(side=tk.LEFT)
+        _eeylo = tk.Entry(r1, textvariable=self._ylim_exp_lo, width=7, font=("Courier", 9))
+        _eeylo.pack(side=tk.LEFT, padx=(2, 0))
+        _eeylo.bind("<Return>",   lambda e: self._replot())
+        _eeylo.bind("<FocusOut>", lambda e: self._replot())
+        tk.Label(r1, text="\u2192", font=F9).pack(side=tk.LEFT, padx=1)
+        _eeyhi = tk.Entry(r1, textvariable=self._ylim_exp_hi, width=7, font=("Courier", 9))
+        _eeyhi.pack(side=tk.LEFT)
+        _eeyhi.bind("<Return>",   lambda e: self._replot())
+        _eeyhi.bind("<FocusOut>", lambda e: self._replot())
+        tk.Button(r1, text="Auto", font=F9,
+                  command=lambda: (self._ylim_exp_lo.set(""), self._ylim_exp_hi.set(""), self._replot())
+                  ).pack(side=tk.LEFT, padx=(3, 0))
 
         _vsep(r1)
 
@@ -515,13 +530,28 @@ class PlotWidget(tk.Frame):
         _vsep(r1)
 
         tk.Label(r1, text="Ticks:", font=F9).pack(side=tk.LEFT)
-        for val, lbl in (("out", "Out"), ("in", "In"), ("both", "Both")):
+        for val, lbl in (("in", "In"), ("out", "Out"), ("both", "Both")):
             tk.Radiobutton(r1, text=lbl, variable=self._tick_direction,
                            value=val, command=self._replot, font=F9).pack(side=tk.LEFT, padx=1)
 
         # ── Row 2: Axis labels ────────────────────────────────────────────────────
         r2 = tk.Frame(outer, padx=4, pady=2)
         r2.pack(side=tk.TOP, fill=tk.X)
+
+        tk.Label(r2, text="Title:", font=F9).pack(side=tk.LEFT)
+        _tle = tk.Entry(r2, textvariable=self._custom_title, font=("", 9),
+                        relief=tk.SUNKEN, width=18, bg="#f8f8ff")
+        _tle.pack(side=tk.LEFT, padx=(2, 0))
+        _tle.bind("<Return>",   lambda _: self._replot())
+        _tle.bind("<FocusOut>", lambda _: self._replot())
+        tk.Button(r2, text="Auto", font=F9,
+                  command=lambda: (self._custom_title.set(""), self._replot())
+                  ).pack(side=tk.LEFT, padx=(2, 2))
+        tk.Button(r2, text="None", font=F9,
+                  command=lambda: (self._custom_title.set("\x00"), self._replot())
+                  ).pack(side=tk.LEFT, padx=(0, 4))
+
+        _vsep(r2)
 
         tk.Label(r2, text="X label:", font=F9).pack(side=tk.LEFT)
         _xle = tk.Entry(r2, textvariable=self._custom_x_label, font=("", 9),
@@ -549,9 +579,18 @@ class PlotWidget(tk.Frame):
                        command=self._replot, font=F9).pack(side=tk.LEFT)
         self._right_ylabel_entry = tk.Entry(r2, textvariable=self._custom_right_ylabel,
                                             width=16, font=("", 9), relief=tk.SUNKEN, bg="#f8f8ff")
-        self._right_ylabel_entry.pack(side=tk.LEFT, padx=(2, 0))
+        self._right_ylabel_entry.pack(side=tk.LEFT, padx=(2, 4))
         self._right_ylabel_entry.bind("<Return>",   lambda _: self._replot())
         self._right_ylabel_entry.bind("<FocusOut>", lambda _: self._replot())
+
+        _vsep(r2)
+
+        tk.Label(r2, text="\u03bb axis:", font=F9).pack(side=tk.LEFT)
+        _nme = tk.Entry(r2, textvariable=self._custom_nm_label, font=("", 9),
+                        relief=tk.SUNKEN, width=10, bg="#f8f8ff")
+        _nme.pack(side=tk.LEFT, padx=(2, 0))
+        _nme.bind("<Return>",   lambda _: self._replot())
+        _nme.bind("<FocusOut>", lambda _: self._replot())
 
         # ── Row 3: Legend + Inset + Clear buttons ─────────────────────────────
         r3 = tk.Frame(outer, padx=4, pady=2)
@@ -1170,16 +1209,31 @@ class PlotWidget(tk.Frame):
         # Set ticks in nm space — secondary_xaxis applies the inverse to place them
         ax_top.set_xticks(tick_nm)
         ax_top.set_xticklabels([str(int(t)) for t in tick_nm])
-        ax_top.set_xlabel(
-            "\u03bb (nm)",
-            fontsize=self._font_xlabel_size.get(),
-            fontweight="bold" if self._font_xlabel_bold.get() else "normal",
-        )
+
+        _nm_lbl = self._custom_nm_label.get().strip()
+        if _nm_lbl:
+            ax_top.set_xlabel(
+                _nm_lbl,
+                fontsize=self._font_xlabel_size.get(),
+                fontweight="bold" if self._font_xlabel_bold.get() else "normal",
+            )
+        else:
+            ax_top.set_xlabel("")
+
+        _tdir = self._tick_direction.get()
         ax_top.tick_params(
-            axis="x",
+            axis="x", which="both",
+            direction=_tdir,
             labelsize=self._font_tick_size.get(),
-            direction=self._tick_direction.get(),
+            top=True, bottom=False,
         )
+        # Force tick direction on the underlying Tick objects (secondary_xaxis quirk)
+        for tick in ax_top.xaxis.get_major_ticks():
+            tick.tick1line.set_visible(True)
+            if _tdir == "in":
+                tick.tick1line.set_markersize(4)
+            elif _tdir == "both":
+                tick.tick2line.set_visible(True)
 
     # ══════════════════════════════════════════════════════════════════════════
     #  Figure — ax and ax2 created ONCE; never destroyed (fixes toolbar zoom)
@@ -1312,7 +1366,8 @@ class PlotWidget(tk.Frame):
         tbl.pack(fill=tk.X, expand=True, padx=2)
         # Label column expands; give the fixed columns a consistent minimum width
         tbl.columnconfigure(1, weight=1, minsize=280)
-        for _c in (0, 2, 3, 4, 5, 6, 7, 8, 9):
+        tbl.columnconfigure(0, minsize=46)
+        for _c in (2, 3, 4, 5, 6, 7, 8, 9):
             tbl.columnconfigure(_c, minsize=30)
 
         HDR_BG = "#e8e8e8"
@@ -1379,8 +1434,8 @@ class PlotWidget(tk.Frame):
             r = i + 1   # row 0 = header
 
             # Col 0: swatch
-            tk.Button(tbl, bg=colour, relief=tk.RAISED, width=3,
-                      text="T", fg="white", font=("", 7, "bold"),
+            tk.Button(tbl, bg=colour, relief=tk.RAISED, width=4,
+                      text="TDD", fg="white", font=("", 7, "bold"),
                       activebackground=colour, cursor="hand2",
                       command=lambda idx=i: self._pick_tddft_colour(idx)
                       ).grid(row=r, column=0, padx=SPX, pady=0, sticky="w")
@@ -1446,8 +1501,8 @@ class PlotWidget(tk.Frame):
             r = offset + i
 
             # Col 0: swatch
-            tk.Button(tbl, bg=colour, relief=tk.RAISED, width=3,
-                      text="E", fg="white", font=("", 7, "bold"),
+            tk.Button(tbl, bg=colour, relief=tk.RAISED, width=4,
+                      text="EXP", fg="white", font=("", 7, "bold"),
                       activebackground=colour, cursor="hand2",
                       command=lambda idx=i: self._pick_exp_colour(idx)
                       ).grid(row=r, column=0, padx=SPX, pady=0, sticky="w")
@@ -2565,7 +2620,7 @@ class PlotWidget(tk.Frame):
                     if _show_sticks.get():
                         ml, sl, bl = ax_t.stem(
                             x_arr, yp, linefmt=col_c, markerfmt="o", basefmt=" ",
-                            label=comp_lbl
+                            label="_nolegend_"
                         )
                         ml.set_markersize(_st["stick_markersize"] if _st.get("stick_markers", True) else 0)
                         ml.set_color(col_c)
@@ -2616,7 +2671,7 @@ class PlotWidget(tk.Frame):
                 if _show_sticks.get():
                     ml, sl, bl = ax_t.stem(
                         x_arr, y_plot, linefmt=colour, markerfmt="o", basefmt=" ",
-                        label=name if _in_legend.get() else None
+                        label="_nolegend_"
                     )
                     ml.set_markersize(_st["stick_markersize"] if _st.get("stick_markers", True) else 0)
                     ml.set_color(colour)
@@ -2711,11 +2766,15 @@ class PlotWidget(tk.Frame):
             fontsize=self._font_ylabel_size.get(),
             fontweight="bold" if self._font_ylabel_bold.get() else "normal")
 
-        title = self._custom_title.get().strip() or self._auto_title()
-        self.ax.set_title(
-            title,
-            fontsize=self._font_title_size.get(),
-            fontweight="bold" if self._font_title_bold.get() else "normal")
+        _raw_title = self._custom_title.get()
+        if _raw_title == "\x00":          # "None" button pressed — suppress title
+            self.ax.set_title("")
+        else:
+            title = _raw_title.strip() or self._auto_title()
+            self.ax.set_title(
+                title,
+                fontsize=self._font_title_size.get(),
+                fontweight="bold" if self._font_title_bold.get() else "normal")
 
         # Tick label size + direction (both axes)
         self.ax.tick_params(axis="both", labelsize=self._font_tick_size.get(),
@@ -2759,6 +2818,12 @@ class PlotWidget(tk.Frame):
             cur = ax_t.get_ylim()
             ax_t.set_ylim(y_lo if y_lo is not None else cur[0],
                           y_hi if y_hi is not None else cur[1])
+        ey_lo = _parse_float(self._ylim_exp_lo)
+        ey_hi = _parse_float(self._ylim_exp_hi)
+        if (ey_lo is not None or ey_hi is not None) and ax_e is not None:
+            cur = ax_e.get_ylim()
+            ax_e.set_ylim(ey_lo if ey_lo is not None else cur[0],
+                          ey_hi if ey_hi is not None else cur[1])
 
         # ── Secondary nm axis (cm⁻¹ mode only) ──────────────────────────────────
         _nm_axis_active = (
