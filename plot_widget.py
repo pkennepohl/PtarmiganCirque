@@ -1168,7 +1168,11 @@ class PlotWidget(tk.Frame):
         def _cm_to_nm(x):
             arr = np.asarray(x, dtype=float)
             with np.errstate(divide="ignore", invalid="ignore"):
-                return np.where(arr > 0, 1e7 / arr, np.nan)
+                # Clamp to ≥ 0.1 cm⁻¹ so the transform never returns NaN.
+                # At secondary-axis creation time matplotlib calls this with
+                # its default xlim (0, 1) — a NaN result there breaks minor-
+                # tick computation and silently kills the axis render.
+                return 1e7 / np.maximum(arr, 0.1)
 
         cm_lo_raw, cm_hi_raw = ax.get_xlim()
         cm_lo = min(cm_lo_raw, cm_hi_raw)
@@ -1176,17 +1180,14 @@ class PlotWidget(tk.Frame):
         if cm_hi <= 0:
             return  # entire visible range is non-physical
 
-        # Clamp cm_lo to a small positive value so that matplotlib's auto-scale
-        # margin (which can go to 0 or slightly negative for low-energy data)
-        # doesn't abort the nm axis entirely.
-        cm_lo = max(cm_lo, 1.0)
-
         # Create secondary axis — same function both ways (self-inverse transform)
         ax_top = ax.secondary_xaxis("top", functions=(_cm_to_nm, _cm_to_nm))
 
-        # Determine nm range and pick a clean tick step
-        # (nm is inverse of cm⁻¹, so low cm⁻¹ → high nm)
-        nm_hi = 1e7 / cm_lo
+        # Determine nm range for tick selection.
+        # Use actual positive xlim values; if cm_lo ≤ 0 (autoscale margin),
+        # clamp to a fraction of cm_hi so we don't compute absurdly large nm.
+        cm_lo_pos = max(cm_lo, cm_hi * 0.01)
+        nm_hi = 1e7 / cm_lo_pos
         nm_lo = 1e7 / cm_hi
         if nm_hi <= nm_lo:
             return
