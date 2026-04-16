@@ -249,6 +249,7 @@ class PlotWidget(tk.Frame):
         self._show_nm_axis   = tk.BooleanVar(value=False)  # secondary nm axis (cm⁻¹ mode only)
         self._nm_axis_cb     = None                        # reference to the checkbox widget
         self._custom_nm_label = tk.StringVar(value="\u03bb (nm)")  # label for the top nm axis
+        self._nm_step        = tk.StringVar(value="")      # manual tick step in nm (blank = auto)
 
         # Manual axis-range overrides (empty string = auto-scale)
         self._xlim_lo = tk.StringVar(value="")
@@ -448,7 +449,14 @@ class PlotWidget(tk.Frame):
         self._nm_axis_cb = tk.Checkbutton(
             r0, text="\u03bb(nm)", variable=self._show_nm_axis,
             command=self._replot, font=F9, state=tk.DISABLED)
-        self._nm_axis_cb.pack(side=tk.LEFT, padx=(1, 3))
+        self._nm_axis_cb.pack(side=tk.LEFT, padx=(1, 1))
+        tk.Label(r0, text="step:", font=F9).pack(side=tk.LEFT)
+        _nm_step_e = tk.Entry(r0, textvariable=self._nm_step, width=6,
+                              font=("Courier", 9))
+        _nm_step_e.pack(side=tk.LEFT, padx=(1, 3))
+        _nm_step_e.bind("<Return>",   lambda _: self._replot())
+        _nm_step_e.bind("<FocusOut>", lambda _: self._replot())
+        _ToolTip(_nm_step_e, "nm tick step for \u03bb axis.\nLeave blank for auto.")
 
         _vsep(r0)
         tk.Checkbutton(r0, text="Normalise", variable=self._normalise,
@@ -1192,16 +1200,32 @@ class PlotWidget(tk.Frame):
         if nm_hi <= nm_lo:
             return
 
-        candidates = [5, 10, 20, 25, 50, 100, 200, 250, 500, 1000, 2500, 5000, 10000, 25000, 50000]
-        chosen_step = candidates[-1]
-        for step in candidates:
-            first = math.ceil(nm_lo / step) * step
-            last  = math.floor(nm_hi / step) * step
-            count = (int(round((last - first) / step)) + 1
-                     if last >= first else 0)
-            if 4 <= count <= 10:
-                chosen_step = step
-                break
+        # Manual step overrides auto-select
+        _manual = None
+        try:
+            _v = float(self._nm_step.get().strip())
+            if _v > 0:
+                _manual = _v
+        except (ValueError, AttributeError):
+            pass
+
+        if _manual is not None:
+            chosen_step = _manual
+        else:
+            # Geometric candidate list — works across UV, Vis, near-IR ranges
+            candidates = [
+                5, 10, 20, 25, 50, 100, 200, 250, 500,
+                1000, 2000, 2500, 5000, 10000, 25000, 50000
+            ]
+            chosen_step = candidates[-1]
+            for step in candidates:
+                first = math.ceil(nm_lo / step) * step
+                last  = math.floor(nm_hi / step) * step
+                count = (int(round((last - first) / step)) + 1
+                         if last >= first else 0)
+                if 4 <= count <= 12:
+                    chosen_step = step
+                    break
 
         first_tick = math.ceil(nm_lo / chosen_step) * chosen_step
         last_tick  = math.floor(nm_hi / chosen_step) * chosen_step
