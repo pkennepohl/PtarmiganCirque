@@ -1173,19 +1173,25 @@ class PlotWidget(tk.Frame):
         cm_lo_raw, cm_hi_raw = ax.get_xlim()
         cm_lo = min(cm_lo_raw, cm_hi_raw)
         cm_hi = max(cm_lo_raw, cm_hi_raw)
-        if cm_lo <= 0:
-            return
+        if cm_hi <= 0:
+            return  # entire visible range is non-physical
+
+        # Clamp cm_lo to a small positive value so that matplotlib's auto-scale
+        # margin (which can go to 0 or slightly negative for low-energy data)
+        # doesn't abort the nm axis entirely.
+        cm_lo = max(cm_lo, 1.0)
 
         # Create secondary axis — same function both ways (self-inverse transform)
         ax_top = ax.secondary_xaxis("top", functions=(_cm_to_nm, _cm_to_nm))
 
         # Determine nm range and pick a clean tick step
+        # (nm is inverse of cm⁻¹, so low cm⁻¹ → high nm)
         nm_hi = 1e7 / cm_lo
         nm_lo = 1e7 / cm_hi
         if nm_hi <= nm_lo:
             return
 
-        candidates = [5, 10, 20, 25, 50, 100, 200, 250, 500, 1000, 2500, 5000]
+        candidates = [5, 10, 20, 25, 50, 100, 200, 250, 500, 1000, 2500, 5000, 10000, 25000, 50000]
         chosen_step = candidates[-1]
         for step in candidates:
             first = math.ceil(nm_lo / step) * step
