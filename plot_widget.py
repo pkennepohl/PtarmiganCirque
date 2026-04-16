@@ -246,6 +246,8 @@ class PlotWidget(tk.Frame):
         # Master visibility toggles
         self._show_tddft = tk.BooleanVar(value=True)
         self._tddft_on_left = tk.StringVar(value="left")  # "left" or "right"
+        self._show_nm_axis  = tk.BooleanVar(value=False)  # secondary nm axis (cm⁻¹ mode only)
+        self._nm_axis_cb    = None                         # reference to the checkbox widget
 
         # Manual axis-range overrides (empty string = auto-scale)
         self._xlim_lo = tk.StringVar(value="")
@@ -440,6 +442,10 @@ class PlotWidget(tk.Frame):
             tk.Radiobutton(r0, text=label, variable=self._x_unit,
                            value=unit, command=self._on_unit_change,
                            font=F9).pack(side=tk.LEFT, padx=1)
+        self._nm_axis_cb = tk.Checkbutton(
+            r0, text="\u03bb(nm)", variable=self._show_nm_axis,
+            command=self._replot, font=F9, state=tk.DISABLED)
+        self._nm_axis_cb.pack(side=tk.LEFT, padx=(1, 3))
 
         _vsep(r0)
         tk.Checkbutton(r0, text="Normalise", variable=self._normalise,
@@ -1101,7 +1107,79 @@ class PlotWidget(tk.Frame):
         self._fwhm.set(max(lo, min(hi, new_global_fwhm)))
         self._sync_fwhm_entry()
         self._prev_x_unit = unit
+        self._update_nm_axis_btn_state()
         self._replot()
+
+    # ──────────────────────────────────────────────────────────────────────────
+    #  Secondary nm-axis helpers
+    # ──────────────────────────────────────────────────────────────────────────
+    def _update_nm_axis_btn_state(self):
+        """Enable the λ(nm) checkbox only when the X-axis is in cm⁻¹."""
+        if self._nm_axis_cb is None:
+            return
+        is_cm = self._x_unit.get() == "cm\u207b\u00b9"
+        self._nm_axis_cb.config(state=tk.NORMAL if is_cm else tk.DISABLED)
+        if not is_cm:
+            self._show_nm_axis.set(False)
+
+    def _draw_secondary_nm_axis(self, ax) -> None:
+        """Add a secondary x-axis on top showing wavelength in nm (cm⁻¹ mode only)."""
+        import math
+
+        def _cm_to_nm(x):
+            arr = np.asarray(x, dtype=float)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                return np.where(arr > 0, 1e7 / arr, np.nan)
+
+        cm_lo_raw, cm_hi_raw = ax.get_xlim()
+        cm_lo = min(cm_lo_raw, cm_hi_raw)
+        cm_hi = max(cm_lo_raw, cm_hi_raw)
+        if cm_lo <= 0:
+            return
+
+        # Create secondary axis — same function both ways (self-inverse transform)
+        ax_top = ax.secondary_xaxis("top", functions=(_cm_to_nm, _cm_to_nm))
+
+        # Determine nm range and pick a clean tick step
+        nm_hi = 1e7 / cm_lo
+        nm_lo = 1e7 / cm_hi
+        if nm_hi <= nm_lo:
+            return
+
+        candidates = [5, 10, 20, 25, 50, 100, 200, 250, 500, 1000, 2500, 5000]
+        chosen_step = candidates[-1]
+        for step in candidates:
+            first = math.ceil(nm_lo / step) * step
+            last  = math.floor(nm_hi / step) * step
+            count = (int(round((last - first) / step)) + 1
+                     if last >= first else 0)
+            if 4 <= count <= 10:
+                chosen_step = step
+                break
+
+        first_tick = math.ceil(nm_lo / chosen_step) * chosen_step
+        last_tick  = math.floor(nm_hi / chosen_step) * chosen_step
+        if first_tick > last_tick:
+            return
+
+        tick_nm = np.arange(first_tick, last_tick + 0.5 * chosen_step, chosen_step)
+        tick_nm = tick_nm[(tick_nm >= nm_lo) & (tick_nm <= nm_hi)]
+        if len(tick_nm) == 0:
+            return
+
+        # Set ticks in nm space — secondary_xaxis applies the inverse to place them
+        ax_top.set_xticks(tick_nm)
+        ax_top.set_xticklabels([str(int(t)) for t in tick_nm])
+        ax_top.set_xlabel(
+            "\u03bb (nm)",
+            fontsize=self._font_xlabel_size.get(),
+            fontweight="bold" if self._font_xlabel_bold.get() else "normal",
+        )
+        ax_top.tick_params(
+            axis="x",
+            labelsize=self._font_tick_size.get(),
+            direction=self._tick_direction.get(),
+        )
 
     # ══════════════════════════════════════════════════════════════════════════
     #  Figure — ax and ax2 created ONCE; never destroyed (fixes toolbar zoom)
@@ -2682,8 +2760,16 @@ class PlotWidget(tk.Frame):
             ax_t.set_ylim(y_lo if y_lo is not None else cur[0],
                           y_hi if y_hi is not None else cur[1])
 
+        # ── Secondary nm axis (cm⁻¹ mode only) ──────────────────────────────────
+        _nm_axis_active = (
+            self._x_unit.get() == "cm\u207b\u00b9"
+            and self._show_nm_axis.get()
+        )
+        if _nm_axis_active:
+            self._draw_secondary_nm_axis(self.ax)
+
         # ── Layout first so legend bbox coords are stable ─────────────────────
-        self.fig.tight_layout(pad=2.5)
+        self.fig.tight_layout(pad=3.0 if _nm_axis_active else 2.5)
 
         # ── Legend (after tight_layout so position is correct) ────────────────
         # Disconnect all stale drag callbacks from previous draw
