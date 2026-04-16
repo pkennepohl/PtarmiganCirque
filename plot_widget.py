@@ -1220,20 +1220,11 @@ class PlotWidget(tk.Frame):
         else:
             ax_top.set_xlabel("")
 
-        _tdir = self._tick_direction.get()
         ax_top.tick_params(
             axis="x", which="both",
-            direction=_tdir,
+            direction=self._tick_direction.get(),
             labelsize=self._font_tick_size.get(),
-            top=True, bottom=False,
         )
-        # Force tick direction on the underlying Tick objects (secondary_xaxis quirk)
-        for tick in ax_top.xaxis.get_major_ticks():
-            tick.tick1line.set_visible(True)
-            if _tdir == "in":
-                tick.tick1line.set_markersize(4)
-            elif _tdir == "both":
-                tick.tick2line.set_visible(True)
 
     # ══════════════════════════════════════════════════════════════════════════
     #  Figure — ax and ax2 created ONCE; never destroyed (fixes toolbar zoom)
