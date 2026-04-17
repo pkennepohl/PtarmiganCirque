@@ -2304,33 +2304,17 @@ class PlotWidget(tk.Frame):
     def load_spectrum(self, spectrum: TDDFTSpectrum):
         if not self._custom_title.get().strip():
             self._custom_title.set(spectrum.display_name())
-        if spectrum.is_xas:
-            if self._x_unit.get() == "nm":
-                # Switching away from nm — convert FWHM from nm (cm⁻¹ space) → eV
-                converted = self._convert_fwhm_value(self._fwhm.get(), "nm", "eV")
-                self._x_unit.set("eV")
-                self._prev_x_unit = "eV"
-                lo, hi, res = self._fwhm_slider_range("eV")
-                self._fwhm_slider.config(from_=lo, to=hi, resolution=res)
-                self._fwhm_unit_label.config(text="eV")
-                self._fwhm.set(max(lo, min(hi, converted)))
-            else:
-                # Already in an energy unit — just make sure slider range is correct
-                cur = self._x_unit.get()
-                lo, hi, res = self._fwhm_slider_range(cur)
-                self._fwhm_slider.config(from_=lo, to=hi, resolution=res)
-                fwhm_lbl = "Ha" if cur == "Ha" else "eV"
-                self._fwhm_unit_label.config(text=fwhm_lbl)
-        else:
-            # UV-Vis — switch to nm, store FWHM in cm⁻¹ space
-            old_unit = self._prev_x_unit
-            self._x_unit.set("nm")
-            self._prev_x_unit = "nm"
-            lo, hi, res = 100, 8000, 100   # narrow cm⁻¹ range suitable for UV-Vis
-            self._fwhm_slider.config(from_=lo, to=hi, resolution=res)
-            self._fwhm_unit_label.config(text="cm\u207b\u00b9")
-            converted = self._convert_fwhm_value(self._fwhm.get(), old_unit, "nm")
-            self._fwhm.set(max(lo, min(hi, converted)) if converted >= lo else 3000)
+        # Never override the user's chosen x-unit or axis limits — just ensure
+        # the FWHM slider range matches whatever unit is currently active.
+        cur = self._x_unit.get()
+        lo, hi, res = self._fwhm_slider_range(cur)
+        self._fwhm_slider.config(from_=lo, to=hi, resolution=res)
+        fwhm_lbl = (
+            "cm\u207b\u00b9" if cur in ("cm\u207b\u00b9", "nm") else
+            "Ha"              if cur == "Ha" else
+            "eV"
+        )
+        self._fwhm_unit_label.config(text=fwhm_lbl)
         self._sync_fwhm_entry()
 
         label = getattr(spectrum, "_custom_label", None) or spectrum.display_name()
