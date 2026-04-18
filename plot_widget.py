@@ -2318,29 +2318,32 @@ class PlotWidget(tk.Frame):
         self._sync_fwhm_entry()
 
         label = getattr(spectrum, "_custom_label", None) or spectrum.display_name()
+        # Carry forward per-spectrum params from the existing slot-0 entry so
+        # that switching spectra doesn't reset broadening, scale, etc.
+        _prev = self._tddft_spectra[0] if self._tddft_spectra else None
         entry = {
             "label":      label,
             "spectrum":   spectrum,
             "enabled":    tk.BooleanVar(value=True),
             "color":      "",
-            # Per-spectrum parameters (initialised from current global defaults)
-            "fwhm":       tk.DoubleVar(value=self._fwhm.get()),
-            "broadening": tk.StringVar(value=self._broadening.get()),
-            "delta_e":    tk.DoubleVar(value=self._delta_e.get()),
-            "scale":      tk.DoubleVar(value=self._tddft_scale.get()),
+            # Preserve current values if an entry already exists; fall back to globals
+            "fwhm":       tk.DoubleVar(value=_prev["fwhm"].get() if _prev else self._fwhm.get()),
+            "broadening": tk.StringVar(value=_prev["broadening"].get() if _prev else self._broadening.get()),
+            "delta_e":    tk.DoubleVar(value=_prev["delta_e"].get() if _prev else self._delta_e.get()),
+            "scale":      tk.DoubleVar(value=_prev["scale"].get() if _prev else self._tddft_scale.get()),
             # Per-spectrum component toggles (for combined spectra)
             "comb_total": tk.BooleanVar(value=True),
             "comb_d2":    tk.BooleanVar(value=False),
             "comb_m2":    tk.BooleanVar(value=False),
             "comb_q2":    tk.BooleanVar(value=False),
-            # Per-spectrum display toggles
-            "show_sticks": tk.BooleanVar(value=self._show_sticks.get()),
-            "show_env":    tk.BooleanVar(value=self._show_env.get()),
-            "show_trans":  tk.BooleanVar(value=self._show_trans.get()),
-            # Per-spectrum style (independent copy of global defaults)
-            "style":       _default_tddft_style(),
+            # Per-spectrum display toggles — preserve if replacing
+            "show_sticks": tk.BooleanVar(value=_prev["show_sticks"].get() if _prev else self._show_sticks.get()),
+            "show_env":    tk.BooleanVar(value=_prev["show_env"].get()    if _prev else self._show_env.get()),
+            "show_trans":  tk.BooleanVar(value=_prev["show_trans"].get()  if _prev else self._show_trans.get()),
+            # Per-spectrum style — preserve if replacing
+            "style":       dict(_prev["style"]) if _prev else _default_tddft_style(),
             # Legend inclusion
-            "in_legend":   tk.BooleanVar(value=True),
+            "in_legend":   tk.BooleanVar(value=_prev["in_legend"].get() if _prev else True),
         }
         if self._tddft_spectra:
             # Replace the primary (index 0) — keep any overlays intact
