@@ -11,6 +11,9 @@ A desktop application for visualising and analysing TDDFT X-ray absorption spect
 - Energy shift and intensity scale controls
 - Overlay multiple TDDFT spectra for comparison
 - Load experimental XAS data (`.dat`, `.prj` Athena files)
+- Dedicated EXAFS studio with q-space, R-space, q/R overlap, and window controls
+- FEFF working-directory support for loading path files and launching FEFF runs
+- Optional FEFF10 setup prompt that can download FEFF source from GitHub and try a local build
 - Inset zoom panel with connector lines
 - Full font, colour, axis label, and legend control
 - Pop-out resizable graph window with auto-update
@@ -23,7 +26,12 @@ A desktop application for visualising and analysing TDDFT X-ray absorption spect
 ## Requirements
 
 - Python 3.9 or newer
-- See `requirements.txt` for full dependency list
+- **tkinter** (ships with Python, but may need explicit installation):
+  - **Windows:** Reinstall Python → Custom install → check **"tcl/tk and IDLE"**
+  - **macOS:** Usually included. If not: `brew install python-tk@3.11`
+  - **Linux:** `sudo apt install python3-tk`
+  - Test with: `python -c "import tkinter; print('ok')"`
+- See `requirements.txt` for full pip dependency list
 
 ---
 
@@ -46,7 +54,9 @@ pip install -r requirements.txt
 python binah.py
 ```
 
-> **Note:** The SGM beamline loader (`sgmanalysis`) is optional — the app will work without it if you do not need to load CLS SGM data files.
+> **Note:** This repository now bundles the `sgmanalysis` source used for CLS SGM data support, so you do not need a separate checkout of `SGMPython`.
+>
+> **Optional FEFF setup:** Binah can prompt to download FEFF10 from GitHub for EXAFS/FEFF workflows. FEFF10 is distributed as source code, so Binah can bootstrap the source tree and attempt a build, but a supported local compiler/toolchain is still required.
 
 ---
 
@@ -99,9 +109,11 @@ plot_widget.py         — Core plotting widget
 orca_parser.py         — ORCA .out file parser
 experimental_parser.py — Experimental XAS data parser
 xas_analysis_tab.py    — XAS pre-edge analysis panel
+exafs_analysis_tab.py  — EXAFS studio with q/R views, windowing, and FEFF tools
 project_manager.py     — Project save / load (.otproj)
 sgm_xas_loader.py      — CLS SGM beamline data loader
 ledge_normalizer.py    — L-edge normalisation utilities
+sgmanalysis/           — Bundled SGMPython analysis package
 ```
 
 ---
