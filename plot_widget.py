@@ -3112,13 +3112,24 @@ class PlotWidget(tk.Frame):
                 fontsize=self._font_ylabel_size.get(),
                 fontweight="bold" if self._font_ylabel_bold.get() else "normal",
                 color="darkred")
-            _show_left_exp = self._show_left_ylabel.get()
-            ax_e.tick_params(
-                axis="y",
-                labelcolor="darkred" if _show_left_exp else "none",
-                labelleft=_show_left_exp,
-                labelright=False,
-            )
+            # Exp labels go on whichever side ax_e occupies.
+            # When TDDFT is on the left ax_e is the twin (right) axis;
+            # when TDDFT is on the right ax_e is the primary (left) axis.
+            _show_exp_ticks = _show_right
+            if _tddft_left:
+                ax_e.tick_params(
+                    axis="y",
+                    labelcolor="darkred" if _show_exp_ticks else "none",
+                    labelleft=False,
+                    labelright=_show_exp_ticks,
+                )
+            else:
+                ax_e.tick_params(
+                    axis="y",
+                    labelcolor="darkred" if _show_exp_ticks else "none",
+                    labelleft=_show_exp_ticks,
+                    labelright=False,
+                )
             ax_e.axhline(0, color="darkred", linewidth=0.4, alpha=0.3)
 
         # ── Align y=0 of both axes when experimental overlay is active ───────
@@ -3159,14 +3170,30 @@ class PlotWidget(tk.Frame):
         self.ax.tick_params(axis="both", labelsize=self._font_tick_size.get(),
                             direction=self._tick_direction.get())
         if self.ax2 is not None:
-            _show_left = self._show_left_ylabel.get()
-            self.ax2.tick_params(
-                axis="y",
-                labelsize=self._font_tick_size.get(),
-                labelcolor="darkred" if _show_right else "none",
-                labelright=_show_right,
-                direction=self._tick_direction.get(),
-            )
+            # ax2 is always on the right side. When TDDFT is on the left,
+            # ax2 = ax_e (exp, darkred). When TDDFT is on the right,
+            # ax2 = ax_t (TDDFT, black). Always explicitly clear labelleft.
+            if _tddft_left:
+                # ax2 carries the exp axis — darkred, right side only
+                self.ax2.tick_params(
+                    axis="y",
+                    labelsize=self._font_tick_size.get(),
+                    labelcolor="darkred" if _show_right else "none",
+                    labelleft=False,
+                    labelright=_show_right,
+                    direction=self._tick_direction.get(),
+                )
+            else:
+                # ax2 carries the TDDFT axis — right side, default colour
+                _show_tddft = self._show_left_ylabel.get()
+                self.ax2.tick_params(
+                    axis="y",
+                    labelsize=self._font_tick_size.get(),
+                    labelcolor="black" if _show_tddft else "none",
+                    labelleft=False,
+                    labelright=_show_tddft,
+                    direction=self._tick_direction.get(),
+                )
 
         self.ax.set_facecolor(self._bg_colour)
         self.fig.patch.set_facecolor(self._bg_colour)
