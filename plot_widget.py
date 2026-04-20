@@ -301,6 +301,10 @@ class PlotWidget(tk.Frame):
         self._ylim_hi = tk.StringVar(value="")
         self._ylim_exp_lo = tk.StringVar(value="")  # right / Exp axis
         self._ylim_exp_hi = tk.StringVar(value="")
+        # Upstream uses _yleft_lo/_yleft_hi for the same exp-axis limits;
+        # alias them so the toolbar entries built from upstream code work.
+        self._yleft_lo = self._ylim_exp_lo
+        self._yleft_hi = self._ylim_exp_hi
 
         # Font controls — sizes and bold toggles for each text element
         # Initialised from the user's saved defaults (or factory fallback).
@@ -3185,8 +3189,6 @@ class PlotWidget(tk.Frame):
         x_hi = _parse_float(self._xlim_hi)
         y_lo = _parse_float(self._ylim_lo)
         y_hi = _parse_float(self._ylim_hi)
-        y_left_lo = _parse_float(self._yleft_lo)
-        y_left_hi = _parse_float(self._yleft_hi)
         if x_lo is not None or x_hi is not None:
             cur = self.ax.get_xlim()
             self.ax.set_xlim(x_lo if x_lo is not None else cur[0],
