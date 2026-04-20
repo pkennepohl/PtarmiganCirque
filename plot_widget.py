@@ -226,7 +226,7 @@ class PlotWidget(tk.Frame):
         self._tddft_spectra: List[dict] = []
 
         # Experimental scan list: [(label, ExperimentalScan, enabled_BooleanVar, style_dict), ...]
-        self._exp_scans: List[Tuple[str, ExperimentalScan, tk.BooleanVar, dict]] = []
+        self._exp_scans: List[Tuple[str, ExperimentalScan, tk.BooleanVar, dict, tk.BooleanVar]] = []
         self._exp_link_counter = 1
 
         # Global style dictionaries
@@ -1672,13 +1672,13 @@ class PlotWidget(tk.Frame):
     def _selected_exp_entries(self):
         return [
             (i, label, scan, var, style)
-            for i, (label, scan, var, style) in enumerate(self._exp_scans)
+            for i, (label, scan, var, style, _il) in enumerate(self._exp_scans)
             if var.get()
         ]
 
     def _new_exp_link_group_id(self) -> str:
         existing = set()
-        for _label, scan, _var, _style in self._exp_scans:
+        for _label, scan, _var, _style, _il in self._exp_scans:
             meta = getattr(scan, "metadata", {}) or {}
             gid = meta.get("_binah_link_group")
             if gid:
@@ -1691,7 +1691,7 @@ class PlotWidget(tk.Frame):
 
     def _cleanup_exp_link_groups(self):
         groups = {}
-        for _label, scan, _var, _style in self._exp_scans:
+        for _label, scan, _var, _style, _il in self._exp_scans:
             meta = getattr(scan, "metadata", None) or {}
             gid = meta.get("_binah_link_group")
             if gid:
@@ -2667,7 +2667,7 @@ class PlotWidget(tk.Frame):
         return energy, mu, is_norm, e0, scan_type
 
     def _merge_exp_scans(self, use_original: bool = False):
-        selected = [(lbl, scan) for lbl, scan, var, _style in self._exp_scans if var.get()]
+        selected = [(lbl, scan) for lbl, scan, var, _style, _il in self._exp_scans if var.get()]
         if len(selected) < 2:
             messagebox.showinfo(
                 "Merge Experimental Scans",
