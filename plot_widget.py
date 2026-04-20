@@ -3108,10 +3108,11 @@ class PlotWidget(tk.Frame):
                 fontsize=self._font_ylabel_size.get(),
                 fontweight="bold" if self._font_ylabel_bold.get() else "normal",
                 color="darkred")
+            _show_left_exp = self._show_left_ylabel.get()
             ax_e.tick_params(
                 axis="y",
-                labelcolor="darkred" if _show_left else "none",
-                labelleft=_show_left,
+                labelcolor="darkred" if _show_left_exp else "none",
+                labelleft=_show_left_exp,
                 labelright=False,
             )
             ax_e.axhline(0, color="darkred", linewidth=0.4, alpha=0.3)
