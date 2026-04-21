@@ -1365,6 +1365,10 @@ class PlotWidget(tk.Frame):
             lambda e: self._ov_canvas.configure(
                 scrollregion=self._ov_canvas.bbox("all"))
         )
+        # When the panel is revealed (e.g. user switches back to TDDFT tab),
+        # recalculate the canvas height — winfo_reqheight returns 0 on hidden widgets
+        # so any _refresh_panel_content call made from another tab leaves the height wrong.
+        self._ov_inner.bind("<Map>", lambda _e: self._recalc_panel_height())
         self._ov_win_id = self._ov_canvas.create_window(
             (0, 0), window=self._ov_inner, anchor="nw")
         # Stretch inner frame to fill canvas width whenever the panel resizes
@@ -1642,15 +1646,22 @@ class PlotWidget(tk.Frame):
 
         self._ov_inner.update_idletasks()
         self._ov_canvas.configure(scrollregion=self._ov_canvas.bbox("all"))
-        # ── Dynamic canvas height ──────────────────────────────────────────────
-        # Measure actual required height after layout, then clamp to ~6 rows max.
-        # This makes the panel collapse when few items are loaded and grow as
-        # more are added, without ever exceeding the 6-row threshold.
+        self._recalc_panel_height()
+        # Schedule a second pass for when this is called while the TDDFT tab is
+        # hidden — winfo_reqheight() returns 0 on unmapped widgets, so the first
+        # call leaves the canvas at 26 px.  The after() fires once the widget is
+        # rendered and gives the correct height.
+        self.after(50, self._recalc_panel_height)
+        self._update_overlay_panel_visibility()
+
+    def _recalc_panel_height(self):
+        """Resize the overlay canvas to fit its content (capped at ~6 rows)."""
+        self._ov_canvas.configure(scrollregion=self._ov_canvas.bbox("all"))
         actual_h = self._ov_inner.winfo_reqheight()
         _MAX_H   = 155   # ≈ header (26 px) + 6 data rows (~21 px each)
         _MIN_H   = 26    # at least one row visible
-        self._ov_canvas.configure(height=max(_MIN_H, min(actual_h, _MAX_H)))
-        self._update_overlay_panel_visibility()
+        if actual_h > 0:   # only update when the widget is mapped
+            self._ov_canvas.configure(height=max(_MIN_H, min(actual_h, _MAX_H)))
 
     # Alias kept for external callers
     def _refresh_overlay_panel(self):
