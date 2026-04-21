@@ -2775,21 +2775,23 @@ class PlotWidget(tk.Frame):
             f"Overlap: {overlap_lo:.2f} to {overlap_hi:.2f} eV"
         )
 
-    def _remove_tddft_idx(self, idx: int):
-        if 0 <= idx < len(self._tddft_spectra):
-            self._tddft_spectra.pop(idx)
+    def _remove_dataset(self, lst: list, idx: int):
+        """Remove entry at idx from lst, then rebuild the table and replot."""
+        if 0 <= idx < len(lst):
+            lst.pop(idx)
             self._refresh_panel_content()
             self._replot()
+
+    # ── Convenience wrappers kept for any legacy / external callers ───────────
+    def _remove_tddft_idx(self, idx: int):
+        self._remove_dataset(self._tddft_spectra, idx)
 
     def _remove_overlay_idx(self, idx: int):
-        """Legacy alias — old callers used 0-based overlay index (skipping primary)."""
-        self._remove_tddft_idx(idx + 1)
+        """Legacy alias — 0-based overlay index (skips primary at index 0)."""
+        self._remove_dataset(self._tddft_spectra, idx + 1)
 
     def _remove_exp_scan_idx(self, idx: int):
-        if 0 <= idx < len(self._exp_scans):
-            self._exp_scans.pop(idx)
-            self._refresh_panel_content()
-            self._replot()
+        self._remove_dataset(self._exp_scans, idx)
 
     def _clear_overlays(self):
         """Remove all overlay spectra (indices 1+), keeping the primary (index 0)."""
