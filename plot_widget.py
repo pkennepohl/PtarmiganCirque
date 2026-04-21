@@ -2775,6 +2775,12 @@ class PlotWidget(tk.Frame):
             f"Overlap: {overlap_lo:.2f} to {overlap_hi:.2f} eV"
         )
 
+    def _remove_tddft_idx(self, idx: int):
+        if 0 <= idx < len(self._tddft_spectra):
+            self._tddft_spectra.pop(idx)
+            self._refresh_panel_content()
+            self._replot()
+
     def _remove_overlay_idx(self, idx: int):
         """Legacy alias — old callers used 0-based overlay index (skipping primary)."""
         self._remove_tddft_idx(idx + 1)
