@@ -4,10 +4,29 @@ Run with: python binah.py
 Requires: matplotlib, numpy, scipy, xraylarch  (see requirements.txt)
 """
 
-import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
 import os
+import queue
 import sys
+import threading
+
+try:
+    import tkinter as tk
+except ImportError:
+    print(
+        "\n"
+        "ERROR: tkinter is not installed.\n"
+        "tkinter ships with Python but must be enabled at install time.\n"
+        "\n"
+        "  Windows : Reinstall Python → Custom → check 'tcl/tk and IDLE'\n"
+        "  macOS   : brew install python-tk@3.11\n"
+        "  Linux   : sudo apt install python3-tk\n"
+        "\n"
+        "Test it with:  python -c \"import tkinter; print('ok')\"\n",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+from tkinter import ttk, filedialog, messagebox
 
 try:
     from sgm_xas_loader import SGMLoaderApp as _SGMLoaderApp
@@ -18,6 +37,8 @@ except Exception:
 from orca_parser import OrcaParser, TDDFTSpectrum, ParseResult, ParseDiagnosis
 from experimental_parser import ExperimentalParser, ExperimentalScan
 from plot_widget import PlotWidget
+from exafs_analysis_tab import EXAFSAnalysisTab
+import feff_manager
 from xas_analysis_tab import XASAnalysisTab
 import project_manager as pm
 
@@ -46,6 +67,7 @@ class OrcaTDDFTApp(tk.Tk):
         self._build_top_bar()
         self._build_main_area()
         self._build_status_bar()
+        self.after(900, self._maybe_prompt_feff_setup)
 
     # ------------------------------------------------------------------ #
     #  Menu bar                                                             #
@@ -86,6 +108,9 @@ class OrcaTDDFTApp(tk.Tk):
         menubar.add_cascade(label="File", menu=file_menu)
 
         help_menu = tk.Menu(menubar, tearoff=0)
+        help_menu.add_command(label="FEFF Setup / Update...",
+                              command=self._launch_feff_setup)
+        help_menu.add_separator()
         help_menu.add_command(label="About", command=self._show_about)
         menubar.add_cascade(label="Help", menu=help_menu)
 
@@ -140,7 +165,7 @@ class OrcaTDDFTApp(tk.Tk):
 
         # ── Tab 1: Spectra (existing layout) ──────────────────────────────────
         spectra_frame = tk.Frame(nb)
-        nb.add(spectra_frame, text="\U0001f4c8 Spectra")
+        nb.add(spectra_frame, text="\U0001f4c8 TDDFT")
 
         pane = tk.PanedWindow(spectra_frame, orient=tk.HORIZONTAL,
                               sashwidth=5, sashrelief=tk.RAISED)
@@ -193,20 +218,34 @@ class OrcaTDDFTApp(tk.Tk):
 
         # ── Tab 2: XAS Analysis ───────────────────────────────────────────────
         xas_frame = tk.Frame(nb)
-        nb.add(xas_frame, text="\U0001f52c XAS Analysis")
+        nb.add(xas_frame, text="\U0001f52c XANES")
 
         self._xas_tab = XASAnalysisTab(
             xas_frame,
             get_scans_fn=lambda: self._plot._exp_scans,
             replot_fn=lambda: self._plot._replot(),
+            add_scan_fn=self._add_exp_scan_to_plot,
         )
         self._xas_tab.pack(fill=tk.BOTH, expand=True)
 
-        # Auto-run all scans when XAS Analysis tab is selected
+        exafs_frame = tk.Frame(nb)
+        nb.add(exafs_frame, text="⚗ EXAFS")
+
+        self._exafs_tab = EXAFSAnalysisTab(
+            exafs_frame,
+            get_scans_fn=lambda: self._plot._exp_scans,
+            replot_fn=lambda: self._plot._replot(),
+        )
+        self._exafs_tab.pack(fill=tk.BOTH, expand=True)
+
+        # Auto-run all scans when analysis tabs are selected
         def _on_tab_changed(event):
             try:
                 selected = nb.tab(nb.select(), "text")
-                if "XAS" in selected:
+                if "EXAFS" in selected:
+                    self._exafs_tab.refresh_scan_list()
+                    self._exafs_tab.auto_run_all()
+                elif "XANES" in selected:
                     self._xas_tab.refresh_scan_list()
                     self._xas_tab.auto_run_all()
             except Exception:
@@ -221,6 +260,165 @@ class OrcaTDDFTApp(tk.Tk):
         bar = tk.Label(self, textvariable=self._status, bd=1, relief=tk.SUNKEN,
                        anchor="w", padx=6, font=("", 8))
         bar.pack(side=tk.BOTTOM, fill=tk.X)
+
+    def _apply_managed_feff_defaults(self):
+        exe = feff_manager.discover_feff_executable(cfg_path=self._cfg_path)
+        if not exe or not hasattr(self, "_exafs_tab"):
+            return
+        current = self._exafs_tab._feff_exe_var.get().strip()
+        if not current or not os.path.exists(current):
+            self._exafs_tab._feff_exe_var.set(exe)
+
+    def _maybe_prompt_feff_setup(self):
+        self._apply_managed_feff_defaults()
+        if not feff_manager.should_offer_setup(self._cfg_path):
+            return
+
+        choice = messagebox.askyesnocancel(
+            "Optional FEFF Setup",
+            "Binah can download FEFF10 from GitHub and try to build it so "
+            "FEFF-backed EXAFS runs are available.\n\n"
+            "Yes = set up FEFF now\n"
+            "No = do not ask again\n"
+            "Cancel = remind me later",
+            parent=self,
+        )
+        if choice is True:
+            feff_manager.update_setup_state(self._cfg_path, {"auto_prompt": False})
+            self._launch_feff_setup()
+        elif choice is False:
+            feff_manager.update_setup_state(self._cfg_path, {"auto_prompt": False})
+
+    def _launch_feff_setup(self):
+        win = getattr(self, "_feff_setup_win", None)
+        if win is not None and win.winfo_exists():
+            win.lift()
+            win.focus_force()
+            return
+
+        win = tk.Toplevel(self)
+        win.title("FEFF Setup")
+        win.geometry("760x430")
+        win.minsize(620, 320)
+        win.transient(self)
+
+        hdr = tk.Frame(win, bg="#003366", padx=12, pady=10)
+        hdr.pack(fill=tk.X)
+        tk.Label(
+            hdr,
+            text="Managed FEFF Setup",
+            bg="#003366",
+            fg="white",
+            font=("", 11, "bold"),
+        ).pack(anchor="w")
+        tk.Label(
+            hdr,
+            text=(
+                "Binah will download FEFF10 from GitHub and attempt a local build. "
+                "FEFF10 is source code, so a working compiler/toolchain is still required."
+            ),
+            bg="#003366",
+            fg="#d7e7ff",
+            wraplength=700,
+            justify="left",
+            font=("", 9),
+        ).pack(anchor="w", pady=(4, 0))
+
+        body = tk.Frame(win, padx=10, pady=8)
+        body.pack(fill=tk.BOTH, expand=True)
+
+        self._feff_setup_log = tk.Text(body, font=("Courier", 8), wrap=tk.WORD)
+        self._feff_setup_log.pack(fill=tk.BOTH, expand=True)
+        self._feff_setup_log.insert(
+            tk.END,
+            "Starting FEFF10 setup...\n"
+            f"Install directory: {feff_manager.load_setup_state(self._cfg_path).get('install_dir')}\n\n",
+        )
+        self._feff_setup_log.config(state=tk.DISABLED)
+
+        footer = tk.Frame(win, padx=10, pady=8)
+        footer.pack(fill=tk.X)
+        self._feff_setup_status = tk.StringVar(value="Running FEFF setup...")
+        tk.Label(footer, textvariable=self._feff_setup_status, anchor="w",
+                 fg="#003366", font=("", 8)).pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self._feff_setup_close_btn = tk.Button(
+            footer,
+            text="Close",
+            width=12,
+            state=tk.DISABLED,
+            command=win.destroy,
+        )
+        self._feff_setup_close_btn.pack(side=tk.RIGHT)
+
+        self._feff_setup_win = win
+        self._feff_setup_queue = queue.Queue()
+        thread = threading.Thread(target=self._run_feff_setup_worker, daemon=True)
+        thread.start()
+        self.after(120, self._poll_feff_setup_queue)
+
+    def _append_feff_setup_log(self, line: str):
+        log = getattr(self, "_feff_setup_log", None)
+        if log is None:
+            return
+        log.config(state=tk.NORMAL)
+        log.insert(tk.END, line.rstrip() + "\n")
+        log.see(tk.END)
+        log.config(state=tk.DISABLED)
+
+    def _run_feff_setup_worker(self):
+        q = self._feff_setup_queue
+
+        def _log(message: str):
+            q.put(("log", message))
+
+        result = feff_manager.install_or_update_managed_feff(self._cfg_path, _log)
+        q.put(("done", result))
+
+    def _poll_feff_setup_queue(self):
+        q = getattr(self, "_feff_setup_queue", None)
+        win = getattr(self, "_feff_setup_win", None)
+        if q is None or win is None or not win.winfo_exists():
+            return
+
+        done = False
+        result = None
+        while True:
+            try:
+                kind, payload = q.get_nowait()
+            except queue.Empty:
+                break
+            if kind == "log":
+                self._append_feff_setup_log(str(payload))
+            elif kind == "done":
+                done = True
+                result = payload
+
+        if not done:
+            self.after(120, self._poll_feff_setup_queue)
+            return
+
+        self._feff_setup_close_btn.config(state=tk.NORMAL)
+        self._apply_managed_feff_defaults()
+
+        if result and result.get("ok"):
+            exe = str(result.get("exe_path", "")).strip()
+            if exe and hasattr(self, "_exafs_tab"):
+                self._exafs_tab._feff_exe_var.set(exe)
+            msg = "FEFF10 setup complete."
+            self._status.set(msg)
+            self._feff_setup_status.set(msg)
+            self._append_feff_setup_log("")
+            self._append_feff_setup_log(f"Ready: {exe or result.get('repo_dir', '')}")
+        else:
+            msg = "FEFF10 setup needs attention."
+            self._status.set(msg)
+            self._feff_setup_status.set(msg)
+            if result and result.get("message"):
+                self._append_feff_setup_log("")
+                self._append_feff_setup_log(f"Result: {result['message']}")
+                self._append_feff_setup_log(
+                    "You can retry later from Help -> FEFF Setup / Update."
+                )
 
     # ------------------------------------------------------------------ #
     #  Sidebar toggle                                                       #
@@ -365,7 +563,7 @@ class OrcaTDDFTApp(tk.Tk):
 
         hdr = tk.Frame(win, bg="#003366", pady=8)
         hdr.pack(fill=tk.X)
-        tk.Label(hdr, text="Spectra already loaded",
+        tk.Label(hdr, text="TDDFT spectra already loaded",
                  font=("", 11, "bold"), bg="#003366", fg="white").pack(padx=14)
         tk.Label(hdr, text=os.path.basename(path),
                  font=("", 8), bg="#003366", fg="#AACCFF").pack(padx=14)
@@ -689,8 +887,9 @@ class OrcaTDDFTApp(tk.Tk):
             messagebox.showerror(
                 "SGM Loader",
                 "SGM loader not available.\n\n"
-                "Install sgmanalysis:\n"
-                "pip install git+https://github.com/Beamlines-CanadianLightSource/SGMPython.git")
+                "The bundled SGM loader could not be imported.\n"
+                "Check that the repository files are present and the dependencies\n"
+                "from requirements.txt are installed.")
             return
         try:
             # SGMLoaderApp is now a tk.Toplevel — pass self as master so it
@@ -708,6 +907,8 @@ class OrcaTDDFTApp(tk.Tk):
         self._plot.add_exp_scan(label, scan)
         if hasattr(self, "_xas_tab"):
             self._xas_tab.refresh_scan_list()
+        if hasattr(self, "_exafs_tab"):
+            self._exafs_tab.refresh_scan_list()
 
     # ------------------------------------------------------------------ #
     #  Diagnostic dialog for missing spectrum data                          #
@@ -985,6 +1186,8 @@ class OrcaTDDFTApp(tk.Tk):
         self._section_cb.set("")
         self._plot._replot()
         self._xas_tab.refresh_scan_list()
+        if hasattr(self, "_exafs_tab"):
+            self._exafs_tab.refresh_scan_list()
         self.title("Binah")
         self._status.set("New project started.")
 
