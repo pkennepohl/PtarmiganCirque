@@ -165,7 +165,7 @@ class OrcaTDDFTApp(tk.Tk):
 
         # ── Tab 1: Spectra (existing layout) ──────────────────────────────────
         spectra_frame = tk.Frame(nb)
-        nb.add(spectra_frame, text="\U0001f4c8 Spectra")
+        nb.add(spectra_frame, text="\U0001f4c8 TDDFT")
 
         pane = tk.PanedWindow(spectra_frame, orient=tk.HORIZONTAL,
                               sashwidth=5, sashrelief=tk.RAISED)
@@ -218,7 +218,7 @@ class OrcaTDDFTApp(tk.Tk):
 
         # ── Tab 2: XAS Analysis ───────────────────────────────────────────────
         xas_frame = tk.Frame(nb)
-        nb.add(xas_frame, text="\U0001f52c XAS Analysis")
+        nb.add(xas_frame, text="\U0001f52c XANES")
 
         self._xas_tab = XASAnalysisTab(
             xas_frame,
@@ -229,7 +229,7 @@ class OrcaTDDFTApp(tk.Tk):
         self._xas_tab.pack(fill=tk.BOTH, expand=True)
 
         exafs_frame = tk.Frame(nb)
-        nb.add(exafs_frame, text="EXAFS Studio")
+        nb.add(exafs_frame, text="⚗ EXAFS")
 
         self._exafs_tab = EXAFSAnalysisTab(
             exafs_frame,
@@ -245,7 +245,7 @@ class OrcaTDDFTApp(tk.Tk):
                 if "EXAFS" in selected:
                     self._exafs_tab.refresh_scan_list()
                     self._exafs_tab.auto_run_all()
-                elif "XAS" in selected:
+                elif "XANES" in selected:
                     self._xas_tab.refresh_scan_list()
                     self._xas_tab.auto_run_all()
             except Exception:
@@ -563,7 +563,7 @@ class OrcaTDDFTApp(tk.Tk):
 
         hdr = tk.Frame(win, bg="#003366", pady=8)
         hdr.pack(fill=tk.X)
-        tk.Label(hdr, text="Spectra already loaded",
+        tk.Label(hdr, text="TDDFT spectra already loaded",
                  font=("", 11, "bold"), bg="#003366", fg="white").pack(padx=14)
         tk.Label(hdr, text=os.path.basename(path),
                  font=("", 8), bg="#003366", fg="#AACCFF").pack(padx=14)

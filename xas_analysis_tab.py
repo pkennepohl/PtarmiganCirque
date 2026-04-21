@@ -1450,22 +1450,37 @@ class XASAnalysisTab(tk.Frame):
                   command=dlg.destroy).pack(side=tk.LEFT, padx=4)
 
     def auto_run_all(self):
-        """Run analysis on every loaded scan and show them all. Called when tab is opened."""
+        """Pre-compute analysis for every loaded scan but only show the active one.
+
+        Pre-caching avoids repeated computation when the user switches between
+        scans; the overlay starts empty (or with whatever was already there)
+        so that '+ Add to Overlay' is meaningful from the start.
+        """
         scans = self._get_scans()
         if not scans:
             return
         self._rebuild_scan_list_rows()
+        current_label = self._scan_var.get()
         for label, scan, *_ in scans:
             if label not in self._scan_vis_vars:
-                self._scan_vis_vars[label] = tk.BooleanVar(value=True)
-            self._scan_vis_vars[label].set(True)
+                self._scan_vis_vars[label] = tk.BooleanVar(value=False)
             # Run analysis only if not already cached
             if label not in self._results:
                 self._scan_var.set(label)
                 self._auto_fill_e0()
                 self._run_single(label, scan)
-            if label not in self._selected_labels:
-                self._selected_labels.append(label)
+        # Restore combobox to the previously active scan (or first)
+        if current_label and current_label in [lbl for lbl, *_ in scans]:
+            self._scan_var.set(current_label)
+        elif scans:
+            self._scan_var.set(scans[0][0])
+        self._auto_fill_e0()
+        # Auto-show the active scan if the overlay is still empty
+        active = self._scan_var.get()
+        if active and not self._selected_labels:
+            self._selected_labels.append(active)
+            if active in self._scan_vis_vars:
+                self._scan_vis_vars[active].set(True)
         self._rebuild_scan_list_rows()
         self._redraw()
 
