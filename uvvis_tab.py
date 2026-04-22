@@ -589,8 +589,13 @@ class UVVisTab(tk.Frame):
         hi_x = self._parse_lim(self._xlim_hi)
         if lo_x is not None or hi_x is not None:
             cur = ax.get_xlim()
-            ax.set_xlim(lo_x if lo_x is not None else cur[0],
-                        hi_x if hi_x is not None else cur[1])
+            if unit == "nm":
+                # nm axis is inverted: lo_x is the right edge, hi_x is the left edge
+                ax.set_xlim(hi_x if hi_x is not None else cur[0],
+                            lo_x if lo_x is not None else cur[1])
+            else:
+                ax.set_xlim(lo_x if lo_x is not None else cur[0],
+                            hi_x if hi_x is not None else cur[1])
 
         # ── Apply stored y-limits ─────────────────────────────────────────────
         lo_y = self._parse_lim(self._ylim_lo)
