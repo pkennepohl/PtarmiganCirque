@@ -720,14 +720,33 @@ class UVVisTab(tk.Frame):
         body.pack(fill=tk.BOTH)
         body.columnconfigure(1, weight=1)
 
-        # ── Local slider helper ────────────────────────────────────────────────
-        def _slider_row(label, var, lo, hi, res, row, unit=""):
+        # ── Helpers ───────────────────────────────────────────────────────────
+
+        def _push_to_all(key, get_fn):
+            """Return a callback that writes get_fn() into style[key] for every entry."""
+            def _do():
+                val = get_fn()
+                for e in self._entries:
+                    e["style"][key] = val
+                self._rebuild_table()
+                self._redraw()
+            return _do
+
+        def _all_btn(row, col, fn, tip="Apply to all spectra"):
+            b = tk.Button(body, text="∀", font=("", 8), relief=tk.FLAT,
+                          cursor="hand2", fg="#004400", activeforeground="#006600",
+                          command=fn)
+            b.grid(row=row, column=col, padx=(2, 0), sticky="w")
+            _ToolTip(b, tip)
+
+        def _slider_row(label, var, lo, hi, res, row, unit="", apply_fn=None):
             tk.Label(body, text=label, font=("", 9, "bold")).grid(
                 row=row, column=0, sticky="w", pady=3)
             val_lbl = tk.Label(body, font=("Courier", 8), width=7)
             def _fmt(*_):
                 try:
-                    val_lbl.config(text=f"{var.get():.3g}{' '+unit if unit else ''}")
+                    val_lbl.config(
+                        text=f"{var.get():.3g}{' ' + unit if unit else ''}")
                 except Exception:
                     pass
             sc = tk.Scale(body, variable=var, from_=lo, to=hi, resolution=res,
@@ -736,6 +755,8 @@ class UVVisTab(tk.Frame):
             sc.grid(row=row, column=1, sticky="ew", padx=4)
             val_lbl.grid(row=row, column=2, sticky="w")
             _fmt()
+            if apply_fn:
+                _all_btn(row, 3, apply_fn)
 
         row = 0
 
@@ -748,23 +769,26 @@ class UVVisTab(tk.Frame):
         for display, value in _LS_OPTIONS:
             tk.Radiobutton(ls_frame, text=display, variable=ls_var,
                            value=value).pack(side=tk.LEFT, padx=3)
+        _all_btn(row, 3, _push_to_all("linestyle", ls_var.get))
         row += 1
 
         # ── Linewidth ─────────────────────────────────────────────────────────
         lw_var = tk.DoubleVar(value=style.get("linewidth", 1.5))
-        _slider_row("Line width:", lw_var, 0.5, 5.0, 0.1, row, unit="pt")
+        _slider_row("Line width:", lw_var, 0.5, 5.0, 0.1, row, unit="pt",
+                    apply_fn=_push_to_all("linewidth", lw_var.get))
         row += 1
 
         # ── Line opacity ──────────────────────────────────────────────────────
         alpha_var = tk.DoubleVar(value=style.get("alpha", 0.9))
-        _slider_row("Line opacity:", alpha_var, 0.0, 1.0, 0.05, row)
+        _slider_row("Line opacity:", alpha_var, 0.0, 1.0, 0.05, row,
+                    apply_fn=_push_to_all("alpha", alpha_var.get))
         row += 1
 
         # ── Color ─────────────────────────────────────────────────────────────
         tk.Label(body, text="Color:", font=("", 9, "bold")).grid(
             row=row, column=0, sticky="w", pady=4)
-        auto_col  = _PALETTE[idx % len(_PALETTE)]
-        col_var   = tk.StringVar(value=style.get("color", auto_col))
+        auto_col   = _PALETTE[idx % len(_PALETTE)]
+        col_var    = tk.StringVar(value=style.get("color", auto_col))
         col_swatch = tk.Button(body, bg=col_var.get() or auto_col,
                                width=4, relief=tk.RAISED, cursor="hand2")
         col_swatch.grid(row=row, column=1, sticky="w", padx=(4, 0))
@@ -781,13 +805,20 @@ class UVVisTab(tk.Frame):
         def _reset_color():
             col_var.set(auto_col)
             col_swatch.config(bg=auto_col, activebackground=auto_col)
-        tk.Button(body, text="Reset", font=("", 8),
-                  command=_reset_color).grid(row=row, column=2, sticky="w", padx=4)
+
+        reset_row = tk.Frame(body)
+        reset_row.grid(row=row, column=2, sticky="w", padx=4)
+        tk.Button(reset_row, text="Reset", font=("", 8),
+                  command=_reset_color).pack(side=tk.LEFT)
+
+        _all_btn(row, 3,
+                 _push_to_all("color", lambda: col_var.get().strip() or auto_col),
+                 tip="Apply this colour to all spectra")
         row += 1
 
         # ── Fill ──────────────────────────────────────────────────────────────
         ttk.Separator(body, orient=tk.HORIZONTAL).grid(
-            row=row, column=0, columnspan=3, sticky="ew", pady=6)
+            row=row, column=0, columnspan=4, sticky="ew", pady=6)
         row += 1
 
         tk.Label(body, text="Fill area:", font=("", 9, "bold")).grid(
@@ -796,13 +827,15 @@ class UVVisTab(tk.Frame):
         tk.Checkbutton(body, text="Show fill under curve",
                        variable=fill_var).grid(row=row, column=1,
                                                columnspan=2, sticky="w")
+        _all_btn(row, 3, _push_to_all("fill", fill_var.get))
         row += 1
 
         fill_alpha_var = tk.DoubleVar(value=style.get("fill_alpha", 0.08))
-        _slider_row("Fill opacity:", fill_alpha_var, 0.0, 0.5, 0.01, row)
+        _slider_row("Fill opacity:", fill_alpha_var, 0.0, 0.5, 0.01, row,
+                    apply_fn=_push_to_all("fill_alpha", fill_alpha_var.get))
         row += 1
 
-        # ── Snapshot for cancel revert ─────────────────────────────────────────
+        # ── Snapshot for cancel revert ────────────────────────────────────────
         _orig = dict(style)
 
         # ── Read all controls ─────────────────────────────────────────────────
@@ -823,6 +856,7 @@ class UVVisTab(tk.Frame):
             self._redraw()
 
         def _do_apply_all():
+            """Apply everything except colour to all entries."""
             vals = _read()
             for e in self._entries:
                 e["style"]["linestyle"]  = vals["linestyle"]
@@ -830,13 +864,11 @@ class UVVisTab(tk.Frame):
                 e["style"]["alpha"]      = vals["alpha"]
                 e["style"]["fill"]       = vals["fill"]
                 e["style"]["fill_alpha"] = vals["fill_alpha"]
-                # colour intentionally not propagated
             self._rebuild_table()
             self._redraw()
 
         def _do_save():
-            _do_apply()
-            win.destroy()
+            _do_apply(); win.destroy()
 
         def _do_cancel():
             style.update(_orig)
@@ -847,14 +879,14 @@ class UVVisTab(tk.Frame):
         # ── Buttons ───────────────────────────────────────────────────────────
         btn_row = tk.Frame(win)
         btn_row.pack(pady=(4, 10))
-        tk.Button(btn_row, text="Apply",          width=10,
+        tk.Button(btn_row, text="Apply",              width=10,
                   command=_do_apply).pack(side=tk.LEFT, padx=3)
-        tk.Button(btn_row, text="Apply to All",   width=13,
-                  bg="#004400", fg="white",
+        tk.Button(btn_row, text="∀  Apply to All",    width=14,
+                  bg="#004400", fg="white", activeforeground="white",
                   command=_do_apply_all).pack(side=tk.LEFT, padx=3)
-        tk.Button(btn_row, text="Save",           width=8,
+        tk.Button(btn_row, text="Save",               width=8,
                   command=_do_save).pack(side=tk.LEFT, padx=3)
-        tk.Button(btn_row, text="Cancel",         width=8,
+        tk.Button(btn_row, text="Cancel",             width=8,
                   command=_do_cancel).pack(side=tk.LEFT, padx=3)
 
     # ══════════════════════════════════════════════════════════════════════════
