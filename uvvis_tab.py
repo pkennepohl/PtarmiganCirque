@@ -25,6 +25,15 @@ _PALETTE = [
     "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf",
 ]
 
+# ── Linestyle cycle + Tkinter dash patterns ───────────────────────────────────
+_LS_CYCLE = ["solid", "dashed", "dotted", "dashdot"]
+_LS_DASH: Dict[str, tuple] = {
+    "solid":   (),
+    "dashed":  (6, 3),
+    "dotted":  (2, 3),
+    "dashdot": (6, 3, 2, 3),
+}
+
 # ── Default per-scan style ────────────────────────────────────────────────────
 def _default_style(colour: str) -> dict:
     return {
@@ -285,8 +294,11 @@ class UVVisTab(tk.Frame):
         # 6  ✕ remove
         tbl.columnconfigure(1, weight=1, minsize=120)
         tbl.columnconfigure(0, minsize=40)
-        for c in (2, 3, 4, 5, 6):
-            tbl.columnconfigure(c, minsize=28)
+        tbl.columnconfigure(2, minsize=28)
+        tbl.columnconfigure(3, minsize=44)   # linestyle canvas
+        tbl.columnconfigure(4, minsize=28)
+        tbl.columnconfigure(5, minsize=28)
+        tbl.columnconfigure(6, minsize=28)
 
         HDR_BG = "#e8e8e8"
         CPX    = (4, 4)
@@ -322,12 +334,34 @@ class UVVisTab(tk.Frame):
             _refresh()
             b.grid(row=r, column=c, padx=CPX, pady=0, sticky="ew")
 
-        def _make_ls_menu(parent, ls_var, r, c):
-            om = tk.OptionMenu(parent, ls_var,
-                               "solid", "dashed", "dotted", "dashdot")
-            om.config(font=F8, width=6, pady=0, highlightthickness=0)
-            om["menu"].config(font=F8)
-            om.grid(row=r, column=c, padx=CPX, pady=0, sticky="ew")
+        def _make_ls_canvas(parent, style, r, c):
+            """Small canvas that draws the line style; click to cycle."""
+            W, H = 38, 16
+            cv = tk.Canvas(parent, width=W, height=H,
+                           bd=1, relief=tk.SUNKEN, bg="white",
+                           highlightthickness=0, cursor="hand2")
+
+            def _draw(_cv=cv, _s=style):
+                _cv.delete("all")
+                ls   = _s.get("linestyle", "solid")
+                clr  = _s.get("color", "#333333")
+                lw   = max(1, round(_s.get("linewidth", 1.5)))
+                dash = _LS_DASH.get(ls, ())
+                kw   = {"fill": clr, "width": lw, "capstyle": "round"}
+                if dash:
+                    kw["dash"] = dash
+                _cv.create_line(4, H // 2, W - 4, H // 2, **kw)
+
+            def _cycle(_event=None, _cv=cv, _s=style):
+                ls  = _s.get("linestyle", "solid")
+                idx = _LS_CYCLE.index(ls) if ls in _LS_CYCLE else 0
+                _s["linestyle"] = _LS_CYCLE[(idx + 1) % len(_LS_CYCLE)]
+                _draw()
+                self._redraw()
+
+            cv.bind("<Button-1>", _cycle)
+            _draw()
+            cv.grid(row=r, column=c, padx=CPX, pady=2, sticky="")
 
         def _make_lw_entry(parent, lw_var, r, c):
             e = tk.Entry(parent, textvariable=lw_var, width=4,
@@ -368,12 +402,8 @@ class UVVisTab(tk.Frame):
             # Col 2: legend toggle
             _make_leg_btn(tbl, leg, r, 2)
 
-            # Col 3: linestyle
-            ls_var = tk.StringVar(value=style.get("linestyle", "solid"))
-            def _ls_cb(s=style, v=ls_var, *_):
-                s["linestyle"] = v.get(); self._redraw()
-            ls_var.trace_add("write", lambda *a, s=style, v=ls_var: _ls_cb(s, v))
-            _make_ls_menu(tbl, ls_var, r, 3)
+            # Col 3: linestyle canvas (click to cycle)
+            _make_ls_canvas(tbl, style, r, 3)
 
             # Col 4: linewidth
             lw_var = tk.DoubleVar(value=style.get("linewidth", 1.5))
