@@ -345,7 +345,7 @@ class UVVisTab(tk.Frame):
                 _cv.delete("all")
                 ls   = _s.get("linestyle", "solid")
                 clr  = _s.get("color", "#333333")
-                lw   = max(1, round(_s.get("linewidth", 1.5)))
+                lw   = max(0.5, float(_s.get("linewidth", 1.5)))
                 dash = _LS_DASH.get(ls, ())
                 kw   = {"fill": clr, "width": lw, "capstyle": "round"}
                 if dash:
