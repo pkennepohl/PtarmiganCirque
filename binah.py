@@ -40,6 +40,7 @@ from plot_widget import PlotWidget
 from exafs_analysis_tab import EXAFSAnalysisTab
 import feff_manager
 from xas_analysis_tab import XASAnalysisTab
+from uvvis_tab import UVVisTab
 import project_manager as pm
 
 
@@ -237,6 +238,16 @@ class OrcaTDDFTApp(tk.Tk):
             replot_fn=lambda: self._plot._replot(),
         )
         self._exafs_tab.pack(fill=tk.BOTH, expand=True)
+
+        # ── Tab 4: UV/Vis/NIR ─────────────────────────────────────────────────
+        uvvis_frame = tk.Frame(nb)
+        nb.add(uvvis_frame, text="🌈 UV/Vis/NIR")
+
+        self._uvvis_tab = UVVisTab(
+            uvvis_frame,
+            add_scan_fn=self._add_exp_scan_to_plot,
+        )
+        self._uvvis_tab.pack(fill=tk.BOTH, expand=True)
 
         # Auto-run all scans when analysis tabs are selected
         def _on_tab_changed(event):
