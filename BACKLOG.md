@@ -25,9 +25,10 @@ Main files (current — will change during restructure):
 | `uvvis_tab.py` | UV/Vis tab | Reference implementation |
 | `uvvis_parser.py` | UV/Vis file parser | Retain |
 | `experimental_parser.py` | XAS file parser | Retain |
-| `graph.py` | ProjectGraph DAG model | **New — does not exist yet** |
-| `nodes.py` | DataNode / OperationNode dataclasses | **New** |
-| `scan_tree_widget.py` | ScanTreeWidget component | **New** |
+| `graph.py` | ProjectGraph DAG model | ✅ Phase 1 + Phase 2 graph extensions |
+| `nodes.py` | DataNode / OperationNode dataclasses | ✅ Phase 1 |
+| `project_io.py` | .ptproj/ skeleton + raw file ingestion | ✅ Phase 1 (full graph save/load deferred) |
+| `scan_tree_widget.py` | ScanTreeWidget component | ✅ Phase 2 |
 | `compare_tab.py` | Compare tab | **New** |
 | `simulate_tab.py` | Simulate tab (FEFF session manager) | **New** |
 | `feff_workspace.py` | FEFF dedicated workspace window | **New** |
@@ -59,38 +60,46 @@ Within a phase, items can be parallelised.
 
 ---
 
-## Phase 1 — Foundation: Data Model
+## Phase 1 — Foundation: Data Model  ✅ Complete
 
 *Nothing else should be built until this phase is complete.*
 
-| Priority | Item | Notes |
-|---|---|---|
-| 🔵 | **ProjectGraph class** | DAG with add\_node, add\_edge, query, traversal. Separate committed/ and provisional/ stores. Serialise/deserialise to .ptproj/ directory format |
-| 🔵 | **DataNode dataclass** | id, type, arrays (npz), metadata, label, state (PROVISIONAL/COMMITTED/DISCARDED), created\_at, active |
-| 🔵 | **OperationNode dataclass** | id, type, engine, engine\_version, params, input\_ids, output\_ids, timestamp, duration\_ms, status, log, state |
-| 🔵 | **NodeType and OperationType enums** | RAW\_FILE, XANES, EXAFS, UVVIS, FEFF\_PATHS, BXAS\_RESULT, TDDFT, AVERAGED, DIFFERENCE, BASELINE, SMOOTHED, DEGLITCHED, NORMALISED, SHIFTED, ... |
-| 🔵 | **NodeState enum** | PROVISIONAL, COMMITTED, DISCARDED |
-| 🔵 | **Commit / discard operations** | Promote PROVISIONAL → COMMITTED (writes to log.jsonl); promote PROVISIONAL → DISCARDED (removes from active view) |
-| 🔵 | **Project file format** | .ptproj/ directory: project.json, graph/committed/, graph/provisional/, raw/ (with SHA-256 hashes), sessions/, log.jsonl |
-| 🔵 | **Raw file load → RAW\_FILE node** | Loading any file creates exactly one COMMITTED DataNode of type RAW\_FILE. No processing runs automatically |
-| 🔵 | **Provisional session recovery** | On project open, detect graph/provisional/ contents; offer restore or discard |
+| Status | Priority | Item | Notes |
+|---|---|---|---|
+| ✅ | 🔵 | **ProjectGraph class** | DAG with add\_node, add\_edge, query, traversal. Reactive observer pattern with subscribe/unsubscribe. Persistence to .ptproj/ deferred until graph contract stabilises |
+| ✅ | 🔵 | **DataNode dataclass** | id, type, arrays (npz), metadata, label, state (PROVISIONAL/COMMITTED/DISCARDED), created\_at (tz-aware UTC), active, style |
+| ✅ | 🔵 | **OperationNode dataclass** | id, type, engine, engine\_version, params, input\_ids, output\_ids, timestamp (tz-aware UTC), duration\_ms, status, log, state |
+| ✅ | 🔵 | **NodeType and OperationType enums** | All variants from CS-02/CS-03 present (RAW\_FILE, XANES, EXAFS, UVVIS, DEGLITCHED, NORMALISED, SMOOTHED, SHIFTED, BASELINE, AVERAGED, DIFFERENCE, TDDFT, FEFF\_PATHS, BXAS\_RESULT) |
+| ✅ | 🔵 | **NodeState enum** | PROVISIONAL, COMMITTED, DISCARDED |
+| ✅ | 🔵 | **Commit / discard operations** | commit\_node, discard\_node — fire NODE\_COMMITTED / NODE\_DISCARDED. log.jsonl write deferred to project\_io |
+| ✅ | 🔵 | **Project file format (skeleton)** | .ptproj/ directory created: project.json, graph/committed/, graph/provisional/, raw/, sessions/, log.jsonl. Full node-level save/load deferred (project\_io stubs raise NotImplementedError) |
+| ✅ | 🔵 | **Raw file ingestion** | copy\_raw\_file copies raw input → raw/{id}\_\_{filename}, computes SHA-256, updates raw/manifest.json |
+| ⏳ | 🔵 | **Raw file load → RAW\_FILE node** | Loader integration deferred to Phase 4 (UV/Vis pilot tab). No processing runs automatically |
+| ⏳ | 🔵 | **Provisional session recovery** | recover\_provisional stub; full implementation deferred until graph save/load is in place |
 
 ---
 
-## Phase 2 — Foundation: ScanTreeWidget
+## Phase 2 — Foundation: ScanTreeWidget  ✅ Complete (with caveats)
 
 *Depends on Phase 1.*
 
-| Priority | Item | Notes |
-|---|---|---|
-| 🔵 | **ScanTreeWidget base component** | Flat list by default; one row per active node per dataset. Rows: state indicator · colour swatch · visibility checkbox · label · legend toggle · linestyle canvas · history indicator · ⚙ · ✕ |
-| 🔵 | **State indicator on rows** | Lock icon = committed; dashed border = provisional; greyed = discarded |
-| 🔵 | **History expansion** | Click history indicator → inline expansion showing provenance chain. Each entry clickable |
-| 🔵 | **In-place label editing** | Double-click label → editable entry field; Enter to confirm; Escape to cancel |
-| 🔵 | **Sweep group row** | Multiple provisional nodes sharing a parent displayed as single collapsed row with summary and expand affordance |
-| 🔵 | **Commit / discard gestures** | Lock icon on row; ✕ on row; right-click context menu; keyboard shortcuts Ctrl+Return (commit) and Escape (discard) |
-| 🔵 | **Send to Compare action** | Available on COMMITTED nodes; right-click menu + Ctrl+Shift+C |
-| 🔵 | **Reactive updates** | Widget updates automatically when ProjectGraph changes; no manual Refresh button |
+Phase 2 also extended the graph with `set_active`, `set_style` (merge),
+`clone_node`, `NODE_ACTIVE_CHANGED`, `NODE_STYLE_CHANGED`, and
+log-and-continue subscriber dispatch. See COMPONENTS.md CS-01 and CS-04
+"Implementation notes" for the full contract.
+
+| Status | Priority | Item | Notes |
+|---|---|---|---|
+| ✅ | 🔵 | **ScanTreeWidget base component** | Flat list; one row per non-discarded DataNode that passes the filter (sweep groups collapse). Rows: state indicator · colour swatch · visibility checkbox · label · legend toggle · linestyle canvas · history indicator · ⚙ · ✕ |
+| ✅ | 🔵 | **State indicator on rows** | 🔒 = committed; ⋯ = provisional. Discarded rows are not rendered |
+| ✅ | 🔵 | **History expansion** | Click ⌥n → inline expansion of provenance\_chain. Each entry calls redraw\_cb(focus=id) |
+| ✅ | 🔵 | **In-place label editing** | Double-click label → editable Entry; Enter to confirm via set\_label; Escape to cancel |
+| ✅ | 🔵 | **Sweep group row** | 2+ provisional DataNodes sharing a DataNode parent collapse to one leader row (lex-smallest id). `✕all` discards every member |
+| ✅ | 🔵 | **Commit / discard gestures** | Right-click context menu (Commit / Discard); ✕ on row (discard if provisional, soft-hide if committed). Keyboard shortcuts deferred to tab integration |
+| ✅ | 🔵 | **Send to Compare action** | Right-click menu invokes send\_to\_compare\_cb(node\_id) when committed. Widget knows nothing about the Compare tab |
+| ✅ | 🔵 | **Reactive updates** | Subscribes on construction, unsubscribes on `<Destroy>`. NODE\_ADDED / DISCARDED / EDGE\_ADDED rebuild; LABEL\_CHANGED / STYLE\_CHANGED refresh one row; ACTIVE\_CHANGED rebuilds (respects "Show hidden") |
+| ⏳ | 🟡 | **Sweep group inline expansion** | Per-variant editing (commit/discard one variant at a time) deferred. `_sweep_groups` exposes the grouping, ready for a future session |
+| ⏳ | 🟡 | **Keyboard shortcuts** | Ctrl+Return / Escape / Ctrl+Shift+C deferred to first tab integration; the widget's gestures are mouse-driven for now |
 
 ---
 
@@ -118,6 +127,55 @@ Within a phase, items can be parallelised.
 
 *Depends on Phases 1–3. This is the pilot implementation of the new
 architecture. The existing UV/Vis tab is the closest to the new model.*
+
+### Friction points carried forward from Phase 2
+
+These are concrete obstacles that Phase 4 will hit when it migrates
+[uvvis_tab.py](uvvis_tab.py) onto ProjectGraph + ScanTreeWidget.
+Identified during Phase 2 while reading the existing sidebar as the
+reference implementation. **Do not fix until Phase 4** — they need to
+be addressed in the same change that wires ScanTreeWidget into the
+tab, not piecemeal.
+
+1. **`self._entries: List[dict]` is the single source of truth**
+   ([uvvis_tab.py:129](uvvis_tab.py#L129)) and is indexed positionally.
+   Every helper closure in `_rebuild_table` captures `idx=i` from the
+   row loop (`_pick`, `_lw_cb`, `_fill_cb`, `_remove_entry`,
+   `_open_style_dialog`). Migration converts every `idx`-keyed
+   callsite to `node_id`-keyed.
+2. **`in_legend` is a separate `tk.BooleanVar`** sitting alongside
+   `style` ([uvvis_tab.py:509](uvvis_tab.py#L509)), not inside it. The
+   new architecture stores it at `style["in_legend"]`. No project
+   files exist yet so the cutover does not need legend-state
+   migration.
+3. **`_PALETTE[idx % len(_PALETTE)]` colour assignment**
+   ([uvvis_tab.py:505](uvvis_tab.py#L505)) lives in the loader. With
+   the new model, default colour assignment needs to happen at
+   DataNode creation time (inside the load-as-RAW\_FILE pipeline) so
+   the same node draws the same colour across tabs. Decide where: in
+   the loader, or as a graph-side default-style policy.
+4. **`_rebuild_table` is monolithic**
+   ([uvvis_tab.py:306-484](uvvis_tab.py#L306)) — header construction
+   and every per-row gesture sit inline. A clean migration deletes
+   this method entirely along with `_make_leg_btn`, `_make_ls_canvas`,
+   `_make_lw_entry` (all reimplemented in
+   [scan_tree_widget.py](scan_tree_widget.py)) and replaces them with
+   one `ScanTreeWidget(...)` instantiation.
+5. **`_redraw` walks `self._entries` directly.** Once entries become
+   DataNodes, `_redraw` must traverse the graph (e.g.
+   `graph.nodes_of_type(NodeType.UVVIS, state=None)` then filter
+   `state != DISCARDED` and `active`) to find what to plot. This
+   pattern repeats in every tab; consider a shared helper.
+6. **`_remove_entry` deletes from the list**
+   ([uvvis_tab.py:525](uvvis_tab.py#L525)) with no scientific record.
+   Migration replaces this with `graph.discard_node` (provisional) or
+   `graph.set_active(False)` (committed) — exactly what the new ✕
+   button does. Audit external callers of `_remove_entry` during the
+   cutover.
+7. **`_open_style_dialog` is inline**
+   ([uvvis_tab.py:697](uvvis_tab.py#L697)). Phase 3 builds the unified
+   dialog; Phase 4 connects ScanTreeWidget's gear via
+   `style_dialog_cb` and deletes the inline implementation.
 
 | Priority | Item | Notes |
 |---|---|---|
