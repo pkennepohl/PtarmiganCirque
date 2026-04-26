@@ -17,6 +17,9 @@ signatures live here for API completeness but currently raise
 
 from __future__ import annotations
 
+import copy
+import logging
+import uuid
 from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum, auto
@@ -31,6 +34,8 @@ from nodes import (
     OperationType,
 )
 
+_log = logging.getLogger(__name__)
+
 
 # =====================================================================
 # Events
@@ -39,13 +44,15 @@ from nodes import (
 class GraphEventType(Enum):
     """Categories of events the graph can emit to its subscribers."""
 
-    NODE_ADDED          = auto()
-    NODE_COMMITTED      = auto()
-    NODE_DISCARDED      = auto()
-    NODE_LABEL_CHANGED  = auto()
-    EDGE_ADDED          = auto()
-    GRAPH_LOADED        = auto()
-    GRAPH_CLEARED       = auto()
+    NODE_ADDED           = auto()
+    NODE_COMMITTED       = auto()
+    NODE_DISCARDED       = auto()
+    NODE_LABEL_CHANGED   = auto()
+    NODE_ACTIVE_CHANGED  = auto()
+    NODE_STYLE_CHANGED   = auto()
+    EDGE_ADDED           = auto()
+    GRAPH_LOADED         = auto()
+    GRAPH_CLEARED        = auto()
 
 
 @dataclass(frozen=True)
@@ -63,6 +70,10 @@ class GraphEvent:
         Additional event-specific data. Conventions:
 
         * ``NODE_LABEL_CHANGED``: ``{"new_label": str, "old_label": str}``
+        * ``NODE_ACTIVE_CHANGED``: ``{"new_value": bool, "old_value": bool}``
+        * ``NODE_STYLE_CHANGED``: ``{"partial": dict, "new_style": dict}``
+          where ``partial`` is the user-supplied delta and
+          ``new_style`` is the full merged style dict after the update.
         * ``EDGE_ADDED``: ``{"parent_id": str, "child_id": str}``
         * other event types may carry an empty dict.
     """
@@ -187,6 +198,114 @@ class ProjectGraph:
             node_id,
             payload={"new_label": new_label, "old_label": old_label},
         ))
+
+    def set_active(self, node_id: str, value: bool) -> None:
+        """Toggle a DataNode's ``active`` flag (visibility hint).
+
+        ``active`` is a display-only property: it is the canonical
+        signal the ScanTreeWidget uses to hide a row from the default
+        view, and ``DISCARDED`` is the only state where ``active`` is
+        forced. Allowed on any state — committed nodes can be hidden
+        without being deleted. Emits ``NODE_ACTIVE_CHANGED``; if the
+        new value equals the existing value, no event is emitted.
+        """
+        node = self.get_node(node_id)
+        if not isinstance(node, DataNode):
+            raise TypeError(
+                f"set_active only applies to DataNode, got "
+                f"{type(node).__name__}"
+            )
+        new_value = bool(value)
+        old_value = node.active
+        if old_value == new_value:
+            return
+        node.active = new_value
+        self._notify(GraphEvent(
+            GraphEventType.NODE_ACTIVE_CHANGED,
+            node_id,
+            payload={"new_value": new_value, "old_value": old_value},
+        ))
+
+    def set_style(self, node_id: str, partial: dict) -> None:
+        """Merge ``partial`` into a DataNode's style dict.
+
+        This is a *merge*, not a replacement: keys present in
+        ``partial`` overwrite the existing style values; keys absent
+        from ``partial`` are preserved. Style is display-only (CS-02)
+        and may be edited on any state, including COMMITTED. Emits
+        ``NODE_STYLE_CHANGED`` whose payload carries both the
+        user-supplied ``partial`` and the resulting merged
+        ``new_style`` (a shallow copy, safe for subscribers to
+        retain).
+
+        Passing an empty dict is a no-op; no event is emitted.
+        """
+        node = self.get_node(node_id)
+        if not isinstance(node, DataNode):
+            raise TypeError(
+                f"set_style only applies to DataNode, got "
+                f"{type(node).__name__}"
+            )
+        if not partial:
+            return
+        node.style.update(partial)
+        self._notify(GraphEvent(
+            GraphEventType.NODE_STYLE_CHANGED,
+            node_id,
+            payload={
+                "partial":   dict(partial),
+                "new_style": dict(node.style),
+            },
+        ))
+
+    def clone_node(self, node_id: str) -> str:
+        """Duplicate a DataNode, returning the new node's id.
+
+        The clone is a fresh PROVISIONAL DataNode with a new uuid4
+        id. Field handling:
+
+        * ``type`` — same enum value as the source.
+        * ``arrays`` — **shared reference** to the source dict (numpy
+          arrays are not deep-copied, by design: scientific data is
+          immutable on COMMITTED nodes, so sharing the array dict is
+          safe and avoids needlessly duplicating large beamline
+          tensors).
+        * ``metadata`` — deep-copied so callers can mutate the clone's
+          metadata without affecting the source.
+        * ``label`` — source label with the suffix ``" (copy)"``.
+        * ``style`` — deep-copied so the clone has independent visual
+          state (colour swatch edits on the clone do not affect the
+          source).
+        * ``state`` — always ``PROVISIONAL``, regardless of the
+          source's state. The caller commits or discards explicitly.
+        * ``active`` — defaults to ``True``.
+
+        No edges are wired up: the caller is responsible for calling
+        ``add_edge`` for every parent that should also point at the
+        clone. Emits ``NODE_ADDED`` (via ``add_node``).
+
+        Raises ``TypeError`` if the source id refers to an
+        ``OperationNode`` rather than a DataNode.
+        """
+        source = self.get_node(node_id)
+        if not isinstance(source, DataNode):
+            raise TypeError(
+                f"clone_node only applies to DataNode, got "
+                f"{type(source).__name__}"
+            )
+        new_id = uuid.uuid4().hex
+        clone = DataNode(
+            id=new_id,
+            type=source.type,
+            arrays=source.arrays,                  # shared reference
+            metadata=copy.deepcopy(source.metadata),
+            label=f"{source.label} (copy)",
+            state=NodeState.PROVISIONAL,
+            active=True,
+            style=copy.deepcopy(source.style),
+        )
+        self.add_node(clone)
+        return new_id
 
     # ------------------------------------------------------------
     # Edge management
@@ -442,13 +561,23 @@ class ProjectGraph:
     def _notify(self, event: GraphEvent) -> None:
         """Emit an event to all current subscribers.
 
-        Subscribers are notified in registration order. If a subscriber
-        raises, the exception propagates and any later subscribers do
-        NOT receive the event — callers should keep their handlers
-        defensive.
+        Subscribers are notified in registration order. A subscriber
+        that raises does NOT prevent later subscribers from receiving
+        the event: the exception is logged at WARNING level via the
+        standard ``logging`` module and dispatch continues. This
+        isolates UI components from each other — a buggy sidebar
+        cannot break the log panel by raising on a NODE_ADDED.
         """
         for cb in list(self._subscribers):
-            cb(event)
+            try:
+                cb(event)
+            except Exception:
+                _log.warning(
+                    "graph subscriber %r raised on event %s "
+                    "(node_id=%r); continuing dispatch",
+                    cb, event.type.name, event.node_id,
+                    exc_info=True,
+                )
 
     # ------------------------------------------------------------
     # Internal helpers

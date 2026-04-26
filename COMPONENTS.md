@@ -31,6 +31,12 @@ class ProjectGraph:
     def commit_node(id: str) -> None      # PROVISIONAL → COMMITTED
     def discard_node(id: str) -> None     # PROVISIONAL → DISCARDED
 
+    # Per-node visualization edits (allowed on any state)
+    def set_label(id: str, new_label: str) -> None
+    def set_active(id: str, value: bool) -> None
+    def set_style(id: str, partial: dict) -> None       # merges
+    def clone_node(id: str) -> str                      # new uuid4 id
+
     # Edge management
     def add_edge(parent_id: str, child_id: str) -> None
     def parents_of(id: str) -> list[str]
@@ -53,6 +59,30 @@ class ProjectGraph:
     def _notify(event: GraphEvent) -> None
 ```
 
+### Visualization-edit semantics
+
+The four per-node visualization methods (`set_label`, `set_active`,
+`set_style`, `clone_node`) are the widget-facing surface for everything
+that is *display state*, not *scientific data*. They are allowed on any
+node state, including COMMITTED, because COMMITTED only locks `arrays`
+and `metadata` — not `label`, `active`, or `style`.
+
+* `set_label` — emits `NODE_LABEL_CHANGED`. No-op when the new label
+  equals the current one.
+* `set_active` — emits `NODE_ACTIVE_CHANGED`. No-op when the value is
+  unchanged. `active=False` is the canonical "soft-hide" signal the
+  ScanTreeWidget reads to omit a row.
+* `set_style` — **merges** `partial` into `node.style` (does NOT
+  replace). Emits `NODE_STYLE_CHANGED` with payload
+  `{"partial": ..., "new_style": ...}`. No-op on an empty `partial`.
+* `clone_node` — produces a fresh `PROVISIONAL` `DataNode` with a new
+  `uuid4` id. `arrays` is a **shared reference** (numpy not deep-copied,
+  by design — committed scientific data is immutable so sharing is
+  safe and avoids duplicating large beamline tensors). `metadata` and
+  `style` are deep-copied. Label is suffixed with `" (copy)"`. The
+  caller is responsible for wiring edges (`add_edge`) — `clone_node`
+  itself only emits `NODE_ADDED`.
+
 ### Reactivity
 
 The graph uses an observer pattern. UI components subscribe to graph
@@ -64,9 +94,18 @@ GraphEvent types:
 - NODE\_ADDED(node\_id)
 - NODE\_COMMITTED(node\_id)
 - NODE\_DISCARDED(node\_id)
-- NODE\_LABEL\_CHANGED(node\_id, new\_label)
+- NODE\_LABEL\_CHANGED(node\_id, payload={old\_label, new\_label})
+- NODE\_ACTIVE\_CHANGED(node\_id, payload={old\_value, new\_value})
+- NODE\_STYLE\_CHANGED(node\_id, payload={partial, new\_style})
+- EDGE\_ADDED(payload={parent\_id, child\_id})
 - GRAPH\_LOADED
 - GRAPH\_CLEARED
+
+Subscribers must NOT prevent each other from receiving an event. If a
+subscriber raises, ``_notify`` logs the exception at WARNING level via
+the standard ``logging`` module and continues dispatch to remaining
+subscribers. This isolates UI panels from each other — a buggy sidebar
+cannot break the log panel by raising on a `NODE_ADDED`.
 
 ### Persistence layout
 
@@ -162,11 +201,17 @@ class DataNode:
     metadata: dict[str, Any]         # technique-specific; see below
     label: str                       # user-editable display name
     state: NodeState = NodeState.PROVISIONAL
-    created_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(    # tz-aware UTC; see _utcnow helper
+        default_factory=_utcnow)
     active: bool = True              # False = hidden from default views
     style: dict = field(            # display style; not scientific data
         default_factory=dict)
 ```
+
+`created_at` is constructed via the module-private `_utcnow()` helper,
+which returns `datetime.now(timezone.utc)` (timezone-aware). This
+replaces the deprecated `datetime.utcnow()` form (Python 3.12+).
+ISO 8601 serialisation includes the `+00:00` offset.
 
 ### Metadata conventions by NodeType
 
@@ -264,7 +309,7 @@ class OperationNode:
                              # to reproduce the operation exactly
     input_ids: list[str]     # DataNode ids consumed
     output_ids: list[str]    # DataNode ids produced
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=_utcnow)  # tz-aware UTC
     duration_ms: int = 0
     status: str = "SUCCESS"  # "SUCCESS" | "FAILED" | "PARTIAL"
     log: str = ""            # engine stdout/stderr
@@ -376,6 +421,80 @@ row. On NODE\_LABEL\_CHANGED: updates label text. No manual refresh.
   to show via a filter parameter at construction time
 - Does not trigger plot redraws directly — it calls a redraw callback
   provided by the tab
+
+### Implementation notes (Phase 2)
+
+These record decisions taken when implementing CS-04 for ambiguities
+the spec left open. They are descriptive, not prescriptive — a future
+design session can revisit any of them.
+
+**Construction signature.**
+```python
+ScanTreeWidget(
+    parent,                     # tk.Widget host frame
+    graph,                      # ProjectGraph
+    node_filter,                # list[NodeType] OR Callable[[DataNode], bool]
+    redraw_cb,                  # callable: redraw_cb() = full redraw,
+                                #           redraw_cb(focus=id) = preview a node
+    send_to_compare_cb=None,    # called with node_id; widget knows nothing
+                                # about Compare
+    style_dialog_cb=None,       # called with node_id; widget knows nothing
+                                # about the dialog (Phase 3)
+)
+```
+
+The callable form of `node_filter` is for the Compare tab, which mixes
+types and groups them by category; analysis tabs pass the list form.
+
+**`[☑]` (visibility) vs `[✕]` (discard / hide) — different concerns.**
+
+| Control | Writes | Effect |
+|---|---|---|
+| `[☑]` checkbox | `style["visible"]` | Toggles whether the line is drawn on the plot |
+| `[✕]` on PROVISIONAL | `discard_node` | DataNode → DISCARDED; row vanishes |
+| `[✕]` on COMMITTED | `set_active(False)` | Soft-hide — row vanishes, "Show hidden" reveals it |
+
+The two layers stayed separate because conflating them broke the
+"Show hidden" gesture in early drafts.
+
+**Other style keys written by row controls.** `style["color"]` (colour
+swatch), `style["linestyle"]` (linestyle canvas, cycled through
+solid → dashed → dotted → dashdot), `style["in_legend"]` (legend
+toggle). The unified style dialog (CS-05) is the place for the full
+list; these are the keys the row controls touch directly.
+
+**Default flat view** = every non-discarded DataNode that passes the
+filter and has `active=True` (sweep groups collapse). The "currently
+active node for each loaded dataset" reading of §6.1 is left to the
+filter — a tab can supply a callable filter that returns only
+`graph.active_node_for(root)` ids if it wants stricter
+one-per-lineage semantics.
+
+**Sweep group leader** = lexicographically smallest member id, so the
+collapsed row renders deterministically. Group detection walks each
+candidate's parents through one OperationNode hop to find its
+DataNode parents (per the Phase 1 rule: "sweep group = multiple
+provisional DataNodes sharing the same parent DataNode").
+
+**Duplicate** (right-click → Duplicate) calls `graph.clone_node` and
+then replicates every direct parent edge of the source onto the
+clone, so the clone sits in the same lineage and appears via
+`provenance_chain`.
+
+**History entry click** calls `redraw_cb(focus=id)`. If the integration
+hasn't been updated to accept `focus=`, the widget catches `TypeError`
+and falls back to a regular `redraw_cb()` rather than swallowing the
+gesture silently.
+
+**Subscription teardown.** The widget binds `<Destroy>` and drops its
+graph subscription automatically when destroyed; an explicit
+`unsubscribe()` is also exposed for tabs that detach without
+destroying.
+
+**Sweep group inline expansion** (per-variant editing) is deferred —
+the collapsed row currently exposes only `✕all`. The data needed for
+per-variant rendering is exposed via `_sweep_groups`, so a future
+session can extend without redesigning.
 
 ---
 

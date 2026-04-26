@@ -37,7 +37,7 @@ import json
 import platform
 import shutil
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from version import __version__ as PTARMIGAN_VERSION
@@ -378,5 +378,11 @@ def export_reproducibility_report(
 # =====================================================================
 
 def _now_iso() -> str:
-    """Return the current UTC time as an ISO 8601 string."""
-    return datetime.utcnow().isoformat(timespec="seconds")
+    """Return the current UTC time as an ISO 8601 string.
+
+    Uses ``datetime.now(timezone.utc)`` rather than the deprecated
+    ``utcnow()`` so the timestamp is timezone-aware. The ``+00:00``
+    offset is included in the serialised form, which is the format
+    standard JSON loaders accept.
+    """
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
