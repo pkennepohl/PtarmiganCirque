@@ -335,6 +335,234 @@ class TestProvenanceChain(unittest.TestCase):
             g.provenance_chain("nope")
 
 
+class TestSetActive(unittest.TestCase):
+
+    def test_set_active_changes_value_and_emits_event(self):
+        g = ProjectGraph()
+        n = _data("a")
+        n.active = True
+        g.add_node(n)
+        events: list[GraphEvent] = []
+        g.subscribe(events.append)
+
+        g.set_active("a", False)
+
+        self.assertFalse(n.active)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].type, GraphEventType.NODE_ACTIVE_CHANGED)
+        self.assertEqual(events[0].node_id, "a")
+        self.assertEqual(events[0].payload,
+                         {"new_value": False, "old_value": True})
+
+    def test_set_active_no_event_when_unchanged(self):
+        g = ProjectGraph()
+        n = _data("a")
+        n.active = True
+        g.add_node(n)
+        events: list[GraphEvent] = []
+        g.subscribe(events.append)
+        g.set_active("a", True)
+        self.assertEqual(events, [])
+
+    def test_set_active_works_on_committed_node(self):
+        # active is a visualization toggle; allowed on any state.
+        g = ProjectGraph()
+        n = _data("a", state=NodeState.COMMITTED)
+        g.add_node(n)
+        g.set_active("a", False)
+        self.assertFalse(n.active)
+
+    def test_set_active_rejects_operation_node(self):
+        g = ProjectGraph()
+        g.add_node(_op("op"))
+        with self.assertRaises(TypeError):
+            g.set_active("op", False)
+
+    def test_set_active_coerces_truthy(self):
+        g = ProjectGraph()
+        g.add_node(_data("a"))
+        g.set_active("a", 0)
+        self.assertEqual(g.get_node("a").active, False)
+
+
+class TestSetStyle(unittest.TestCase):
+
+    def test_set_style_merges_into_existing(self):
+        g = ProjectGraph()
+        n = _data("a")
+        n.style = {"color": "red", "linewidth": 1.5}
+        g.add_node(n)
+
+        g.set_style("a", {"linewidth": 3.0, "alpha": 0.5})
+
+        # 'color' must be preserved (merge, not replace).
+        self.assertEqual(n.style,
+                         {"color": "red", "linewidth": 3.0, "alpha": 0.5})
+
+    def test_set_style_emits_event_with_partial_and_merged(self):
+        g = ProjectGraph()
+        n = _data("a")
+        n.style = {"color": "red"}
+        g.add_node(n)
+        events: list[GraphEvent] = []
+        g.subscribe(events.append)
+
+        g.set_style("a", {"linewidth": 2.0})
+
+        self.assertEqual(len(events), 1)
+        ev = events[0]
+        self.assertEqual(ev.type, GraphEventType.NODE_STYLE_CHANGED)
+        self.assertEqual(ev.node_id, "a")
+        self.assertEqual(ev.payload["partial"], {"linewidth": 2.0})
+        self.assertEqual(ev.payload["new_style"],
+                         {"color": "red", "linewidth": 2.0})
+
+    def test_set_style_empty_is_noop(self):
+        g = ProjectGraph()
+        g.add_node(_data("a"))
+        events: list[GraphEvent] = []
+        g.subscribe(events.append)
+        g.set_style("a", {})
+        self.assertEqual(events, [])
+
+    def test_set_style_works_on_committed_node(self):
+        # Style is display-only; mutable on COMMITTED per CS-02.
+        g = ProjectGraph()
+        n = _data("a", state=NodeState.COMMITTED)
+        g.add_node(n)
+        g.set_style("a", {"color": "blue"})
+        self.assertEqual(n.style.get("color"), "blue")
+
+    def test_set_style_rejects_operation_node(self):
+        g = ProjectGraph()
+        g.add_node(_op("op"))
+        with self.assertRaises(TypeError):
+            g.set_style("op", {"color": "red"})
+
+
+class TestCloneNode(unittest.TestCase):
+
+    def test_clone_assigns_new_id_and_preserves_type(self):
+        g = ProjectGraph()
+        src = _data("orig", NodeType.UVVIS, state=NodeState.COMMITTED,
+                    label="scan1")
+        g.add_node(src)
+        new_id = g.clone_node("orig")
+        self.assertNotEqual(new_id, "orig")
+        clone = g.get_node(new_id)
+        self.assertIsInstance(clone, DataNode)
+        self.assertEqual(clone.type, NodeType.UVVIS)
+
+    def test_clone_starts_provisional_regardless_of_source_state(self):
+        g = ProjectGraph()
+        g.add_node(_data("orig", state=NodeState.COMMITTED))
+        new_id = g.clone_node("orig")
+        self.assertEqual(g.get_node(new_id).state, NodeState.PROVISIONAL)
+
+    def test_clone_label_has_copy_suffix(self):
+        g = ProjectGraph()
+        g.add_node(_data("orig", label="scan1"))
+        new_id = g.clone_node("orig")
+        self.assertEqual(g.get_node(new_id).label, "scan1 (copy)")
+
+    def test_clone_shares_arrays_reference(self):
+        # Numpy arrays are not deep-copied — scientific data is
+        # immutable on COMMITTED nodes, so sharing the dict is safe
+        # and avoids duplicating large beamline tensors.
+        g = ProjectGraph()
+        src = _data("orig")
+        g.add_node(src)
+        new_id = g.clone_node("orig")
+        clone = g.get_node(new_id)
+        self.assertIs(clone.arrays, src.arrays)
+
+    def test_clone_deep_copies_metadata_and_style(self):
+        g = ProjectGraph()
+        src = _data("orig")
+        src.metadata = {"nested": {"k": 1}}
+        src.style    = {"color": "red"}
+        g.add_node(src)
+        new_id = g.clone_node("orig")
+        clone = g.get_node(new_id)
+
+        # Top-level dicts are independent.
+        self.assertIsNot(clone.metadata, src.metadata)
+        self.assertIsNot(clone.style,    src.style)
+        # And nested mutations don't bleed through.
+        clone.metadata["nested"]["k"] = 99
+        clone.style["color"] = "blue"
+        self.assertEqual(src.metadata["nested"]["k"], 1)
+        self.assertEqual(src.style["color"], "red")
+
+    def test_clone_does_not_add_edges(self):
+        # Caller is responsible for wiring parents to the clone.
+        g = ProjectGraph()
+        g.add_node(_data("parent"))
+        g.add_node(_data("orig"))
+        g.add_edge("parent", "orig")
+        new_id = g.clone_node("orig")
+        self.assertEqual(g.parents_of(new_id), [])
+        self.assertEqual(g.children_of(new_id), [])
+
+    def test_clone_emits_node_added(self):
+        g = ProjectGraph()
+        g.add_node(_data("orig"))
+        events: list[GraphEvent] = []
+        g.subscribe(events.append)
+        new_id = g.clone_node("orig")
+        self.assertEqual([e.type for e in events],
+                         [GraphEventType.NODE_ADDED])
+        self.assertEqual(events[0].node_id, new_id)
+
+    def test_clone_rejects_operation_node(self):
+        g = ProjectGraph()
+        g.add_node(_op("op"))
+        with self.assertRaises(TypeError):
+            g.clone_node("op")
+
+
+class TestNotifyResilience(unittest.TestCase):
+    """A raising subscriber must not break sibling subscribers."""
+
+    def test_raising_subscriber_does_not_block_later_ones(self):
+        g = ProjectGraph()
+        delivered: list[str] = []
+
+        def raiser(_event):
+            raise RuntimeError("intentional")
+
+        def good(_event):
+            delivered.append("ok")
+
+        g.subscribe(raiser)
+        g.subscribe(good)
+
+        # Suppress the WARNING log so the test output stays clean.
+        import logging
+        logging.getLogger("graph").setLevel(logging.ERROR)
+        try:
+            g.add_node(_data("a"))
+        finally:
+            logging.getLogger("graph").setLevel(logging.WARNING)
+
+        self.assertEqual(delivered, ["ok"])
+
+    def test_raising_subscriber_logged_at_warning(self):
+        import logging
+        g = ProjectGraph()
+
+        def raiser(_event):
+            raise RuntimeError("boom")
+
+        g.subscribe(raiser)
+
+        with self.assertLogs("graph", level="WARNING") as cm:
+            g.add_node(_data("a"))
+
+        self.assertTrue(any("subscriber" in line and "raised" in line
+                            for line in cm.output))
+
+
 class TestNodesOfTypeAndActive(unittest.TestCase):
 
     def test_filter_by_type_and_state(self):

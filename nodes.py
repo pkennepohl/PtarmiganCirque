@@ -15,9 +15,21 @@ for serialisation.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum, auto
 from typing import Any
+
+
+def _utcnow() -> datetime:
+    """Timezone-aware UTC ``now`` (Python 3.12+ recommended form).
+
+    ``datetime.utcnow()`` was deprecated in 3.12 because it returns
+    a naive datetime that *claims* to be UTC. Centralising the
+    construction here keeps ``DataNode.created_at`` and
+    ``OperationNode.timestamp`` aware and lets callers use
+    ``.astimezone(...)`` without losing information.
+    """
+    return datetime.now(timezone.utc)
 
 
 # =====================================================================
@@ -162,7 +174,7 @@ class DataNode:
     metadata: dict[str, Any]
     label: str
     state: NodeState = NodeState.PROVISIONAL
-    created_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=_utcnow)
     active: bool = True
     style: dict = field(default_factory=dict)
 
@@ -228,7 +240,7 @@ class OperationNode:
     params: dict
     input_ids: list[str]
     output_ids: list[str]
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=_utcnow)
     duration_ms: int = 0
     status: str = "SUCCESS"
     log: str = ""
