@@ -606,6 +606,146 @@ reference implementation. Its layout, ∀ button pattern, and button
 bar are carried forward directly. The unified dialog extends this
 with conditional sections.
 
+### Implementation notes (Phase 3)
+
+These record decisions taken when implementing CS-05 for ambiguities
+the spec left open. They are descriptive, not prescriptive — a future
+design session can revisit any of them.
+
+**Construction signature.**
+```python
+StyleDialog(
+    parent,                  # tk.Widget for the Toplevel parent
+    graph,                   # ProjectGraph
+    node_id,                 # the DataNode being edited
+    on_apply_to_all=None,    # callable(param_name, value)
+)
+```
+
+The module-level factory `open_style_dialog(parent, graph, node_id,
+on_apply_to_all=None)` enforces the per-node "focus existing"
+contract: a second open request for the same `node_id` raises the
+existing Toplevel rather than creating a duplicate.
+
+**Modeless.** No `transient`, no `grab_set`. Multiple dialogs (one
+per node) coexist with each other and with the main window.
+
+**Live writes via variable traces.** Each control's Tk variable is
+wired with `trace_add("write", ...)` rather than the widget's
+`command=`. The trace fires for any source of change (slider drag,
+`scale.set`, programmatic `var.set`, radiobutton click), which makes
+the write path uniformly testable. The Scale's own `command` is not
+fired by all `var.set` paths in CPython 3.12 Tk 8.6, so trace-based
+wiring was preferred.
+
+**Re-entrancy guard.** A single boolean `_suspend_writes` covers
+both directions: it is set during `_write_partial` so the resulting
+`NODE_STYLE_CHANGED` event delivered back to `_on_graph_event` is
+treated as "our own" and skipped, and it is set during widget
+refreshes triggered by external events so the Tk variable's trace
+callbacks don't loop back into `set_style`.
+
+**Cancel snapshot semantics.** `__init__` deep-copies `node.style`
+into `_snapshot`. Cancel sends the snapshot through `set_style` as
+a single partial. Because `set_style` merges (CS-01), keys added
+during the session that were absent from the snapshot remain on the
+node — the graph contract has no "remove key" verb, and threading
+one in for a single dialog's revert path was deemed out of scope.
+This matches the existing UV/Vis dialog's behaviour
+(`uvvis_tab._do_cancel`).
+
+**Window-close [X] is Cancel.** With live updates the window-close
+gesture is wired to `_do_cancel` via `WM_DELETE_WINDOW`, so closing
+the window without explicit Cancel still reverts to the snapshot.
+Save closes after applying the current widget state explicitly.
+
+**Apply is idempotent.** Live writes already keep the graph in
+sync, so Apply re-emits the current widget state as one
+`set_style` call (a safety net for any control whose write path
+the dialog might miss). Save = Apply + destroy. Cancel = revert +
+destroy.
+
+**∀ button scope.** Per-row ∀ buttons appear only on the universal
+section's six rows. Conditional sections do not carry per-row ∀
+buttons because the tab-side scope of "same node" is less
+well-defined for, say, a TDDFT broadening setting (does it fan out
+to every TDDFT node? to every node showing a stick spectrum? to
+every node sharing a parent dataset?). Adding ∀ to conditional
+rows is a small follow-up once a tab needs it.
+
+**∀ delegation.** The dialog never enumerates other nodes itself.
+Per-row ∀ calls `on_apply_to_all(param_name, value)` and also
+writes the value to its own node so the local widgets stay in sync
+with the graph (the tab's fan-out is free to skip the dialog's own
+node id; either way the dialog's node ends up with the value).
+
+**Bottom ∀ Apply to All.** Fans out every universal-section
+parameter except colour, per CS-05. The exclusion of colour is
+intentional — bulk recolouring is rarely the user intent and would
+collapse a meaningful palette to a single shade.
+
+**Disabled-button affordance.** When `on_apply_to_all` is `None`
+both the per-row ∀ buttons and the bottom ∀ Apply to All button
+are rendered with `state=tk.DISABLED`. The user sees the
+affordance and understands it's a no-op for the current host
+context, rather than seeing it silently disappear.
+
+**Style key namespacing.** Conditional sections use prefixed keys
+to avoid collisions: `marker_shape`, `marker_size`,
+`broadening_function`, `broadening_fwhm`, `delta_e`, `scale`,
+`envelope_linewidth`, `envelope_fill`, `envelope_fill_alpha`,
+`stick_linewidth`, `stick_alpha`, `stick_tip_markers`,
+`stick_marker_size`, `component_total`, `component_d2`,
+`component_m2`, `component_q2`. The universal-section keys
+(`color`, `linestyle`, `linewidth`, `alpha`, `fill`, `fill_alpha`)
+match `scan_tree_widget._DEFAULT_STYLE` so the row controls and the
+dialog read/write the same dict.
+
+**Defaults table.** `_UNIVERSAL_DEFAULTS` (kept in sync with the
+scan-tree-widget defaults) and `_CONDITIONAL_DEFAULTS` together
+provide a fallback for every key the dialog reads. `node.style`
+takes precedence; the defaults are only consulted when the key is
+absent.
+
+**Hidden sections consume zero vertical space.** A node type absent
+from `_SECTIONS_BY_TYPE` gets only the universal section. Each
+conditional section is a `tk.LabelFrame` constructed only when its
+name appears in the type's tuple — there is no placeholder frame,
+no `pack_forget`, no hidden geometry.
+
+**Section dispatch.** Section names map to `_build_section_<name>`
+methods on the dialog class. A name with no corresponding method
+is logged at WARNING and skipped, which makes it safe to add a
+section name to the type table before the builder lands.
+
+**Reset (colour) restores snapshot, not a palette default.** The
+swatch's Reset button writes the colour that was in `node.style`
+when the dialog opened. The dialog has no palette knowledge — the
+default colour for a freshly created node is the loader's
+responsibility (cf. Phase 4 friction point about
+`_PALETTE[idx % len(_PALETTE)]`). Reset means "undo my colour
+edits in this dialog session," not "restore an app-wide default."
+
+**Stubbed sections.**
+
+* **Uncertainty band** (`BXAS_RESULT`) — schema blocked on OQ-002.
+  The `LabelFrame` is constructed and contains an explanatory Label
+  citing OQ-002 so the gap is visible to the user rather than
+  silently absent.
+* **Compound result components** (`BXAS_RESULT`) — bXAS compound
+  result grouping (one row vs. three vs. expandable group) is
+  OQ-003. Same stub treatment as Uncertainty band.
+
+**Subscription teardown.** The dialog binds `<Destroy>` and drops
+its graph subscription and registry entry automatically. Both the
+WM close hook and Tk's `<Destroy>` event can fire; the underlying
+ops are idempotent.
+
+**Plot redraw is the tab's job.** The dialog never calls a redraw
+callback. Per the graph contract the tab is already subscribed to
+`NODE_STYLE_CHANGED` and will redraw in response to dialog-driven
+mutations.
+
 ---
 
 ## CS-06: Top Bar (per-tab specification)
