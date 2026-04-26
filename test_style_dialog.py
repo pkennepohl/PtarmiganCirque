@@ -250,5 +250,168 @@ class TestStyleDialogShell(unittest.TestCase):
         self.assertNotIn("a", self.style_dialog._open_dialogs)
 
 
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestStyleDialogConditionalSections(unittest.TestCase):
+    """Sections shown/hidden depending on the node's NodeType (CS-05)."""
+
+    @classmethod
+    def setUpClass(cls):
+        import style_dialog
+        cls.style_dialog = style_dialog
+        cls.StyleDialog = style_dialog.StyleDialog
+
+    def setUp(self):
+        self.style_dialog._open_dialogs.clear()
+        self.host = tk.Frame(_root)
+        self.graph = ProjectGraph()
+
+    def tearDown(self):
+        for dlg in list(self.style_dialog._open_dialogs.values()):
+            try:
+                dlg.destroy()
+            except Exception:
+                pass
+        self.style_dialog._open_dialogs.clear()
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    @staticmethod
+    def _section_titles(dlg) -> list[str]:
+        titles: list[str] = []
+
+        def walk(w):
+            for c in w.winfo_children():
+                if isinstance(c, tk.LabelFrame):
+                    titles.append(c.cget("text"))
+                walk(c)
+        walk(dlg)
+        return titles
+
+    # All possible section titles — used to assert "no other sections."
+    _ALL_SECTIONS = {
+        "Markers", "Broadening", "Energy shift and scale",
+        "Envelope", "Sticks", "Component visibility",
+        "Uncertainty band", "Compound result components",
+    }
+
+    def _open(self, ntype: NodeType):
+        self.graph.add_node(_data("a", ntype))
+        dlg = self.StyleDialog(self.host, self.graph, "a")
+        dlg.update_idletasks()
+        return dlg
+
+    def _assert_only(self, dlg, expected: set[str]):
+        titles = set(self._section_titles(dlg))
+        self.assertEqual(
+            titles & self._ALL_SECTIONS, expected,
+            f"section set mismatch: got {sorted(titles)}, "
+            f"expected {sorted(expected)}",
+        )
+
+    # ---- types with no conditional section ----
+
+    def test_uvvis_has_no_conditional_sections(self):
+        dlg = self._open(NodeType.UVVIS)
+        self._assert_only(dlg, set())
+
+    def test_raw_file_has_no_conditional_sections(self):
+        dlg = self._open(NodeType.RAW_FILE)
+        self._assert_only(dlg, set())
+
+    # ---- types in the markers group ----
+
+    def test_xanes_has_markers_only(self):
+        dlg = self._open(NodeType.XANES)
+        self._assert_only(dlg, {"Markers"})
+
+    def test_exafs_has_markers_only(self):
+        dlg = self._open(NodeType.EXAFS)
+        self._assert_only(dlg, {"Markers"})
+
+    def test_deglitched_has_markers_only(self):
+        dlg = self._open(NodeType.DEGLITCHED)
+        self._assert_only(dlg, {"Markers"})
+
+    def test_averaged_has_markers_only(self):
+        dlg = self._open(NodeType.AVERAGED)
+        self._assert_only(dlg, {"Markers"})
+
+    # ---- TDDFT (the heavyweight) ----
+
+    def test_tddft_has_full_calculated_set(self):
+        dlg = self._open(NodeType.TDDFT)
+        self._assert_only(dlg, {
+            "Broadening", "Energy shift and scale",
+            "Envelope", "Sticks", "Component visibility",
+        })
+
+    # ---- BXAS_RESULT (with both stubs) ----
+
+    def test_bxas_result_includes_stubs(self):
+        dlg = self._open(NodeType.BXAS_RESULT)
+        self._assert_only(dlg, {
+            "Broadening", "Energy shift and scale", "Envelope",
+            "Uncertainty band", "Compound result components",
+        })
+
+    def test_bxas_uncertainty_section_is_oq002_stub(self):
+        """The uncertainty section must NOT silently be empty.
+
+        OQ-002 (uncertainty band schema) blocks the real controls; the
+        section header is present and contains a Label that flags the
+        gap so it's visible rather than silent.
+        """
+        dlg = self._open(NodeType.BXAS_RESULT)
+        # Find the LabelFrame and assert it contains a Label
+        # mentioning "OQ-002".
+        found = False
+        for child in self._all_descendants(dlg):
+            if (isinstance(child, tk.LabelFrame)
+                    and child.cget("text") == "Uncertainty band"):
+                for sub in child.winfo_children():
+                    if isinstance(sub, tk.Label) and "OQ-002" in sub.cget(
+                        "text"
+                    ):
+                        found = True
+                        break
+                break
+        self.assertTrue(
+            found,
+            "Uncertainty band stub must contain an OQ-002 reference",
+        )
+
+    # ---- FEFF_PATHS (energy shift / scale only) ----
+
+    def test_feff_paths_has_energy_shift_only(self):
+        dlg = self._open(NodeType.FEFF_PATHS)
+        self._assert_only(dlg, {"Energy shift and scale"})
+
+    # ---- conditional section writes through the graph ----
+
+    def test_marker_size_change_writes_via_graph(self):
+        """Conditional section controls also route through set_style."""
+        self.graph.add_node(_data("a", NodeType.XANES,
+                                  style={"marker_size": 4}))
+        dlg = self.StyleDialog(self.host, self.graph, "a")
+        dlg.update_idletasks()
+
+        dlg._control_vars["marker_size"].set(8)
+        dlg.update_idletasks()
+
+        self.assertEqual(self.graph.get_node("a").style["marker_size"], 8)
+
+    @staticmethod
+    def _all_descendants(w):
+        out = []
+        for c in w.winfo_children():
+            out.append(c)
+            out.extend(
+                TestStyleDialogConditionalSections._all_descendants(c)
+            )
+        return out
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -117,8 +117,69 @@ _BULK_UNIVERSAL_KEYS: tuple[str, ...] = (
 # methods on ``StyleDialog`` (named ``_build_section_<name>``). A node
 # type absent from the table has only the universal section.
 #
-# Populated in Part B; Part A ships with the universal section only.
-_SECTIONS_BY_TYPE: dict[NodeType, tuple[str, ...]] = {}
+# A section name with no corresponding ``_build_section_<name>`` method
+# is silently skipped (the gap is logged at WARNING).
+_SECTIONS_BY_TYPE: dict[NodeType, tuple[str, ...]] = {
+    NodeType.XANES:       ("markers",),
+    NodeType.EXAFS:       ("markers",),
+    NodeType.DEGLITCHED:  ("markers",),
+    NodeType.AVERAGED:    ("markers",),
+    NodeType.TDDFT: (
+        "broadening", "energy_shift_scale", "envelope",
+        "sticks", "components",
+    ),
+    NodeType.BXAS_RESULT: (
+        "broadening", "energy_shift_scale", "envelope",
+        "uncertainty", "compound_result",
+    ),
+    NodeType.FEFF_PATHS:  ("energy_shift_scale",),
+}
+
+
+# Human-readable section titles. Used both as the ``tk.LabelFrame``
+# text and as the lookup key for tests that walk ``winfo_children()``.
+_SECTION_TITLES: dict[str, str] = {
+    "markers":            "Markers",
+    "broadening":         "Broadening",
+    "energy_shift_scale": "Energy shift and scale",
+    "envelope":           "Envelope",
+    "sticks":             "Sticks",
+    "components":         "Component visibility",
+    "uncertainty":        "Uncertainty band",
+    "compound_result":    "Compound result components",
+}
+
+
+# Defaults for keys touched by conditional sections. Kept here rather
+# than in ``_UNIVERSAL_DEFAULTS`` so adding a new section is a one-file
+# change. Section builders read via ``self._style_get(key)`` which
+# falls back to this table when the key is absent from both
+# ``_UNIVERSAL_DEFAULTS`` and ``node.style``.
+_CONDITIONAL_DEFAULTS: dict[str, Any] = {
+    # Markers
+    "marker_shape":          "none",   # "none"|"circle"|"square"|"diamond"
+    "marker_size":           4,
+    # Broadening
+    "broadening_function":   "Gaussian",  # "Gaussian"|"Lorentzian"
+    "broadening_fwhm":       0.5,          # eV
+    # Energy shift and scale
+    "delta_e":               0.0,           # eV
+    "scale":                 1.0,
+    # Envelope
+    "envelope_linewidth":    1.5,
+    "envelope_fill":         False,
+    "envelope_fill_alpha":   0.10,
+    # Sticks
+    "stick_linewidth":       1.0,
+    "stick_alpha":           0.9,
+    "stick_tip_markers":     False,
+    "stick_marker_size":     4,
+    # Components
+    "component_total":       True,
+    "component_d2":          True,
+    "component_m2":          True,
+    "component_q2":          True,
+}
 
 
 # =====================================================================
@@ -251,12 +312,10 @@ class StyleDialog(tk.Toplevel):
         # Conditional sections: one tk.LabelFrame per section, each
         # preceded by a horizontal separator. Hidden sections (those
         # not in _SECTIONS_BY_TYPE for this node type) are simply not
-        # created — they consume no vertical space.
+        # created — they consume no vertical space (per the task
+        # spec).
         section_names = _SECTIONS_BY_TYPE.get(node.type, ())
         for name in section_names:
-            ttk.Separator(body, orient=tk.HORIZONTAL).pack(
-                fill=tk.X, pady=(8, 4),
-            )
             builder = getattr(self, f"_build_section_{name}", None)
             if builder is None:
                 _log.warning(
@@ -264,7 +323,17 @@ class StyleDialog(tk.Toplevel):
                     name, self._node_id,
                 )
                 continue
-            builder(body, node)
+            ttk.Separator(body, orient=tk.HORIZONTAL).pack(
+                fill=tk.X, pady=(8, 4),
+            )
+            frame = tk.LabelFrame(
+                body,
+                text=_SECTION_TITLES.get(name, name),
+                padx=8, pady=4,
+            )
+            frame.pack(fill=tk.X)
+            frame.columnconfigure(1, weight=1)
+            builder(frame, node)
 
     def _build_universal_section(
         self, parent: tk.Widget, node: DataNode,
@@ -647,14 +716,21 @@ class StyleDialog(tk.Toplevel):
     # ------------------------------------------------------------
 
     def _style_get(self, key: str) -> Any:
-        """Fetch a style value with the universal-default fallback."""
+        """Fetch a style value with the module-default fallback.
+
+        Looks up ``node.style[key]`` first, then ``_UNIVERSAL_DEFAULTS``,
+        then ``_CONDITIONAL_DEFAULTS``. Returns ``None`` if the key
+        isn't known in either table.
+        """
         try:
             node = self._graph.get_node(self._node_id)
         except KeyError:
-            return _UNIVERSAL_DEFAULTS.get(key)
-        if not isinstance(node, DataNode):
-            return _UNIVERSAL_DEFAULTS.get(key)
-        return node.style.get(key, _UNIVERSAL_DEFAULTS.get(key))
+            node = None
+        if isinstance(node, DataNode) and key in node.style:
+            return node.style[key]
+        if key in _UNIVERSAL_DEFAULTS:
+            return _UNIVERSAL_DEFAULTS[key]
+        return _CONDITIONAL_DEFAULTS.get(key)
 
     # ------------------------------------------------------------
     # Graph write (with re-entrancy guard)
@@ -741,13 +817,380 @@ class StyleDialog(tk.Toplevel):
             _open_dialogs.pop(self._node_id, None)
 
     # ------------------------------------------------------------
-    # Conditional section builders (Phase 3 Part B fills these in)
+    # Conditional section builders
+    # ------------------------------------------------------------
+    #
+    # Each section builder takes ``(parent, node)`` where ``parent``
+    # is a ``tk.LabelFrame`` already configured with the section
+    # title. Builders place controls into the parent and register
+    # variables into ``self._control_vars`` and refresh closures into
+    # ``self._control_refresh`` so external NODE_STYLE_CHANGED events
+    # update the widgets without firing recursive set_style writes.
+    #
+    # Per CS-05 §"Conditional sections" the universal section's ∀
+    # buttons fan out to the tab; conditional sections do not carry
+    # ∀ buttons (Implementation note: deferred — would require
+    # additional tab-side knowledge to scope "same component".)
+
+    # ---- Markers ------------------------------------------------
+
+    def _build_section_markers(
+        self, parent: tk.Widget, _node: DataNode,
+    ) -> None:
+        row = 0
+        # Marker shape (radio).
+        tk.Label(parent, text="Marker shape:", font=("", 9, "bold")).grid(
+            row=row, column=0, sticky="w", pady=2,
+        )
+        shape_var = tk.StringVar(value=str(self._style_get("marker_shape")))
+        self._control_vars["marker_shape"] = shape_var
+        shape_frame = tk.Frame(parent)
+        shape_frame.grid(row=row, column=1, columnspan=2, sticky="w")
+        for display, value in (
+            ("None", "none"), ("Circle", "circle"),
+            ("Square", "square"), ("Diamond", "diamond"),
+        ):
+            tk.Radiobutton(
+                shape_frame, text=display, variable=shape_var, value=value,
+            ).pack(side=tk.LEFT, padx=3)
+        shape_var.trace_add(
+            "write",
+            lambda *_, k="marker_shape", v=shape_var:
+                self._write_partial({k: v.get()}),
+        )
+
+        def _refresh_shape(value, _v=shape_var):
+            _v.set(str(value))
+        self._control_refresh["marker_shape"] = _refresh_shape
+        row += 1
+
+        # Marker size (spinbox).
+        size_var = tk.IntVar(value=int(self._style_get("marker_size")))
+        self._control_vars["marker_size"] = size_var
+        self._build_spinbox_row(
+            parent, row, "Marker size:", size_var,
+            lo=2, hi=12, key="marker_size", unit="px",
+        )
+
+    # ---- Broadening --------------------------------------------
+
+    def _build_section_broadening(
+        self, parent: tk.Widget, _node: DataNode,
+    ) -> None:
+        row = 0
+        # Function (radio).
+        tk.Label(parent, text="Function:", font=("", 9, "bold")).grid(
+            row=row, column=0, sticky="w", pady=2,
+        )
+        fn_var = tk.StringVar(
+            value=str(self._style_get("broadening_function")),
+        )
+        self._control_vars["broadening_function"] = fn_var
+        fn_frame = tk.Frame(parent)
+        fn_frame.grid(row=row, column=1, columnspan=2, sticky="w")
+        for value in ("Gaussian", "Lorentzian"):
+            tk.Radiobutton(
+                fn_frame, text=value, variable=fn_var, value=value,
+            ).pack(side=tk.LEFT, padx=3)
+        fn_var.trace_add(
+            "write",
+            lambda *_, k="broadening_function", v=fn_var:
+                self._write_partial({k: v.get()}),
+        )
+
+        def _refresh_fn(value, _v=fn_var):
+            _v.set(str(value))
+        self._control_refresh["broadening_function"] = _refresh_fn
+        row += 1
+
+        # FWHM (entry + slider).
+        fwhm_var = tk.DoubleVar(
+            value=float(self._style_get("broadening_fwhm")),
+        )
+        self._control_vars["broadening_fwhm"] = fwhm_var
+        self._build_entry_slider_row(
+            parent, row, "FWHM:", fwhm_var,
+            lo=0.0, hi=5.0, res=0.05, key="broadening_fwhm", unit="eV",
+        )
+
+    # ---- Energy shift and scale --------------------------------
+
+    def _build_section_energy_shift_scale(
+        self, parent: tk.Widget, _node: DataNode,
+    ) -> None:
+        row = 0
+        # ΔE
+        de_var = tk.DoubleVar(value=float(self._style_get("delta_e")))
+        self._control_vars["delta_e"] = de_var
+        self._build_entry_slider_row(
+            parent, row, "ΔE:", de_var,
+            lo=-20.0, hi=20.0, res=0.01, key="delta_e", unit="eV",
+        )
+        row += 1
+
+        # Scale (multiplier)
+        sc_var = tk.DoubleVar(value=float(self._style_get("scale")))
+        self._control_vars["scale"] = sc_var
+        self._build_entry_slider_row(
+            parent, row, "Scale:", sc_var,
+            lo=0.0, hi=5.0, res=0.01, key="scale", unit="×",
+        )
+
+    # ---- Envelope -----------------------------------------------
+
+    def _build_section_envelope(
+        self, parent: tk.Widget, _node: DataNode,
+    ) -> None:
+        row = 0
+        lw_var = tk.DoubleVar(
+            value=float(self._style_get("envelope_linewidth")),
+        )
+        self._control_vars["envelope_linewidth"] = lw_var
+        self._build_slider_row(
+            parent, row, "Line width:", lw_var,
+            lo=0.5, hi=5.0, res=0.1, key="envelope_linewidth", unit="pt",
+        )
+        row += 1
+
+        # Fill area (checkbox).
+        fill_var = tk.BooleanVar(
+            value=bool(self._style_get("envelope_fill")),
+        )
+        self._control_vars["envelope_fill"] = fill_var
+        tk.Label(parent, text="Fill area:", font=("", 9, "bold")).grid(
+            row=row, column=0, sticky="w", pady=2,
+        )
+        tk.Checkbutton(
+            parent, text="Show envelope fill", variable=fill_var,
+        ).grid(row=row, column=1, columnspan=2, sticky="w")
+        fill_var.trace_add(
+            "write",
+            lambda *_, k="envelope_fill", v=fill_var:
+                self._write_partial({k: bool(v.get())}),
+        )
+
+        def _refresh_efill(value, _v=fill_var):
+            _v.set(bool(value))
+        self._control_refresh["envelope_fill"] = _refresh_efill
+        row += 1
+
+        # Fill opacity.
+        fa_var = tk.DoubleVar(
+            value=float(self._style_get("envelope_fill_alpha")),
+        )
+        self._control_vars["envelope_fill_alpha"] = fa_var
+        self._build_slider_row(
+            parent, row, "Fill opacity:", fa_var,
+            lo=0.0, hi=1.0, res=0.05, key="envelope_fill_alpha",
+        )
+
+    # ---- Sticks -------------------------------------------------
+
+    def _build_section_sticks(
+        self, parent: tk.Widget, _node: DataNode,
+    ) -> None:
+        row = 0
+        lw_var = tk.DoubleVar(
+            value=float(self._style_get("stick_linewidth")),
+        )
+        self._control_vars["stick_linewidth"] = lw_var
+        self._build_slider_row(
+            parent, row, "Line width:", lw_var,
+            lo=0.5, hi=5.0, res=0.1, key="stick_linewidth", unit="pt",
+        )
+        row += 1
+
+        a_var = tk.DoubleVar(value=float(self._style_get("stick_alpha")))
+        self._control_vars["stick_alpha"] = a_var
+        self._build_slider_row(
+            parent, row, "Opacity:", a_var,
+            lo=0.0, hi=1.0, res=0.05, key="stick_alpha",
+        )
+        row += 1
+
+        # Tip markers.
+        tip_var = tk.BooleanVar(
+            value=bool(self._style_get("stick_tip_markers")),
+        )
+        self._control_vars["stick_tip_markers"] = tip_var
+        tk.Label(parent, text="Tip markers:", font=("", 9, "bold")).grid(
+            row=row, column=0, sticky="w", pady=2,
+        )
+        tk.Checkbutton(
+            parent, text="Show stick tips", variable=tip_var,
+        ).grid(row=row, column=1, columnspan=2, sticky="w")
+        tip_var.trace_add(
+            "write",
+            lambda *_, k="stick_tip_markers", v=tip_var:
+                self._write_partial({k: bool(v.get())}),
+        )
+
+        def _refresh_tip(value, _v=tip_var):
+            _v.set(bool(value))
+        self._control_refresh["stick_tip_markers"] = _refresh_tip
+        row += 1
+
+        ms_var = tk.IntVar(value=int(self._style_get("stick_marker_size")))
+        self._control_vars["stick_marker_size"] = ms_var
+        self._build_spinbox_row(
+            parent, row, "Marker size:", ms_var,
+            lo=2, hi=12, key="stick_marker_size", unit="px",
+        )
+
+    # ---- Component visibility (TDDFT) --------------------------
+
+    def _build_section_components(
+        self, parent: tk.Widget, _node: DataNode,
+    ) -> None:
+        # Two-column grid of checkboxes.
+        comps = (
+            ("Total",                    "component_total"),
+            ("Electric Dipole (D²)",     "component_d2"),
+            ("Mag. Dipole (m²)",         "component_m2"),
+            ("Elec. Quad. (Q²)",         "component_q2"),
+        )
+        for i, (display, key) in enumerate(comps):
+            r, c = divmod(i, 2)
+            var = tk.BooleanVar(value=bool(self._style_get(key)))
+            self._control_vars[key] = var
+            tk.Checkbutton(
+                parent, text=display, variable=var,
+            ).grid(row=r, column=c, sticky="w", padx=4, pady=2)
+            var.trace_add(
+                "write",
+                lambda *_, k=key, v=var:
+                    self._write_partial({k: bool(v.get())}),
+            )
+
+            def _refresh(value, _v=var):
+                _v.set(bool(value))
+            self._control_refresh[key] = _refresh
+
+    # ---- Uncertainty band stub (OQ-002) ------------------------
+
+    def _build_section_uncertainty(
+        self, parent: tk.Widget, _node: DataNode,
+    ) -> None:
+        # Stub — schema blocked on OQ-002 (ARCHITECTURE.md §15).
+        # The section header is present so the gap is visible to the
+        # user rather than silently absent; controls land here once
+        # the bXAS uncertainty representation is settled.
+        tk.Label(
+            parent,
+            text=(
+                "Uncertainty band controls are blocked on OQ-002 "
+                "(bXAS uncertainty schema). Controls will land here "
+                "once the schema is specified."
+            ),
+            wraplength=380, justify="left", fg="#666666",
+        ).grid(row=0, column=0, columnspan=3, sticky="w", padx=4, pady=4)
+
+    # ---- bXAS compound result stub (OQ-003) --------------------
+
+    def _build_section_compound_result(
+        self, parent: tk.Widget, _node: DataNode,
+    ) -> None:
+        # Stub — bXAS compound result grouping (one row vs three vs
+        # expandable group) is OQ-003. The dialog can't currently
+        # offer per-component styling without that decision.
+        tk.Label(
+            parent,
+            text=(
+                "Per-component styling for the bXAS compound result "
+                "(fit curve · uncertainty band · residuals) is "
+                "blocked on OQ-003. Controls will land here once the "
+                "grouping is specified."
+            ),
+            wraplength=380, justify="left", fg="#666666",
+        ).grid(row=0, column=0, columnspan=3, sticky="w", padx=4, pady=4)
+
+    # ------------------------------------------------------------
+    # Spinbox + value-trace helper
     # ------------------------------------------------------------
 
-    # Each section builder takes (parent, node) and builds inside
-    # ``parent`` (typically the body Frame). They are looked up by
-    # name via ``_SECTIONS_BY_TYPE``. Hidden sections are never
-    # constructed and so consume no vertical space (per the task
-    # spec "Hidden sections must NOT consume vertical space").
-    #
-    # Filled in by Part B.
+    def _build_spinbox_row(
+        self,
+        parent: tk.Widget,
+        row: int,
+        label: str,
+        var: tk.IntVar,
+        lo: int,
+        hi: int,
+        key: str,
+        unit: str = "",
+    ) -> None:
+        """Labelled Spinbox row that writes via ``trace_add('write')``."""
+        tk.Label(parent, text=label, font=("", 9, "bold")).grid(
+            row=row, column=0, sticky="w", pady=2,
+        )
+        spin = tk.Spinbox(
+            parent, from_=lo, to=hi, increment=1, textvariable=var,
+            width=5,
+        )
+        spin.grid(row=row, column=1, sticky="w", padx=4)
+        if unit:
+            tk.Label(parent, text=unit, font=("Courier", 8)).grid(
+                row=row, column=2, sticky="w",
+            )
+
+        def _on_var_write(*_, k=key, v=var):
+            try:
+                value = int(v.get())
+            except (tk.TclError, ValueError):
+                return
+            self._write_partial({k: value})
+        var.trace_add("write", _on_var_write)
+
+        def _refresh(value, _v=var):
+            try:
+                _v.set(int(value))
+            except (tk.TclError, ValueError):
+                pass
+        self._control_refresh[key] = _refresh
+
+    # ------------------------------------------------------------
+    # Entry + Slider helper (used for FWHM, ΔE, scale)
+    # ------------------------------------------------------------
+
+    def _build_entry_slider_row(
+        self,
+        parent: tk.Widget,
+        row: int,
+        label: str,
+        var: tk.DoubleVar,
+        lo: float,
+        hi: float,
+        res: float,
+        key: str,
+        unit: str = "",
+    ) -> None:
+        """Labelled Entry + unit + Scale row, all bound to ``var``."""
+        tk.Label(parent, text=label, font=("", 9, "bold")).grid(
+            row=row, column=0, sticky="w", pady=2,
+        )
+        entry = tk.Entry(parent, textvariable=var, width=8)
+        entry.grid(row=row, column=1, sticky="w", padx=(4, 2))
+        if unit:
+            tk.Label(parent, text=unit, font=("Courier", 8)).grid(
+                row=row, column=2, sticky="w",
+            )
+        sc = tk.Scale(
+            parent, variable=var, from_=lo, to=hi, resolution=res,
+            orient=tk.HORIZONTAL, length=140, showvalue=False,
+        )
+        sc.grid(row=row, column=3, sticky="ew", padx=(4, 0))
+
+        def _on_var_write(*_, k=key, v=var):
+            try:
+                value = float(v.get())
+            except (tk.TclError, ValueError):
+                return
+            self._write_partial({k: value})
+        var.trace_add("write", _on_var_write)
+
+        def _refresh(value, _v=var):
+            try:
+                _v.set(float(value))
+            except (tk.TclError, ValueError):
+                pass
+        self._control_refresh[key] = _refresh
