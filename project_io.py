@@ -36,15 +36,11 @@ import hashlib
 import json
 import platform
 import shutil
-import sys
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-# Ptarmigan version is not yet exposed by binah.py at module level,
-# so we keep a local constant here. When binah.py grows a __version__
-# this should be replaced with `from binah import __version__`.
-PTARMIGAN_VERSION = "0.1.0-dev"
+from version import __version__ as PTARMIGAN_VERSION
 
 # Directory and file names within a .ptproj/ project.
 PROJECT_JSON       = "project.json"
