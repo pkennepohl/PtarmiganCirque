@@ -413,5 +413,173 @@ class TestStyleDialogConditionalSections(unittest.TestCase):
         return out
 
 
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestStyleDialogApplyToAll(unittest.TestCase):
+    """Per-parameter ∀ and bottom ∀ Apply to All wiring (CS-05)."""
+
+    @classmethod
+    def setUpClass(cls):
+        import style_dialog
+        cls.style_dialog = style_dialog
+        cls.StyleDialog = style_dialog.StyleDialog
+
+    def setUp(self):
+        self.style_dialog._open_dialogs.clear()
+        self.host = tk.Frame(_root)
+        self.graph = ProjectGraph()
+
+    def tearDown(self):
+        for dlg in list(self.style_dialog._open_dialogs.values()):
+            try:
+                dlg.destroy()
+            except Exception:
+                pass
+        self.style_dialog._open_dialogs.clear()
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    @staticmethod
+    def _find_apply_one_buttons(parent) -> list:
+        """Walk the widget tree for per-row ∀ buttons.
+
+        The bottom Apply-to-All button has text "∀  Apply to All" with
+        a different label so it does not match.
+        """
+        out = []
+        for c in parent.winfo_children():
+            if isinstance(c, tk.Button) and c.cget("text") == "∀":
+                out.append(c)
+            out.extend(
+                TestStyleDialogApplyToAll._find_apply_one_buttons(c)
+            )
+        return out
+
+    # ---- per-parameter ∀ ----
+
+    def test_delegate_apply_one_calls_callback(self):
+        """The dialog forwards (key, value) to on_apply_to_all."""
+        self.graph.add_node(_data("a", style={"linewidth": 2.5}))
+        seen: list = []
+        dlg = self.StyleDialog(
+            self.host, self.graph, "a",
+            on_apply_to_all=lambda k, v: seen.append((k, v)),
+        )
+        dlg._delegate_apply_one("linewidth", 3.5)
+        self.assertEqual(seen, [("linewidth", 3.5)])
+        # Self-write too: the local node ends up with the value so the
+        # dialog's widgets stay in sync with the graph.
+        self.assertAlmostEqual(
+            self.graph.get_node("a").style["linewidth"], 3.5,
+        )
+
+    def test_per_row_buttons_emit_one_call_per_universal_key(self):
+        """Invoking every per-row ∀ records the universal-section keys."""
+        self.graph.add_node(_data("a", style={
+            "linestyle": "dashed",
+            "linewidth": 2.5,
+            "alpha": 0.7,
+            "color": "#ff0000",
+            "fill": True,
+            "fill_alpha": 0.2,
+        }))
+        seen: list = []
+        dlg = self.StyleDialog(
+            self.host, self.graph, "a",
+            on_apply_to_all=lambda k, v: seen.append((k, v)),
+        )
+        dlg.update_idletasks()
+
+        # Universal section has six per-row ∀ buttons.
+        btns = self._find_apply_one_buttons(dlg)
+        self.assertEqual(
+            len(btns), 6,
+            "expected one ∀ per universal-section row",
+        )
+        for b in btns:
+            b.invoke()
+
+        keys = [k for (k, _) in seen]
+        self.assertCountEqual(
+            keys,
+            ["linestyle", "linewidth", "alpha",
+             "color", "fill", "fill_alpha"],
+        )
+
+    # ---- bottom ∀ Apply to All ----
+
+    def test_bottom_apply_all_fans_out_all_except_colour(self):
+        """Bottom ∀ button delegates every universal key except colour."""
+        self.graph.add_node(_data("a", style={
+            "linestyle": "dashed",
+            "linewidth": 2.5,
+            "alpha": 0.7,
+            "color": "#ff0000",
+            "fill": True,
+            "fill_alpha": 0.2,
+        }))
+        seen: list = []
+        dlg = self.StyleDialog(
+            self.host, self.graph, "a",
+            on_apply_to_all=lambda k, v: seen.append((k, v)),
+        )
+        dlg.update_idletasks()
+
+        dlg._apply_all_btn.invoke()
+
+        keys = [k for (k, _) in seen]
+        self.assertNotIn("color", keys)
+        self.assertCountEqual(
+            keys,
+            ["linestyle", "linewidth", "alpha", "fill", "fill_alpha"],
+        )
+        # Values match the graph state.
+        as_dict = dict(seen)
+        self.assertEqual(as_dict["linestyle"], "dashed")
+        self.assertAlmostEqual(as_dict["linewidth"], 2.5)
+        self.assertAlmostEqual(as_dict["alpha"], 0.7)
+        self.assertEqual(as_dict["fill"], True)
+        self.assertAlmostEqual(as_dict["fill_alpha"], 0.2)
+
+    # ---- callback absent → buttons disabled ----
+
+    def test_apply_buttons_disabled_when_no_callback(self):
+        self.graph.add_node(_data("a"))
+        dlg = self.StyleDialog(self.host, self.graph, "a")
+        dlg.update_idletasks()
+
+        for b in self._find_apply_one_buttons(dlg):
+            self.assertEqual(str(b.cget("state")), "disabled")
+        self.assertEqual(
+            str(dlg._apply_all_btn.cget("state")), "disabled",
+        )
+
+    def test_callback_exception_does_not_break_dialog(self):
+        """A raising on_apply_to_all is logged, not propagated."""
+        self.graph.add_node(_data("a", style={"linewidth": 2.0}))
+
+        def raiser(_k, _v):
+            raise RuntimeError("intentional")
+
+        dlg = self.StyleDialog(
+            self.host, self.graph, "a", on_apply_to_all=raiser,
+        )
+        dlg.update_idletasks()
+
+        # Suppress the WARNING noise so test output stays clean.
+        import logging
+        logging.getLogger("style_dialog").setLevel(logging.ERROR)
+        try:
+            # No exception escapes.
+            dlg._delegate_apply_one("linewidth", 3.0)
+        finally:
+            logging.getLogger("style_dialog").setLevel(logging.WARNING)
+        # The dialog still wrote to its own node.
+        self.assertAlmostEqual(
+            self.graph.get_node("a").style["linewidth"], 3.0,
+        )
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
