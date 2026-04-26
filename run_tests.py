@@ -15,7 +15,7 @@ import unittest
 TEST_MODULES = (
     "test_nodes",
     "test_graph",
-    # Phase 2 will add: "test_scan_tree_widget", ...
+    "test_scan_tree_widget",
 )
 
 
