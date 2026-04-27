@@ -1369,7 +1369,160 @@ colliding with the convention.
 
 ---
 
-*Document version: 1.1 — April 2026*
+## CS-14: Plot Settings Dialog
+
+**File:** `plot_settings_dialog.py`
+**Depends on:** nothing in the graph layer (tab-private UI state)
+**Depended on by:** every tab's top bar ⚙ button; first wired into
+`uvvis_tab.py` in Phase 4b
+
+### Responsibility
+
+Single modal dialog for plot-level rendering controls — fonts, grid,
+background colour, legend show/position, tick direction, title and
+axis-label text. Per ARCHITECTURE.md §3 and CS-06, every analysis tab
+hosts one ⚙ button in its top bar that opens a Plot Settings dialog
+configured for that tab. The dialog mutates a tab-private
+configuration dict; the tab's `_redraw` reads from that dict.
+
+### Window properties
+
+- Title: "Plot Settings"
+- Modal — `transient(parent)` + `grab_set()`
+- One dialog per tab; opening ⚙ on a tab that already has a dialog
+  open focuses the existing window rather than creating a duplicate
+- `[X]` window-close is treated as Cancel (matches CS-05 StyleDialog)
+
+### Sections (per CS-06)
+
+| Section | Controls |
+|---|---|
+| **Fonts** | Title / X-label / Y-label / Tick label / Legend font sizes; Title / X-label / Y-label bold; Save-as-Default / Reset Defaults / Factory Reset row |
+| **Appearance** | Grid on/off; background colour swatch; tick direction (in / out / both) |
+| **Legend** | Show legend; position (matplotlib `loc` combobox) |
+| **Title and labels** | Title / X-label / Y-label text entries with `[Auto]` (and `[None]` on Title) buttons that flip per-label mode |
+
+Each section is rendered into its own `tk.LabelFrame`. Hidden
+sections consume zero vertical space — they simply aren't created.
+The configuration dict's `_sections` key (or the `sections=`
+constructor argument) controls which sections render; default is all
+four.
+
+### Construction
+
+```python
+PlotSettingsDialog(
+    parent,                 # tk.Widget; also the registry key
+    config,                 # dict — tab-private plot config,
+                            # mutated in place on Apply
+    on_apply=None,          # callable(); invoked after Apply (and
+                            # again on Cancel that reverts an Apply)
+    sections=None,          # explicit section filter; falls back to
+                            # config["_sections"] then to the
+                            # all-four module default
+)
+```
+
+Or via the module-level factory which handles the per-host registry:
+
+```python
+open_plot_settings_dialog(parent, config, on_apply=None, sections=None)
+```
+
+### Bottom buttons
+
+```
+[ Apply ]  [ Cancel ]
+```
+
+- **Apply** — copy the working copy into the caller's config dict
+  (in place), invoke `on_apply`, dialog stays open for further edits
+- **Cancel** — revert config to the snapshot taken at `__init__`,
+  invoke `on_apply` if anything had to be reverted, destroy
+
+### Implementation notes (Phase 4b)
+
+These record decisions taken when implementing CS-14 for the
+ambiguities the spec left open. Descriptive, not prescriptive — a
+future design session can revisit any of them.
+
+**Modal contract.** `transient(parent.winfo_toplevel())` plus
+`grab_set()` exactly per CS-06. The transient call is best-effort
+(wrapped in a try/except for the unusual case where the parent is
+detached), but `grab_set` is unconditional — the modal contract is
+the dialog's primary affordance and must not be silently skipped.
+This is the deliberate difference from CS-05 StyleDialog, which is
+modeless. CS-14 dialogs do not coexist; CS-05 dialogs do.
+
+**Per-host registry, not per-node.** `_open_dialogs` keys on
+`id(parent)` rather than a node id (CS-05) because a tab's plot
+settings are tab-scoped, not node-scoped. A second
+`open_plot_settings_dialog(parent, ...)` call on the same parent
+focuses the existing window.
+
+**Working-copy semantics.** Slider, spinbox, checkbox, and combobox
+edits update an in-memory `self._working` dict via Tk variable
+`trace_add("write")` callbacks. Nothing reaches the caller's config
+or the plot until Apply. This differs from CS-05 — the StyleDialog
+writes through the graph on every keystroke for live preview, but a
+modal Plot Settings dialog with a single Apply gesture is what
+CS-06 calls for. Live preview is still possible: Apply commits the
+current state but leaves the dialog open, so the user can iterate.
+
+**Cancel is a session-snapshot revert, not an undo stack.** The
+snapshot is taken in `__init__` and restored on Cancel regardless of
+how many Applies happened in between. This matches the user's
+expectation of a Cancel gesture in a modal dialog. There is no
+"revert just my last change" affordance.
+
+**Save-as-Default / Reset Defaults / Factory Reset are working-copy
+operations.** None of the three commits to the caller's config; only
+Apply does. So the user flow is "Save as Default, then Apply" if
+they want the tab to also adopt the saved values. The buttons sit
+inside the Fonts section (per CS-06 layout) but their scope is the
+full working copy — they are not Fonts-only.
+
+**`_FACTORY_DEFAULTS` / `_UNIVERSAL_DEFAULTS` / `_USER_DEFAULTS`.**
+Three module-level dicts. `_FACTORY_DEFAULTS` is the
+ship-with-the-app baseline; `_UNIVERSAL_DEFAULTS` is currently a
+shallow copy alias kept distinct so a future design session can
+split "fallback for unset keys" from "what Factory Reset writes"
+without a global rename. `_USER_DEFAULTS` is mutable and starts
+empty — Save-as-Default writes the working copy here, Reset Defaults
+reads from here (with `_FACTORY_DEFAULTS` fallback when empty).
+
+**Persistence to project.json is deferred (CS-13 follow-up).** The
+`_USER_DEFAULTS` lifetime is the process. Persistence to project
+files lands in the project-I/O wiring session; CS-14 does not write
+to disk. The tab initialises its config from `_USER_DEFAULTS` if
+non-empty, falling back to `_FACTORY_DEFAULTS`, so newly opened
+dialogs in the same session pick up the user's saved values.
+
+**Title / X-label / Y-label modes.** Each label row carries both a
+text and a mode field (`"auto" | "none" | "custom"`, with X/Y rows
+omitting `"none"` per CS-06). The dialog cannot compute the
+auto-derived label text — that is tab-specific (e.g. "Wavelength
+(nm)" for UV/Vis, depending on the active x-unit). So Auto and
+None are mode flags; the entry shows whatever the user typed; the
+tab's `_redraw` picks `xlabel_text` only when `xlabel_mode ==
+"custom"` and otherwise computes the auto value itself.
+
+**Subscription teardown.** The dialog binds `<Destroy>` and drops
+its registry entry automatically. Both the WM close hook and Tk's
+`<Destroy>` event can fire; the underlying op is idempotent.
+
+**No graph subscription.** Plot Settings is tab-private UI state,
+not graph state — the dialog never subscribes to `GraphEvent` and
+the tab's `_redraw` is invoked through the explicit `on_apply`
+callback rather than via `NODE_STYLE_CHANGED`. This matches Phase
+4a friction point #4: a graph-side view-state payload would be the
+larger refactor; Plot Settings sidesteps it by keeping the config
+on the tab.
+
+---
+
+*Document version: 1.2 — April 2026*
 *1.1: CS-13 implementation notes added in Phase 4a.*
+*1.2: CS-14 Plot Settings Dialog added in Phase 4b.*
 *To be updated as Open Questions are resolved and new components
 are specified.*
