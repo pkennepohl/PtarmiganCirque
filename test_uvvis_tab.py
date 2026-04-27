@@ -583,5 +583,159 @@ class TestUVVisTabStyleDialogIntegration(unittest.TestCase):
             )
 
 
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestUVVisTabPlotSettingsIntegration(unittest.TestCase):
+    """Phase 4b — ⚙ Plot Settings button + dialog hand-off."""
+
+    @classmethod
+    def setUpClass(cls):
+        from uvvis_tab import UVVisTab
+        import plot_settings_dialog
+        cls.UVVisTab = UVVisTab
+        cls.psd = plot_settings_dialog
+
+    def setUp(self):
+        # Reset registries / module-level user defaults.
+        self.psd._open_dialogs.clear()
+        self.psd._USER_DEFAULTS.clear()
+        self.host = tk.Frame(_root)
+        self.host.pack()
+        self.graph = ProjectGraph()
+        self.tab = self.UVVisTab(self.host, graph=self.graph)
+
+    def tearDown(self):
+        for dlg in list(self.psd._open_dialogs.values()):
+            try:
+                dlg.destroy()
+            except Exception:
+                pass
+        self.psd._open_dialogs.clear()
+        self.psd._USER_DEFAULTS.clear()
+        try:
+            self.tab.destroy()
+        except Exception:
+            pass
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    def _add_uvvis(self, nid: str = "u1") -> None:
+        """Drop one UVVIS node onto the tab so _redraw produces a Line2D."""
+        wl = np.linspace(300, 600, 10)
+        absorb = np.linspace(0.1, 0.9, 10)
+        self.graph.add_node(DataNode(
+            id=nid,
+            type=NodeType.UVVIS,
+            arrays={"wavelength_nm": wl, "absorbance": absorb},
+            metadata={"source_file": "synthetic"},
+            label=nid,
+            state=NodeState.COMMITTED,
+            style={"color": "#1f77b4", "linestyle": "solid",
+                   "linewidth": 1.5, "alpha": 0.9, "visible": True,
+                   "in_legend": True, "fill": False, "fill_alpha": 0.08},
+        ))
+
+    # ----------- ⚙ button is in the toolbar -----------
+
+    def test_plot_settings_button_exists_in_toolbar(self):
+        # The button is placed between the legacy "+ Add to TDDFT
+        # Overlay" slot (which stands in for the deferred Send-to-Compare)
+        # and the status label.
+        self.assertTrue(hasattr(self.tab, "_plot_settings_btn"))
+        btn = self.tab._plot_settings_btn
+        self.assertIsInstance(btn, tk.Button)
+        self.assertIn("Plot Settings", btn.cget("text"))
+
+    def test_plot_config_initialised_from_factory_defaults(self):
+        # No user defaults saved yet → plot_config mirrors factory.
+        self.assertEqual(
+            self.tab._plot_config["title_font_size"],
+            self.psd._FACTORY_DEFAULTS["title_font_size"],
+        )
+        self.assertEqual(
+            self.tab._plot_config["grid"],
+            self.psd._FACTORY_DEFAULTS["grid"],
+        )
+
+    # ----------- ⚙ click opens dialog and registers it -----------
+
+    def test_button_invocation_opens_and_registers_dialog(self):
+        self.tab._plot_settings_btn.invoke()
+        dlg = self.psd._open_dialogs.get(id(self.tab))
+        self.assertIsNotNone(dlg, "dialog must register under the tab id")
+        self.assertIsInstance(dlg, self.psd.PlotSettingsDialog)
+
+    def test_open_then_apply_calls_back_into_tab(self):
+        # The dialog factory enforces one-per-tab; sanity-check that
+        # the on_apply callback is wired and triggers _redraw.
+        self.tab._open_plot_settings()
+        dlg = self.psd._open_dialogs[id(self.tab)]
+        dlg.update_idletasks()
+
+        self._add_uvvis()
+        # Pre-Apply: factory default tick label size is 9.
+        self.tab._redraw()
+        labels_pre = self.tab._ax.get_xticklabels()
+        size_pre = labels_pre[0].get_fontsize() if labels_pre else None
+
+        # Adjust tick label font size in the dialog and Apply.
+        dlg._control_vars["tick_label_font_size"].set(16)
+        dlg.update_idletasks()
+        dlg._do_apply()
+        # The on_apply callback (the tab's _redraw) has fired.
+
+        labels_post = self.tab._ax.get_xticklabels()
+        # The tick params API stores labelsize on each tick label.
+        # After redraw with the new config, every visible tick label
+        # carries the new size.
+        if labels_post:
+            self.assertAlmostEqual(labels_post[0].get_fontsize(), 16.0)
+        # Config dict was mutated in place.
+        self.assertEqual(self.tab._plot_config["tick_label_font_size"], 16)
+
+    # ----------- font size change reaches matplotlib -----------
+
+    def test_apply_font_size_change_reflects_in_axes(self):
+        self._add_uvvis()
+        self.tab._open_plot_settings()
+        dlg = self.psd._open_dialogs[id(self.tab)]
+        dlg.update_idletasks()
+
+        # Bump the X-axis label font size from default (10) to 18.
+        dlg._control_vars["xlabel_font_size"].set(18)
+        dlg.update_idletasks()
+        dlg._do_apply()
+
+        # _redraw has been called; the matplotlib X-label carries the
+        # new font size.
+        self.assertAlmostEqual(
+            self.tab._ax.xaxis.label.get_fontsize(), 18.0,
+        )
+
+    # ----------- grid toggle removes the gridlines -----------
+
+    def test_apply_grid_off_removes_gridlines(self):
+        self._add_uvvis()
+        # Default factory: grid=True. Confirm gridlines exist.
+        self.tab._redraw()
+        x_grid_pre = self.tab._ax.xaxis.get_gridlines()
+        # At least one gridline visible by default.
+        self.assertTrue(any(g.get_visible() for g in x_grid_pre))
+
+        # Open dialog, flip grid off, Apply.
+        self.tab._open_plot_settings()
+        dlg = self.psd._open_dialogs[id(self.tab)]
+        dlg.update_idletasks()
+        dlg._control_vars["grid"].set(False)
+        dlg.update_idletasks()
+        dlg._do_apply()
+
+        x_grid_post = self.tab._ax.xaxis.get_gridlines()
+        # Gridlines either gone or all marked invisible.
+        self.assertFalse(any(g.get_visible() for g in x_grid_post))
+        self.assertEqual(self.tab._plot_config["grid"], False)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

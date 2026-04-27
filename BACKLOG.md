@@ -34,8 +34,8 @@ Main files (current — will change during restructure):
 | `feff_workspace.py` | FEFF dedicated workspace window | **New** |
 | `bxas_workspace.py` | bXAS dedicated workspace window | **New** |
 | `bxas_engine.py` | bXAS Python reimplementation | **New** |
-| `style_dialog.py` | Unified style dialog | **New** |
-| `plot_settings_dialog.py` | Plot Settings dialog | **New** |
+| `style_dialog.py` | Unified style dialog | ✅ Phase 3 |
+| `plot_settings_dialog.py` | Plot Settings dialog | ✅ Phase 4b |
 
 See ARCHITECTURE.md for all structural decisions.
 
@@ -285,12 +285,20 @@ checklist for that swap-in.
 ### Friction points carried forward from Phase 4a
 
 These are concrete obstacles the next Phase 4 session will hit when
-it adds baseline correction, normalisation-as-operation, the Plot
-Settings dialog, or wires Send-to-Compare. Identified during Phase 4a
-while migrating the loader and sidebar onto the new architecture.
-**Do not fix until the relevant subsequent Phase 4 session** — they
-need to be addressed in the same change that introduces the new
-operation/feature.
+it adds baseline correction, normalisation-as-operation, or wires
+Send-to-Compare. Identified during Phase 4a while migrating the
+loader and sidebar onto the new architecture. **Do not fix until
+the relevant subsequent Phase 4 session** — they need to be
+addressed in the same change that introduces the new operation/
+feature.
+
+> Phase 4b status: friction point #7 (Plot Settings dialog has no
+> host yet) is resolved by the ⚙ button + dialog landed in this
+> session. Items #1, #2, #3, #5, and #6 remain open. Item #4
+> (graph-side view config) was the entry point for #7 and is now
+> partially answered: Plot Settings sidesteps the question by living
+> in tab-private state. The broader graph-side view-state question
+> is still open and now interlocks with persistence (BACKLOG below).
 
 1. **No `BASELINE_*` `OperationType` variants beyond the existing
    `BASELINE`.** [nodes.py:96](nodes.py#L96) lists a single
@@ -350,14 +358,89 @@ operation/feature.
    ScanTreeWidget defaults map is currently module-private and
    exposing it pulls a UI module into the loader's import graph.
    Revisit when XANES/EXAFS migrations need their own defaults.
-7. **Plot Settings dialog has no host yet.** The top bar still owns
+7. ~~**Plot Settings dialog has no host yet.** The top bar still owns
    per-axis labels, grid, and other plot-level controls inline (the
    existing toolbar layout is unchanged in Phase 4a). The deferred
    Phase 4 session that introduces the ⚙ Plot Settings dialog
    (per CS-06 / ARCHITECTURE.md §3) needs to relocate those controls
    without breaking the existing entry-field bindings (sticky
    limits, unit conversion). Mention the unit-conversion code path
-   ([uvvis_tab.py:78-94](uvvis_tab.py#L78)) when planning that move.
+   ([uvvis_tab.py:78-94](uvvis_tab.py#L78)) when planning that
+   move.~~ **Resolved (Phase 4b):** ⚙ Plot Settings button added to
+   the toolbar, opening `PlotSettingsDialog` (CS-14). The legacy
+   inline controls remained in the top bar per CS-06 (axis units,
+   sticky limits, normalisation) — only the *new* plot-level
+   controls (fonts, grid, background, legend show/position, tick
+   direction, title/label text) live in the dialog.
+
+### Friction points carried forward from Phase 4b
+
+These are concrete obstacles the next Phase 4 session will hit when
+it wires Plot Settings persistence to `project.json`, extends Plot
+Settings to other tabs, or wires Send-to-Compare. Identified during
+Phase 4b while integrating the dialog into the UV/Vis pilot tab.
+**Do not fix until the relevant subsequent Phase 4 session.**
+
+1. **`_USER_DEFAULTS` is process-lifetime only.** Save-as-Default
+   writes to `plot_settings_dialog._USER_DEFAULTS`
+   ([plot_settings_dialog.py:152](plot_settings_dialog.py#L152)),
+   which evaporates on app restart. CS-13 §"Implementation notes"
+   already documents that project I/O lands later; the work needed
+   here is a load-time read from `project.json["plot_defaults"]`
+   into `_USER_DEFAULTS`, plus a save-time write back. The dialog
+   needs no API changes — only `project_io` and `binah.py` glue.
+2. **Plot Settings is wired only into UV/Vis.** Phase 4b is
+   UV/Vis-only by design. Each subsequent tab (XANES, EXAFS,
+   Compare) needs the same three changes: a `self._plot_config`
+   dict, a ⚙ button in the toolbar, and a `_redraw` rewrite to
+   read from the config. The `_redraw` rewrite is the bulk of the
+   work — see [uvvis_tab.py:613-696](uvvis_tab.py#L613) for the
+   reference. Each tab's auto-derived axis labels (XANES energy,
+   EXAFS k/R-space, Compare's mixed units) need their own
+   tab-specific defaults; the dialog itself is unchanged.
+3. **Auto-derived label text is recomputed inside `_redraw` every
+   time.** When `xlabel_mode == "auto"` the tab computes the
+   X-label text from the current x-unit
+   ([uvvis_tab.py:660-673](uvvis_tab.py#L660)). This is fine for
+   UV/Vis but means the dialog's entry shows the user's last
+   *custom* text even when the mode is "auto" — the dialog has no
+   way to display the auto-derived value. A future session might
+   add an `auto_label_provider` callback so the entry can show the
+   current auto value as ghost text; for now the small `(auto)` /
+   `(custom)` / `(none)` mode indicator is the only visible cue.
+4. **`background_color` factory default is `#ffffff` but
+   `_draw_empty` still uses `#f8f8f8`.** The empty-state placeholder
+   ([uvvis_tab.py:573-581](uvvis_tab.py#L573)) is unchanged, so a
+   user who picks a non-white background sees their colour only
+   when at least one spectrum is loaded. Whether the empty-state
+   should also pick up the configured background is a UX decision —
+   the placeholder text is grey, which may be unreadable on some
+   colours. Flag for the project-I/O session.
+5. **No persistence handle for `_plot_config` either.** Each tab's
+   `_plot_config` ([uvvis_tab.py:166-179](uvvis_tab.py#L166)) is
+   currently rebuilt from `_USER_DEFAULTS` on every tab construction.
+   When project I/O lands the project file should carry per-tab
+   plot configs alongside the graph; otherwise reopening a project
+   discards the user's plot choices. Probably a `project.json`
+   `tabs[uvvis].plot_config = {...}` payload. CS-13 needs to grow
+   a `tabs` section to host it.
+6. **Mode indicators inside the Title-and-labels section are
+   small.** The `(auto)` / `(custom)` / `(none)` Label is only 8pt
+   text and easy to miss
+   ([plot_settings_dialog.py:344-349](plot_settings_dialog.py#L344)).
+   Acceptable for the pilot but worth revisiting once we see a real
+   user trip over it. Possible upgrade: bold/coloured chip, or
+   ghost-text in the entry showing the auto value.
+7. **Graph-side view-state question is unanswered.** Phase 4a
+   friction #4 flagged the choice between per-tab UI state in
+   `project.json` vs. graph-side `view_state` per node. Phase 4b
+   chose tab-private storage (sidesteps the question). When XANES
+   and EXAFS migrate, they will face the same call; if they all
+   choose tab-private then `view_state` per node is dead and we
+   should formally close the question. If any tab needs per-node
+   view state (e.g. Compare overlays where different nodes use
+   different tick styles) the graph-side payload returns. Revisit
+   in Phase 5/7.
 
 | Status | Priority | Item | Notes |
 |---|---|---|---|
@@ -368,7 +451,7 @@ operation/feature.
 | ⏳ | 🔴 | **Export processed data** | Save committed node data to CSV or TXT; include provenance header |
 | ⏳ | 🔴 | **Normalisation as explicit operation** | Normalisation creates a provisional NORMALISED node rather than modifying data in place |
 | ⏳ | 🔴 | **"Send to Compare" action** | Replaces "Add to TDDFT Overlay". Available on committed nodes |
-| ⏳ | 🔴 | **Plot Settings dialog** | Fonts, grid, background colour, legend position, tick direction, title/label customisation. Accessed via ⚙ in top bar |
+| ✅ | 🔴 | **Plot Settings dialog** | Fonts, grid, background colour, legend position, tick direction, title/label customisation. Accessed via ⚙ in top bar (Phase 4b; CS-14) |
 | ⏳ | 🟡 | **Peak picking** | Click-to-mark peaks; λ/E annotation; optional peak table export |
 | ⏳ | 🟡 | **OLIS integrating sphere correction** | Three-input operation node (sample + reference + blank → corrected). See OQ-004 for multi-input UI design |
 | ⏳ | 🟡 | **Interactive normalisation** | Normalise to user-specified wavelength or integration region |
