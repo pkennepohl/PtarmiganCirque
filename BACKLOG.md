@@ -650,5 +650,30 @@ See ARCHITECTURE.md Section 15 for full descriptions.
 
 ---
 
-*Document version: 1.0 — April 2026*
+## Known Bugs (logged 2026-04-27 — post Phase 4b manual testing)
+
+These were discovered while manually exercising the UV/Vis tab after
+Phase 4b landed. Each is assigned to a phase to resolve in. The
+"focused fix" assignments grant explicit authorisation for the named
+phase to touch files that its primary brief lists as no-modify.
+
+| ID | Severity | Bug | Spec ref | Resolve in |
+|---|---|---|---|---|
+| **B-001** | 🟡 | History expansion (`⌥n` click on a sidebar row) renders at the bottom of the sidebar instead of inline below the clicked row. With two datasets loaded, clicking the top row's history shows expanded entries below the *second* row, making the visual association ambiguous | CS-04 §6.2 ("inline, below row") | **Phase 4c** focused fix in `scan_tree_widget.py` |
+| **B-002** | 🔴 | Sidebar row controls do not adapt to sidebar width. At narrow widths the row overflows. The minimum always-visible set should be: dataset name + visibility checkbox + ⚙ gear button. Every other per-row control (colour swatch, legend toggle, linestyle canvas, linewidth entry, fill checkbox, history indicator, ✕) must collapse when the row narrows. The unified StyleDialog (CS-05) must then cover every collapsed control — which it currently does not: `style["visible"]` and `style["in_legend"]` have no controls in the dialog | CS-04 §6.1 + CS-05 universal section | **Phase 4d** dedicated session (responsive row + StyleDialog completeness) |
+| **B-003** | 🟡 | When `Norm: area` is active the X-axis limit entries no longer take effect on Apply / Return. `Norm: none` and `Norm: peak` both work. Likely interaction between `_y_with_norm`'s area integral and the post-render axis-limit application path in `_redraw` ([uvvis_tab.py:583-593](uvvis_tab.py#L583), [uvvis_tab.py:662-671](uvvis_tab.py#L662)) — verify before fixing | UV/Vis tab `_redraw` | **Phase 4c** focused fix in `uvvis_tab.py` |
+| **B-004** | 🟡 | No way to rename a dataset from the right sidebar via the right-click menu. CS-04 §"Context menu" lists `Rename` as a right-click entry; the implementation only landed Commit / Discard / Send to Compare. In-place double-click rename exists per Phase 2 but is undiscoverable. Add the context-menu entry; consider a label tooltip pointing at it | CS-04 §"Context menu" | **Phase 4c** focused fix in `scan_tree_widget.py` |
+
+The Phase 4d responsive-row work (B-002) also needs to add `visible`
+and `in_legend` controls to the StyleDialog universal section so the
+collapsed row's controls remain reachable through the dialog.
+
+Newly discovered bugs go in this table with a fresh `B-NNN` id and a
+phase assignment. Resolved bugs get a ✅ in the Severity column with
+the resolving phase + commit SHA appended to the row.
+
+---
+
+*Document version: 1.1 — April 2026*
+*1.1: Known Bugs register added 2026-04-27 after Phase 4b manual testing.*
 *Supersedes: BACKLOG.md (original)*
