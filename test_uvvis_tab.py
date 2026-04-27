@@ -1,0 +1,587 @@
+"""Tests for uvvis_tab.py.
+
+Mirrors the structure of ``test_scan_tree_widget.py`` and
+``test_style_dialog.py``: construct a real ``tk.Tk`` root and a real
+``ProjectGraph``, then drive the tab and observe the resulting graph
+state. Headless environments where ``tk.Tk()`` cannot be constructed
+are skipped via ``unittest.skipUnless``.
+
+Phase 4a (Part A) coverage:
+
+* loading a fixture file produces the expected node structure
+  (1 LOAD op, 1 RAW_FILE, 1 UVVIS, edges wired)
+* default colour from the loader palette is set on the UVVIS node
+* ``_redraw`` no longer references ``_entries`` and walks the graph
+
+Run with the project venv:
+
+    venv/Scripts/python run_tests.py
+"""
+
+from __future__ import annotations
+
+import os
+import tempfile
+import textwrap
+import unittest
+
+import numpy as np
+
+# Try to construct a Tk root once at module import time. If it fails
+# (no display, missing tcl/tk), every test in the file is skipped.
+try:
+    import tkinter as tk
+    _root = tk.Tk()
+    _root.withdraw()
+    _HAS_DISPLAY = True
+except Exception:  # pragma: no cover — only hit on headless CI
+    _root = None
+    _HAS_DISPLAY = False
+
+
+from graph import ProjectGraph
+from nodes import DataNode, NodeState, NodeType, OperationNode, OperationType
+
+
+# ---- helpers --------------------------------------------------------
+
+def _write_csv_fixture(path: str) -> None:
+    """Write a tiny generic two-column UV/Vis CSV (nm, absorbance)."""
+    rows = ["# generic UV/Vis fixture"]
+    for nm, a in [(200.0, 0.10), (300.0, 0.45),
+                  (400.0, 0.70), (500.0, 0.30),
+                  (600.0, 0.05)]:
+        rows.append(f"{nm},{a}")
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(rows))
+
+
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestUVVisTabLoaderMigration(unittest.TestCase):
+    """Phase 4a Part A — loader builds the right graph structure."""
+
+    @classmethod
+    def setUpClass(cls):
+        from uvvis_tab import UVVisTab, _PALETTE
+        cls.UVVisTab = UVVisTab
+        cls._PALETTE = _PALETTE
+
+    def setUp(self):
+        self.host = tk.Frame(_root)
+        self.graph = ProjectGraph()
+        self.tab = self.UVVisTab(self.host, graph=self.graph)
+        self._tmpdir = tempfile.mkdtemp(prefix="uvvis_tab_test_")
+
+    def tearDown(self):
+        try:
+            self.tab.destroy()
+        except Exception:
+            pass
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+        # Best-effort cleanup of the fixture file(s).
+        for name in os.listdir(self._tmpdir):
+            try:
+                os.remove(os.path.join(self._tmpdir, name))
+            except OSError:
+                pass
+        try:
+            os.rmdir(self._tmpdir)
+        except OSError:
+            pass
+
+    # ----------- construction -----------
+
+    def test_constructs_with_external_graph(self):
+        # The tab honours the graph argument and routes through it.
+        self.assertIs(self.tab._graph, self.graph)
+        # No UVVIS nodes yet.
+        self.assertEqual(
+            self.graph.nodes_of_type(NodeType.UVVIS, state=None), [],
+        )
+
+    def test_constructs_with_default_graph(self):
+        # When no graph is given the tab fabricates its own; the tab
+        # still works end-to-end without binah.py integration.
+        host = tk.Frame(_root)
+        try:
+            tab = self.UVVisTab(host)
+            self.assertIsInstance(tab._graph, ProjectGraph)
+        finally:
+            host.destroy()
+
+    def test_no_entries_attribute(self):
+        # Phase 4a Part A drops self._entries entirely.
+        self.assertFalse(hasattr(self.tab, "_entries"))
+
+    # ----------- loader produces the right graph structure -----------
+
+    def test_load_creates_raw_load_uvvis_with_edges(self):
+        path = os.path.join(self._tmpdir, "fixture.csv")
+        _write_csv_fixture(path)
+
+        from uvvis_parser import parse_uvvis_file
+        scans = parse_uvvis_file(path)
+        self.assertEqual(len(scans), 1, "fixture should parse to 1 scan")
+
+        raw_id, op_id, uvvis_id = self.tab._load_uvvis_scan(path, scans[0])
+
+        # Node identities and types.
+        raw   = self.graph.get_node(raw_id)
+        op    = self.graph.get_node(op_id)
+        uvvis = self.graph.get_node(uvvis_id)
+
+        self.assertIsInstance(raw, DataNode)
+        self.assertEqual(raw.type, NodeType.RAW_FILE)
+        self.assertEqual(raw.state, NodeState.COMMITTED)
+
+        self.assertIsInstance(op, OperationNode)
+        self.assertEqual(op.type, OperationType.LOAD)
+        self.assertEqual(op.engine, "internal")
+        self.assertEqual(op.input_ids, [raw_id])
+        self.assertEqual(op.output_ids, [uvvis_id])
+        self.assertEqual(op.state, NodeState.COMMITTED)
+
+        self.assertIsInstance(uvvis, DataNode)
+        self.assertEqual(uvvis.type, NodeType.UVVIS)
+        self.assertEqual(uvvis.state, NodeState.COMMITTED)
+        self.assertIn("wavelength_nm", uvvis.arrays)
+        self.assertIn("absorbance",    uvvis.arrays)
+        self.assertEqual(
+            uvvis.arrays["wavelength_nm"].shape,
+            uvvis.arrays["absorbance"].shape,
+        )
+
+        # Edges wired raw → op → uvvis.
+        self.assertIn(op_id,    self.graph.children_of(raw_id))
+        self.assertIn(uvvis_id, self.graph.children_of(op_id))
+        self.assertEqual(self.graph.parents_of(uvvis_id), [op_id])
+        self.assertEqual(self.graph.parents_of(op_id),    [raw_id])
+
+    def test_uvvis_metadata_follows_cs02_conventions(self):
+        path = os.path.join(self._tmpdir, "meta.csv")
+        _write_csv_fixture(path)
+        from uvvis_parser import parse_uvvis_file
+        scan = parse_uvvis_file(path)[0]
+
+        _, _, uvvis_id = self.tab._load_uvvis_scan(path, scan)
+        uvvis = self.graph.get_node(uvvis_id)
+
+        # CS-02 UVVIS metadata convention: x_unit, y_unit, instrument.
+        self.assertEqual(uvvis.metadata.get("x_unit"),  "nm")
+        self.assertEqual(uvvis.metadata.get("y_unit"),  "absorbance")
+        self.assertIn("instrument", uvvis.metadata)
+        self.assertEqual(uvvis.metadata.get("source_file"), path)
+
+    # ----------- default colour at node creation -----------
+
+    def test_default_colour_assigned_from_palette(self):
+        path = os.path.join(self._tmpdir, "color.csv")
+        _write_csv_fixture(path)
+        from uvvis_parser import parse_uvvis_file
+        scan = parse_uvvis_file(path)[0]
+
+        _, _, uvvis_id = self.tab._load_uvvis_scan(path, scan)
+        node = self.graph.get_node(uvvis_id)
+        self.assertEqual(node.style.get("color"), self._PALETTE[0])
+
+    def test_default_colour_cycles_through_palette(self):
+        from uvvis_parser import parse_uvvis_file
+        ids: list[str] = []
+        for i in range(len(self._PALETTE) + 2):
+            path = os.path.join(self._tmpdir, f"row{i}.csv")
+            _write_csv_fixture(path)
+            scan = parse_uvvis_file(path)[0]
+            scan.label = f"row{i}"  # avoid duplicate-detection
+            _, _, uvvis_id = self.tab._load_uvvis_scan(path, scan)
+            ids.append(uvvis_id)
+
+        # Index N wraps modulo the palette length.
+        for i, nid in enumerate(ids):
+            self.assertEqual(
+                self.graph.get_node(nid).style["color"],
+                self._PALETTE[i % len(self._PALETTE)],
+                f"node #{i} should pick palette[{i % len(self._PALETTE)}]",
+            )
+
+    # ----------- _redraw walks the graph (not _entries) -----------
+
+    def test_redraw_walks_graph(self):
+        # Inject a UVVIS node directly so we can verify _redraw uses
+        # it without going through the loader path.
+        wl = np.linspace(300, 600, 50)
+        absorb = np.exp(-((wl - 450) ** 2) / 50.0)
+        node = DataNode(
+            id="manual",
+            type=NodeType.UVVIS,
+            arrays={"wavelength_nm": wl, "absorbance": absorb},
+            metadata={"x_unit": "nm", "y_unit": "absorbance",
+                      "instrument": "manual",
+                      "source_file": "synthetic"},
+            label="manual",
+            state=NodeState.COMMITTED,
+            style={"color": "#123456", "linestyle": "solid",
+                   "linewidth": 1.5, "alpha": 0.9, "visible": True,
+                   "in_legend": True, "fill": False, "fill_alpha": 0.08},
+        )
+        self.graph.add_node(node)
+        # _redraw does not raise; the figure ends up with one Line2D.
+        self.tab._redraw()
+        ax = self.tab._ax
+        self.assertEqual(len(ax.get_lines()), 1)
+        line = ax.get_lines()[0]
+        self.assertEqual(line.get_label(), "manual")
+        self.assertEqual(line.get_color(), "#123456")
+
+    def test_redraw_skips_invisible_nodes(self):
+        wl = np.linspace(300, 600, 20)
+        absorb = np.linspace(0.1, 0.9, 20)
+        self.graph.add_node(DataNode(
+            id="hidden",
+            type=NodeType.UVVIS,
+            arrays={"wavelength_nm": wl, "absorbance": absorb},
+            metadata={"source_file": "synthetic"},
+            label="hidden",
+            state=NodeState.COMMITTED,
+            style={"color": "#abcdef", "visible": False},
+        ))
+        self.tab._redraw()
+        # When every UVVIS is invisible the empty-state placeholder
+        # renders — no Line2D entries.
+        self.assertEqual(self.tab._ax.get_lines(), [])
+
+    def test_redraw_skips_discarded_and_inactive_nodes(self):
+        wl = np.linspace(300, 600, 20)
+        absorb = np.linspace(0.1, 0.9, 20)
+        self.graph.add_node(DataNode(
+            id="discarded",
+            type=NodeType.UVVIS,
+            arrays={"wavelength_nm": wl, "absorbance": absorb},
+            metadata={"source_file": "synthetic"},
+            label="discarded",
+            state=NodeState.PROVISIONAL,
+            style={"color": "#aaaaaa", "visible": True},
+        ))
+        self.graph.discard_node("discarded")
+
+        self.graph.add_node(DataNode(
+            id="inactive",
+            type=NodeType.UVVIS,
+            arrays={"wavelength_nm": wl, "absorbance": absorb},
+            metadata={"source_file": "synthetic"},
+            label="inactive",
+            state=NodeState.COMMITTED,
+            active=False,
+            style={"color": "#bbbbbb", "visible": True},
+        ))
+
+        self.tab._redraw()
+        self.assertEqual(self.tab._ax.get_lines(), [])
+
+    # ----------- duplicate detection -----------
+
+    def test_duplicate_load_is_skipped(self):
+        path = os.path.join(self._tmpdir, "dup.csv")
+        _write_csv_fixture(path)
+        from uvvis_parser import parse_uvvis_file
+        scan = parse_uvvis_file(path)[0]
+
+        self.tab._load_uvvis_scan(path, scan)
+        # Same source_file + label combination → duplicate.
+        self.assertTrue(
+            self.tab._has_existing_load(scan.source_file, scan.label),
+        )
+
+
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestUVVisTabSidebar(unittest.TestCase):
+    """Phase 4a Part B — sidebar is a ScanTreeWidget, gear opens dialog."""
+
+    @classmethod
+    def setUpClass(cls):
+        from uvvis_tab import UVVisTab
+        from scan_tree_widget import ScanTreeWidget
+        import style_dialog
+        cls.UVVisTab = UVVisTab
+        cls.ScanTreeWidget = ScanTreeWidget
+        cls.style_dialog = style_dialog
+
+    def setUp(self):
+        # Reset the per-node dialog registry between tests so a leaked
+        # entry from one test cannot poison the next.
+        self.style_dialog._open_dialogs.clear()
+        self.host = tk.Frame(_root)
+        self.graph = ProjectGraph()
+        self.tab = self.UVVisTab(self.host, graph=self.graph)
+        self._tmpdir = tempfile.mkdtemp(prefix="uvvis_sidebar_test_")
+
+    def tearDown(self):
+        for dlg in list(self.style_dialog._open_dialogs.values()):
+            try:
+                dlg.destroy()
+            except Exception:
+                pass
+        self.style_dialog._open_dialogs.clear()
+        try:
+            self.tab.destroy()
+        except Exception:
+            pass
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+        for name in os.listdir(self._tmpdir):
+            try:
+                os.remove(os.path.join(self._tmpdir, name))
+            except OSError:
+                pass
+        try:
+            os.rmdir(self._tmpdir)
+        except OSError:
+            pass
+
+    # ----------- sidebar identity -----------
+
+    def test_sidebar_contains_a_scan_tree_widget(self):
+        self.assertIsInstance(self.tab._scan_tree, self.ScanTreeWidget)
+
+    def test_legacy_table_widgets_are_gone(self):
+        # The Phase 2 friction "monolithic _rebuild_table" is resolved.
+        self.assertFalse(hasattr(self.tab, "_tbl_canvas"))
+        self.assertFalse(hasattr(self.tab, "_tbl_inner"))
+        self.assertFalse(hasattr(self.tab, "_rebuild_table"))
+        self.assertFalse(hasattr(self.tab, "_remove_entry"))
+        self.assertFalse(hasattr(self.tab, "_make_leg_btn"))
+        self.assertFalse(hasattr(self.tab, "_make_ls_canvas"))
+        self.assertFalse(hasattr(self.tab, "_make_lw_entry"))
+
+    # ----------- sidebar lists exactly the loaded UVVIS nodes -----------
+
+    def test_sidebar_lists_loaded_uvvis_nodes(self):
+        from uvvis_parser import parse_uvvis_file
+        ids: list[str] = []
+        for i in range(3):
+            path = os.path.join(self._tmpdir, f"row{i}.csv")
+            _write_csv_fixture(path)
+            scan = parse_uvvis_file(path)[0]
+            scan.label = f"row{i}"
+            _, _, uvvis_id = self.tab._load_uvvis_scan(path, scan)
+            ids.append(uvvis_id)
+        self.tab._scan_tree.update_idletasks()
+
+        # ScanTreeWidget rebuilds reactively on NODE_ADDED — every
+        # loaded UVVIS id must own a row.
+        self.assertEqual(
+            set(self.tab._scan_tree._row_frames.keys()),
+            set(ids),
+        )
+
+    def test_sidebar_excludes_non_uvvis_nodes(self):
+        # Add a XANES node directly; it is filtered out by the
+        # node_filter list.
+        wl = np.linspace(300, 600, 5)
+        xanes = DataNode(
+            id="xanes_id",
+            type=NodeType.XANES,
+            arrays={"energy": wl, "mu": np.zeros_like(wl)},
+            metadata={},
+            label="xanes",
+            state=NodeState.COMMITTED,
+        )
+        self.graph.add_node(xanes)
+        self.tab._scan_tree.update_idletasks()
+        self.assertNotIn("xanes_id", self.tab._scan_tree._row_frames)
+
+    # ----------- gear button opens unified StyleDialog -----------
+
+    def test_gear_click_opens_style_dialog(self):
+        # Add a UVVIS directly so we control the id deterministically.
+        wl = np.linspace(300, 600, 10)
+        absorb = np.linspace(0.1, 0.9, 10)
+        self.graph.add_node(DataNode(
+            id="uvvis_target",
+            type=NodeType.UVVIS,
+            arrays={"wavelength_nm": wl, "absorbance": absorb},
+            metadata={"source_file": "synthetic"},
+            label="target",
+            state=NodeState.COMMITTED,
+            style={"color": "#1f77b4", "linewidth": 1.5},
+        ))
+        self.tab._scan_tree.update_idletasks()
+
+        # Locate the gear button in the row and invoke it.
+        row = self.tab._scan_tree._row_frames["uvvis_target"]
+        gear = [
+            w for w in row.winfo_children()
+            if isinstance(w, tk.Button) and w.cget("text") == "⚙"
+        ]
+        self.assertEqual(len(gear), 1)
+        gear[0].invoke()
+
+        # The unified factory registers the live dialog under its id.
+        dlg = self.style_dialog._open_dialogs.get("uvvis_target")
+        self.assertIsNotNone(dlg)
+        self.assertIsInstance(dlg, self.style_dialog.StyleDialog)
+
+    # ----------- ∀ apply-to-all fans out via graph.set_style -----------
+
+    def test_on_uvvis_apply_to_all_writes_each_visible_uvvis_node(self):
+        # Two UVVIS + one XANES so we can confirm scope is type-bounded.
+        for nid, ntype in [("u1", NodeType.UVVIS),
+                           ("u2", NodeType.UVVIS),
+                           ("x1", NodeType.XANES)]:
+            wl = np.linspace(300, 600, 4)
+            self.graph.add_node(DataNode(
+                id=nid, type=ntype,
+                arrays={"wavelength_nm": wl, "absorbance": wl * 0,
+                        "energy": wl, "mu": wl * 0},
+                metadata={}, label=nid,
+                state=NodeState.COMMITTED,
+                style={"linewidth": 1.5},
+            ))
+
+        self.tab._on_uvvis_apply_to_all("linewidth", 3.5)
+
+        self.assertAlmostEqual(self.graph.get_node("u1").style["linewidth"], 3.5)
+        self.assertAlmostEqual(self.graph.get_node("u2").style["linewidth"], 3.5)
+        # XANES untouched — fan-out filtered to UVVIS.
+        self.assertAlmostEqual(self.graph.get_node("x1").style["linewidth"], 1.5)
+
+    # ----------- graph subscription drives plot redraws -----------
+
+    def test_graph_event_triggers_redraw(self):
+        wl = np.linspace(300, 600, 10)
+        absorb = np.linspace(0.1, 0.9, 10)
+        self.graph.add_node(DataNode(
+            id="redraw_target",
+            type=NodeType.UVVIS,
+            arrays={"wavelength_nm": wl, "absorbance": absorb},
+            metadata={"source_file": "synthetic"},
+            label="r",
+            state=NodeState.COMMITTED,
+            style={"color": "#aabbcc", "visible": True},
+        ))
+
+        # First confirm it draws once.
+        self.assertEqual(len(self.tab._ax.get_lines()), 1)
+
+        # External style mutation should re-render.
+        self.graph.set_style("redraw_target", {"color": "#112233"})
+        self.tab.update_idletasks()
+        self.assertEqual(self.tab._ax.get_lines()[0].get_color(), "#112233")
+
+
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestUVVisTabStyleDialogIntegration(unittest.TestCase):
+    """Phase 4a Part C — inline dialog gone, unified StyleDialog wired."""
+
+    @classmethod
+    def setUpClass(cls):
+        from uvvis_tab import UVVisTab
+        import style_dialog
+        cls.UVVisTab = UVVisTab
+        cls.style_dialog = style_dialog
+
+    def setUp(self):
+        self.style_dialog._open_dialogs.clear()
+        self.host = tk.Frame(_root)
+        self.graph = ProjectGraph()
+        self.tab = self.UVVisTab(self.host, graph=self.graph)
+
+    def tearDown(self):
+        for dlg in list(self.style_dialog._open_dialogs.values()):
+            try:
+                dlg.destroy()
+            except Exception:
+                pass
+        self.style_dialog._open_dialogs.clear()
+        try:
+            self.tab.destroy()
+        except Exception:
+            pass
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    # ----------- the inline dialog has been deleted -----------
+
+    def test_inline_open_style_dialog_method_is_gone(self):
+        # Part C deletes _open_style_dialog (~175 lines). The
+        # tab keeps only _open_style_dialog_for_node, the gear
+        # hand-off to the unified factory.
+        self.assertFalse(hasattr(self.tab, "_open_style_dialog"))
+        self.assertTrue(hasattr(self.tab, "_open_style_dialog_for_node"))
+
+    # ----------- gear callback opens the unified StyleDialog -----------
+
+    def _add_uvvis(self, nid: str, style: dict | None = None):
+        wl = np.linspace(300, 600, 10)
+        absorb = np.linspace(0.1, 0.9, 10)
+        node = DataNode(
+            id=nid,
+            type=NodeType.UVVIS,
+            arrays={"wavelength_nm": wl, "absorbance": absorb},
+            metadata={"source_file": "synthetic"},
+            label=nid,
+            state=NodeState.COMMITTED,
+            style=dict(style) if style else {"color": "#1f77b4",
+                                             "linewidth": 1.5},
+        )
+        self.graph.add_node(node)
+        return node
+
+    def test_gear_callback_registers_unified_style_dialog(self):
+        self._add_uvvis("a")
+        self.tab._scan_tree.update_idletasks()
+
+        # Trigger the gear hand-off the same way the widget would.
+        self.tab._open_style_dialog_for_node("a")
+
+        dlg = self.style_dialog._open_dialogs.get("a")
+        self.assertIsNotNone(dlg)
+        self.assertIsInstance(dlg, self.style_dialog.StyleDialog)
+
+    def test_slider_change_in_dialog_writes_to_node_style(self):
+        self._add_uvvis("a", style={"color": "#1f77b4", "linewidth": 1.5})
+        self.tab._open_style_dialog_for_node("a")
+        dlg = self.style_dialog._open_dialogs["a"]
+        dlg.update_idletasks()
+
+        # Simulating the user dragging the line-width slider drives
+        # the bound DoubleVar; the dialog routes it through
+        # graph.set_style under the hood.
+        dlg._control_vars["linewidth"].set(3.7)
+        dlg.update_idletasks()
+
+        self.assertAlmostEqual(self.graph.get_node("a").style["linewidth"], 3.7)
+
+    def test_apply_to_all_fans_out_to_sibling_uvvis_nodes(self):
+        # Three UVVIS nodes; opening the dialog on one and using its
+        # ∀ fan-out must update the sibling UVVIS nodes via the
+        # tab's on_apply_to_all callback.
+        self._add_uvvis("a", style={"linewidth": 1.5})
+        self._add_uvvis("b", style={"linewidth": 1.5})
+        self._add_uvvis("c", style={"linewidth": 1.5})
+
+        self.tab._open_style_dialog_for_node("a")
+        dlg = self.style_dialog._open_dialogs["a"]
+        dlg.update_idletasks()
+
+        # Set a value, then trigger ∀ fan-out on linewidth via the
+        # dialog's per-row delegate (matches the user clicking ∀).
+        dlg._control_vars["linewidth"].set(4.2)
+        dlg.update_idletasks()
+        dlg._delegate_apply_one("linewidth", 4.2)
+
+        for nid in ("a", "b", "c"):
+            self.assertAlmostEqual(
+                self.graph.get_node(nid).style["linewidth"], 4.2,
+                f"node {nid} should have received fan-out",
+            )
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

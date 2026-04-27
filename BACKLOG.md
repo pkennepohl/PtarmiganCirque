@@ -146,45 +146,67 @@ reference implementation. **Do not fix until Phase 4** — they need to
 be addressed in the same change that wires ScanTreeWidget into the
 tab, not piecemeal.
 
-1. **`self._entries: List[dict]` is the single source of truth**
+> Phase 4a status: every item below is resolved by the loader migration
+> and ScanTreeWidget swap that landed in this phase. Strike-throughs
+> indicate items now closed.
+
+1. ~~**`self._entries: List[dict]` is the single source of truth**
    ([uvvis_tab.py:129](uvvis_tab.py#L129)) and is indexed positionally.
    Every helper closure in `_rebuild_table` captures `idx=i` from the
    row loop (`_pick`, `_lw_cb`, `_fill_cb`, `_remove_entry`,
    `_open_style_dialog`). Migration converts every `idx`-keyed
-   callsite to `node_id`-keyed.
-2. **`in_legend` is a separate `tk.BooleanVar`** sitting alongside
+   callsite to `node_id`-keyed.~~ **Resolved (Phase 4a Part A):**
+   `_entries` deleted; node lookups are graph-driven via
+   `_uvvis_nodes()`.
+2. ~~**`in_legend` is a separate `tk.BooleanVar`** sitting alongside
    `style` ([uvvis_tab.py:509](uvvis_tab.py#L509)), not inside it. The
    new architecture stores it at `style["in_legend"]`. No project
    files exist yet so the cutover does not need legend-state
-   migration.
-3. **`_PALETTE[idx % len(_PALETTE)]` colour assignment**
+   migration.~~ **Resolved (Phase 4a Part A):** `in_legend` and
+   `visible` both live at `node.style[...]`; ScanTreeWidget reads
+   them directly.
+3. ~~**`_PALETTE[idx % len(_PALETTE)]` colour assignment**
    ([uvvis_tab.py:505](uvvis_tab.py#L505)) lives in the loader. With
    the new model, default colour assignment needs to happen at
    DataNode creation time (inside the load-as-RAW\_FILE pipeline) so
    the same node draws the same colour across tabs. Decide where: in
-   the loader, or as a graph-side default-style policy.
-4. **`_rebuild_table` is monolithic**
+   the loader, or as a graph-side default-style policy.~~
+   **Resolved (Phase 4a Part A):** the loader populates
+   `style["color"]` at UVVIS-node creation, indexed by the count of
+   pre-existing UVVIS nodes. See COMPONENTS.md CS-13 §"Implementation
+   notes (Phase 4a)".
+4. ~~**`_rebuild_table` is monolithic**
    ([uvvis_tab.py:306-484](uvvis_tab.py#L306)) — header construction
    and every per-row gesture sit inline. A clean migration deletes
    this method entirely along with `_make_leg_btn`, `_make_ls_canvas`,
    `_make_lw_entry` (all reimplemented in
    [scan_tree_widget.py](scan_tree_widget.py)) and replaces them with
-   one `ScanTreeWidget(...)` instantiation.
-5. **`_redraw` walks `self._entries` directly.** Once entries become
+   one `ScanTreeWidget(...)` instantiation.~~ **Resolved (Phase 4a
+   Part B):** all four helpers and the table are gone; the right pane
+   instantiates one `ScanTreeWidget`.
+5. ~~**`_redraw` walks `self._entries` directly.** Once entries become
    DataNodes, `_redraw` must traverse the graph (e.g.
    `graph.nodes_of_type(NodeType.UVVIS, state=None)` then filter
    `state != DISCARDED` and `active`) to find what to plot. This
-   pattern repeats in every tab; consider a shared helper.
-6. **`_remove_entry` deletes from the list**
+   pattern repeats in every tab; consider a shared helper.~~
+   **Resolved (Phase 4a Part A):** `_redraw` now iterates
+   `self._uvvis_nodes()` (filter on the graph). The "shared helper
+   across tabs" subpoint is deferred — a single tab does not yet
+   justify extracting it.
+6. ~~**`_remove_entry` deletes from the list**
    ([uvvis_tab.py:525](uvvis_tab.py#L525)) with no scientific record.
    Migration replaces this with `graph.discard_node` (provisional) or
    `graph.set_active(False)` (committed) — exactly what the new ✕
    button does. Audit external callers of `_remove_entry` during the
-   cutover.
-7. **`_open_style_dialog` is inline**
+   cutover.~~ **Resolved (Phase 4a Part B):** `_remove_entry` deleted;
+   ScanTreeWidget's ✕ button calls `discard_node`/`set_active(False)`
+   directly.
+7. ~~**`_open_style_dialog` is inline**
    ([uvvis_tab.py:697](uvvis_tab.py#L697)). Phase 3 builds the unified
    dialog; Phase 4 connects ScanTreeWidget's gear via
-   `style_dialog_cb` and deletes the inline implementation.
+   `style_dialog_cb` and deletes the inline implementation.~~
+   **Resolved (Phase 4a Part C):** inline `_open_style_dialog`
+   deleted; the gear hand-off goes to the unified factory.
 
 ### Friction points carried forward from Phase 3
 
@@ -194,26 +216,37 @@ during Phase 3 while reading the existing dialog as the reference
 implementation. **Do not fix until Phase 4** — they are the migration
 checklist for that swap-in.
 
-1. **`win.grab_set()`** ([uvvis_tab.py:707](uvvis_tab.py#L707)) makes
+> Phase 4a status: every item below is resolved by the inline-dialog
+> deletion and ∀ fan-out callback that landed in this phase.
+
+1. ~~**`win.grab_set()`** ([uvvis_tab.py:707](uvvis_tab.py#L707)) makes
    the inline dialog application-modal. The unified `StyleDialog` is
    modeless by design (no `transient`, no `grab_set`). Migration
    removes the grab — multiple style dialogs across nodes/tabs must
-   be allowed to coexist.
-2. **Per-row `idx`-keyed gear callbacks**
+   be allowed to coexist.~~ **Resolved (Phase 4a Part C):** the
+   modal grab is gone with the inline dialog; the unified
+   `StyleDialog` is modeless.
+2. ~~**Per-row `idx`-keyed gear callbacks**
    ([uvvis_tab.py:697](uvvis_tab.py#L697) takes `idx`). After Phase 4
    the `ScanTreeWidget` invokes `style_dialog_cb(node_id)`. The
    migration converts `_open_style_dialog(idx)` to
    `lambda node_id: open_style_dialog(self, self._graph, node_id,
-   on_apply_to_all=...)`.
-3. **`_push_to_all` writes through `e["style"][key]`**
+   on_apply_to_all=...)`.~~ **Resolved (Phase 4a Part B + C):**
+   `style_dialog_cb=self._open_style_dialog_for_node` calls
+   `open_style_dialog(self, self._graph, node_id,
+   on_apply_to_all=self._on_uvvis_apply_to_all)`.
+3. ~~**`_push_to_all` writes through `e["style"][key]`**
    ([uvvis_tab.py:725-733](uvvis_tab.py#L725)) and explicitly calls
    `self._rebuild_table()` and `self._redraw()` afterwards. The
    migration provides an `on_apply_to_all` callback to `StyleDialog`
    that uses `graph.set_style` for each visible UVVIS node, then
    relies on the existing graph subscription for the redraw.
    `_rebuild_table` and `_redraw` go away when the sidebar becomes
-   ScanTreeWidget.
-4. **`auto_col = _PALETTE[idx % len(_PALETTE)]`**
+   ScanTreeWidget.~~ **Resolved (Phase 4a Part B + C):**
+   `_on_uvvis_apply_to_all(param, value)` writes through
+   `graph.set_style` for every visible UVVIS node; the tab's graph
+   subscription drives the resulting redraw.
+4. ~~**`auto_col = _PALETTE[idx % len(_PALETTE)]`**
    ([uvvis_tab.py:790](uvvis_tab.py#L790)) computes a per-position
    default colour inside the dialog and passes it to the colour
    swatch as the implicit baseline. The unified dialog has no
@@ -221,43 +254,128 @@ checklist for that swap-in.
    palette default. Phase 4 must assign the default colour at
    DataNode creation time (in the loader / load-as-RAW\_FILE
    pipeline) so `node.style["color"]` is non-empty by the time the
-   dialog opens. This is the same friction listed as Phase 2 item 3.
-5. **`_orig` snapshot lives in the dialog closure**
+   dialog opens. This is the same friction listed as Phase 2 item 3.~~
+   **Resolved (Phase 4a Part A):** loader-side default colour
+   assignment, see Phase 2 item 3.
+5. ~~**`_orig` snapshot lives in the dialog closure**
    ([uvvis_tab.py:839](uvvis_tab.py#L839)) and is restored by
    `style.update(_orig)` in `_do_cancel`. Replaced wholesale by
    `StyleDialog._snapshot` and the `set_style(snapshot)` revert path.
    Note the same merge-can't-remove-keys limitation applies in both
-   implementations and is documented in CS-05 Implementation notes.
-6. **Dialog reads from `entry["style"]` and `entry["scan"]` dicts**
+   implementations and is documented in CS-05 Implementation notes.~~
+   **Resolved (Phase 4a Part C):** the closure snapshot is gone with
+   the inline dialog; `StyleDialog._snapshot` is now the only
+   revert path.
+6. ~~**Dialog reads from `entry["style"]` and `entry["scan"]` dicts**
    ([uvvis_tab.py:701-702](uvvis_tab.py#L701)). After migration the
    dialog reads from `graph.get_node(node_id).style` exclusively; the
    `_entries` list disappears as part of the broader Phase 4
-   restructure.
-7. **`_do_save` calls `_do_apply()` then `win.destroy()`**
+   restructure.~~ **Resolved (Phase 4a Part A + C):** `_entries`
+   deleted; the unified dialog reads through `graph.get_node`.
+7. ~~**`_do_save` calls `_do_apply()` then `win.destroy()`**
    ([uvvis_tab.py:870-871](uvvis_tab.py#L870)). The unified dialog
    has the same flow but lives in `StyleDialog._do_save`. Phase 4
    simply deletes the inline `_open_style_dialog` method (~175 lines)
    and the `_LS_OPTIONS` constant if not needed elsewhere; the
    gear-button hand-off is already in `ScanTreeWidget`
-   (`style_dialog_cb` parameter).
+   (`style_dialog_cb` parameter).~~ **Resolved (Phase 4a Part C):**
+   ~175 lines + `_LS_OPTIONS` + `_LS_CYCLE`/`_LS_DASH` + `_ToolTip`
+   helper deleted.
 
-| Priority | Item | Notes |
-|---|---|---|
-| 🔴 | **Migrate UV/Vis to node model** | UVVisScan → DataNode(type=UVVIS). File load → RAW\_FILE node. All operations produce provisional nodes |
-| 🔴 | **Replace UV/Vis sidebar with ScanTreeWidget** | Retire existing compact grid table; ScanTreeWidget is the replacement |
-| 🔴 | **Replace UV/Vis style dialog with unified style dialog** | Existing UV/Vis style dialog is the reference; unified dialog supersedes it |
-| 🔴 | **Baseline correction** | Linear (two-point), polynomial (order n), spline, rubberband/convex hull. Each application creates a provisional BASELINE node |
-| 🔴 | **Export processed data** | Save committed node data to CSV or TXT; include provenance header |
-| 🔴 | **Normalisation as explicit operation** | Normalisation creates a provisional NORMALISED node rather than modifying data in place |
-| 🔴 | **"Send to Compare" action** | Replaces "Add to TDDFT Overlay". Available on committed nodes |
-| 🔴 | **Plot Settings dialog** | Fonts, grid, background colour, legend position, tick direction, title/label customisation. Accessed via ⚙ in top bar |
-| 🟡 | **Peak picking** | Click-to-mark peaks; λ/E annotation; optional peak table export |
-| 🟡 | **OLIS integrating sphere correction** | Three-input operation node (sample + reference + blank → corrected). See OQ-004 for multi-input UI design |
-| 🟡 | **Interactive normalisation** | Normalise to user-specified wavelength or integration region |
-| 🟡 | **Difference spectra** | Two-input operation node. See OQ-004 |
-| 🟡 | **Smoothing** | Savitzky-Golay or moving average; creates provisional SMOOTHED node |
-| 🟢 | **Second derivative** | Creates provisional node; useful for resolving overlapping bands |
-| 🟢 | **Beer-Lambert / concentration** | Use known ε to extract concentration, or fit ε from known concentration |
+### Friction points carried forward from Phase 4a
+
+These are concrete obstacles the next Phase 4 session will hit when
+it adds baseline correction, normalisation-as-operation, the Plot
+Settings dialog, or wires Send-to-Compare. Identified during Phase 4a
+while migrating the loader and sidebar onto the new architecture.
+**Do not fix until the relevant subsequent Phase 4 session** — they
+need to be addressed in the same change that introduces the new
+operation/feature.
+
+1. **No `BASELINE_*` `OperationType` variants beyond the existing
+   `BASELINE`.** [nodes.py:96](nodes.py#L96) lists a single
+   `BASELINE` `OperationType`, but Phase 4 (BACKLOG) calls for four
+   distinct baseline modes — linear, polynomial, spline, and
+   rubberband/convex hull — each with materially different `params`
+   schemas. The next session needs to either (a) keep one
+   `OperationType` and discriminate via `params["mode"]`, or (b)
+   split into four variants. CS-03 §"Params completeness requirement"
+   bites either way: define the schema before implementing the UI.
+2. **Normalisation has no UI for parameter capture.** Existing
+   top-bar combobox `_norm_mode` (`none`/`peak`/`area`) at
+   [uvvis_tab.py:170](uvvis_tab.py#L170) is currently a *display*
+   transform applied at draw time, not an operation node. Migrating
+   it to a `NORMALISED` `OperationType` (CS-03) means deciding where
+   the user enters the parameter (peak position, integration window
+   bounds) — top-bar combobox does not have room. Likely lands on
+   the left panel per CS-07 §"UV/Vis left panel". Until then, the
+   existing draw-time transform stays; new normalisation modes
+   (interactive normalisation, normalisation to wavelength) need the
+   left panel.
+3. **Send-to-Compare needs the Compare tab to exist.** ScanTreeWidget
+   is constructed with `send_to_compare_cb=None`
+   ([uvvis_tab.py:333](uvvis_tab.py#L333)), so the right-click "Send
+   to Compare" menu entry renders disabled (CS-04 implementation
+   notes). The toolbar's "+ Add to TDDFT Overlay" button is still
+   wired to the legacy `_add_scan_fn` callback. Phase 7 builds the
+   Compare tab and wires `send_to_compare_cb` to a
+   `compare_tab.add_node(node_id)` style hand-off; the toolbar
+   button retires at the same time.
+4. **No graph subscription for the toolbar/limit-bar UI state.** The
+   unit radio buttons and limit entry fields call `self._redraw()`
+   directly rather than going through the graph. That is correct —
+   axis units and entry-field values are tab-private UI state, not
+   graph state — but it means a future session that introduces a
+   shared "view config" (e.g. sticky axis limits saved with the
+   project) will need to decide where that state lives. The choice
+   is between a per-tab UI-state dict in `project.json` vs. a
+   graph-side `view_state` payload on each node. Out of scope for
+   Phase 4 baseline/normalisation but flagged here so the
+   Plot-Settings session has a starting point.
+5. **`_add_selected_to_overlay` still constructs `ExperimentalScan`
+   from graph nodes.** [uvvis_tab.py:613](uvvis_tab.py#L613) reads
+   `node.arrays` and `node.metadata` and synthesises an
+   `ExperimentalScan` for the legacy TDDFT-overlay shim. This works
+   but means UV/Vis values cross the graph boundary twice (out, then
+   into the TDDFT plot's parallel state). Phase 7 deletes both
+   sides: Compare consumes the UVVIS DataNode directly. Until then
+   the shim is correct but inefficient.
+6. **Default `node.style` lives in two places.** The loader's
+   `_default_uvvis_style` ([uvvis_tab.py](uvvis_tab.py)) and
+   `scan_tree_widget._DEFAULT_STYLE`
+   ([scan_tree_widget.py:100](scan_tree_widget.py#L100)) are kept in
+   sync by hand. Sane today (six keys, both places set them
+   identically), but bound to drift. The cleanest fix is for the
+   loader to import the widget defaults — deferred because the
+   ScanTreeWidget defaults map is currently module-private and
+   exposing it pulls a UI module into the loader's import graph.
+   Revisit when XANES/EXAFS migrations need their own defaults.
+7. **Plot Settings dialog has no host yet.** The top bar still owns
+   per-axis labels, grid, and other plot-level controls inline (the
+   existing toolbar layout is unchanged in Phase 4a). The deferred
+   Phase 4 session that introduces the ⚙ Plot Settings dialog
+   (per CS-06 / ARCHITECTURE.md §3) needs to relocate those controls
+   without breaking the existing entry-field bindings (sticky
+   limits, unit conversion). Mention the unit-conversion code path
+   ([uvvis_tab.py:78-94](uvvis_tab.py#L78)) when planning that move.
+
+| Status | Priority | Item | Notes |
+|---|---|---|---|
+| ✅ | 🔴 | **Migrate UV/Vis to node model** | UVVisScan → DataNode(type=UVVIS). File load → RAW\_FILE + LOAD + UVVIS triple, all COMMITTED (Phase 4a Part A; CS-13 implementation notes) |
+| ✅ | 🔴 | **Replace UV/Vis sidebar with ScanTreeWidget** | Retire existing compact grid table; ScanTreeWidget is the replacement (Phase 4a Part B) |
+| ✅ | 🔴 | **Replace UV/Vis style dialog with unified style dialog** | Existing UV/Vis style dialog is the reference; unified dialog supersedes it (Phase 4a Part C) |
+| ⏳ | 🔴 | **Baseline correction** | Linear (two-point), polynomial (order n), spline, rubberband/convex hull. Each application creates a provisional BASELINE node |
+| ⏳ | 🔴 | **Export processed data** | Save committed node data to CSV or TXT; include provenance header |
+| ⏳ | 🔴 | **Normalisation as explicit operation** | Normalisation creates a provisional NORMALISED node rather than modifying data in place |
+| ⏳ | 🔴 | **"Send to Compare" action** | Replaces "Add to TDDFT Overlay". Available on committed nodes |
+| ⏳ | 🔴 | **Plot Settings dialog** | Fonts, grid, background colour, legend position, tick direction, title/label customisation. Accessed via ⚙ in top bar |
+| ⏳ | 🟡 | **Peak picking** | Click-to-mark peaks; λ/E annotation; optional peak table export |
+| ⏳ | 🟡 | **OLIS integrating sphere correction** | Three-input operation node (sample + reference + blank → corrected). See OQ-004 for multi-input UI design |
+| ⏳ | 🟡 | **Interactive normalisation** | Normalise to user-specified wavelength or integration region |
+| ⏳ | 🟡 | **Difference spectra** | Two-input operation node. See OQ-004 |
+| ⏳ | 🟡 | **Smoothing** | Savitzky-Golay or moving average; creates provisional SMOOTHED node |
+| ⏳ | 🟢 | **Second derivative** | Creates provisional node; useful for resolving overlapping bands |
+| ⏳ | 🟢 | **Beer-Lambert / concentration** | Use known ε to extract concentration, or fit ε from known concentration |
 
 ---
 

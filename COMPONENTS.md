@@ -1307,8 +1307,69 @@ Generates a human-readable or machine-readable summary of all
 committed operations that contributed to the specified Compare
 output nodes, traversing the full provenance chain.
 
+### Implementation notes (Phase 4a)
+
+These record the load-time decisions taken during Phase 4a (UV/Vis
+pilot tab) for the parts of CS-13 that the spec left open. They
+are descriptive — a future design session can revisit any of them
+— and they apply uniformly to every tab that loads experimental
+data into the graph.
+
+**Load is a three-node operation, not one.** A file load creates
+*three* graph entries together:
+
+1. a `COMMITTED RAW_FILE` `DataNode` — the immutable provenance
+   anchor (ARCHITECTURE.md §5.3),
+2. a `COMMITTED LOAD` `OperationNode` — the audit-trail counterpart,
+3. a `COMMITTED` technique-specific `DataNode` (e.g. `UVVIS`) —
+   carrying the parsed arrays.
+
+Edges wire `RAW_FILE → LOAD → UVVIS` via `add_edge`. All three
+land COMMITTED in the same gesture. The rationale: parsing the
+on-disk format into numpy arrays is bookkeeping, not science. The
+analyst did not yet make any analytic choice, so the parsed result
+is as canonical as the raw bytes — there is no reason to require a
+separate "commit" step before the user can see the spectrum on the
+plot. Analytic operations (baseline correction, normalisation,
+smoothing) start PROVISIONAL as before; the load is the only path
+that lands directly at COMMITTED for the technique node.
+
+**Default colour assignment lives in the loader.** The loader
+populates `node.style["color"] = _PALETTE[i % len(_PALETTE)]` at
+UVVIS-DataNode creation, where `i` is the count of pre-existing
+UVVIS nodes (any state) at the moment of load. This resolves Phase
+2 friction point #3: a freshly-loaded node opens the unified
+`StyleDialog` with a non-empty starting colour, and Reset restores
+that snapshot. The palette is module-private to the loader; the
+`StyleDialog` (CS-05) has no palette knowledge.
+
+**No automatic raw-file copy or SHA-256 yet.** Until project I/O is
+wired into the tab the RAW_FILE node only records `original_path`
+and `file_format` in its metadata. The `sha256` and `copied_to`
+fields land later, the first time the project is saved into a
+`.ptproj/` directory via `project_io.copy_raw_file`. Hash
+verification on subsequent project loads (CS-13 §"Raw file
+handling") is unaffected — it kicks in once the manifest exists.
+
+**Duplicate detection is `(source_file, label)`-keyed.** Reloading
+a file already in the graph is a no-op: `_has_existing_load`
+checks both the source path and the label of every non-DISCARDED
+UVVIS node. This matches the existing pre-graph behaviour and
+avoids creating a second RAW_FILE/LOAD pair for the same on-disk
+file. Whether to use a stronger SHA-256-based identity is left for
+the project-I/O wiring session.
+
+**Parser metadata is stored under a namespaced key.** The CS-02
+UVVIS metadata convention reserves `x_unit`, `y_unit`,
+`instrument`, and `source_file` for the canonical fields. The
+parser's free-form metadata dict (e.g. OLIS sample name, raw
+y-unit hint, header-line preamble) is preserved under
+`metadata["parser_metadata"]` so tabs can reach it without
+colliding with the convention.
+
 ---
 
-*Document version: 1.0 — April 2026*
+*Document version: 1.1 — April 2026*
+*1.1: CS-13 implementation notes added in Phase 4a.*
 *To be updated as Open Questions are resolved and new components
 are specified.*
