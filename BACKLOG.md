@@ -103,23 +103,32 @@ log-and-continue subscriber dispatch. See COMPONENTS.md CS-01 and CS-04
 
 ---
 
-## Phase 3 — Foundation: Unified Style Dialog
+## Phase 3 — Foundation: Unified Style Dialog  ✅ Complete (with caveats)
 
 *Depends on Phase 2.*
 
-| Priority | Item | Notes |
-|---|---|---|
-| 🔵 | **Unified style dialog shell** | Modeless (non-blocking); title shows node label; sections conditional on node type |
-| 🔵 | **Universal section** | Line style (radio), line width (slider + value), line opacity (slider), colour (swatch + picker + Reset), fill (checkbox + opacity slider). ∀ button per parameter |
-| 🔵 | **Markers section** | Shape radio (none/circle/square/diamond), size spinbox. Shown for: XANES, EXAFS node types |
-| 🔵 | **Broadening section** | Gaussian/Lorentzian radio, FWHM slider + entry. Shown for: TDDFT, BXAS\_RESULT types |
-| 🔵 | **Energy shift and scale section** | ΔE entry + slider, scale entry + slider. Shown for: TDDFT, BXAS\_RESULT, FEFF\_PATHS types |
-| 🔵 | **Envelope section** | Line width, fill checkbox + opacity. Shown for: TDDFT, BXAS\_RESULT types |
-| 🔵 | **Sticks section** | Line width, opacity, tip markers checkbox, marker size. Shown for: TDDFT types |
-| 🔵 | **Uncertainty band section** | Colour, opacity. Shown for: BXAS\_RESULT types |
-| 🔵 | **Component visibility section** | D², m², Q² checkboxes. Shown for: TDDFT types |
-| 🔵 | **Bottom buttons** | Apply · ∀ Apply to All · Save · Cancel. Matches existing UV/Vis style dialog pattern |
-| 🔵 | **∀ per-parameter apply-to-all** | Applies single parameter to all visible nodes of same type in current tab. Carries forward existing UV/Vis \_push\_to\_all pattern |
+Phase 3 ships `style_dialog.py` and `test_style_dialog.py`. The
+dialog is modeless, subscribes to `NODE_STYLE_CHANGED`, mutates
+exclusively via `graph.set_style`, and handles cross-node fan-out by
+delegating to a tab-supplied `on_apply_to_all` callback. See
+COMPONENTS.md CS-05 "Implementation notes" for the full set of
+decisions taken for ambiguities the spec left open.
+
+| Status | Priority | Item | Notes |
+|---|---|---|---|
+| ✅ | 🔵 | **Unified style dialog shell** | Modeless (non-blocking); title shows node label; sections conditional on node type. Module-level `open_style_dialog()` factory enforces one-dialog-per-node (focuses the existing window on a second open) |
+| ✅ | 🔵 | **Universal section** | Line style (radio), line width (slider + value), line opacity (slider), colour (swatch + picker + Reset), fill (checkbox + opacity slider). ∀ button per row |
+| ✅ | 🔵 | **Markers section** | Shape radio (none/circle/square/diamond), size spinbox. Shown for: XANES, EXAFS, DEGLITCHED, AVERAGED |
+| ✅ | 🔵 | **Broadening section** | Gaussian/Lorentzian radio, FWHM slider + entry. Shown for: TDDFT, BXAS\_RESULT |
+| ✅ | 🔵 | **Energy shift and scale section** | ΔE entry + slider, scale entry + slider. Shown for: TDDFT, BXAS\_RESULT, FEFF\_PATHS |
+| ✅ | 🔵 | **Envelope section** | Line width, fill checkbox + opacity. Shown for: TDDFT, BXAS\_RESULT |
+| ✅ | 🔵 | **Sticks section** | Line width, opacity, tip markers checkbox, marker size. Shown for: TDDFT |
+| ⏳ | 🔵 | **Uncertainty band section** | Stubbed — schema blocked on **OQ-002**. The section header is present and contains a Label citing OQ-002 so the gap is visible rather than silent. Controls land here once the bXAS uncertainty representation is decided |
+| ⏳ | 🔵 | **bXAS compound result grouping** | Stubbed — blocked on **OQ-003** (one row vs three vs expandable group for fit + uncertainty + residuals). Same stub treatment as the uncertainty band section |
+| ✅ | 🔵 | **Component visibility section** | Total / D² / m² / Q² checkboxes. Shown for: TDDFT |
+| ✅ | 🔵 | **Bottom buttons** | Apply · ∀ Apply to All · Save · Cancel. Matches existing UV/Vis dialog. Cancel reverts via deep-copied snapshot taken at `__init__`; window-close [X] is wired to Cancel so close-without-Cancel still reverts |
+| ✅ | 🔵 | **∀ per-parameter apply-to-all** | Universal-section rows only; the dialog delegates `(param_name, value)` via the tab-supplied `on_apply_to_all` callback. Conditional sections deferred — adding ∀ there awaits a tab-side scope decision |
+| ✅ | 🔵 | **Bottom ∀ Apply to All** | Fans out every universal-section parameter except colour, per CS-05 |
 
 ---
 
@@ -176,6 +185,61 @@ tab, not piecemeal.
    ([uvvis_tab.py:697](uvvis_tab.py#L697)). Phase 3 builds the unified
    dialog; Phase 4 connects ScanTreeWidget's gear via
    `style_dialog_cb` and deletes the inline implementation.
+
+### Friction points carried forward from Phase 3
+
+These are concrete obstacles that Phase 4 will hit when it swaps the
+inline `_open_style_dialog` for the unified `StyleDialog`. Identified
+during Phase 3 while reading the existing dialog as the reference
+implementation. **Do not fix until Phase 4** — they are the migration
+checklist for that swap-in.
+
+1. **`win.grab_set()`** ([uvvis_tab.py:707](uvvis_tab.py#L707)) makes
+   the inline dialog application-modal. The unified `StyleDialog` is
+   modeless by design (no `transient`, no `grab_set`). Migration
+   removes the grab — multiple style dialogs across nodes/tabs must
+   be allowed to coexist.
+2. **Per-row `idx`-keyed gear callbacks**
+   ([uvvis_tab.py:697](uvvis_tab.py#L697) takes `idx`). After Phase 4
+   the `ScanTreeWidget` invokes `style_dialog_cb(node_id)`. The
+   migration converts `_open_style_dialog(idx)` to
+   `lambda node_id: open_style_dialog(self, self._graph, node_id,
+   on_apply_to_all=...)`.
+3. **`_push_to_all` writes through `e["style"][key]`**
+   ([uvvis_tab.py:725-733](uvvis_tab.py#L725)) and explicitly calls
+   `self._rebuild_table()` and `self._redraw()` afterwards. The
+   migration provides an `on_apply_to_all` callback to `StyleDialog`
+   that uses `graph.set_style` for each visible UVVIS node, then
+   relies on the existing graph subscription for the redraw.
+   `_rebuild_table` and `_redraw` go away when the sidebar becomes
+   ScanTreeWidget.
+4. **`auto_col = _PALETTE[idx % len(_PALETTE)]`**
+   ([uvvis_tab.py:790](uvvis_tab.py#L790)) computes a per-position
+   default colour inside the dialog and passes it to the colour
+   swatch as the implicit baseline. The unified dialog has no
+   palette knowledge; Reset restores the snapshot colour, not a
+   palette default. Phase 4 must assign the default colour at
+   DataNode creation time (in the loader / load-as-RAW\_FILE
+   pipeline) so `node.style["color"]` is non-empty by the time the
+   dialog opens. This is the same friction listed as Phase 2 item 3.
+5. **`_orig` snapshot lives in the dialog closure**
+   ([uvvis_tab.py:839](uvvis_tab.py#L839)) and is restored by
+   `style.update(_orig)` in `_do_cancel`. Replaced wholesale by
+   `StyleDialog._snapshot` and the `set_style(snapshot)` revert path.
+   Note the same merge-can't-remove-keys limitation applies in both
+   implementations and is documented in CS-05 Implementation notes.
+6. **Dialog reads from `entry["style"]` and `entry["scan"]` dicts**
+   ([uvvis_tab.py:701-702](uvvis_tab.py#L701)). After migration the
+   dialog reads from `graph.get_node(node_id).style` exclusively; the
+   `_entries` list disappears as part of the broader Phase 4
+   restructure.
+7. **`_do_save` calls `_do_apply()` then `win.destroy()`**
+   ([uvvis_tab.py:870-871](uvvis_tab.py#L870)). The unified dialog
+   has the same flow but lives in `StyleDialog._do_save`. Phase 4
+   simply deletes the inline `_open_style_dialog` method (~175 lines)
+   and the `_LS_OPTIONS` constant if not needed elsewhere; the
+   gear-button hand-off is already in `ScanTreeWidget`
+   (`style_dialog_cb` parameter).
 
 | Priority | Item | Notes |
 |---|---|---|
