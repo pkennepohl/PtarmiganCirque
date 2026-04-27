@@ -1,12 +1,18 @@
 """
 uvvis_tab.py — UV/Vis/NIR analysis tab for Ptarmigan
 
-Phase 4a (loader migration): the tab now reads from a ProjectGraph
-rather than a private `_entries` list. File load creates a COMMITTED
-RAW_FILE DataNode + LOAD OperationNode + COMMITTED UVVIS DataNode
-wired together (CS-13 §"Implementation notes (Phase 4a)"). No
-analysis runs automatically — parsing the on-disk format into arrays
-is bookkeeping, not science.
+Phase 4a (loader migration + sidebar swap): the tab reads from a
+ProjectGraph rather than a private `_entries` list. File load creates
+a COMMITTED RAW_FILE DataNode + LOAD OperationNode + COMMITTED UVVIS
+DataNode wired together (CS-13 §"Implementation notes (Phase 4a)").
+No analysis runs automatically — parsing the on-disk format into
+arrays is bookkeeping, not science.
+
+The right pane is now ``ScanTreeWidget`` (CS-04). Per-row controls,
+gestures, and the gear-button hand-off to the unified
+``StyleDialog`` (CS-05) all live in that widget. The tab subscribes
+to ``GraphEvent`` so dialog- and row-driven mutations drive the plot
+without explicit redraw calls.
 """
 
 from __future__ import annotations
@@ -26,7 +32,7 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolb
 
 from uvvis_parser import UVVisScan, parse_uvvis_file
 from experimental_parser import ExperimentalScan
-from graph import ProjectGraph
+from graph import GraphEvent, GraphEventType, ProjectGraph
 from nodes import (
     DataNode,
     NodeState,
@@ -34,6 +40,8 @@ from nodes import (
     OperationNode,
     OperationType,
 )
+from scan_tree_widget import ScanTreeWidget
+from style_dialog import open_style_dialog
 from version import __version__ as PTARMIGAN_VERSION
 
 # ── Colour palette (loader-side default colour assignment) ────────────────────
@@ -243,13 +251,21 @@ class UVVisTab(tk.Frame):
                               sashwidth=5, sashrelief=tk.RAISED)
         body.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
 
-        left = tk.Frame(body, bd=1, relief=tk.SUNKEN)
-        body.add(left, minsize=200)
-        self._build_table_panel(left)
+        # ARCHITECTURE.md §3: plot in the centre, sidebar on the right.
+        plot_pane = tk.Frame(body)
+        body.add(plot_pane, minsize=400)
+        self._build_plot(plot_pane)
 
-        right = tk.Frame(body)
-        body.add(right, minsize=400)
-        self._build_plot(right)
+        sidebar_pane = tk.Frame(body, bd=1, relief=tk.SUNKEN)
+        body.add(sidebar_pane, minsize=240)
+        self._build_sidebar(sidebar_pane)
+
+        # Drive plot redraws off graph events. Dialog and row mutations
+        # go through ``graph.set_style`` → ``NODE_STYLE_CHANGED`` which
+        # this handler translates into a ``_redraw``. Lifetime is the
+        # tab's: unsubscribed automatically on ``<Destroy>``.
+        self._graph.subscribe(self._on_graph_event)
+        self.bind("<Destroy>", self._on_destroy_unsubscribe, add="+")
 
     # ── Toolbar ───────────────────────────────────────────────────────────────
 
@@ -335,32 +351,30 @@ class UVVisTab(tk.Frame):
         tk.Button(bar, text="Auto Y", font=("", 8),
                   command=self._auto_y).pack(side=tk.LEFT, padx=(4, 0))
 
-    # ── Scan table panel ──────────────────────────────────────────────────────
+    # ── Sidebar (right pane: ScanTreeWidget) ──────────────────────────────────
 
-    def _build_table_panel(self, parent):
+    def _build_sidebar(self, parent):
+        """Construct the right-pane sidebar around a ``ScanTreeWidget``.
+
+        The widget filters to ``NodeType.UVVIS``; its row controls
+        write through ``graph.set_style`` (CS-04), and the gear button
+        delegates to the unified style dialog (CS-05) via
+        ``style_dialog_cb``. Send-to-Compare is deferred to Phase 7,
+        so ``send_to_compare_cb=None`` — the right-click menu will
+        render it disabled.
+        """
         tk.Label(parent, text="Loaded Spectra",
                  font=("", 9, "bold")).pack(anchor="w", padx=4, pady=(4, 2))
 
-        # Scrollable canvas
-        container = tk.Frame(parent)
-        container.pack(fill=tk.BOTH, expand=True, padx=2, pady=2)
-
-        self._tbl_canvas = tk.Canvas(container, bd=0, highlightthickness=0)
-        sb = ttk.Scrollbar(container, orient=tk.VERTICAL,
-                           command=self._tbl_canvas.yview)
-        self._tbl_inner = tk.Frame(self._tbl_canvas)
-        self._tbl_inner.bind(
-            "<Configure>",
-            lambda e: self._tbl_canvas.configure(
-                scrollregion=self._tbl_canvas.bbox("all")))
-        self._tbl_win = self._tbl_canvas.create_window(
-            (0, 0), window=self._tbl_inner, anchor="nw")
-        self._tbl_canvas.bind(
-            "<Configure>",
-            lambda e: self._tbl_canvas.itemconfig(self._tbl_win, width=e.width))
-        self._tbl_canvas.configure(yscrollcommand=sb.set)
-        self._tbl_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        sb.pack(side=tk.RIGHT, fill=tk.Y)
+        self._scan_tree = ScanTreeWidget(
+            parent,
+            self._graph,
+            [NodeType.UVVIS],
+            redraw_cb=self._redraw,
+            send_to_compare_cb=None,
+            style_dialog_cb=self._open_style_dialog_for_node,
+        )
+        self._scan_tree.pack(fill=tk.BOTH, expand=True, padx=2, pady=2)
 
     # ── Plot panel ────────────────────────────────────────────────────────────
 
@@ -383,191 +397,63 @@ class UVVisTab(tk.Frame):
         self._draw_empty()
 
     # ══════════════════════════════════════════════════════════════════════════
-    #  Table rebuild  (Part B will replace this with ScanTreeWidget)
+    #  Graph event subscription
     # ══════════════════════════════════════════════════════════════════════════
 
-    def _rebuild_table(self):
-        for w in self._tbl_inner.winfo_children():
-            w.destroy()
+    def _on_graph_event(self, event: GraphEvent) -> None:
+        """Drive plot redraws from graph mutations.
 
-        nodes = self._uvvis_nodes()
-        if not nodes:
-            tk.Label(self._tbl_inner,
-                     text="No spectra loaded.",
-                     fg="gray", font=("", 8)
-                     ).grid(row=0, column=0, padx=8, pady=8)
-            self._tbl_canvas.update_idletasks()
-            self._tbl_canvas.configure(
-                scrollregion=self._tbl_canvas.bbox("all"))
-            return
+        Per CS-05 the unified style dialog never calls a redraw
+        callback; the tab is the single subscriber that owns plot
+        updates. ScanTreeWidget rebuilds its own rows; here we just
+        repaint the figure. Any UVVIS-touching event re-renders.
+        """
+        et = event.type
+        if et in (
+            GraphEventType.NODE_ADDED,
+            GraphEventType.NODE_DISCARDED,
+            GraphEventType.NODE_ACTIVE_CHANGED,
+            GraphEventType.NODE_STYLE_CHANGED,
+            GraphEventType.NODE_LABEL_CHANGED,
+            GraphEventType.GRAPH_LOADED,
+            GraphEventType.GRAPH_CLEARED,
+        ):
+            self._redraw()
 
-        tbl = tk.Frame(self._tbl_inner)
-        tbl.pack(fill=tk.X, expand=True, padx=2)
-
-        tbl.columnconfigure(1, weight=1, minsize=120)
-        tbl.columnconfigure(0, minsize=40)
-        tbl.columnconfigure(2, minsize=28)
-        tbl.columnconfigure(3, minsize=44)
-        tbl.columnconfigure(4, minsize=28)
-        tbl.columnconfigure(5, minsize=28)
-        tbl.columnconfigure(6, minsize=24)
-        tbl.columnconfigure(7, minsize=28)
-
-        HDR_BG = "#e8e8e8"
-        CPX    = (4, 4)
-        SPX    = (4, 2)
-        RPX    = (4, 6)
-        F8     = ("", 8)
-        F9     = ("", 9)
-        FHD    = ("", 8, "bold")
-
-        # ── Header ────────────────────────────────────────────────────────────
-        for col, txt, anch, px in [
-            (0, "",       "center", SPX),
-            (1, "Label",  "w",      (6, 4)),
-            (2, "Lgd",    "center", CPX),
-            (3, "LS",     "center", CPX),
-            (4, "LW",     "center", CPX),
-            (5, "Fill",   "center", CPX),
-            (6, "",       "center", CPX),
-            (7, "",       "center", RPX),
-        ]:
-            tk.Label(tbl, text=txt, font=FHD, bg=HDR_BG, fg="#444444",
-                     anchor=anch, padx=3,
-                     ).grid(row=0, column=col, sticky="ew", ipady=1, padx=px)
-
-        # ── Helpers ───────────────────────────────────────────────────────────
-        def _make_leg_btn(parent, node, r, c):
-            v = tk.BooleanVar(value=bool(node.style.get("in_legend", True)))
-            b = tk.Button(parent, width=2, font=F9, relief=tk.FLAT)
-            def _refresh(_b=b, _v=v):
-                _b.config(text="✓" if _v.get() else "–",
-                          fg="#006600" if _v.get() else "#999999")
-            def _toggle(nid=node.id, _b=b, _v=v):
-                _v.set(not _v.get()); _refresh()
-                self._graph.set_style(nid, {"in_legend": bool(_v.get())})
-                self._redraw()
-            b.config(command=_toggle)
-            _refresh()
-            b.grid(row=r, column=c, padx=CPX, pady=0, sticky="ew")
-
-        def _make_ls_canvas(parent, node, r, c):
-            W, H = 38, 16
-            cv = tk.Canvas(parent, width=W, height=H,
-                           bd=1, relief=tk.SUNKEN, bg="white",
-                           highlightthickness=0, cursor="hand2")
-
-            def _draw(_cv=cv, _node=node):
-                _cv.delete("all")
-                style = _node.style
-                ls   = style.get("linestyle", "solid")
-                clr  = style.get("color", "#333333")
-                lw   = max(0.5, float(style.get("linewidth", 1.5)))
-                dash = _LS_DASH.get(ls, ())
-                kw   = {"fill": clr, "width": lw, "capstyle": "round"}
-                if dash:
-                    kw["dash"] = dash
-                _cv.create_line(4, H // 2, W - 4, H // 2, **kw)
-
-            def _cycle(_event=None, _node=node):
-                ls  = _node.style.get("linestyle", "solid")
-                idx = _LS_CYCLE.index(ls) if ls in _LS_CYCLE else 0
-                new = _LS_CYCLE[(idx + 1) % len(_LS_CYCLE)]
-                self._graph.set_style(_node.id, {"linestyle": new})
-                _draw()
-                self._redraw()
-
-            cv.bind("<Button-1>", _cycle)
-            _draw()
-            cv.grid(row=r, column=c, padx=CPX, pady=2, sticky="")
-
-        def _make_lw_entry(parent, node, r, c):
-            v = tk.DoubleVar(value=float(node.style.get("linewidth", 1.5)))
-            def _cb(*_, nid=node.id, _v=v):
-                try:
-                    val = float(_v.get())
-                except Exception:
-                    return
-                self._graph.set_style(nid, {"linewidth": val})
-                self._redraw()
-            v.trace_add("write", _cb)
-            e = tk.Entry(parent, textvariable=v, width=4,
-                         font=("Courier", 8), justify="center")
-            e.grid(row=r, column=c, padx=CPX, pady=0, sticky="ew")
-
-        # ── Data rows ─────────────────────────────────────────────────────────
-        for i, node in enumerate(nodes):
-            r      = i + 1
-            colour = node.style.get("color", "#333333")
-
-            # Col 0: colour swatch — click to change
-            def _pick(nid=node.id):
-                old = self._graph.get_node(nid).style.get("color", "#1f77b4")
-                result = colorchooser.askcolor(color=old,
-                                               title="Pick spectrum colour")
-                if result and result[1]:
-                    self._graph.set_style(nid, {"color": result[1]})
-                    self._rebuild_table()
-                    self._redraw()
-            tk.Button(tbl, bg=colour, relief=tk.RAISED, width=3,
-                      text="UV", fg="white", font=("", 7, "bold"),
-                      activebackground=colour, cursor="hand2",
-                      command=_pick,
-                      ).grid(row=r, column=0, padx=SPX, pady=1, sticky="w")
-
-            # Col 1: visibility checkbox + label
-            vis_var = tk.BooleanVar(value=bool(node.style.get("visible", True)))
-            def _vis_cb(*_, nid=node.id, v=vis_var):
-                self._graph.set_style(nid, {"visible": bool(v.get())})
-                self._redraw()
-            vis_var.trace_add("write", _vis_cb)
-            tk.Checkbutton(tbl, text=node.label, variable=vis_var,
-                           anchor="w", font=F9,
-                           wraplength=200, justify=tk.LEFT,
-                           ).grid(row=r, column=1, sticky="ew",
-                                  padx=(6, 4), pady=0)
-
-            # Col 2: legend toggle
-            _make_leg_btn(tbl, node, r, 2)
-
-            # Col 3: linestyle canvas (click to cycle)
-            _make_ls_canvas(tbl, node, r, 3)
-
-            # Col 4: linewidth
-            _make_lw_entry(tbl, node, r, 4)
-
-            # Col 5: fill checkbox
-            fill_var = tk.BooleanVar(value=bool(node.style.get("fill", False)))
-            def _fill_cb(*_, nid=node.id, v=fill_var):
-                self._graph.set_style(nid, {"fill": bool(v.get())})
-                self._redraw()
-            fill_var.trace_add("write", _fill_cb)
-            tk.Checkbutton(tbl, variable=fill_var,
-                           ).grid(row=r, column=5, padx=CPX, pady=0,
-                                  sticky="ew")
-
-            # Col 6: style dialog
-            _gear = tk.Button(tbl, text="⚙", font=F8, relief=tk.FLAT,
-                              cursor="hand2",
-                              command=lambda nid=node.id: self._open_style_dialog(nid))
-            _gear.grid(row=r, column=6, padx=CPX, pady=0, sticky="ew")
-            _ToolTip(_gear, "Edit full style…")
-
-            # Col 7: remove
-            tk.Button(tbl, text="✕", font=F8, relief=tk.FLAT,
-                      command=lambda nid=node.id: self._remove_entry(nid),
-                      ).grid(row=r, column=7, padx=RPX, pady=0, sticky="e")
-
-        self._tbl_canvas.update_idletasks()
-        self._tbl_canvas.configure(
-            scrollregion=self._tbl_canvas.bbox("all"))
-        actual_h = self._tbl_inner.winfo_reqheight()
-        if actual_h > 0:
-            self._tbl_canvas.configure(
-                height=min(actual_h, 26 + 8 * 24))
+    def _on_destroy_unsubscribe(self, _event) -> None:
+        try:
+            self._graph.unsubscribe(self._on_graph_event)
+        except Exception:
+            pass
 
     # ══════════════════════════════════════════════════════════════════════════
-    #  File loading / removal
+    #  Style dialog hand-off (CS-05)
+    # ══════════════════════════════════════════════════════════════════════════
+
+    def _open_style_dialog_for_node(self, node_id: str) -> None:
+        """Gear-button hand-off: open the unified ``StyleDialog`` (CS-05).
+
+        ``open_style_dialog`` enforces one-dialog-per-node. The
+        ``on_apply_to_all`` callback fans the value out to every UVVIS
+        node currently in the sidebar.
+        """
+        open_style_dialog(
+            self, self._graph, node_id,
+            on_apply_to_all=self._on_uvvis_apply_to_all,
+        )
+
+    def _on_uvvis_apply_to_all(self, param: str, value) -> None:
+        """∀ fan-out: write ``param=value`` onto every visible UVVIS node.
+
+        "Visible" here matches ``_uvvis_nodes`` — non-DISCARDED and
+        ``active=True``. Per CS-05 each ``set_style`` is a merge, so
+        keys other than ``param`` on each target node are preserved.
+        """
+        for node in self._uvvis_nodes():
+            self._graph.set_style(node.id, {param: value})
+
+    # ══════════════════════════════════════════════════════════════════════════
+    #  File loading
     # ══════════════════════════════════════════════════════════════════════════
 
     def _load_files(self):
@@ -590,8 +476,9 @@ class UVVisTab(tk.Frame):
                     f"Could not read {os.path.basename(path)}:\n{exc}")
 
         if n_loaded:
-            self._rebuild_table()
-            self._redraw()
+            # Plot redraw fires automatically through the graph
+            # subscription on each NODE_ADDED. Status label is a UI
+            # detail outside the graph, so update it here directly.
             total = len(self._uvvis_nodes())
             self._status_lbl.config(
                 text=f"{total} spectrum/spectra loaded.",
@@ -682,25 +569,6 @@ class UVVisTab(tk.Frame):
         self._graph.add_edge(op_id, uvvis_id)
         return raw_id, op_id, uvvis_id
 
-    def _remove_entry(self, node_id: str):
-        """✕ button: discard provisional, soft-hide committed.
-
-        Mirrors ScanTreeWidget._on_x_clicked semantics (CS-04 §6.1) so
-        Part B's swap to ScanTreeWidget is a no-op for the user.
-        """
-        try:
-            node = self._graph.get_node(node_id)
-        except KeyError:
-            return
-        if not isinstance(node, DataNode):
-            return
-        if node.state == NodeState.PROVISIONAL:
-            self._graph.discard_node(node_id)
-        elif node.state == NodeState.COMMITTED:
-            self._graph.set_active(node_id, False)
-        self._rebuild_table()
-        self._redraw()
-
     # ══════════════════════════════════════════════════════════════════════════
     #  Axis helpers
     # ══════════════════════════════════════════════════════════════════════════
@@ -769,7 +637,11 @@ class UVVisTab(tk.Frame):
             if area > 0: y = y / area
         return y
 
-    def _redraw(self, *_):
+    def _redraw(self, *_args, **_kwargs):
+        # Accept ``focus=node_id`` from ScanTreeWidget history-click
+        # gestures (CS-04). Phase 4a does not yet implement preview
+        # rendering for ancestor nodes, so the kwarg is currently
+        # ignored; the call is honoured as a regular full redraw.
         # Walk the ProjectGraph for live UVVIS nodes whose style has
         # them visible; fall back to the empty-state placeholder when
         # nothing is loaded or every loaded node is hidden.
@@ -900,8 +772,8 @@ class UVVisTab(tk.Frame):
                 val = get_fn()
                 for other in self._uvvis_nodes():
                     self._graph.set_style(other.id, {key: val})
-                self._rebuild_table()
-                self._redraw()
+                # Plot/sidebar refresh fires via the graph
+                # subscription on each NODE_STYLE_CHANGED.
             return _do
 
         def _all_btn(row, col, fn, tip="Apply to all spectra"):
@@ -1023,24 +895,18 @@ class UVVisTab(tk.Frame):
 
         def _do_apply():
             self._graph.set_style(node_id, _read())
-            self._rebuild_table()
-            self._redraw()
 
         def _do_apply_all():
             vals = _read()
             partial = {k: v for k, v in vals.items() if k != "color"}
             for other in self._uvvis_nodes():
                 self._graph.set_style(other.id, dict(partial))
-            self._rebuild_table()
-            self._redraw()
 
         def _do_save():
             _do_apply(); win.destroy()
 
         def _do_cancel():
             self._graph.set_style(node_id, dict(_orig))
-            self._rebuild_table()
-            self._redraw()
             win.destroy()
 
         btn_row = tk.Frame(win)
