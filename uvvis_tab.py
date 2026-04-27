@@ -1,10 +1,18 @@
 """
 uvvis_tab.py — UV/Vis/NIR analysis tab for Ptarmigan
+
+Phase 4a (loader migration): the tab now reads from a ProjectGraph
+rather than a private `_entries` list. File load creates a COMMITTED
+RAW_FILE DataNode + LOAD OperationNode + COMMITTED UVVIS DataNode
+wired together (CS-13 §"Implementation notes (Phase 4a)"). No
+analysis runs automatically — parsing the on-disk format into arrays
+is bookkeeping, not science.
 """
 
 from __future__ import annotations
 
 import os
+import uuid
 from typing import Callable, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -18,8 +26,19 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolb
 
 from uvvis_parser import UVVisScan, parse_uvvis_file
 from experimental_parser import ExperimentalScan
+from graph import ProjectGraph
+from nodes import (
+    DataNode,
+    NodeState,
+    NodeType,
+    OperationNode,
+    OperationType,
+)
+from version import __version__ as PTARMIGAN_VERSION
 
-# ── Colour palette ────────────────────────────────────────────────────────────
+# ── Colour palette (loader-side default colour assignment) ────────────────────
+# Phase 2 friction #3: the UVVIS DataNode receives ``style["color"]`` at
+# creation so the StyleDialog opens with a non-empty starting colour.
 _PALETTE = [
     "#1f77b4", "#d62728", "#2ca02c", "#ff7f0e", "#9467bd",
     "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf",
@@ -35,12 +54,20 @@ _LS_DASH: Dict[str, tuple] = {
 }
 
 # ── Default per-scan style ────────────────────────────────────────────────────
-def _default_style(colour: str) -> dict:
+def _default_uvvis_style(colour: str) -> dict:
+    """Default ``DataNode.style`` for a freshly-loaded UVVIS node.
+
+    Mirrors ``scan_tree_widget._DEFAULT_STYLE`` so that row controls
+    and the unified style dialog read/write the same dict. ``visible``
+    and ``in_legend`` move into the style dict (Phase 2 friction #2).
+    """
     return {
         "color":      colour,
         "linestyle":  "solid",
         "linewidth":  1.5,
         "alpha":      0.9,
+        "visible":    True,
+        "in_legend":  True,
         "fill":       False,
         "fill_alpha": 0.08,
     }
@@ -117,16 +144,42 @@ def _convert_xlim(lo: float, hi: float,
     return (min(a, b), max(a, b))
 
 
+def _wavelength_to_x(wavelength_nm: np.ndarray, unit: str) -> np.ndarray:
+    """Derive the displayed x-axis from the canonical wavelength_nm array."""
+    if unit == "cm-1":
+        with np.errstate(divide="ignore", invalid="ignore"):
+            return np.where(wavelength_nm > 0,
+                            _NM_TO_CM1 / wavelength_nm, 0.0)
+    if unit == "eV":
+        with np.errstate(divide="ignore", invalid="ignore"):
+            return np.where(wavelength_nm > 0,
+                            _HC_NM_EV / wavelength_nm, 0.0)
+    return wavelength_nm
+
+
+def _absorbance_to_y(absorbance: np.ndarray, y_unit: str) -> np.ndarray:
+    if y_unit == "%T":
+        return 100.0 * np.power(10.0, -np.clip(absorbance, -10, 10))
+    return absorbance
+
+
 class UVVisTab(tk.Frame):
     """UV/Vis/NIR import, display and analysis panel."""
 
-    def __init__(self, parent, add_scan_fn: Optional[Callable] = None):
+    def __init__(
+        self,
+        parent,
+        add_scan_fn: Optional[Callable] = None,
+        graph: Optional[ProjectGraph] = None,
+    ):
         super().__init__(parent)
         self._add_scan_fn: Optional[Callable] = add_scan_fn
 
-        # ── Scan entries: list of dicts ───────────────────────────────────────
-        # Each entry: {"scan", "vis", "in_legend", "style"}
-        self._entries: List[dict] = []
+        # ProjectGraph: passed in by the host (binah.py once integrated)
+        # or constructed locally as a tab-private graph until the host
+        # is wired up. The tab routes every mutation through graph
+        # methods.
+        self._graph: ProjectGraph = graph if graph is not None else ProjectGraph()
 
         # ── Display options ───────────────────────────────────────────────────
         self._x_unit      = tk.StringVar(value="nm")
@@ -142,6 +195,36 @@ class UVVisTab(tk.Frame):
         self._ylim_hi = tk.StringVar(value="")
 
         self._build_ui()
+
+    # ══════════════════════════════════════════════════════════════════════════
+    #  Graph helpers
+    # ══════════════════════════════════════════════════════════════════════════
+
+    def _uvvis_nodes(self) -> List[DataNode]:
+        """Return the UVVIS DataNodes the tab considers "live".
+
+        Live = state != DISCARDED *and* ``active`` is True. The list
+        preserves insertion order (Python 3.7+ dict is ordered) so the
+        sidebar's row order is deterministic across rebuilds.
+        """
+        out: List[DataNode] = []
+        for node in self._graph.nodes_of_type(NodeType.UVVIS, state=None):
+            if node.state == NodeState.DISCARDED:
+                continue
+            if not node.active:
+                continue
+            out.append(node)
+        return out
+
+    def _has_existing_load(self, source_file: str, label: str) -> bool:
+        """Skip duplicates when the user reloads a file already in the graph."""
+        for node in self._graph.nodes_of_type(NodeType.UVVIS, state=None):
+            md = node.metadata
+            if (md.get("source_file") == source_file
+                    and node.label == label
+                    and node.state != NodeState.DISCARDED):
+                return True
+        return False
 
     # ══════════════════════════════════════════════════════════════════════════
     #  Layout
@@ -300,14 +383,15 @@ class UVVisTab(tk.Frame):
         self._draw_empty()
 
     # ══════════════════════════════════════════════════════════════════════════
-    #  Table rebuild
+    #  Table rebuild  (Part B will replace this with ScanTreeWidget)
     # ══════════════════════════════════════════════════════════════════════════
 
     def _rebuild_table(self):
         for w in self._tbl_inner.winfo_children():
             w.destroy()
 
-        if not self._entries:
+        nodes = self._uvvis_nodes()
+        if not nodes:
             tk.Label(self._tbl_inner,
                      text="No spectra loaded.",
                      fg="gray", font=("", 8)
@@ -320,22 +404,14 @@ class UVVisTab(tk.Frame):
         tbl = tk.Frame(self._tbl_inner)
         tbl.pack(fill=tk.X, expand=True, padx=2)
 
-        # Column layout:
-        # 0  colour swatch
-        # 1  ☐ label  (expands)
-        # 2  Lgd toggle
-        # 3  Style (linestyle)
-        # 4  LW
-        # 5  Fill ☐
-        # 6  ✕ remove
         tbl.columnconfigure(1, weight=1, minsize=120)
         tbl.columnconfigure(0, minsize=40)
         tbl.columnconfigure(2, minsize=28)
-        tbl.columnconfigure(3, minsize=44)   # linestyle canvas
+        tbl.columnconfigure(3, minsize=44)
         tbl.columnconfigure(4, minsize=28)
         tbl.columnconfigure(5, minsize=28)
-        tbl.columnconfigure(6, minsize=24)   # ⚙ style dialog
-        tbl.columnconfigure(7, minsize=28)   # ✕ remove
+        tbl.columnconfigure(6, minsize=24)
+        tbl.columnconfigure(7, minsize=28)
 
         HDR_BG = "#e8e8e8"
         CPX    = (4, 4)
@@ -361,39 +437,43 @@ class UVVisTab(tk.Frame):
                      ).grid(row=0, column=col, sticky="ew", ipady=1, padx=px)
 
         # ── Helpers ───────────────────────────────────────────────────────────
-        def _make_leg_btn(parent, leg_var, r, c):
+        def _make_leg_btn(parent, node, r, c):
+            v = tk.BooleanVar(value=bool(node.style.get("in_legend", True)))
             b = tk.Button(parent, width=2, font=F9, relief=tk.FLAT)
-            def _refresh(_b=b, _v=leg_var):
+            def _refresh(_b=b, _v=v):
                 _b.config(text="✓" if _v.get() else "–",
                           fg="#006600" if _v.get() else "#999999")
-            def _toggle(_b=b, _v=leg_var):
-                _v.set(not _v.get()); _refresh(); self._redraw()
+            def _toggle(nid=node.id, _b=b, _v=v):
+                _v.set(not _v.get()); _refresh()
+                self._graph.set_style(nid, {"in_legend": bool(_v.get())})
+                self._redraw()
             b.config(command=_toggle)
             _refresh()
             b.grid(row=r, column=c, padx=CPX, pady=0, sticky="ew")
 
-        def _make_ls_canvas(parent, style, r, c):
-            """Small canvas that draws the line style; click to cycle."""
+        def _make_ls_canvas(parent, node, r, c):
             W, H = 38, 16
             cv = tk.Canvas(parent, width=W, height=H,
                            bd=1, relief=tk.SUNKEN, bg="white",
                            highlightthickness=0, cursor="hand2")
 
-            def _draw(_cv=cv, _s=style):
+            def _draw(_cv=cv, _node=node):
                 _cv.delete("all")
-                ls   = _s.get("linestyle", "solid")
-                clr  = _s.get("color", "#333333")
-                lw   = max(0.5, float(_s.get("linewidth", 1.5)))
+                style = _node.style
+                ls   = style.get("linestyle", "solid")
+                clr  = style.get("color", "#333333")
+                lw   = max(0.5, float(style.get("linewidth", 1.5)))
                 dash = _LS_DASH.get(ls, ())
                 kw   = {"fill": clr, "width": lw, "capstyle": "round"}
                 if dash:
                     kw["dash"] = dash
                 _cv.create_line(4, H // 2, W - 4, H // 2, **kw)
 
-            def _cycle(_event=None, _cv=cv, _s=style):
-                ls  = _s.get("linestyle", "solid")
+            def _cycle(_event=None, _node=node):
+                ls  = _node.style.get("linestyle", "solid")
                 idx = _LS_CYCLE.index(ls) if ls in _LS_CYCLE else 0
-                _s["linestyle"] = _LS_CYCLE[(idx + 1) % len(_LS_CYCLE)]
+                new = _LS_CYCLE[(idx + 1) % len(_LS_CYCLE)]
+                self._graph.set_style(_node.id, {"linestyle": new})
                 _draw()
                 self._redraw()
 
@@ -401,27 +481,32 @@ class UVVisTab(tk.Frame):
             _draw()
             cv.grid(row=r, column=c, padx=CPX, pady=2, sticky="")
 
-        def _make_lw_entry(parent, lw_var, r, c):
-            e = tk.Entry(parent, textvariable=lw_var, width=4,
+        def _make_lw_entry(parent, node, r, c):
+            v = tk.DoubleVar(value=float(node.style.get("linewidth", 1.5)))
+            def _cb(*_, nid=node.id, _v=v):
+                try:
+                    val = float(_v.get())
+                except Exception:
+                    return
+                self._graph.set_style(nid, {"linewidth": val})
+                self._redraw()
+            v.trace_add("write", _cb)
+            e = tk.Entry(parent, textvariable=v, width=4,
                          font=("Courier", 8), justify="center")
             e.grid(row=r, column=c, padx=CPX, pady=0, sticky="ew")
 
         # ── Data rows ─────────────────────────────────────────────────────────
-        for i, entry in enumerate(self._entries):
+        for i, node in enumerate(nodes):
             r      = i + 1
-            scan   = entry["scan"]
-            vis    = entry["vis"]
-            leg    = entry["in_legend"]
-            style  = entry["style"]
-            colour = style["color"]
+            colour = node.style.get("color", "#333333")
 
             # Col 0: colour swatch — click to change
-            def _pick(idx=i):
-                old = self._entries[idx]["style"]["color"]
+            def _pick(nid=node.id):
+                old = self._graph.get_node(nid).style.get("color", "#1f77b4")
                 result = colorchooser.askcolor(color=old,
                                                title="Pick spectrum colour")
                 if result and result[1]:
-                    self._entries[idx]["style"]["color"] = result[1]
+                    self._graph.set_style(nid, {"color": result[1]})
                     self._rebuild_table()
                     self._redraw()
             tk.Button(tbl, bg=colour, relief=tk.RAISED, width=3,
@@ -431,33 +516,32 @@ class UVVisTab(tk.Frame):
                       ).grid(row=r, column=0, padx=SPX, pady=1, sticky="w")
 
             # Col 1: visibility checkbox + label
-            tk.Checkbutton(tbl, text=scan.display_name(), variable=vis,
-                           command=self._redraw, anchor="w", font=F9,
+            vis_var = tk.BooleanVar(value=bool(node.style.get("visible", True)))
+            def _vis_cb(*_, nid=node.id, v=vis_var):
+                self._graph.set_style(nid, {"visible": bool(v.get())})
+                self._redraw()
+            vis_var.trace_add("write", _vis_cb)
+            tk.Checkbutton(tbl, text=node.label, variable=vis_var,
+                           anchor="w", font=F9,
                            wraplength=200, justify=tk.LEFT,
                            ).grid(row=r, column=1, sticky="ew",
                                   padx=(6, 4), pady=0)
 
             # Col 2: legend toggle
-            _make_leg_btn(tbl, leg, r, 2)
+            _make_leg_btn(tbl, node, r, 2)
 
             # Col 3: linestyle canvas (click to cycle)
-            _make_ls_canvas(tbl, style, r, 3)
+            _make_ls_canvas(tbl, node, r, 3)
 
             # Col 4: linewidth
-            lw_var = tk.DoubleVar(value=style.get("linewidth", 1.5))
-            def _lw_cb(s=style, v=lw_var, *_):
-                try:
-                    s["linewidth"] = float(v.get()); self._redraw()
-                except Exception:
-                    pass
-            lw_var.trace_add("write", lambda *a, s=style, v=lw_var: _lw_cb(s, v))
-            _make_lw_entry(tbl, lw_var, r, 4)
+            _make_lw_entry(tbl, node, r, 4)
 
             # Col 5: fill checkbox
-            fill_var = tk.BooleanVar(value=style.get("fill", False))
-            def _fill_cb(s=style, v=fill_var, *_):
-                s["fill"] = v.get(); self._redraw()
-            fill_var.trace_add("write", lambda *a, s=style, v=fill_var: _fill_cb(s, v))
+            fill_var = tk.BooleanVar(value=bool(node.style.get("fill", False)))
+            def _fill_cb(*_, nid=node.id, v=fill_var):
+                self._graph.set_style(nid, {"fill": bool(v.get())})
+                self._redraw()
+            fill_var.trace_add("write", _fill_cb)
             tk.Checkbutton(tbl, variable=fill_var,
                            ).grid(row=r, column=5, padx=CPX, pady=0,
                                   sticky="ew")
@@ -465,19 +549,18 @@ class UVVisTab(tk.Frame):
             # Col 6: style dialog
             _gear = tk.Button(tbl, text="⚙", font=F8, relief=tk.FLAT,
                               cursor="hand2",
-                              command=lambda idx=i: self._open_style_dialog(idx))
+                              command=lambda nid=node.id: self._open_style_dialog(nid))
             _gear.grid(row=r, column=6, padx=CPX, pady=0, sticky="ew")
             _ToolTip(_gear, "Edit full style…")
 
             # Col 7: remove
             tk.Button(tbl, text="✕", font=F8, relief=tk.FLAT,
-                      command=lambda idx=i: self._remove_entry(idx),
+                      command=lambda nid=node.id: self._remove_entry(nid),
                       ).grid(row=r, column=7, padx=RPX, pady=0, sticky="e")
 
         self._tbl_canvas.update_idletasks()
         self._tbl_canvas.configure(
             scrollregion=self._tbl_canvas.bbox("all"))
-        # Resize canvas height to content, capped at ~8 rows
         actual_h = self._tbl_inner.winfo_reqheight()
         if actual_h > 0:
             self._tbl_canvas.configure(
@@ -497,18 +580,9 @@ class UVVisTab(tk.Frame):
         for path in paths:
             try:
                 for scan in parse_uvvis_file(path):
-                    key = (scan.source_file, scan.label)
-                    if any((e["scan"].source_file, e["scan"].label) == key
-                           for e in self._entries):
+                    if self._has_existing_load(scan.source_file, scan.label):
                         continue
-                    idx    = len(self._entries)
-                    colour = _PALETTE[idx % len(_PALETTE)]
-                    self._entries.append({
-                        "scan":      scan,
-                        "vis":       tk.BooleanVar(value=True),
-                        "in_legend": tk.BooleanVar(value=True),
-                        "style":     _default_style(colour),
-                    })
+                    self._load_uvvis_scan(path, scan)
                     n_loaded += 1
             except Exception as exc:
                 messagebox.showerror(
@@ -518,15 +592,114 @@ class UVVisTab(tk.Frame):
         if n_loaded:
             self._rebuild_table()
             self._redraw()
+            total = len(self._uvvis_nodes())
             self._status_lbl.config(
-                text=f"{len(self._entries)} spectrum/spectra loaded.",
+                text=f"{total} spectrum/spectra loaded.",
                 fg="#003300")
 
-    def _remove_entry(self, idx: int):
-        if 0 <= idx < len(self._entries):
-            self._entries.pop(idx)
-            self._rebuild_table()
-            self._redraw()
+    def _load_uvvis_scan(self, path: str, scan: UVVisScan) -> tuple[str, str, str]:
+        """Materialise a parsed UVVisScan as RAW_FILE + LOAD + UVVIS in the graph.
+
+        Implements the §5.3 + CS-13 load-time rule: a file load creates
+        a COMMITTED RAW_FILE node (the immutable provenance anchor),
+        a COMMITTED LOAD OperationNode, and a COMMITTED UVVIS DataNode
+        carrying the parsed arrays. No analysis runs automatically.
+
+        Returns ``(raw_id, op_id, uvvis_id)``.
+        """
+        raw_id   = uuid.uuid4().hex
+        op_id    = uuid.uuid4().hex
+        uvvis_id = uuid.uuid4().hex
+
+        ext = os.path.splitext(path)[1].lower().lstrip(".") or "unknown"
+        instrument = scan.metadata.get("instrument", "generic")
+
+        # 1. RAW_FILE node — the immutable anchor (CS-02 conventions).
+        raw_node = DataNode(
+            id=raw_id,
+            type=NodeType.RAW_FILE,
+            arrays={},
+            metadata={
+                "original_path": str(path),
+                "file_format":   ext,
+                # sha256 / copied_to are written when the project is
+                # saved into a .ptproj/ via project_io.copy_raw_file.
+            },
+            label=os.path.basename(path),
+            state=NodeState.COMMITTED,
+        )
+
+        # 2. LOAD operation — engine="internal", parameters sufficient
+        #    to re-run the load (CS-03 params completeness).
+        op_node = OperationNode(
+            id=op_id,
+            type=OperationType.LOAD,
+            engine="internal",
+            engine_version=PTARMIGAN_VERSION,
+            params={
+                "file_format": ext,
+                "instrument":  instrument,
+                "parser":      "uvvis_parser.parse_uvvis_file",
+            },
+            input_ids=[raw_id],
+            output_ids=[uvvis_id],
+            status="SUCCESS",
+            state=NodeState.COMMITTED,
+        )
+
+        # 3. UVVIS DataNode — parsed arrays + style with default colour.
+        existing_count = len(self._graph.nodes_of_type(NodeType.UVVIS, state=None))
+        colour = _PALETTE[existing_count % len(_PALETTE)]
+
+        uvvis_meta = {
+            "x_unit":      "nm",
+            "y_unit":      "absorbance",
+            "instrument":  instrument,
+            "source_file": scan.source_file,
+        }
+        # Carry parser-supplied metadata under a namespaced key so it
+        # doesn't collide with CS-02 conventions.
+        if scan.metadata:
+            uvvis_meta["parser_metadata"] = dict(scan.metadata)
+
+        uvvis_node = DataNode(
+            id=uvvis_id,
+            type=NodeType.UVVIS,
+            arrays={
+                "wavelength_nm": np.asarray(scan.wavelength_nm, dtype=float),
+                "absorbance":    np.asarray(scan.absorbance, dtype=float),
+            },
+            metadata=uvvis_meta,
+            label=scan.display_name(),
+            state=NodeState.COMMITTED,
+            style=_default_uvvis_style(colour),
+        )
+
+        self._graph.add_node(raw_node)
+        self._graph.add_node(op_node)
+        self._graph.add_node(uvvis_node)
+        self._graph.add_edge(raw_id, op_id)
+        self._graph.add_edge(op_id, uvvis_id)
+        return raw_id, op_id, uvvis_id
+
+    def _remove_entry(self, node_id: str):
+        """✕ button: discard provisional, soft-hide committed.
+
+        Mirrors ScanTreeWidget._on_x_clicked semantics (CS-04 §6.1) so
+        Part B's swap to ScanTreeWidget is a no-op for the user.
+        """
+        try:
+            node = self._graph.get_node(node_id)
+        except KeyError:
+            return
+        if not isinstance(node, DataNode):
+            return
+        if node.state == NodeState.PROVISIONAL:
+            self._graph.discard_node(node_id)
+        elif node.state == NodeState.COMMITTED:
+            self._graph.set_active(node_id, False)
+        self._rebuild_table()
+        self._redraw()
 
     # ══════════════════════════════════════════════════════════════════════════
     #  Axis helpers
@@ -571,7 +744,7 @@ class UVVisTab(tk.Frame):
         self._redraw()
 
     # ══════════════════════════════════════════════════════════════════════════
-    #  Plotting
+    #  Plotting (graph-driven)
     # ══════════════════════════════════════════════════════════════════════════
 
     def _draw_empty(self):
@@ -584,28 +757,26 @@ class UVVisTab(tk.Frame):
         self._ax.set_axis_off()
         self._canvas.draw_idle()
 
-    def _x_data(self, scan: UVVisScan) -> np.ndarray:
-        unit = self._x_unit.get()
-        if unit == "cm-1": return scan.wavenumber_cm1
-        if unit == "eV":   return scan.energy_ev
-        return scan.wavelength_nm
-
-    def _y_data(self, scan: UVVisScan) -> np.ndarray:
-        y = (scan.transmittance_pct if self._y_unit.get() == "%T"
-             else scan.absorbance)
+    def _y_with_norm(self, absorbance: np.ndarray,
+                     wavelength_nm: np.ndarray) -> np.ndarray:
+        y = _absorbance_to_y(absorbance, self._y_unit.get())
         mode = self._norm_mode.get()
         if mode == "peak":
             pk = np.nanmax(np.abs(y))
             if pk > 0: y = y / pk
         elif mode == "area":
-            area = np.trapz(np.abs(y), scan.wavelength_nm)
+            area = np.trapz(np.abs(y), wavelength_nm)
             if area > 0: y = y / area
         return y
 
     def _redraw(self, *_):
-        visible = [e for e in self._entries if e["vis"].get()]
+        # Walk the ProjectGraph for live UVVIS nodes whose style has
+        # them visible; fall back to the empty-state placeholder when
+        # nothing is loaded or every loaded node is hidden.
+        live = [n for n in self._uvvis_nodes()
+                if bool(n.style.get("visible", True))]
 
-        if not visible:
+        if not live:
             self._draw_empty()
             return
 
@@ -614,15 +785,16 @@ class UVVisTab(tk.Frame):
         ax   = self._ax
         unit = self._x_unit.get()
 
-        for entry in visible:
-            scan   = entry["scan"]
-            style  = entry["style"]
-            colour = style["color"]
-            x = self._x_data(scan)
-            y = self._y_data(scan)
+        for node in live:
+            style  = node.style
+            colour = style.get("color", "#333333")
+            wl     = node.arrays["wavelength_nm"]
+            absorb = node.arrays["absorbance"]
+            x = _wavelength_to_x(wl, unit)
+            y = self._y_with_norm(absorb, wl)
             order  = np.argsort(x)
             x, y   = x[order], y[order]
-            label  = scan.display_name() if entry["in_legend"].get() else None
+            label  = node.label if style.get("in_legend", True) else None
             ax.plot(x, y,
                     color=colour,
                     linestyle=style.get("linestyle", "solid"),
@@ -655,8 +827,8 @@ class UVVisTab(tk.Frame):
 
         # ── Invert nm axis ────────────────────────────────────────────────────
         if unit == "nm":
-            lo_nm = min(e["scan"].wavelength_nm.min() for e in visible)
-            hi_nm = max(e["scan"].wavelength_nm.max() for e in visible)
+            lo_nm = min(float(np.min(n.arrays["wavelength_nm"])) for n in live)
+            hi_nm = max(float(np.max(n.arrays["wavelength_nm"])) for n in live)
             ax.set_xlim(hi_nm, lo_nm)
 
         # ── Apply stored x-limits ─────────────────────────────────────────────
@@ -665,7 +837,6 @@ class UVVisTab(tk.Frame):
         if lo_x is not None or hi_x is not None:
             cur = ax.get_xlim()
             if unit == "nm":
-                # nm axis is inverted: lo_x is the right edge, hi_x is the left edge
                 ax.set_xlim(hi_x if hi_x is not None else cur[0],
                             lo_x if lo_x is not None else cur[1])
             else:
@@ -691,15 +862,17 @@ class UVVisTab(tk.Frame):
         self._toolbar.update()
 
     # ══════════════════════════════════════════════════════════════════════════
-    #  Per-scan style dialog
+    #  Per-scan style dialog (legacy — Part C will delete this)
     # ══════════════════════════════════════════════════════════════════════════
 
-    def _open_style_dialog(self, idx: int):
-        if idx < 0 or idx >= len(self._entries):
+    def _open_style_dialog(self, node_id: str):
+        try:
+            node = self._graph.get_node(node_id)
+        except KeyError:
             return
-        entry = self._entries[idx]
-        scan  = entry["scan"]
-        style = entry["style"]
+        if not isinstance(node, DataNode):
+            return
+        style = node.style
 
         win = tk.Toplevel(self)
         win.title("Spectrum Style")
@@ -712,7 +885,7 @@ class UVVisTab(tk.Frame):
         tk.Label(hdr, text="UV/Vis Spectrum Style",
                  bg="#003d7a", fg="white",
                  font=("", 10, "bold")).pack(anchor="w")
-        name = scan.display_name()
+        name = node.label
         tk.Label(hdr, text=(name[:60] + "…") if len(name) > 60 else name,
                  bg="#003d7a", fg="#aaccff", font=("", 8)).pack(anchor="w")
 
@@ -723,11 +896,10 @@ class UVVisTab(tk.Frame):
         # ── Helpers ───────────────────────────────────────────────────────────
 
         def _push_to_all(key, get_fn):
-            """Return a callback that writes get_fn() into style[key] for every entry."""
             def _do():
                 val = get_fn()
-                for e in self._entries:
-                    e["style"][key] = val
+                for other in self._uvvis_nodes():
+                    self._graph.set_style(other.id, {key: val})
                 self._rebuild_table()
                 self._redraw()
             return _do
@@ -787,14 +959,14 @@ class UVVisTab(tk.Frame):
         # ── Color ─────────────────────────────────────────────────────────────
         tk.Label(body, text="Color:", font=("", 9, "bold")).grid(
             row=row, column=0, sticky="w", pady=4)
-        auto_col   = _PALETTE[idx % len(_PALETTE)]
-        col_var    = tk.StringVar(value=style.get("color", auto_col))
-        col_swatch = tk.Button(body, bg=col_var.get() or auto_col,
-                               width=4, relief=tk.RAISED, cursor="hand2")
+        snapshot_col = style.get("color", "#1f77b4")
+        col_var      = tk.StringVar(value=snapshot_col)
+        col_swatch   = tk.Button(body, bg=col_var.get() or snapshot_col,
+                                 width=4, relief=tk.RAISED, cursor="hand2")
         col_swatch.grid(row=row, column=1, sticky="w", padx=(4, 0))
 
         def _pick_color():
-            init   = col_var.get().strip() or auto_col
+            init   = col_var.get().strip() or snapshot_col
             result = colorchooser.askcolor(color=init,
                                            title="Choose colour", parent=win)
             if result and result[1]:
@@ -803,8 +975,8 @@ class UVVisTab(tk.Frame):
         col_swatch.config(command=_pick_color)
 
         def _reset_color():
-            col_var.set(auto_col)
-            col_swatch.config(bg=auto_col, activebackground=auto_col)
+            col_var.set(snapshot_col)
+            col_swatch.config(bg=snapshot_col, activebackground=snapshot_col)
 
         reset_row = tk.Frame(body)
         reset_row.grid(row=row, column=2, sticky="w", padx=4)
@@ -812,7 +984,7 @@ class UVVisTab(tk.Frame):
                   command=_reset_color).pack(side=tk.LEFT)
 
         _all_btn(row, 3,
-                 _push_to_all("color", lambda: col_var.get().strip() or auto_col),
+                 _push_to_all("color", lambda: col_var.get().strip() or snapshot_col),
                  tip="Apply this colour to all spectra")
         row += 1
 
@@ -844,26 +1016,21 @@ class UVVisTab(tk.Frame):
                 "linestyle":  ls_var.get(),
                 "linewidth":  lw_var.get(),
                 "alpha":      alpha_var.get(),
-                "color":      col_var.get().strip() or auto_col,
+                "color":      col_var.get().strip() or snapshot_col,
                 "fill":       fill_var.get(),
                 "fill_alpha": fill_alpha_var.get(),
             }
 
-        # ── Action callbacks ──────────────────────────────────────────────────
         def _do_apply():
-            style.update(_read())
+            self._graph.set_style(node_id, _read())
             self._rebuild_table()
             self._redraw()
 
         def _do_apply_all():
-            """Apply everything except colour to all entries."""
             vals = _read()
-            for e in self._entries:
-                e["style"]["linestyle"]  = vals["linestyle"]
-                e["style"]["linewidth"]  = vals["linewidth"]
-                e["style"]["alpha"]      = vals["alpha"]
-                e["style"]["fill"]       = vals["fill"]
-                e["style"]["fill_alpha"] = vals["fill_alpha"]
+            partial = {k: v for k, v in vals.items() if k != "color"}
+            for other in self._uvvis_nodes():
+                self._graph.set_style(other.id, dict(partial))
             self._rebuild_table()
             self._redraw()
 
@@ -871,12 +1038,11 @@ class UVVisTab(tk.Frame):
             _do_apply(); win.destroy()
 
         def _do_cancel():
-            style.update(_orig)
+            self._graph.set_style(node_id, dict(_orig))
             self._rebuild_table()
             self._redraw()
             win.destroy()
 
-        # ── Buttons ───────────────────────────────────────────────────────────
         btn_row = tk.Frame(win)
         btn_row.pack(pady=(4, 10))
         tk.Button(btn_row, text="Apply",              width=10,
@@ -899,31 +1065,37 @@ class UVVisTab(tk.Frame):
                                 "No TDDFT plot connected to this panel.")
             return
 
-        visible = [e for e in self._entries if e["vis"].get()]
-        if not visible:
+        live = [n for n in self._uvvis_nodes()
+                if bool(n.style.get("visible", True))]
+        if not live:
             messagebox.showinfo("Nothing selected",
                                 "Check at least one spectrum in the list first.")
             return
 
-        for entry in visible:
-            scan      = entry["scan"]
-            energy_ev = scan.energy_ev.copy()
-            absorb    = scan.absorbance.copy()
+        for node in live:
+            wl     = np.asarray(node.arrays["wavelength_nm"], dtype=float)
+            absorb = np.asarray(node.arrays["absorbance"], dtype=float)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                energy_ev = np.where(wl > 0, _HC_NM_EV / wl, 0.0)
             order     = np.argsort(energy_ev)
             energy_ev = energy_ev[order]
             absorb    = absorb[order]
             mask      = energy_ev > 0
+            parser_md = node.metadata.get("parser_metadata", {})
             exp_scan  = ExperimentalScan(
-                label=scan.label,
-                source_file=scan.source_file,
+                label=node.label,
+                source_file=node.metadata.get("source_file", ""),
                 energy_ev=energy_ev[mask],
                 mu=absorb[mask],
                 is_normalized=True,
                 scan_type="UV/Vis absorbance",
-                metadata=dict(scan.metadata, uvvis_source=scan.source_file),
+                metadata=dict(
+                    parser_md,
+                    uvvis_source=node.metadata.get("source_file", ""),
+                ),
             )
             self._add_scan_fn(exp_scan)
 
         self._status_lbl.config(
-            text=f"Added {len(visible)} spectrum/spectra to TDDFT overlay.",
+            text=f"Added {len(live)} spectrum/spectra to TDDFT overlay.",
             fg="#003d7a")
