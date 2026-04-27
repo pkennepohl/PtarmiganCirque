@@ -17,6 +17,7 @@ without explicit redraw calls.
 
 from __future__ import annotations
 
+import copy
 import os
 import uuid
 from typing import Callable, List, Optional, Tuple
@@ -42,6 +43,7 @@ from nodes import (
 )
 from scan_tree_widget import ScanTreeWidget
 from style_dialog import open_style_dialog
+import plot_settings_dialog
 from version import __version__ as PTARMIGAN_VERSION
 
 # ── Colour palette (loader-side default colour assignment) ────────────────────
@@ -157,6 +159,20 @@ class UVVisTab(tk.Frame):
         self._ylim_lo = tk.StringVar(value="")
         self._ylim_hi = tk.StringVar(value="")
 
+        # ── Plot Settings configuration (CS-06 / CS-14) ──────────────────────
+        # Tab-private dict: fonts, grid, background, legend show/position,
+        # tick direction, title/X-label/Y-label text and modes. Initialised
+        # from the in-process user defaults if any have been saved this
+        # session, falling back to the factory defaults. ``_redraw`` reads
+        # from this dict; the ⚙ Plot Settings dialog mutates it in place
+        # on Apply. Per Phase 4a friction #4 this is tab-private state, not
+        # graph state.
+        _src = (
+            plot_settings_dialog._USER_DEFAULTS
+            or plot_settings_dialog._FACTORY_DEFAULTS
+        )
+        self._plot_config: dict = copy.deepcopy(dict(_src))
+
         self._build_ui()
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -269,6 +285,16 @@ class UVVisTab(tk.Frame):
                   activebackground="#6a0090",
                   command=self._add_selected_to_overlay,
                   ).pack(side=tk.LEFT, padx=2)
+
+        # ⚙ Plot Settings (CS-06): opens the unified Plot Settings dialog
+        # for this tab. Placed between the deferred Send-to-Compare slot
+        # (currently the legacy "+ Add to TDDFT Overlay" button) and the
+        # status label.
+        self._plot_settings_btn = tk.Button(
+            bar, text="⚙ Plot Settings", font=F9,
+            command=self._open_plot_settings,
+        )
+        self._plot_settings_btn.pack(side=tk.LEFT, padx=2)
 
         self._status_lbl = tk.Label(bar, text="Load a UV/Vis file to begin.",
                                     fg="gray", font=("", 8))
@@ -406,6 +432,31 @@ class UVVisTab(tk.Frame):
         """
         for node in self._uvvis_nodes():
             self._graph.set_style(node.id, {param: value})
+
+    # ══════════════════════════════════════════════════════════════════════════
+    #  Plot Settings dialog hand-off (CS-06)
+    # ══════════════════════════════════════════════════════════════════════════
+
+    def _open_plot_settings(self) -> None:
+        """⚙ button hand-off: open the unified Plot Settings dialog.
+
+        The factory enforces one-dialog-per-tab. The dialog mutates
+        ``self._plot_config`` in place on Apply, then invokes
+        ``on_apply`` so the tab repaints.
+        """
+        plot_settings_dialog.open_plot_settings_dialog(
+            self, self._plot_config,
+            on_apply=self._on_plot_config_changed,
+        )
+
+    def _on_plot_config_changed(self) -> None:
+        """Apply / Cancel callback from the Plot Settings dialog.
+
+        The dialog has already mutated ``self._plot_config`` in place;
+        the tab just needs to repaint. Plot Settings is tab-private
+        UI state, so it does not flow through the graph subscription.
+        """
+        self._redraw()
 
     # ══════════════════════════════════════════════════════════════════════════
     #  File loading
@@ -611,6 +662,10 @@ class UVVisTab(tk.Frame):
         self._ax = self._fig.add_subplot(111)
         ax   = self._ax
         unit = self._x_unit.get()
+        cfg  = self._plot_config
+
+        # Background colour (Plot Settings → Appearance).
+        ax.set_facecolor(cfg.get("background_color", "#ffffff"))
 
         for node in live:
             style  = node.style
@@ -633,14 +688,51 @@ class UVVisTab(tk.Frame):
                                 color=colour,
                                 alpha=style.get("fill_alpha", 0.08))
 
-        # ── Axis labels ───────────────────────────────────────────────────────
-        ax.set_xlabel({"nm":   "Wavelength (nm)",
-                       "cm-1": "Wavenumber (cm⁻¹)",
-                       "eV":   "Energy (eV)"}.get(unit, unit),
-                      fontsize=10, fontweight="bold")
-        ax.set_ylabel({"A": "Absorbance", "%T": "Transmittance (%)"
-                       }.get(self._y_unit.get(), ""),
-                      fontsize=10, fontweight="bold")
+        # ── Axis labels (Plot Settings → Title and labels / Fonts) ───────────
+        # ``mode = "auto"`` uses the unit-derived default; ``"custom"``
+        # uses the user-supplied text; ``"none"`` (X/Y label rows do not
+        # offer None — entry just goes empty if user clears it).
+        auto_xlabels = {"nm":   "Wavelength (nm)",
+                        "cm-1": "Wavenumber (cm⁻¹)",
+                        "eV":   "Energy (eV)"}
+        auto_ylabels = {"A": "Absorbance", "%T": "Transmittance (%)"}
+
+        xlabel_mode = cfg.get("xlabel_mode", "auto")
+        xlabel_text = (auto_xlabels.get(unit, unit)
+                       if xlabel_mode == "auto"
+                       else cfg.get("xlabel_text", ""))
+        ax.set_xlabel(
+            xlabel_text,
+            fontsize=cfg.get("xlabel_font_size", 10),
+            fontweight=("bold" if cfg.get("xlabel_font_bold", True) else "normal"),
+        )
+
+        ylabel_mode = cfg.get("ylabel_mode", "auto")
+        ylabel_text = (auto_ylabels.get(self._y_unit.get(), "")
+                       if ylabel_mode == "auto"
+                       else cfg.get("ylabel_text", ""))
+        ax.set_ylabel(
+            ylabel_text,
+            fontsize=cfg.get("ylabel_font_size", 10),
+            fontweight=("bold" if cfg.get("ylabel_font_bold", True) else "normal"),
+        )
+
+        # Title: "auto" has no UV/Vis-derivable default so it falls
+        # through as no title; "custom" uses the user-entered text;
+        # "none" (default factory value) suppresses the title entirely.
+        title_mode = cfg.get("title_mode", "none")
+        if title_mode == "custom":
+            ax.set_title(
+                cfg.get("title_text", ""),
+                fontsize=cfg.get("title_font_size", 12),
+                fontweight=("bold" if cfg.get("title_font_bold", True) else "normal"),
+            )
+
+        # Tick direction + tick label size.
+        ax.tick_params(
+            direction=cfg.get("tick_direction", "out"),
+            labelsize=cfg.get("tick_label_font_size", 9),
+        )
 
         # ── Secondary λ(nm) axis ──────────────────────────────────────────────
         if unit == "cm-1" and self._show_nm_axis.get():
@@ -678,12 +770,21 @@ class UVVisTab(tk.Frame):
             ax.set_ylim(lo_y if lo_y is not None else cur[0],
                         hi_y if hi_y is not None else cur[1])
 
-        # ── Legend ────────────────────────────────────────────────────────────
+        # ── Legend (Plot Settings → Legend) ──────────────────────────────────
         handles, labels = ax.get_legend_handles_labels()
-        if handles:
-            ax.legend(fontsize=8, loc="best", framealpha=0.7)
+        if handles and cfg.get("legend_show", True):
+            ax.legend(
+                fontsize=cfg.get("legend_font_size", 8),
+                loc=cfg.get("legend_position", "best"),
+                framealpha=0.7,
+            )
 
-        ax.grid(True, linestyle=":", alpha=0.4)
+        # ── Grid (Plot Settings → Appearance) ───────────────────────────────
+        if cfg.get("grid", True):
+            ax.grid(True, linestyle=":", alpha=0.4)
+        else:
+            ax.grid(False)
+
         self._fig.tight_layout()
         self._canvas.draw_idle()
         self._toolbar.update()
