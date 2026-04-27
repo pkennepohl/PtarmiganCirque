@@ -19,11 +19,11 @@ from __future__ import annotations
 
 import os
 import uuid
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, List, Optional, Tuple
 
 import numpy as np
 import tkinter as tk
-from tkinter import ttk, filedialog, colorchooser, messagebox
+from tkinter import ttk, filedialog, messagebox
 
 import matplotlib
 matplotlib.use("TkAgg")
@@ -52,15 +52,6 @@ _PALETTE = [
     "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf",
 ]
 
-# ── Linestyle cycle + Tkinter dash patterns ───────────────────────────────────
-_LS_CYCLE = ["solid", "dashed", "dotted", "dashdot"]
-_LS_DASH: Dict[str, tuple] = {
-    "solid":   (),
-    "dashed":  (6, 3),
-    "dotted":  (2, 3),
-    "dashdot": (6, 3, 2, 3),
-}
-
 # ── Default per-scan style ────────────────────────────────────────────────────
 def _default_uvvis_style(colour: str) -> dict:
     """Default ``DataNode.style`` for a freshly-loaded UVVIS node.
@@ -79,42 +70,6 @@ def _default_uvvis_style(colour: str) -> dict:
         "fill":       False,
         "fill_alpha": 0.08,
     }
-
-# ── Linestyle radio options (display name → mpl value) ───────────────────────
-_LS_OPTIONS = [
-    ("Solid",    "solid"),
-    ("Dashed",   "dashed"),
-    ("Dotted",   "dotted"),
-    ("Dash-dot", "dashdot"),
-]
-
-# ── Lightweight hover tooltip ─────────────────────────────────────────────────
-class _ToolTip:
-    def __init__(self, widget, text: str, delay: int = 500):
-        self._w, self._text, self._delay = widget, text, delay
-        self._id = self._win = None
-        widget.bind("<Enter>",  self._schedule, add="+")
-        widget.bind("<Leave>",  self._cancel,   add="+")
-        widget.bind("<Button>", self._cancel,   add="+")
-
-    def _schedule(self, _=None):
-        self._cancel()
-        self._id = self._w.after(self._delay, self._show)
-
-    def _cancel(self, _=None):
-        if self._id:
-            self._w.after_cancel(self._id); self._id = None
-        if self._win:
-            self._win.destroy(); self._win = None
-
-    def _show(self):
-        x = self._w.winfo_rootx() + self._w.winfo_width() + 4
-        y = self._w.winfo_rooty()
-        self._win = tw = tk.Toplevel(self._w)
-        tw.wm_overrideredirect(True)
-        tw.wm_geometry(f"+{x}+{y}")
-        tk.Label(tw, text=self._text, background="#ffffe0",
-                 relief=tk.SOLID, borderwidth=1, font=("", 8)).pack()
 
 # ── File-type filter ──────────────────────────────────────────────────────────
 _FILE_TYPES = [
@@ -732,194 +687,6 @@ class UVVisTab(tk.Frame):
         self._fig.tight_layout()
         self._canvas.draw_idle()
         self._toolbar.update()
-
-    # ══════════════════════════════════════════════════════════════════════════
-    #  Per-scan style dialog (legacy — Part C will delete this)
-    # ══════════════════════════════════════════════════════════════════════════
-
-    def _open_style_dialog(self, node_id: str):
-        try:
-            node = self._graph.get_node(node_id)
-        except KeyError:
-            return
-        if not isinstance(node, DataNode):
-            return
-        style = node.style
-
-        win = tk.Toplevel(self)
-        win.title("Spectrum Style")
-        win.resizable(False, False)
-        win.grab_set()
-
-        # ── Header ────────────────────────────────────────────────────────────
-        hdr = tk.Frame(win, bg="#003d7a", padx=10, pady=6)
-        hdr.pack(fill=tk.X)
-        tk.Label(hdr, text="UV/Vis Spectrum Style",
-                 bg="#003d7a", fg="white",
-                 font=("", 10, "bold")).pack(anchor="w")
-        name = node.label
-        tk.Label(hdr, text=(name[:60] + "…") if len(name) > 60 else name,
-                 bg="#003d7a", fg="#aaccff", font=("", 8)).pack(anchor="w")
-
-        body = tk.Frame(win, padx=12, pady=8)
-        body.pack(fill=tk.BOTH)
-        body.columnconfigure(1, weight=1)
-
-        # ── Helpers ───────────────────────────────────────────────────────────
-
-        def _push_to_all(key, get_fn):
-            def _do():
-                val = get_fn()
-                for other in self._uvvis_nodes():
-                    self._graph.set_style(other.id, {key: val})
-                # Plot/sidebar refresh fires via the graph
-                # subscription on each NODE_STYLE_CHANGED.
-            return _do
-
-        def _all_btn(row, col, fn, tip="Apply to all spectra"):
-            b = tk.Button(body, text="∀", font=("", 8), relief=tk.FLAT,
-                          cursor="hand2", fg="#004400", activeforeground="#006600",
-                          command=fn)
-            b.grid(row=row, column=col, padx=(2, 0), sticky="w")
-            _ToolTip(b, tip)
-
-        def _slider_row(label, var, lo, hi, res, row, unit="", apply_fn=None):
-            tk.Label(body, text=label, font=("", 9, "bold")).grid(
-                row=row, column=0, sticky="w", pady=3)
-            val_lbl = tk.Label(body, font=("Courier", 8), width=7)
-            def _fmt(*_):
-                try:
-                    val_lbl.config(
-                        text=f"{var.get():.3g}{' ' + unit if unit else ''}")
-                except Exception:
-                    pass
-            sc = tk.Scale(body, variable=var, from_=lo, to=hi, resolution=res,
-                          orient=tk.HORIZONTAL, length=160, showvalue=False,
-                          command=lambda _: _fmt())
-            sc.grid(row=row, column=1, sticky="ew", padx=4)
-            val_lbl.grid(row=row, column=2, sticky="w")
-            _fmt()
-            if apply_fn:
-                _all_btn(row, 3, apply_fn)
-
-        row = 0
-
-        # ── Linestyle ─────────────────────────────────────────────────────────
-        tk.Label(body, text="Line style:", font=("", 9, "bold")).grid(
-            row=row, column=0, sticky="w", pady=(0, 4))
-        ls_var = tk.StringVar(value=style.get("linestyle", "solid"))
-        ls_frame = tk.Frame(body)
-        ls_frame.grid(row=row, column=1, columnspan=2, sticky="w")
-        for display, value in _LS_OPTIONS:
-            tk.Radiobutton(ls_frame, text=display, variable=ls_var,
-                           value=value).pack(side=tk.LEFT, padx=3)
-        _all_btn(row, 3, _push_to_all("linestyle", ls_var.get))
-        row += 1
-
-        # ── Linewidth ─────────────────────────────────────────────────────────
-        lw_var = tk.DoubleVar(value=style.get("linewidth", 1.5))
-        _slider_row("Line width:", lw_var, 0.5, 5.0, 0.1, row, unit="pt",
-                    apply_fn=_push_to_all("linewidth", lw_var.get))
-        row += 1
-
-        # ── Line opacity ──────────────────────────────────────────────────────
-        alpha_var = tk.DoubleVar(value=style.get("alpha", 0.9))
-        _slider_row("Line opacity:", alpha_var, 0.0, 1.0, 0.05, row,
-                    apply_fn=_push_to_all("alpha", alpha_var.get))
-        row += 1
-
-        # ── Color ─────────────────────────────────────────────────────────────
-        tk.Label(body, text="Color:", font=("", 9, "bold")).grid(
-            row=row, column=0, sticky="w", pady=4)
-        snapshot_col = style.get("color", "#1f77b4")
-        col_var      = tk.StringVar(value=snapshot_col)
-        col_swatch   = tk.Button(body, bg=col_var.get() or snapshot_col,
-                                 width=4, relief=tk.RAISED, cursor="hand2")
-        col_swatch.grid(row=row, column=1, sticky="w", padx=(4, 0))
-
-        def _pick_color():
-            init   = col_var.get().strip() or snapshot_col
-            result = colorchooser.askcolor(color=init,
-                                           title="Choose colour", parent=win)
-            if result and result[1]:
-                col_var.set(result[1])
-                col_swatch.config(bg=result[1], activebackground=result[1])
-        col_swatch.config(command=_pick_color)
-
-        def _reset_color():
-            col_var.set(snapshot_col)
-            col_swatch.config(bg=snapshot_col, activebackground=snapshot_col)
-
-        reset_row = tk.Frame(body)
-        reset_row.grid(row=row, column=2, sticky="w", padx=4)
-        tk.Button(reset_row, text="Reset", font=("", 8),
-                  command=_reset_color).pack(side=tk.LEFT)
-
-        _all_btn(row, 3,
-                 _push_to_all("color", lambda: col_var.get().strip() or snapshot_col),
-                 tip="Apply this colour to all spectra")
-        row += 1
-
-        # ── Fill ──────────────────────────────────────────────────────────────
-        ttk.Separator(body, orient=tk.HORIZONTAL).grid(
-            row=row, column=0, columnspan=4, sticky="ew", pady=6)
-        row += 1
-
-        tk.Label(body, text="Fill area:", font=("", 9, "bold")).grid(
-            row=row, column=0, sticky="w")
-        fill_var = tk.BooleanVar(value=style.get("fill", False))
-        tk.Checkbutton(body, text="Show fill under curve",
-                       variable=fill_var).grid(row=row, column=1,
-                                               columnspan=2, sticky="w")
-        _all_btn(row, 3, _push_to_all("fill", fill_var.get))
-        row += 1
-
-        fill_alpha_var = tk.DoubleVar(value=style.get("fill_alpha", 0.08))
-        _slider_row("Fill opacity:", fill_alpha_var, 0.0, 0.5, 0.01, row,
-                    apply_fn=_push_to_all("fill_alpha", fill_alpha_var.get))
-        row += 1
-
-        # ── Snapshot for cancel revert ────────────────────────────────────────
-        _orig = dict(style)
-
-        # ── Read all controls ─────────────────────────────────────────────────
-        def _read():
-            return {
-                "linestyle":  ls_var.get(),
-                "linewidth":  lw_var.get(),
-                "alpha":      alpha_var.get(),
-                "color":      col_var.get().strip() or snapshot_col,
-                "fill":       fill_var.get(),
-                "fill_alpha": fill_alpha_var.get(),
-            }
-
-        def _do_apply():
-            self._graph.set_style(node_id, _read())
-
-        def _do_apply_all():
-            vals = _read()
-            partial = {k: v for k, v in vals.items() if k != "color"}
-            for other in self._uvvis_nodes():
-                self._graph.set_style(other.id, dict(partial))
-
-        def _do_save():
-            _do_apply(); win.destroy()
-
-        def _do_cancel():
-            self._graph.set_style(node_id, dict(_orig))
-            win.destroy()
-
-        btn_row = tk.Frame(win)
-        btn_row.pack(pady=(4, 10))
-        tk.Button(btn_row, text="Apply",              width=10,
-                  command=_do_apply).pack(side=tk.LEFT, padx=3)
-        tk.Button(btn_row, text="∀  Apply to All",    width=14,
-                  bg="#004400", fg="white", activeforeground="white",
-                  command=_do_apply_all).pack(side=tk.LEFT, padx=3)
-        tk.Button(btn_row, text="Save",               width=8,
-                  command=_do_save).pack(side=tk.LEFT, padx=3)
-        tk.Button(btn_row, text="Cancel",             width=8,
-                  command=_do_cancel).pack(side=tk.LEFT, padx=3)
 
     # ══════════════════════════════════════════════════════════════════════════
     #  Push to TDDFT overlay

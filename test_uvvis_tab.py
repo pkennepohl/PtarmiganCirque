@@ -473,5 +473,115 @@ class TestUVVisTabSidebar(unittest.TestCase):
         self.assertEqual(self.tab._ax.get_lines()[0].get_color(), "#112233")
 
 
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestUVVisTabStyleDialogIntegration(unittest.TestCase):
+    """Phase 4a Part C — inline dialog gone, unified StyleDialog wired."""
+
+    @classmethod
+    def setUpClass(cls):
+        from uvvis_tab import UVVisTab
+        import style_dialog
+        cls.UVVisTab = UVVisTab
+        cls.style_dialog = style_dialog
+
+    def setUp(self):
+        self.style_dialog._open_dialogs.clear()
+        self.host = tk.Frame(_root)
+        self.graph = ProjectGraph()
+        self.tab = self.UVVisTab(self.host, graph=self.graph)
+
+    def tearDown(self):
+        for dlg in list(self.style_dialog._open_dialogs.values()):
+            try:
+                dlg.destroy()
+            except Exception:
+                pass
+        self.style_dialog._open_dialogs.clear()
+        try:
+            self.tab.destroy()
+        except Exception:
+            pass
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    # ----------- the inline dialog has been deleted -----------
+
+    def test_inline_open_style_dialog_method_is_gone(self):
+        # Part C deletes _open_style_dialog (~175 lines). The
+        # tab keeps only _open_style_dialog_for_node, the gear
+        # hand-off to the unified factory.
+        self.assertFalse(hasattr(self.tab, "_open_style_dialog"))
+        self.assertTrue(hasattr(self.tab, "_open_style_dialog_for_node"))
+
+    # ----------- gear callback opens the unified StyleDialog -----------
+
+    def _add_uvvis(self, nid: str, style: dict | None = None):
+        wl = np.linspace(300, 600, 10)
+        absorb = np.linspace(0.1, 0.9, 10)
+        node = DataNode(
+            id=nid,
+            type=NodeType.UVVIS,
+            arrays={"wavelength_nm": wl, "absorbance": absorb},
+            metadata={"source_file": "synthetic"},
+            label=nid,
+            state=NodeState.COMMITTED,
+            style=dict(style) if style else {"color": "#1f77b4",
+                                             "linewidth": 1.5},
+        )
+        self.graph.add_node(node)
+        return node
+
+    def test_gear_callback_registers_unified_style_dialog(self):
+        self._add_uvvis("a")
+        self.tab._scan_tree.update_idletasks()
+
+        # Trigger the gear hand-off the same way the widget would.
+        self.tab._open_style_dialog_for_node("a")
+
+        dlg = self.style_dialog._open_dialogs.get("a")
+        self.assertIsNotNone(dlg)
+        self.assertIsInstance(dlg, self.style_dialog.StyleDialog)
+
+    def test_slider_change_in_dialog_writes_to_node_style(self):
+        self._add_uvvis("a", style={"color": "#1f77b4", "linewidth": 1.5})
+        self.tab._open_style_dialog_for_node("a")
+        dlg = self.style_dialog._open_dialogs["a"]
+        dlg.update_idletasks()
+
+        # Simulating the user dragging the line-width slider drives
+        # the bound DoubleVar; the dialog routes it through
+        # graph.set_style under the hood.
+        dlg._control_vars["linewidth"].set(3.7)
+        dlg.update_idletasks()
+
+        self.assertAlmostEqual(self.graph.get_node("a").style["linewidth"], 3.7)
+
+    def test_apply_to_all_fans_out_to_sibling_uvvis_nodes(self):
+        # Three UVVIS nodes; opening the dialog on one and using its
+        # ∀ fan-out must update the sibling UVVIS nodes via the
+        # tab's on_apply_to_all callback.
+        self._add_uvvis("a", style={"linewidth": 1.5})
+        self._add_uvvis("b", style={"linewidth": 1.5})
+        self._add_uvvis("c", style={"linewidth": 1.5})
+
+        self.tab._open_style_dialog_for_node("a")
+        dlg = self.style_dialog._open_dialogs["a"]
+        dlg.update_idletasks()
+
+        # Set a value, then trigger ∀ fan-out on linewidth via the
+        # dialog's per-row delegate (matches the user clicking ∀).
+        dlg._control_vars["linewidth"].set(4.2)
+        dlg.update_idletasks()
+        dlg._delegate_apply_one("linewidth", 4.2)
+
+        for nid in ("a", "b", "c"):
+            self.assertAlmostEqual(
+                self.graph.get_node(nid).style["linewidth"], 4.2,
+                f"node {nid} should have received fan-out",
+            )
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
