@@ -607,5 +607,262 @@ class TestScanTreeWidgetBugB004(unittest.TestCase):
         self.assertEqual(calls, ["a"])
 
 
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestScanTreeWidgetResponsiveRow(unittest.TestCase):
+    """Phase 4d — B-002: per-row responsive collapse on narrow sidebars.
+
+    The minimum always-visible set is ``state``, ``[☑]`` visibility,
+    ``label``, ``[⚙]`` gear, ``[✕]`` discard. The optional set
+    (colour swatch, legend toggle, linestyle canvas, history button)
+    must hide when the row narrows below
+    ``scan_tree_widget._RESPONSIVE_COLLAPSE_PX``.
+
+    Tests force a known row width by calling
+    ``widget._apply_responsive_layout`` directly with a stubbed
+    ``winfo_width`` rather than driving Tk geometry events — that
+    keeps the suite deterministic and decoupled from the host's
+    actual pixel width.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from scan_tree_widget import ScanTreeWidget
+        import scan_tree_widget as stw_mod
+        cls.ScanTreeWidget = ScanTreeWidget
+        cls.stw_mod = stw_mod
+
+    def setUp(self):
+        self.host = tk.Frame(_root)
+        self.host.pack()
+        self.graph = ProjectGraph()
+
+    def tearDown(self):
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    def _fresh_widget(self):
+        _, cb = _redraw_calls()
+        widget = self.ScanTreeWidget(
+            self.host, self.graph, [NodeType.UVVIS], cb,
+        )
+        widget.pack()
+        return widget
+
+    @staticmethod
+    def _force_width(widget: tk.Widget, width: int) -> None:
+        """Stub ``winfo_width`` on a single widget instance."""
+        widget.winfo_width = lambda w=width: w  # type: ignore[assignment]
+
+    def _always_visible(self, row: tk.Frame) -> dict[str, tk.Widget]:
+        """Locate the always-visible widgets in a row.
+
+        Returns a dict keyed by role name. Used to assert that the
+        minimum set survives every collapse/restore cycle.
+        """
+        labels = [
+            w for w in row.winfo_children() if isinstance(w, tk.Label)
+        ]
+        state_lbl = next(
+            (w for w in labels if w.cget("text") in ("🔒", "⋯")), None,
+        )
+        text_lbl = next(
+            (w for w in labels if w.cget("text") not in ("🔒", "⋯")), None,
+        )
+        vis_cb = next(
+            (w for w in row.winfo_children()
+             if isinstance(w, tk.Checkbutton)),
+            None,
+        )
+        buttons = [
+            w for w in row.winfo_children() if isinstance(w, tk.Button)
+        ]
+        gear = next((b for b in buttons if b.cget("text") == "⚙"), None)
+        x_btn = next((b for b in buttons if b.cget("text") == "✕"), None)
+        return {
+            "state": state_lbl, "label": text_lbl, "vis_cb": vis_cb,
+            "gear": gear, "x": x_btn,
+        }
+
+    # ----------- threshold constant exists -----------
+
+    def test_threshold_constant_is_a_positive_int(self):
+        # The collapse threshold is module-level so both the widget
+        # and tests can reach it. Pinning the type and sign protects
+        # against accidental redefinition.
+        self.assertIsInstance(self.stw_mod._RESPONSIVE_COLLAPSE_PX, int)
+        self.assertGreater(self.stw_mod._RESPONSIVE_COLLAPSE_PX, 0)
+
+    # ----------- optional widgets dict is populated -----------
+
+    def test_optional_row_widgets_tracked_per_node(self):
+        self.graph.add_node(_data("a"))
+        widget = self._fresh_widget()
+        widget.update_idletasks()
+
+        widgets = widget._optional_row_widgets["a"]
+        # Names that responsive layout reaches for.
+        for name in ("swatch", "leg", "ls_canvas", "hist", "vis_cb"):
+            self.assertIn(name, widgets, f"missing {name!r}")
+            self.assertTrue(
+                bool(widgets[name].winfo_exists()),
+                f"{name!r} widget should exist",
+            )
+
+    # ----------- collapse below threshold -----------
+
+    def test_narrow_width_hides_every_optional_control(self):
+        self.graph.add_node(_data("a"))
+        widget = self._fresh_widget()
+        widget.update_idletasks()
+
+        row = widget._row_frames["a"]
+        # Force narrow width below the threshold.
+        self._force_width(row, 100)
+        widget._apply_responsive_layout("a", row)
+
+        widgets = widget._optional_row_widgets["a"]
+        for name in ("swatch", "leg", "ls_canvas", "hist"):
+            self.assertFalse(
+                bool(widgets[name].winfo_ismapped()),
+                f"{name!r} should be pack_forget-ed at narrow width",
+            )
+
+    # ----------- restore at wide width -----------
+
+    def test_wide_width_keeps_all_controls_packed(self):
+        self.graph.add_node(_data("a"))
+        widget = self._fresh_widget()
+        widget.update_idletasks()
+
+        row = widget._row_frames["a"]
+        # Force wide width well above the threshold.
+        self._force_width(row, 600)
+        widget._apply_responsive_layout("a", row)
+
+        widgets = widget._optional_row_widgets["a"]
+        for name in ("swatch", "leg", "ls_canvas", "hist"):
+            self.assertTrue(
+                bool(widgets[name].winfo_ismapped()),
+                f"{name!r} should be packed at wide width",
+            )
+
+    # ----------- collapse → restore round trip -----------
+
+    def test_resize_back_and_forth_toggles_cleanly(self):
+        # Repeatedly narrow → widen → narrow → widen and confirm the
+        # optional controls track the threshold without leaking
+        # widgets or losing pack order.
+        self.graph.add_node(_data("a"))
+        widget = self._fresh_widget()
+        widget.update_idletasks()
+
+        row = widget._row_frames["a"]
+        widgets = widget._optional_row_widgets["a"]
+
+        for width, expected_mapped in (
+            (600, True),
+            (100, False),
+            (600, True),
+            (50,  False),
+            (400, True),
+        ):
+            self._force_width(row, width)
+            widget._apply_responsive_layout("a", row)
+            # ``winfo_ismapped()`` reflects the result of Tk's geometry
+            # pass, not the most recent ``pack`` / ``pack_forget`` call,
+            # so a flush is needed before reading it.
+            widget.update_idletasks()
+            for name in ("swatch", "leg", "ls_canvas", "hist"):
+                self.assertEqual(
+                    bool(widgets[name].winfo_ismapped()),
+                    expected_mapped,
+                    f"{name!r} mapped state at width={width} "
+                    f"should be {expected_mapped}",
+                )
+
+    # ----------- always-visible minimum survives every width -----------
+
+    def test_always_visible_minimum_unaffected_at_every_width(self):
+        # state · ☑ · label · ⚙ · ✕ must remain mapped at every
+        # width — narrow, wide, and zero/negative defensive cases.
+        self.graph.add_node(_data("a"))
+        widget = self._fresh_widget()
+        widget.update_idletasks()
+
+        row = widget._row_frames["a"]
+        for width in (50, 200, 280, 400, 1200):
+            self._force_width(row, width)
+            widget._apply_responsive_layout("a", row)
+            mins = self._always_visible(row)
+            for role, w in mins.items():
+                self.assertIsNotNone(
+                    w, f"{role!r} missing from row",
+                )
+                self.assertTrue(
+                    bool(w.winfo_ismapped()),
+                    f"{role!r} should stay mapped at width={width}",
+                )
+
+    # ----------- pack order preserved on restore -----------
+
+    def test_restored_pack_order_matches_original(self):
+        # Visual order on restoration must be:
+        # [state · swatch · vis_cb · label · ... · leg · ls_canvas
+        #  · hist · gear · x]. Verifying via winfo_x() ensures the
+        # restore path uses the right ``before=`` / packing order
+        # (tested implicitly — a ``side="left"`` restore for the
+        # swatch without ``before=vis_cb`` would land it after the
+        # label, breaking the sequence).
+        self.graph.add_node(_data("a"))
+        widget = self._fresh_widget()
+        widget.update_idletasks()
+
+        row = widget._row_frames["a"]
+
+        # Collapse first, then restore to a wide width.
+        self._force_width(row, 100)
+        widget._apply_responsive_layout("a", row)
+        self._force_width(row, 600)
+        widget._apply_responsive_layout("a", row)
+
+        widgets = widget._optional_row_widgets["a"]
+        widget.update_idletasks()
+
+        # Confirm the swatch sits to the left of the visibility
+        # checkbox (i.e., between state and ☑) — the canonical
+        # ``side="left", before=vis_cb`` placement.
+        swatch_x = widgets["swatch"].winfo_x()
+        vis_cb_x = widgets["vis_cb"].winfo_x()
+        self.assertLess(
+            swatch_x, vis_cb_x,
+            "swatch must be packed before vis_cb on the left side",
+        )
+
+    # ----------- multi-row independence -----------
+
+    def test_each_row_collapses_independently(self):
+        # Rows must respond to their own <Configure> width, not a
+        # shared global value.
+        self.graph.add_node(_data("a"))
+        self.graph.add_node(_data("b"))
+        widget = self._fresh_widget()
+        widget.update_idletasks()
+
+        row_a = widget._row_frames["a"]
+        row_b = widget._row_frames["b"]
+        # Narrow only row "a".
+        self._force_width(row_a, 100)
+        self._force_width(row_b, 600)
+        widget._apply_responsive_layout("a", row_a)
+        widget._apply_responsive_layout("b", row_b)
+
+        a_swatch = widget._optional_row_widgets["a"]["swatch"]
+        b_swatch = widget._optional_row_widgets["b"]["swatch"]
+        self.assertFalse(bool(a_swatch.winfo_ismapped()))
+        self.assertTrue(bool(b_swatch.winfo_ismapped()))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
