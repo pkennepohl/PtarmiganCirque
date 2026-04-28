@@ -1117,6 +1117,148 @@ class TestUVVisTabNormalisationIntegration(unittest.TestCase):
 
 
 @unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestUVVisTabSmoothingIntegration(unittest.TestCase):
+    """Phase 4g — SMOOTHED nodes are first-class spectra in the tab.
+
+    Mirrors TestUVVisTabNormalisationIntegration (Phase 4e). The pure
+    SmoothingPanel mechanics are pinned in test_uvvis_smoothing.py;
+    here we only check that the panel is wired into the tab and that
+    SMOOTHED nodes flow through the render path and the right
+    sidebar like UVVIS / BASELINE / NORMALISED.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from uvvis_tab import UVVisTab
+        cls.UVVisTab = UVVisTab
+
+    def setUp(self):
+        self.host = tk.Frame(_root)
+        self.host.pack()
+        self.graph = ProjectGraph()
+        self.tab = self.UVVisTab(self.host, graph=self.graph)
+
+    def tearDown(self):
+        try:
+            self.tab.destroy()
+        except Exception:
+            pass
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    def _add_uvvis(self, nid: str = "u1") -> None:
+        wl = np.linspace(200.0, 800.0, 601)
+        absorb = np.exp(-((wl - 500.0) / 50.0) ** 2) + 0.05
+        self.graph.add_node(DataNode(
+            id=nid, type=NodeType.UVVIS,
+            arrays={"wavelength_nm": wl, "absorbance": absorb},
+            metadata={"source_file": "syn"},
+            label=nid, state=NodeState.COMMITTED,
+            style={"color": "#111", "linestyle": "solid",
+                   "linewidth": 1.5, "alpha": 0.9, "visible": True,
+                   "in_legend": True, "fill": False, "fill_alpha": 0.08},
+        ))
+
+    def _select_first_smooth_subject(self):
+        items = self.tab._smoothing_panel._subject_cb.cget("values")
+        if isinstance(items, str):
+            items = tuple(items.split())
+        self.assertGreaterEqual(len(items), 1)
+        self.tab._smoothing_panel._subject_var.set(items[0])
+
+    def test_panel_present_in_left_pane(self):
+        self.assertTrue(hasattr(self.tab, "_smoothing_panel"))
+
+    def test_smoothed_node_renders_in_redraw(self):
+        # Apply smoothing through the panel; the resulting SMOOTHED
+        # node must show up as a second matplotlib line on the next
+        # redraw (parent UVVIS + child SMOOTHED).
+        self._add_uvvis("u1")
+        self.tab.update_idletasks()
+        self._select_first_smooth_subject()
+        self.tab._smoothing_panel._mode_var.set("savgol")
+        self.tab._smoothing_panel._window_length.set(11)
+        self.tab._smoothing_panel._polyorder.set(2)
+        self.tab._smoothing_panel._apply()
+        self.tab.update_idletasks()
+        self.assertEqual(len(self.tab._ax.get_lines()), 2)
+
+    def test_smoothed_node_has_sidebar_row(self):
+        self._add_uvvis("u1")
+        self.tab.update_idletasks()
+        self._select_first_smooth_subject()
+        self.tab._smoothing_panel._mode_var.set("moving_avg")
+        self.tab._smoothing_panel._window_length.set(7)
+        _, out_id = self.tab._smoothing_panel._apply()
+        self.tab._scan_tree.update_idletasks()
+        # The new SMOOTHED node owns a row in the right sidebar (the
+        # sidebar filter widened from [UVVIS, BASELINE, NORMALISED]
+        # to [UVVIS, BASELINE, NORMALISED, SMOOTHED] in Phase 4g).
+        self.assertIn(out_id, self.tab._scan_tree._row_frames)
+
+    def test_discard_removes_smoothed_from_plot(self):
+        self._add_uvvis("u1")
+        self.tab.update_idletasks()
+        self._select_first_smooth_subject()
+        self.tab._smoothing_panel._mode_var.set("savgol")
+        self.tab._smoothing_panel._window_length.set(5)
+        self.tab._smoothing_panel._polyorder.set(2)
+        _, out_id = self.tab._smoothing_panel._apply()
+        self.tab.update_idletasks()
+        self.assertEqual(len(self.tab._ax.get_lines()), 2)
+        self.graph.discard_node(out_id)
+        self.tab.update_idletasks()
+        lines = self.tab._ax.get_lines()
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(lines[0].get_label(), "u1")
+
+    def test_smoothed_appears_in_baseline_and_normalisation_subject_lists(self):
+        # The tab's _spectrum_nodes() helper drives every subject
+        # combobox; widening it to include SMOOTHED means baseline /
+        # normalisation can now act on a smoothed spectrum too. This
+        # is the same shape as Phase 4e's NORMALISED-feeds-baseline
+        # widening (both panels iterate _spectrum_nodes).
+        self._add_uvvis("u1")
+        self.tab.update_idletasks()
+        self._select_first_smooth_subject()
+        self.tab._smoothing_panel._mode_var.set("savgol")
+        self.tab._smoothing_panel._window_length.set(5)
+        self.tab._smoothing_panel._polyorder.set(2)
+        self.tab._smoothing_panel._apply()
+        self.tab.update_idletasks()
+        # Both downstream subject combos should now list the parent
+        # plus the SMOOTHED child.
+        baseline_items = self.tab._baseline_subject_cb.cget("values")
+        if isinstance(baseline_items, str):
+            baseline_items = tuple(baseline_items.split())
+        norm_items = self.tab._normalisation_panel._subject_cb.cget(
+            "values")
+        if isinstance(norm_items, str):
+            norm_items = tuple(norm_items.split())
+        self.assertEqual(len(baseline_items), 2)
+        self.assertEqual(len(norm_items), 2)
+
+    def test_smoothing_status_message_routed_to_toolbar(self):
+        # The panel's status_cb is wired to the tab's
+        # _set_status_message helper (same hand-off as the
+        # NormalisationPanel). A successful Apply must update the
+        # toolbar status label.
+        self._add_uvvis("u1")
+        self.tab.update_idletasks()
+        self._select_first_smooth_subject()
+        self.tab._smoothing_panel._mode_var.set("moving_avg")
+        self.tab._smoothing_panel._window_length.set(5)
+        before = self.tab._status_lbl.cget("text")
+        self.tab._smoothing_panel._apply()
+        self.tab.update_idletasks()
+        after = self.tab._status_lbl.cget("text")
+        self.assertNotEqual(before, after)
+        self.assertIn("smooth", after.lower())
+
+
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
 class TestUVVisTabExportIntegration(unittest.TestCase):
     """Phase 4f, CS-17 — Export… dialog flow.
 
