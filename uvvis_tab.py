@@ -46,6 +46,7 @@ from style_dialog import open_style_dialog
 import plot_settings_dialog
 import uvvis_baseline
 import uvvis_normalise
+import uvvis_smoothing
 import node_export
 from node_styles import default_spectrum_style
 from version import __version__ as PTARMIGAN_VERSION
@@ -186,20 +187,21 @@ class UVVisTab(tk.Frame):
     def _spectrum_nodes(self) -> List[DataNode]:
         """Return every spectrum-shaped DataNode the tab considers live.
 
-        Spectrum-shaped today means UVVIS, BASELINE, or NORMALISED:
-        all three carry ``arrays["wavelength_nm"]`` +
+        Spectrum-shaped today means UVVIS, BASELINE, NORMALISED, or
+        SMOOTHED: all four carry ``arrays["wavelength_nm"]`` +
         ``arrays["absorbance"]`` and render through the same
         matplotlib code path. ``_redraw``, the baseline subject
-        combobox, and the normalisation subject combobox all iterate
-        this helper. The walk is type-keyed (UVVIS first, then
-        BASELINE, then NORMALISED) so a parent typically appears
-        above its derivatives in the sidebar / subject list when the
-        dict ordering is preserved (Phase 4e widening from
-        ``[UVVIS, BASELINE]`` to include NORMALISED).
+        combobox, the normalisation subject combobox, and the
+        smoothing subject combobox all iterate this helper. The walk
+        is type-keyed (UVVIS first, then BASELINE, then NORMALISED,
+        then SMOOTHED) so a parent typically appears above its
+        derivatives in the sidebar / subject list when the dict
+        ordering is preserved (Phase 4g widening from
+        ``[UVVIS, BASELINE, NORMALISED]`` to include SMOOTHED).
         """
         out: List[DataNode] = []
         for ntype in (NodeType.UVVIS, NodeType.BASELINE,
-                      NodeType.NORMALISED):
+                      NodeType.NORMALISED, NodeType.SMOOTHED):
             for node in self._graph.nodes_of_type(ntype, state=None):
                 if node.state == NodeState.DISCARDED:
                     continue
@@ -363,7 +365,8 @@ class UVVisTab(tk.Frame):
         self._scan_tree = ScanTreeWidget(
             parent,
             self._graph,
-            [NodeType.UVVIS, NodeType.BASELINE, NodeType.NORMALISED],
+            [NodeType.UVVIS, NodeType.BASELINE,
+             NodeType.NORMALISED, NodeType.SMOOTHED],
             redraw_cb=self._redraw,
             send_to_compare_cb=None,
             style_dialog_cb=self._open_style_dialog_for_node,
@@ -371,7 +374,7 @@ class UVVisTab(tk.Frame):
         )
         self._scan_tree.pack(fill=tk.BOTH, expand=True, padx=2, pady=2)
 
-    # ── Left panel (baseline correction + normalisation, CS-07 + CS-15 + CS-16) ──
+    # ── Left panel (baseline + normalisation + smoothing, CS-07 + CS-15 + CS-16 + CS-18) ──
 
     def _build_left_panel(self, parent):
         """Construct the left panel with processing controls.
@@ -389,6 +392,11 @@ class UVVisTab(tk.Frame):
           "Apply Normalisation" button. Replaces the legacy top-bar
           ``Norm:`` combobox + draw-time ``_y_with_norm`` transform
           (Phase 4a friction point #2).
+        * **Smoothing** (CS-18, Phase 4g) — ``SmoothingPanel``
+          subwidget hosting its own subject combobox, a two-mode
+          combobox (savgol / moving_avg), per-mode parameter rows
+          (window length spinbox, plus polyorder for savgol), and
+          an "Apply Smoothing" button.
 
         Each Apply gesture creates one provisional OperationNode +
         DataNode pair; the user commits or discards via the
@@ -464,6 +472,21 @@ class UVVisTab(tk.Frame):
             status_cb=self._set_status_message,
         )
         self._normalisation_panel.pack(fill=tk.X)
+
+        # ── Smoothing section (CS-18, Phase 4g) ──────────────────────────
+        # Visual separator between the normalisation section and the
+        # smoothing section (mirrors the baseline → normalisation
+        # separator above).
+        ttk.Separator(parent, orient=tk.HORIZONTAL).pack(
+            fill=tk.X, padx=4, pady=(8, 4))
+
+        self._smoothing_panel = uvvis_smoothing.SmoothingPanel(
+            parent,
+            self._graph,
+            spectrum_nodes_fn=self._spectrum_nodes,
+            status_cb=self._set_status_message,
+        )
+        self._smoothing_panel.pack(fill=tk.X)
 
         # Defer non-toolkit init until the chrome is present.
         self._refresh_baseline_param_rows()
