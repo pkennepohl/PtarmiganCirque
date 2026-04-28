@@ -21,6 +21,8 @@ TEST_MODULES = (
     "test_uvvis_baseline",
     "test_uvvis_normalise",
     "test_uvvis_tab",
+    "test_provenance_export",
+    "test_node_export",
 )
 
 

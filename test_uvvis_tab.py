@@ -1116,5 +1116,138 @@ class TestUVVisTabNormalisationIntegration(unittest.TestCase):
         self.assertEqual(lines[0].get_label(), "u1")
 
 
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestUVVisTabExportIntegration(unittest.TestCase):
+    """Phase 4f, CS-17 — Export… dialog flow.
+
+    The widget side of Export… is exercised in
+    ``test_scan_tree_widget.py``; here we pin that the tab wires
+    ``export_cb`` to its own handler, that the handler invokes the
+    file dialog and writes via ``node_export``, and that an empty
+    dialog return cancels the gesture.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from uvvis_tab import UVVisTab
+        cls.UVVisTab = UVVisTab
+
+    def setUp(self):
+        self.host = tk.Frame(_root)
+        self.graph = ProjectGraph()
+        self.tab = self.UVVisTab(self.host, graph=self.graph)
+        self._tmpdir = tempfile.mkdtemp(prefix="uvvis_export_test_")
+
+    def tearDown(self):
+        try:
+            self.tab.destroy()
+        except Exception:
+            pass
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+        for name in os.listdir(self._tmpdir):
+            try:
+                os.remove(os.path.join(self._tmpdir, name))
+            except OSError:
+                pass
+        try:
+            os.rmdir(self._tmpdir)
+        except OSError:
+            pass
+
+    def _add_committed_uvvis(self, nid: str = "uvX0123456789",
+                              label: str = "exportable") -> None:
+        wl = np.linspace(200.0, 700.0, 6)
+        ab = np.linspace(0.05, 0.95, 6)
+        node = DataNode(
+            id=nid, type=NodeType.UVVIS,
+            arrays={"wavelength_nm": wl, "absorbance": ab},
+            metadata={}, label=label,
+            state=NodeState.COMMITTED,
+        )
+        self.graph.add_node(node)
+
+    def test_scan_tree_export_cb_routes_to_tab_handler(self):
+        # The tab must hand its ``_on_export_node`` method to the
+        # widget. Bound methods are unique per access in Python (``is``
+        # comparison fails even when both reference the same
+        # underlying function), so we compare ``__func__`` / ``__self__``
+        # to pin the wiring.
+        cb = self.tab._scan_tree._export_cb
+        self.assertIsNotNone(cb)
+        self.assertIs(cb.__self__, self.tab)
+        self.assertIs(
+            cb.__func__, self.UVVisTab._on_export_node,
+        )
+
+    def test_export_node_writes_file_at_chosen_path(self):
+        # Stub the file dialog so the flow runs end-to-end without UI.
+        self._add_committed_uvvis()
+        target = os.path.join(self._tmpdir, "out.csv")
+
+        from uvvis_tab import filedialog as _fd
+        original = _fd.asksaveasfilename
+        try:
+            _fd.asksaveasfilename = lambda **kw: target
+            self.tab._on_export_node("uvX0123456789")
+        finally:
+            _fd.asksaveasfilename = original
+
+        self.assertTrue(os.path.exists(target))
+        with open(target, encoding="utf-8") as fh:
+            text = fh.read()
+        # File carries the expected header + data block.
+        self.assertIn("# ptarmigan_version=", text)
+        self.assertIn("wavelength_nm,absorbance", text)
+
+    def test_export_cancel_writes_no_file(self):
+        # An empty path return from the dialog is the cancellation
+        # convention — the handler must not call out to node_export.
+        self._add_committed_uvvis()
+
+        from uvvis_tab import filedialog as _fd
+        original = _fd.asksaveasfilename
+        try:
+            _fd.asksaveasfilename = lambda **kw: ""
+            self.tab._on_export_node("uvX0123456789")
+        finally:
+            _fd.asksaveasfilename = original
+
+        # No files in the tmpdir — the cancel path is silent.
+        self.assertEqual(os.listdir(self._tmpdir), [])
+
+    def test_export_default_basename_is_label_sanitised(self):
+        # The dialog's ``initialfile`` must be the node's label with
+        # filesystem-hostile characters replaced. We capture the kwargs
+        # the tab passes to ``asksaveasfilename`` rather than driving
+        # the real dialog.
+        self._add_committed_uvvis(
+            nid="lblsanitisetest", label='ugly/name?:"',
+        )
+        captured: dict = {}
+
+        from uvvis_tab import filedialog as _fd
+        original = _fd.asksaveasfilename
+
+        def _capture(**kwargs):
+            captured.update(kwargs)
+            return ""  # cancel
+
+        try:
+            _fd.asksaveasfilename = _capture
+            self.tab._on_export_node("lblsanitisetest")
+        finally:
+            _fd.asksaveasfilename = original
+
+        initialfile = captured.get("initialfile", "")
+        # No bad characters survived.
+        for ch in '<>:"/\\|?*':
+            self.assertNotIn(ch, initialfile)
+        # And it didn't collapse to empty.
+        self.assertTrue(initialfile)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

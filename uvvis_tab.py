@@ -46,6 +46,7 @@ from style_dialog import open_style_dialog
 import plot_settings_dialog
 import uvvis_baseline
 import uvvis_normalise
+import node_export
 from version import __version__ as PTARMIGAN_VERSION
 
 # ── Colour palette (loader-side default colour assignment) ────────────────────
@@ -371,7 +372,8 @@ class UVVisTab(tk.Frame):
         delegates to the unified style dialog (CS-05) via
         ``style_dialog_cb``. Send-to-Compare is deferred to Phase 7,
         so ``send_to_compare_cb=None`` — the right-click menu will
-        render it disabled.
+        render it disabled. ``export_cb`` is wired to ``_on_export_node``
+        for the row Export… gesture (CS-17, Phase 4f).
         """
         tk.Label(parent, text="Loaded Spectra",
                  font=("", 9, "bold")).pack(anchor="w", padx=4, pady=(4, 2))
@@ -383,6 +385,7 @@ class UVVisTab(tk.Frame):
             redraw_cb=self._redraw,
             send_to_compare_cb=None,
             style_dialog_cb=self._open_style_dialog_for_node,
+            export_cb=self._on_export_node,
         )
         self._scan_tree.pack(fill=tk.BOTH, expand=True, padx=2, pady=2)
 
@@ -773,6 +776,68 @@ class UVVisTab(tk.Frame):
     # ══════════════════════════════════════════════════════════════════════════
     #  Style dialog hand-off (CS-05)
     # ══════════════════════════════════════════════════════════════════════════
+
+    # ── Export hand-off (CS-17, Phase 4f) ─────────────────────────────────────
+
+    _EXPORT_FILETYPES: tuple = (
+        ("CSV (comma-separated)", "*.csv"),
+        ("TXT (tab-separated)",   "*.txt"),
+    )
+
+    @staticmethod
+    def _sanitise_basename(label: str) -> str:
+        """Sanitise a node label for use as a default filename basename.
+
+        Strips characters that Windows / macOS / Linux file systems
+        reject and collapses runs of whitespace to a single underscore.
+        Empty results fall back to ``"export"``.
+        """
+        bad = '<>:"/\\|?*'
+        cleaned = "".join(
+            "_" if (ch in bad or ch.isspace()) else ch for ch in label
+        )
+        cleaned = cleaned.strip("._")
+        return cleaned or "export"
+
+    def _on_export_node(self, node_id: str) -> None:
+        """Row Export… hand-off: ask for a path then write the file.
+
+        Opens an ``asksaveasfilename`` dialog filtered to ``.csv`` /
+        ``.txt``, defaults the basename to the node's sanitised label,
+        and delegates to ``node_export.export_node_to_file``. Success
+        nudges the status bar; failure surfaces via ``messagebox``.
+
+        The widget gates the gesture on committed state, so this
+        method can assume a valid committed-and-exportable id, but
+        ``node_export`` raises ``ValueError`` on a stale type and we
+        still surface that defensively.
+        """
+        try:
+            node = self._graph.get_node(node_id)
+        except KeyError:
+            return
+
+        default_name = self._sanitise_basename(getattr(node, "label", ""))
+        path = filedialog.asksaveasfilename(
+            parent=self,
+            title="Export spectrum",
+            defaultextension=".csv",
+            initialfile=default_name,
+            filetypes=list(self._EXPORT_FILETYPES),
+        )
+        if not path:
+            return
+
+        try:
+            node_export.export_node_to_file(self._graph, node_id, path)
+        except (ValueError, KeyError, OSError) as exc:
+            messagebox.showerror(
+                "Export failed",
+                f"Could not export {node_id!r}:\n{exc}",
+                parent=self,
+            )
+            return
+        self._set_status_message(f"Exported to {path}")
 
     def _open_style_dialog_for_node(self, node_id: str) -> None:
         """Gear-button hand-off: open the unified ``StyleDialog`` (CS-05).
