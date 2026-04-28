@@ -713,17 +713,35 @@ class ScanTreeWidget(tk.Frame):
         return sum(1 for n in chain if isinstance(n, OperationNode))
 
     def _toggle_history(self, node_id: str) -> None:
+        # B-001 (Phase 4c): only one history pane is open at a time
+        # across the widget. Toggling on a row that is already
+        # expanded collapses it; toggling on any other row collapses
+        # the previously expanded pane before opening the new one.
         if node_id in self._expanded_history:
             self._expanded_history.discard(node_id)
             frame = self._history_frames.pop(node_id, None)
             if frame is not None:
                 frame.destroy()
-        else:
-            self._expanded_history.add(node_id)
-            self._render_history(node_id)
+            return
+
+        for other_id in list(self._expanded_history):
+            self._expanded_history.discard(other_id)
+            other_frame = self._history_frames.pop(other_id, None)
+            if other_frame is not None:
+                other_frame.destroy()
+
+        self._expanded_history.add(node_id)
+        self._render_history(node_id)
 
     def _render_history(self, node_id: str) -> None:
-        """Render the inline provenance chain below the row."""
+        """Render the inline provenance chain below the row.
+
+        B-001 (Phase 4c): the sub-frame is packed with ``after=row`` so
+        it appears immediately below the clicked row, not at the end
+        of the scroll area. Tk's pack manager does support
+        ``after=`` — the previous implementation that relied on the
+        next full rebuild to restore ordering was wrong.
+        """
         row = self._row_frames.get(node_id)
         if row is None:
             return
@@ -732,13 +750,16 @@ class ScanTreeWidget(tk.Frame):
         except KeyError:
             return
 
+        # Replace any previous sub-frame for this node so the
+        # ``_refresh_row → _populate_node_row → _render_history``
+        # chain doesn't leak orphan history frames after a label or
+        # style update.
+        old = self._history_frames.pop(node_id, None)
+        if old is not None:
+            old.destroy()
+
         sub = tk.Frame(self._rows_frame)
-        # Insert immediately after the row in pack order. Tk doesn't
-        # have an "insert at index" for pack; pack simply appends.
-        # Because rebuild is the dominant flow, we accept that toggling
-        # history near the top temporarily places the sub-frame at the
-        # bottom; the next rebuild restores ordering.
-        sub.pack(side="top", fill="x", padx=(20, 4), pady=(0, 2))
+        sub.pack(after=row, side="top", fill="x", padx=(20, 4), pady=(0, 2))
         self._history_frames[node_id] = sub
 
         for ancestor in chain:

@@ -402,5 +402,96 @@ class TestScanTreeWidget(unittest.TestCase):
         self.assertNotIn(widget._on_graph_event, graph._subscribers)
 
 
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestScanTreeWidgetBugB001(unittest.TestCase):
+    """Phase 4c — B-001: history pane must render inline below the row.
+
+    Regression: the previous implementation packed the history
+    sub-frame at the end of the rows container (Tk's pack default)
+    and relied on a full rebuild to restore visual ordering. With
+    two rows, expanding history on the first row appeared
+    *underneath the second* row, making the row → history visual
+    association ambiguous.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from scan_tree_widget import ScanTreeWidget
+        cls.ScanTreeWidget = ScanTreeWidget
+
+    def setUp(self):
+        self.host = tk.Frame(_root)
+        self.host.pack()
+        self.graph = ProjectGraph()
+
+    def tearDown(self):
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    def _fresh_widget(self):
+        _, cb = _redraw_calls()
+        widget = self.ScanTreeWidget(
+            self.host, self.graph, [NodeType.UVVIS], cb,
+        )
+        widget.pack()
+        return widget
+
+    def test_history_frame_packs_immediately_after_clicked_row(self):
+        # Two committed UVVIS rows, neither expanded. The history
+        # toggle on the first row must place the sub-frame between
+        # the two rows in pack order.
+        a = _data("a", state=NodeState.COMMITTED)
+        b = _data("b", state=NodeState.COMMITTED)
+        self.graph.add_node(a)
+        self.graph.add_node(b)
+        widget = self._fresh_widget()
+        widget.update_idletasks()
+
+        widget._toggle_history("a")
+        widget.update_idletasks()
+
+        slaves = widget._rows_frame.pack_slaves()
+        # Three children: row_a, history_a, row_b — in that order.
+        self.assertEqual(len(slaves), 3,
+                         f"expected row_a, history_a, row_b; got {slaves}")
+        self.assertIs(slaves[0], widget._row_frames["a"])
+        self.assertIs(slaves[1], widget._history_frames["a"])
+        self.assertIs(slaves[2], widget._row_frames["b"])
+
+    def test_history_collapses_when_other_row_expanded(self):
+        # Spec: "Toggling history on a different row collapses the
+        # previous one (one history pane open at a time across the
+        # widget)."
+        self.graph.add_node(_data("a", state=NodeState.COMMITTED))
+        self.graph.add_node(_data("b", state=NodeState.COMMITTED))
+        widget = self._fresh_widget()
+        widget.update_idletasks()
+
+        widget._toggle_history("a")
+        self.assertIn("a", widget._expanded_history)
+        widget._toggle_history("b")
+        self.assertNotIn("a", widget._expanded_history)
+        self.assertIn("b", widget._expanded_history)
+        # And the new history frame sits between row_b and any
+        # subsequent row (here, only row_b after row_a).
+        slaves = widget._rows_frame.pack_slaves()
+        self.assertIs(slaves[0], widget._row_frames["a"])
+        self.assertIs(slaves[1], widget._row_frames["b"])
+        self.assertIs(slaves[2], widget._history_frames["b"])
+
+    def test_toggle_same_row_collapses_history(self):
+        self.graph.add_node(_data("a", state=NodeState.COMMITTED))
+        widget = self._fresh_widget()
+        widget.update_idletasks()
+
+        widget._toggle_history("a")
+        self.assertIn("a", widget._expanded_history)
+        widget._toggle_history("a")
+        self.assertNotIn("a", widget._expanded_history)
+        self.assertNotIn("a", widget._history_frames)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
