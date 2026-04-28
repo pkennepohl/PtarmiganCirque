@@ -1,39 +1,32 @@
-"""UV/Vis normalisation as an explicit operation (Phase 4e, CS-16).
+"""UV/Vis smoothing as an explicit operation (Phase 4g, CS-18).
 
-Two pieces live here, mirroring the Phase 4c BASELINE shape but with
-the panel co-located alongside the pure compute (the brief's call):
+Two pieces live here, mirroring the Phase 4e CS-16 NormalisationPanel
+shape (panel co-located with pure compute):
 
-* ``compute_peak`` / ``compute_area`` / ``compute`` — pure-Python
-  numpy routines. Each takes ``(wavelength_nm, absorbance, params)``
-  and returns the normalised absorbance as a numpy array of the same
-  shape as the input.
-* ``NormalisationPanel`` — a Tk frame hosting the subject combobox,
-  mode combobox, conditional parameter rows, and the Apply button.
-  The panel owns the graph wiring: each Apply gesture creates one
-  provisional ``NORMALISE`` ``OperationNode`` + one provisional
-  ``NORMALISED`` ``DataNode`` wired ``parent → op → child``.
+* ``compute_savgol`` / ``compute_moving_avg`` / ``compute`` — pure-Python
+  numpy / scipy routines. Each takes ``(wavelength_nm, absorbance,
+  params)`` and returns the smoothed absorbance as a numpy array of the
+  same shape as the input.
+* ``SmoothingPanel`` — a Tk frame hosting the subject combobox, mode
+  combobox, conditional parameter rows, and the Apply button. The panel
+  owns the graph wiring: each Apply gesture creates one provisional
+  ``SMOOTH`` ``OperationNode`` + one provisional ``SMOOTHED``
+  ``DataNode`` wired ``parent → op → child``.
 
-Two modes per the Phase 4e brief:
+Two modes per the Phase 4g brief:
 
-* **peak** — divide the absorbance by the maximum |absorbance| inside
-  ``[peak_lo_nm, peak_hi_nm]`` (the peak-search window). Required
-  ``params`` keys: ``peak_lo_nm``, ``peak_hi_nm``.
-* **area** — divide the absorbance by the integrated |absorbance|
-  inside ``[area_lo_nm, area_hi_nm]`` (the integration window),
-  computed with ``np.trapezoid``. The divisor is taken in absolute
-  value so descending wavelength arrays do not flip the sign.
-  Required ``params`` keys: ``area_lo_nm``, ``area_hi_nm``.
+* **savgol** — Savitzky-Golay filter (``scipy.signal.savgol_filter``).
+  Required ``params`` keys: ``window_length`` (odd int > ``polyorder``,
+  ≤ len(absorbance)), ``polyorder`` (int ≥ 0).
+* **moving_avg** — uniform moving average over ``window_length``
+  samples, reflect-padded at the edges so the output keeps the input
+  shape. Required ``params`` keys: ``window_length`` (int ≥ 1,
+  ≤ len(absorbance)).
 
-There is no ``none`` mode — the absence of normalisation is the
-absence of a NORMALISED node. ``compute(...)`` rejects unknown modes
-including ``"none"`` so callers cannot accidentally materialise a
-no-op operation.
-
-Params completeness (CS-03): each mode lists exactly the keys it
-reads from ``params``. Missing keys raise ``KeyError`` (the calling
-panel resolves blank fields against the spectrum's full wavelength
-range before calling into the compute layer, so the OperationNode's
-params dict always contains the resolved bounds).
+Single ``OperationType.SMOOTH`` with a ``mode``-discriminated params
+dict, mirroring CS-15 (BASELINE) / CS-16 (NORMALISE). Reproducibility
+(CS-03 params completeness): every key needed to reproduce the exact
+smoothed array is captured.
 """
 
 from __future__ import annotations
@@ -44,6 +37,7 @@ from typing import Callable, List, Mapping, Optional
 import numpy as np
 import tkinter as tk
 from tkinter import ttk, messagebox
+from scipy.signal import savgol_filter
 
 from graph import GraphEvent, GraphEventType, ProjectGraph
 from node_styles import default_spectrum_style
@@ -58,22 +52,22 @@ from version import __version__ as PTARMIGAN_VERSION
 
 
 __all__ = [
-    "compute_peak",
-    "compute_area",
+    "compute_savgol",
+    "compute_moving_avg",
     "compute",
-    "NORMALISATION_MODES",
-    "NormalisationPanel",
+    "SMOOTHING_MODES",
+    "SmoothingPanel",
 ]
 
 
-NORMALISATION_MODES = ("peak", "area")
+SMOOTHING_MODES = ("savgol", "moving_avg")
 
 
-# Local palette — duplicated from uvvis_tab._PALETTE (Phase 4c friction
-# point #5 flagged the duplication; Phase 4e's brief explicitly carries
-# it forward instead of extracting a helper). The values must stay in
-# sync with the loader-side palette so a consistent visual ordering is
-# preserved across UVVIS / BASELINE / NORMALISED nodes.
+# Local palette — duplicated from uvvis_tab._PALETTE / uvvis_normalise._PALETTE
+# (Phase 4c friction #5, Phase 4e friction #2 flagged the duplication).
+# Carried forward here so a fresh SMOOTHED node picks a palette colour
+# distinct from its parent without pulling a UI module into this
+# (otherwise compute-only) file's import graph.
 _PALETTE = [
     "#1f77b4", "#d62728", "#2ca02c", "#ff7f0e", "#9467bd",
     "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf",
@@ -98,84 +92,88 @@ def _coerce(wavelength_nm, absorbance):
     return wl, a
 
 
-def _window_mask(wl: np.ndarray, lo: float, hi: float) -> np.ndarray:
-    """Return a boolean mask selecting samples inside ``[lo, hi]``.
-
-    Endpoints are inclusive; ``lo`` and ``hi`` are reordered if the
-    caller supplied them in descending order. A window with no samples
-    inside it raises ``ValueError`` so the user gets a recognisable
-    error rather than a silent NaN.
-    """
-    if lo > hi:
-        lo, hi = hi, lo
-    mask = (wl >= lo) & (wl <= hi)
-    if not mask.any():
-        raise ValueError(
-            f"normalisation window [{lo}, {hi}] contains no samples"
-        )
-    return mask
-
-
 # ---------------------------------------------------------------------------
-# Peak normalisation (divide by max |abs| inside the peak window)
+# Savitzky-Golay
 # ---------------------------------------------------------------------------
 
 
-def compute_peak(
+def compute_savgol(
     wavelength_nm, absorbance, params: Mapping,
 ) -> np.ndarray:
-    """Divide absorbance by its peak |value| inside the search window.
+    """Apply a Savitzky-Golay filter to ``absorbance``.
 
-    Required ``params`` keys: ``peak_lo_nm``, ``peak_hi_nm``. The
-    divisor is the maximum of ``|absorbance|`` over the samples whose
-    wavelength falls inside the window. The whole spectrum (not just
-    the window) is then divided by that scalar so the returned array
-    has the same shape as the input.
+    Required ``params`` keys: ``window_length`` (odd int, ``>polyorder``
+    and ``≤ len(absorbance)``), ``polyorder`` (int ``≥ 0``). Wraps
+    ``scipy.signal.savgol_filter`` and surfaces the parameter validation
+    as ``ValueError`` with a user-readable message rather than scipy's
+    own assertion text.
     """
-    wl, a = _coerce(wavelength_nm, absorbance)
-    lo = float(params["peak_lo_nm"])
-    hi = float(params["peak_hi_nm"])
-    mask = _window_mask(wl, lo, hi)
-    pk = float(np.nanmax(np.abs(a[mask])))
-    if not np.isfinite(pk) or pk <= 0.0:
+    _, a = _coerce(wavelength_nm, absorbance)
+    window_length = int(params["window_length"])
+    polyorder = int(params["polyorder"])
+
+    if window_length < 1:
+        raise ValueError("savgol: window_length must be >= 1.")
+    if window_length % 2 == 0:
+        raise ValueError("savgol: window_length must be odd.")
+    if polyorder < 0:
+        raise ValueError("savgol: polyorder must be >= 0.")
+    if polyorder >= window_length:
         raise ValueError(
-            "peak normalisation: peak |absorbance| is zero or non-finite "
-            "in the chosen window"
+            "savgol: polyorder must be < window_length "
+            f"(got polyorder={polyorder}, window_length={window_length})."
         )
-    return a / pk
+    if window_length > a.size:
+        raise ValueError(
+            f"savgol: window_length ({window_length}) cannot exceed the "
+            f"number of samples ({a.size})."
+        )
+
+    return np.asarray(
+        savgol_filter(a, window_length=window_length, polyorder=polyorder),
+        dtype=float,
+    )
 
 
 # ---------------------------------------------------------------------------
-# Area normalisation (divide by integrated |abs| inside the window)
+# Moving average
 # ---------------------------------------------------------------------------
 
 
-def compute_area(
+def compute_moving_avg(
     wavelength_nm, absorbance, params: Mapping,
 ) -> np.ndarray:
-    """Divide absorbance by its integrated |value| inside the window.
+    """Apply a uniform moving average (length ``window_length``).
 
-    Required ``params`` keys: ``area_lo_nm``, ``area_hi_nm``. The
-    divisor is ``|trapezoid(|absorbance|, wavelength_nm)|`` over the
-    in-window samples; the absolute value protects against descending
-    wavelength arrays that would otherwise yield a negative integral
-    (B-003 root cause from Phase 4c).
+    Required ``params`` keys: ``window_length`` (int ``≥ 1``,
+    ``≤ len(absorbance)``). The signal is reflect-padded so the output
+    keeps the input shape; an odd ``window_length`` keeps the kernel
+    centred at every sample (an even ``window_length`` is allowed but
+    introduces a half-sample shift, so the panel offers odd values
+    only).
     """
-    wl, a = _coerce(wavelength_nm, absorbance)
-    lo = float(params["area_lo_nm"])
-    hi = float(params["area_hi_nm"])
-    mask = _window_mask(wl, lo, hi)
-    # Restrict to in-window samples. The mask is already a 1-D bool
-    # array of the same shape as wl/a, so masking preserves order.
-    wl_w = wl[mask]
-    a_w = a[mask]
-    area = float(abs(np.trapezoid(np.abs(a_w), wl_w)))
-    if not np.isfinite(area) or area <= 0.0:
+    _, a = _coerce(wavelength_nm, absorbance)
+    window_length = int(params["window_length"])
+
+    if window_length < 1:
+        raise ValueError("moving_avg: window_length must be >= 1.")
+    if window_length > a.size:
         raise ValueError(
-            "area normalisation: integrated |absorbance| is zero or "
-            "non-finite in the chosen window"
+            f"moving_avg: window_length ({window_length}) cannot exceed "
+            f"the number of samples ({a.size})."
         )
-    return a / area
+    if window_length == 1:
+        return a.copy()
+
+    # Reflect-pad so edges keep their amplitude (boxcar convolution
+    # would otherwise pull edge samples toward zero / NaN). The
+    # ``reflect`` mode mirrors without repeating the edge sample.
+    half = window_length // 2
+    pad_lo = half
+    pad_hi = window_length - 1 - half
+    padded = np.pad(a, (pad_lo, pad_hi), mode="reflect")
+    kernel = np.full(window_length, 1.0 / window_length, dtype=float)
+    return np.convolve(padded, kernel, mode="valid")
 
 
 # ---------------------------------------------------------------------------
@@ -184,8 +182,8 @@ def compute_area(
 
 
 _DISPATCH = {
-    "peak": compute_peak,
-    "area": compute_area,
+    "savgol":     compute_savgol,
+    "moving_avg": compute_moving_avg,
 }
 
 
@@ -193,45 +191,46 @@ def compute(mode: str, wavelength_nm, absorbance, params: Mapping | None):
     """Dispatch to the appropriate ``compute_*`` by mode name.
 
     Convenience for callers that hold the mode as a string. Raises
-    ``ValueError`` on unknown modes (including ``"none"`` — the
-    absence of normalisation is the absence of an operation, not a
-    no-op operation).
+    ``ValueError`` on unknown modes (mirrors CS-15 / CS-16: the absence
+    of smoothing is the absence of a SMOOTHED node, not a no-op
+    operation).
     """
     if mode not in _DISPATCH:
         raise ValueError(
-            f"unknown normalisation mode {mode!r}; expected one of "
-            f"{NORMALISATION_MODES}"
+            f"unknown smoothing mode {mode!r}; expected one of "
+            f"{SMOOTHING_MODES}"
         )
     fn = _DISPATCH[mode]
     return fn(wavelength_nm, absorbance, params or {})
 
 
 # ---------------------------------------------------------------------------
-# NormalisationPanel — left-panel UI hosting the Apply gesture
+# SmoothingPanel — left-panel UI hosting the Apply gesture
 # ---------------------------------------------------------------------------
 
 
-class NormalisationPanel(tk.Frame):
-    """Left-panel widget for UV/Vis normalisation (Phase 4e, CS-16).
+class SmoothingPanel(tk.Frame):
+    """Left-panel widget for UV/Vis smoothing (Phase 4g, CS-18).
 
-    Mirrors the Phase 4c baseline panel's shape but materialises a
-    NORMALISED operation chain instead of a BASELINE one:
+    Mirrors the Phase 4e ``NormalisationPanel`` shape but materialises
+    a ``SMOOTH`` operation chain instead of a ``NORMALISE`` one:
 
     * **Subject combobox** — chooses which UVVIS / BASELINE /
-      NORMALISED node to normalise. Normalising a normalised node is
-      allowed (the user might first normalise to peak then to area).
-    * **Mode combobox** — ``peak`` / ``area``. On change the parameter
-      row frame rebuilds.
-    * **Window entries** — ``Window lo / hi`` in nm. Required for both
-      modes; blank entries are an error so the OperationNode's params
-      dict carries the resolved bounds (CS-03 params completeness).
+      NORMALISED / SMOOTHED node to smooth. Smoothing a smoothed node
+      is allowed (the user might iterate Savitzky-Golay then a final
+      moving-average pass).
+    * **Mode combobox** — ``savgol`` / ``moving_avg``. On change the
+      parameter row frame rebuilds.
+    * **Per-mode parameter rows** —
+      * savgol: ``window_length`` spinbox (odd, default 5) +
+        ``polyorder`` spinbox (default 2).
+      * moving_avg: ``window_length`` spinbox (odd, default 5).
     * **Apply button** — runs ``_apply()``.
 
-    The panel owns its graph wiring: pass in the ``ProjectGraph`` and
-    a callable returning the live spectrum nodes (the host's
-    ``_spectrum_nodes`` helper, which already returns UVVIS +
-    BASELINE; the host extends it to include NORMALISED in Phase 4e
-    Part E so the subject list covers every spectrum the tab plots).
+    The panel owns its graph wiring: pass in the ``ProjectGraph`` and a
+    callable returning the live spectrum nodes (the host's
+    ``_spectrum_nodes`` helper, which Phase 4g widens to include
+    SMOOTHED so the subject list covers every spectrum the tab plots).
     """
 
     def __init__(
@@ -249,10 +248,10 @@ class NormalisationPanel(tk.Frame):
         F9 = ("", 9)
         FC = ("Courier", 9)
 
-        tk.Label(self, text="Normalisation",
+        tk.Label(self, text="Smoothing",
                  font=("", 9, "bold")).pack(anchor="w", padx=4, pady=(4, 2))
 
-        # Subject — which spectrum to normalise.
+        # Subject — which spectrum to smooth.
         subj_frame = tk.Frame(self)
         subj_frame.pack(fill=tk.X, padx=4, pady=2)
         tk.Label(subj_frame, text="Spectrum:", font=F9).pack(anchor="w")
@@ -268,10 +267,10 @@ class NormalisationPanel(tk.Frame):
         mode_frame = tk.Frame(self)
         mode_frame.pack(fill=tk.X, padx=4, pady=(6, 2))
         tk.Label(mode_frame, text="Mode:", font=F9).pack(anchor="w")
-        self._mode_var = tk.StringVar(value="peak")
+        self._mode_var = tk.StringVar(value="savgol")
         self._mode_cb = ttk.Combobox(
             mode_frame, textvariable=self._mode_var,
-            values=list(NORMALISATION_MODES),
+            values=list(SMOOTHING_MODES),
             state="readonly", font=F9, width=24,
         )
         self._mode_cb.pack(fill=tk.X)
@@ -279,13 +278,14 @@ class NormalisationPanel(tk.Frame):
             "write", lambda *_: self._refresh_param_rows())
 
         # Per-mode Tk vars (kept on the panel so values survive mode
-        # flips). Strings default to empty so the user enters explicit
-        # window endpoints — blanks are rejected at Apply per CS-03.
-        self._window_lo = tk.StringVar(value="")
-        self._window_hi = tk.StringVar(value="")
+        # flips). Defaults are the canonical Savitzky-Golay starting
+        # parameters for UV/Vis-shaped spectra (5-point window, quadratic).
+        self._window_length = tk.IntVar(value=5)
+        self._polyorder = tk.IntVar(value=2)
 
         # Conditional parameter rows. Rebuilt on every mode change to
-        # keep layout straightforward.
+        # keep layout straightforward (mirrors the baseline / normalise
+        # panels).
         self._params_frame = tk.Frame(self)
         self._params_frame.pack(fill=tk.X, padx=4, pady=2)
 
@@ -293,15 +293,15 @@ class NormalisationPanel(tk.Frame):
         apply_frame = tk.Frame(self)
         apply_frame.pack(fill=tk.X, padx=4, pady=(8, 4))
         self._apply_btn = tk.Button(
-            apply_frame, text="Apply Normalisation", font=("", 9, "bold"),
+            apply_frame, text="Apply Smoothing", font=("", 9, "bold"),
             bg="#003d7a", fg="white", activebackground="#0055aa",
             command=self._apply,
         )
         self._apply_btn.pack(fill=tk.X)
 
         # Subscribe to graph events so the subject combobox tracks
-        # which UVVIS / BASELINE / NORMALISED nodes exist. Lifetime is
-        # the panel's: unsubscribed automatically on ``<Destroy>``.
+        # which spectrum nodes exist. Lifetime is the panel's:
+        # unsubscribed automatically on ``<Destroy>``.
         self._graph.subscribe(self._on_graph_event)
         self.bind("<Destroy>", self._on_destroy_unsubscribe, add="+")
 
@@ -313,12 +313,7 @@ class NormalisationPanel(tk.Frame):
     # ------------------------------------------------------------------
 
     def refresh_subjects(self) -> None:
-        """Repopulate the subject combobox from the live spectrum nodes.
-
-        The host's ``_spectrum_nodes`` callable is the source of
-        truth; this method only translates the list into combobox
-        items and preserves the user's selection if it still exists.
-        """
+        """Repopulate the subject combobox from the live spectrum nodes."""
         nodes = self._spectrum_nodes_fn()
         self._subject_map = {}
         items: List[str] = []
@@ -350,23 +345,29 @@ class NormalisationPanel(tk.Frame):
                      anchor="w").pack(side=tk.LEFT)
             return row
 
-        # Both modes have the same window-row schema; the row labels
-        # change per mode so the user can see whether they are setting
-        # a peak-search window or an integration window.
-        if mode == "peak":
-            tk.Entry(_row("Peak lo (nm):"),
-                     textvariable=self._window_lo, width=10,
-                     font=FC).pack(side=tk.LEFT)
-            tk.Entry(_row("Peak hi (nm):"),
-                     textvariable=self._window_hi, width=10,
-                     font=FC).pack(side=tk.LEFT)
-        elif mode == "area":
-            tk.Entry(_row("Area lo (nm):"),
-                     textvariable=self._window_lo, width=10,
-                     font=FC).pack(side=tk.LEFT)
-            tk.Entry(_row("Area hi (nm):"),
-                     textvariable=self._window_hi, width=10,
-                     font=FC).pack(side=tk.LEFT)
+        if mode == "savgol":
+            # Window length: odd integers from 3 upward. Spinbox with
+            # step=2 keeps the value odd as the user clicks the arrows.
+            tk.Spinbox(
+                _row("Window length:"),
+                textvariable=self._window_length,
+                from_=3, to=999, increment=2,
+                width=8, font=FC,
+            ).pack(side=tk.LEFT)
+            tk.Spinbox(
+                _row("Poly order:"),
+                textvariable=self._polyorder,
+                from_=0, to=10, increment=1,
+                width=8, font=FC,
+            ).pack(side=tk.LEFT)
+        elif mode == "moving_avg":
+            # Same odd-valued spinbox as savgol; polyorder N/A.
+            tk.Spinbox(
+                _row("Window length:"),
+                textvariable=self._window_length,
+                from_=1, to=999, increment=2,
+                width=8, font=FC,
+            ).pack(side=tk.LEFT)
 
     def _collect_params(self, mode: str) -> dict:
         """Read the panel widgets for ``mode`` into a params dict.
@@ -376,15 +377,18 @@ class NormalisationPanel(tk.Frame):
         verbatim into the OperationNode's params dict.
         """
         try:
-            lo = float(self._window_lo.get())
-            hi = float(self._window_hi.get())
-        except ValueError:
-            raise ValueError("Window endpoints must be numeric (nm).")
-        if mode == "peak":
-            return {"peak_lo_nm": lo, "peak_hi_nm": hi}
-        if mode == "area":
-            return {"area_lo_nm": lo, "area_hi_nm": hi}
-        raise ValueError(f"Unknown normalisation mode: {mode!r}")
+            window_length = int(self._window_length.get())
+        except (ValueError, tk.TclError):
+            raise ValueError("Window length must be an integer.")
+        if mode == "savgol":
+            try:
+                polyorder = int(self._polyorder.get())
+            except (ValueError, tk.TclError):
+                raise ValueError("Poly order must be an integer.")
+            return {"window_length": window_length, "polyorder": polyorder}
+        if mode == "moving_avg":
+            return {"window_length": window_length}
+        raise ValueError(f"Unknown smoothing mode: {mode!r}")
 
     def _on_graph_event(self, event: GraphEvent) -> None:
         """Refresh the subject list on structural / label / active changes."""
@@ -409,10 +413,10 @@ class NormalisationPanel(tk.Frame):
     # ------------------------------------------------------------------
 
     def _apply(self) -> Optional[tuple[str, str]]:
-        """Materialise a provisional NORMALISE op + NORMALISED node.
+        """Materialise a provisional SMOOTH op + SMOOTHED node.
 
-        One Apply gesture = one new provisional ``NORMALISE``
-        OperationNode + one new provisional ``NORMALISED`` DataNode,
+        One Apply gesture = one new provisional ``SMOOTH``
+        OperationNode + one new provisional ``SMOOTHED`` DataNode,
         wired ``parent → op → child``. Returns ``(op_id, child_id)``
         on success or ``None`` if the user input was rejected.
         """
@@ -420,7 +424,7 @@ class NormalisationPanel(tk.Frame):
         subject_id = self._subject_map.get(key)
         if not subject_id:
             messagebox.showinfo(
-                "Apply Normalisation",
+                "Apply Smoothing",
                 "Select a spectrum first (load a file or pick from the list).",
             )
             return None
@@ -428,15 +432,16 @@ class NormalisationPanel(tk.Frame):
             parent_node = self._graph.get_node(subject_id)
         except KeyError:
             messagebox.showerror(
-                "Apply Normalisation",
+                "Apply Smoothing",
                 "Selected spectrum is no longer in the project graph.",
             )
             return None
         if parent_node.type not in (
-            NodeType.UVVIS, NodeType.BASELINE, NodeType.NORMALISED,
+            NodeType.UVVIS, NodeType.BASELINE,
+            NodeType.NORMALISED, NodeType.SMOOTHED,
         ):
             messagebox.showerror(
-                "Apply Normalisation",
+                "Apply Smoothing",
                 "Selected node is not a UV/Vis-style spectrum.",
             )
             return None
@@ -445,26 +450,26 @@ class NormalisationPanel(tk.Frame):
         try:
             params = self._collect_params(mode)
         except ValueError as exc:
-            messagebox.showerror("Normalisation parameters", str(exc))
+            messagebox.showerror("Smoothing parameters", str(exc))
             return None
 
         wl = parent_node.arrays["wavelength_nm"]
         absorb = parent_node.arrays["absorbance"]
         try:
-            normalised = compute(mode, wl, absorb, params)
+            smoothed = compute(mode, wl, absorb, params)
         except (ValueError, KeyError) as exc:
-            messagebox.showerror("Normalisation computation", str(exc))
+            messagebox.showerror("Smoothing computation", str(exc))
             return None
 
         op_id = uuid.uuid4().hex
         out_id = uuid.uuid4().hex
 
         # CS-03 params completeness: ``mode`` is the discriminator;
-        # the remaining keys are the mode-specific sub-schema (CS-16).
+        # the remaining keys are the mode-specific sub-schema (CS-18).
         op_params = {"mode": mode, **params}
         op_node = OperationNode(
             id=op_id,
-            type=OperationType.NORMALISE,
+            type=OperationType.SMOOTH,
             engine="internal",
             engine_version=PTARMIGAN_VERSION,
             params=op_params,
@@ -474,38 +479,45 @@ class NormalisationPanel(tk.Frame):
             state=NodeState.PROVISIONAL,
         )
 
-        # Default colour for the new NORMALISED node — pick a fresh
-        # palette entry so the normalised curve is visually separable
-        # from its parent. Phase 4c friction #5 flagged this duplication
-        # explicitly; carried forward per the Phase 4e brief.
+        # Default colour for the new SMOOTHED node — pick a fresh
+        # palette entry so the smoothed curve is visually separable
+        # from its parent. Phase 4c friction #5 / Phase 4e friction #2
+        # already flagged the index expression duplication; carried
+        # forward per the Phase 4g brief (SMOOTH is the fourth
+        # spectrum-producing operation that picks from the same
+        # palette).
         existing_uvvis = len(
             self._graph.nodes_of_type(NodeType.UVVIS, state=None))
         existing_baselines = len(
             self._graph.nodes_of_type(NodeType.BASELINE, state=None))
         existing_normalised = len(
             self._graph.nodes_of_type(NodeType.NORMALISED, state=None))
+        existing_smoothed = len(
+            self._graph.nodes_of_type(NodeType.SMOOTHED, state=None))
         colour = _PALETTE[
-            (existing_uvvis + existing_baselines + existing_normalised)
+            (existing_uvvis + existing_baselines
+             + existing_normalised + existing_smoothed)
             % len(_PALETTE)
         ]
 
-        # Carry the parent's metadata forward, plus a normalisation
-        # footer (mirrors CS-15's baseline_mode / baseline_parent_id).
+        # Carry the parent's metadata forward, plus a smoothing footer
+        # (mirrors CS-15's baseline_mode / baseline_parent_id and
+        # CS-16's normalisation_mode / normalisation_parent_id).
         new_meta: dict = {
             **parent_node.metadata,
-            "normalisation_mode":      mode,
-            "normalisation_parent_id": subject_id,
+            "smoothing_mode":      mode,
+            "smoothing_parent_id": subject_id,
         }
 
         data_node = DataNode(
             id=out_id,
-            type=NodeType.NORMALISED,
+            type=NodeType.SMOOTHED,
             arrays={
                 "wavelength_nm": np.asarray(wl, dtype=float),
-                "absorbance":    np.asarray(normalised, dtype=float),
+                "absorbance":    np.asarray(smoothed, dtype=float),
             },
             metadata=new_meta,
-            label=f"{parent_node.label} · norm ({mode})",
+            label=f"{parent_node.label} · smooth ({mode})",
             state=NodeState.PROVISIONAL,
             style=default_spectrum_style(colour),
         )
@@ -518,7 +530,7 @@ class NormalisationPanel(tk.Frame):
 
         if self._status_cb is not None:
             self._status_cb(
-                f"Normalisation ({mode}) applied to {parent_node.label} "
+                f"Smoothing ({mode}) applied to {parent_node.label} "
                 f"(provisional — commit / discard via the right sidebar)."
             )
         return op_id, out_id
