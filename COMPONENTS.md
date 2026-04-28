@@ -425,6 +425,7 @@ Committed nodes are never deleted except by explicit "Clean up" action.
 - Discard (if provisional)
 - Send to Compare (if committed)
 - Rename
+- Export… (if committed; CS-17, Phase 4f)
 - Show history
 - Hide / Show
 - Duplicate (creates a new provisional copy for alternative exploration)
@@ -461,6 +462,8 @@ ScanTreeWidget(
                                 # about Compare
     style_dialog_cb=None,       # called with node_id; widget knows nothing
                                 # about the dialog (Phase 3)
+    export_cb=None,             # called with node_id; host opens the file
+                                # dialog and writes the file (CS-17, Phase 4f)
 )
 ```
 
@@ -1431,6 +1434,19 @@ y-unit hint, header-line preamble) is preserved under
 `metadata["parser_metadata"]` so tabs can reach it without
 colliding with the convention.
 
+### Forward-compat note (Phase 4f)
+
+CS-17 introduces a single-node export path that is **not** project
+save. The exported `.csv` / `.txt` files carry a `# `-prefixed
+provenance header whose shape (Ptarmigan version, ISO 8601 UTC
+timestamp, full node id, node label, then a topologically-sorted
+list of ancestor lines) mirrors what a future CS-13 full-project
+serialiser will need for the per-node JSON sidecar. Treat CS-17 as
+a forward-compat probe of the header shape: when CS-13 lands,
+either reuse `provenance_export.build_provenance_header` directly or
+ensure the project sidecar records at least the same set of fields
+under structurally-similar JSON keys.
+
 ---
 
 ## CS-14: Plot Settings Dialog
@@ -1854,6 +1870,135 @@ iteration is via discard + re-apply.
 
 ---
 
+## CS-17: Single-node export
+
+**Files:** `provenance_export.py` (pure header builder) +
+`node_export.py` (file writer) + `scan_tree_widget.py` row gesture
++ host tab dialog flow
+**Depends on:** CS-01 (`ProjectGraph.provenance_chain`), CS-02
+(`DataNode.arrays` keys), CS-03 (`OperationNode.params` /
+`engine` / `engine_version`), CS-04 (row context-menu),
+CS-15 (BASELINE export shape), CS-16 (NORMALISED export shape)
+**Depended on by:** UV/Vis tab (Phase 4f); Phase 5 / 6 will
+extend the writer to XANES / EXAFS shapes.
+
+### Responsibility
+
+Save a single committed `DataNode` to a user-chosen `.csv` or
+`.txt` file with a complete `# `-prefixed provenance header. The
+header lets a future re-import path (or a human reader) reconstruct
+exactly which operations produced the data. Multi-node export is
+out of scope for Phase 4f.
+
+### Two formats: `.csv` and `.txt`
+
+Format dispatch is keyed off the path extension. Both formats
+write the same provenance header lines (each prefixed `# `, no
+trailing newline) followed by a column-header row and the data
+block. CSV uses `,` as the data delimiter; TXT uses `\t`. The
+column-header row carries the same array names for both formats
+(`wavelength_nm,absorbance` for UV/Vis-shaped nodes).
+
+### Provenance header
+
+The header is built by
+`provenance_export.build_provenance_header(graph, node_id)`. It
+returns a list of `# `-prefixed strings, no newlines. The shape:
+
+```
+# ptarmigan_version=<version>
+# exported_at=<ISO 8601 UTC>
+# node_id=<full hex>
+# node_label=<label>
+# ancestor[0] type=<NodeType.name> id=<short_hex> label=<label>
+# ancestor[1] op=<OperationType.name> engine=<engine> engine_version=<version> params=<json>
+# ancestor[2] type=<NodeType.name> id=<short_hex> label=<label>
+...
+```
+
+* DataNode lines carry `type=<NodeType.name>`, `id=<short_hex>`
+  (first 8 characters of the uuid4 hex), and `label=<label>`.
+* OperationNode lines carry `op=<OperationType.name>`, `engine`,
+  `engine_version`, and a single-line JSON-serialised
+  `params=<json>` payload. `params` is dumped with `sort_keys=True`
+  so two exports of the same operation diff cleanly; `default=str`
+  protects against numpy scalars or anything else that slipped past
+  CS-03's "must be JSON-serialisable" rule.
+* Ancestors are emitted in the topological order returned by
+  `graph.provenance_chain(node_id)`: root first, requested node
+  last. The leaf (the requested node) appears as the highest-index
+  ancestor.
+
+The envelope (top four lines) is identical across CSV and TXT and
+across two exports of the same node modulo `exported_at`. The
+ancestor lines are also identical between CSV and TXT, so two
+exports of the same node can be diffed for header equivalence by
+stripping the `exported_at` line.
+
+### Exportable node types (Phase 4f scope)
+
+| `NodeType` | Exported columns |
+|---|---|
+| `UVVIS` / `BASELINE` / `NORMALISED` | `wavelength_nm`, `absorbance` |
+
+Other node types raise `ValueError` from `node_export.export_node_to_file`. Phase 5 (XANES) and Phase 6 (EXAFS) widen the table.
+
+### Provisional nodes are not exportable
+
+The right-click `Export…` menu entry on `ScanTreeWidget` is
+disabled when the row's node is `PROVISIONAL`. This forces the
+commit-or-discard discipline: a derivative cannot leak into a
+file before it is locked into the scientific record. The widget
+gates the gesture; `node_export.export_node_to_file` itself does
+not check state, so a future programmatic caller (e.g. a batch
+export) could in principle export a provisional node — but no
+such caller exists today.
+
+### Row gesture + host hand-off
+
+The widget exposes the gesture via a new `export_cb=None`
+constructor kwarg (CS-04). When the user invokes the menu entry,
+the widget calls `export_cb(node_id)` and stops there — it has no
+file-system knowledge. The host (a tab) wires `export_cb` to a
+method that:
+
+1. opens `tkinter.filedialog.asksaveasfilename` filtered to `.csv`
+   / `.txt`, defaulting `initialfile` to the node label sanitised
+   for the filesystem;
+2. delegates to `node_export.export_node_to_file(graph, node_id,
+   path)` on a non-empty return;
+3. on success, nudges the tab's status bar; on `ValueError` /
+   `KeyError` / `OSError`, surfaces via `messagebox.showerror`.
+
+The UV/Vis tab is the first host (`UVVisTab._on_export_node`).
+
+### Implementation notes (Phase 4f)
+
+* **Header builder is pure.** `provenance_export.py` has no Tk,
+  matplotlib, or file-system imports. Test coverage in
+  `test_provenance_export.py` does not need a Tk display.
+* **File writer is pure.** `node_export.py` writes via the
+  standard library only; tests use `tempfile.mkdtemp` against a
+  real `ProjectGraph` and inspect the written files.
+* **Format dispatch is case-insensitive on the extension.** A path
+  ending in `.CSV` is treated identically to `.csv`. Anything else
+  raises `ValueError` rather than silently picking a default —
+  protects against typos like `.cvs`.
+* **Numeric values use `repr(float(...))`.** Floats round-trip
+  losslessly via Python's `repr` on every supported version, where
+  `str(float)` historically truncated. The wavelength / absorbance
+  arrays are cast to `float` first so numpy dtypes do not leak
+  into the file.
+* **Default basename = sanitised label.** Filesystem-hostile
+  characters (`<>:"/\|?*` plus runs of whitespace) collapse to
+  underscores; the trimmed result falls back to `"export"` if the
+  label is all-bad.
+* **Forward-compat with CS-13.** The provenance header shape is
+  what a future `.ptproj/` serialiser will need anyway. Phase 4f
+  is the first place this shape is exercised against real graphs.
+
+---
+
 ## CS-04 implementation notes (Phase 4c)
 
 * **B-001 fix — inline history expansion.** `_render_history`
@@ -1870,6 +2015,22 @@ iteration is via discard + re-apply.
   vacated slot. Both rename gestures (double-click and the
   Rename menu entry) share `_begin_label_edit` per the original
   spec.
+
+## CS-04 implementation notes (Phase 4f)
+
+* **Export… row context-menu entry.** A new entry sits between
+  ``Rename`` and ``Show history`` in the right-click menu (CS-04
+  §"Context menu"). Enabled only when the row is committed *and*
+  the host wired ``export_cb``; provisional rows render the entry
+  disabled (not absent), mirroring the Discard convention so the
+  user can see the affordance and learn the commit-or-discard
+  rule. Invocation calls ``export_cb(node_id)`` — the widget never
+  imports ``filedialog`` or ``node_export``; the host owns the
+  dialog flow (CS-17).
+* **New constructor kwarg ``export_cb``.** Optional callable
+  ``(node_id: str) -> None``; defaults to ``None``. Tabs that wish
+  to support export pass a bound method; the widget checks for
+  ``None`` before enabling the menu entry.
 
 ## CS-04 implementation notes (Phase 4d)
 
@@ -1903,7 +2064,7 @@ iteration is via discard + re-apply.
 
 ---
 
-*Document version: 1.5 — April 2026*
+*Document version: 1.6 — April 2026*
 *1.1: CS-13 implementation notes added in Phase 4a.*
 *1.2: CS-14 Plot Settings Dialog added in Phase 4b.*
 *1.3: CS-15 UV/Vis Baseline Correction + CS-04 implementation
@@ -1915,5 +2076,10 @@ implementation notes added in Phase 4d (B-002 fix).*
 (normalisation-as-operation; resolves Phase 4a friction #2).
 CS-03 enum comment notes the BASELINE / NORMALISE mode-
 discriminator convention.*
+*1.6: CS-17 Single-node export added in Phase 4f. CS-04
+gains the ``Export…`` row context-menu entry + the
+``export_cb`` constructor kwarg. CS-13 gains a forward-compat
+note tying the export header shape to the future project-save
+serialiser.*
 *To be updated as Open Questions are resolved and new components
 are specified.*

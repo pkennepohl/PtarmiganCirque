@@ -618,13 +618,71 @@ normalisation-as-operation and resolving Phase 4a friction point
    `NORMALISE_UVVIS`. Flagging here since Phase 4e set the
    precedent.
 
+### Friction points carried forward from Phase 4f
+
+These are concrete obstacles the next Phase 4 session will hit.
+Identified during Phase 4f while implementing single-node export.
+**Do not fix until the relevant subsequent Phase 4 session.**
+
+1. **`node_export._resolve_columns` is UV/Vis-shaped only.** Phase
+   4f exports UVVIS / BASELINE / NORMALISED via
+   `wavelength_nm` + `absorbance`; XANES (`energy`, `mu`) and
+   EXAFS (`k`, `chi`) raise `ValueError`. The cleanest extension
+   point is a `NodeType → (col_names, array_keys)` registry the
+   tab plugs into at startup, so `node_export` stays
+   technique-agnostic. Resolve when Phase 5 / 6 land their first
+   exportable node types.
+2. **Export is per-row, not per-selection.** The Phase 4f brief
+   explicitly forbade adding a row-selection model (Phase 4c
+   friction point #1) and forbade multi-node "Export selection".
+   Both decisions interlock: a per-selection export needs a
+   selection state on `ScanTreeWidget`. Carry both forward
+   together.
+3. **Provenance header timestamp is the *export* time, not the
+   commit time.** The header records `exported_at=<UTC now>`,
+   meaning two exports of the same committed node carry different
+   timestamps. The committed node's `created_at` (DataNode) and
+   the OperationNode's `timestamp` are the science-relevant
+   moments and are NOT in the header today. Adding them is
+   straightforward (one extra envelope line + two more fields per
+   ancestor) but the header was kept lean for this first cut.
+   Revisit when project save (CS-13) lands and needs to round-trip
+   commit-time information.
+4. **`# `-prefixed CSV header is a CSV-spec violation.** RFC 4180
+   does not define comment lines. `pandas.read_csv` accepts
+   `comment="#"`, but spreadsheet apps (Excel, Numbers) will
+   render the header as data rows. The TXT format is fine
+   (downstream tools that read tab-separated data tend to be more
+   tolerant or already use `#` as a comment). If Excel friendliness
+   becomes a requirement, options are: (a) write an `.xlsx`
+   instead of `.csv`, (b) write a sidecar `.json` for the
+   provenance, (c) move the header into a second
+   `<basename>.provenance.txt` file. Decision deferred until a
+   user reports it as friction.
+5. **Sanitised-basename collision is silent.** Two committed
+   nodes with the same label produce the same default
+   `initialfile`; if the user accepts the default twice, the
+   second export silently overwrites the first (`asksaveasfilename`
+   surfaces an OS-level "replace?" prompt on most platforms, so
+   data loss is unlikely, but the gesture is noisier than it
+   needs to be). A future polish session could append a
+   short-hex disambiguator to the basename.
+6. **`OperationNode.params` JSON dump uses `default=str`.** Numpy
+   scalars or any non-JSON-primitive that slipped past CS-03's
+   "must be JSON-serialisable" rule serialise as their `repr`,
+   which round-trips as a string — not the original numeric. No
+   such cases exist today (BASELINE / NORMALISE params are pure
+   Python floats / strings), but the fallback hides a future
+   schema regression. Phase 5 / 6 should pin a stricter
+   serialiser when params shapes widen.
+
 | Status | Priority | Item | Notes |
 |---|---|---|---|
 | ✅ | 🔴 | **Migrate UV/Vis to node model** | UVVisScan → DataNode(type=UVVIS). File load → RAW\_FILE + LOAD + UVVIS triple, all COMMITTED (Phase 4a Part A; CS-13 implementation notes) |
 | ✅ | 🔴 | **Replace UV/Vis sidebar with ScanTreeWidget** | Retire existing compact grid table; ScanTreeWidget is the replacement (Phase 4a Part B) |
 | ✅ | 🔴 | **Replace UV/Vis style dialog with unified style dialog** | Existing UV/Vis style dialog is the reference; unified dialog supersedes it (Phase 4a Part C) |
 | ✅ | 🔴 | **Baseline correction** | Linear (two-point), polynomial (order n), spline, rubberband/convex hull. Each application creates a provisional BASELINE node (Phase 4c; CS-15) |
-| ⏳ | 🔴 | **Export processed data** | Save committed node data to CSV or TXT; include provenance header |
+| ✅ | 🔴 | **Export processed data** | Single-node `.csv` / `.txt` export with `# `-prefixed provenance header. Row Export… gesture on committed nodes; provisional rows render the entry disabled. Pure header builder + pure file writer + widget gesture + dialog flow (Phase 4f; CS-17) |
 | ✅ | 🔴 | **Normalisation as explicit operation** | Normalisation creates a provisional NORMALISED node rather than modifying data in place. Two modes (peak / area), each with a window in nm; mirrors the Phase 4c BASELINE shape (Phase 4e; CS-16) |
 | ⏳ | 🔴 | **"Send to Compare" action** | Replaces "Add to TDDFT Overlay". Available on committed nodes |
 | ✅ | 🔴 | **Plot Settings dialog** | Fonts, grid, background colour, legend position, tick direction, title/label customisation. Accessed via ⚙ in top bar (Phase 4b; CS-14) |
