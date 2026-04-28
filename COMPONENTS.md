@@ -292,12 +292,16 @@ class OperationType(Enum):
     NORMALISE     = auto()
     SMOOTH        = auto()
     SHIFT_ENERGY  = auto()
-    BASELINE      = auto()
+    BASELINE      = auto()  # mode-discriminated; CS-15
     AVERAGE       = auto()
     DIFFERENCE    = auto()
     FEFF_RUN      = auto()
     BXAS_FIT      = auto()
     # Add further types as new operations are implemented
+    #
+    # NORMALISE (above) is mode-discriminated for UV/Vis via
+    # params["mode"] ∈ {"peak", "area"}; see CS-16. The mirror
+    # convention for BASELINE lives in CS-15.
 
 @dataclass
 class OperationNode:
@@ -1710,6 +1714,146 @@ provisional node, and iteration is via discard + re-apply.
 
 ---
 
+## CS-16: UV/Vis Normalisation
+
+**File:** `uvvis_normalise.py` (pure module + `NormalisationPanel`
+co-located) + `uvvis_tab.py` left panel
+**Depends on:** CS-01 (ProjectGraph), CS-02 (DataNode `NORMALISED`
+variant), CS-03 (OperationNode `NORMALISE` variant), CS-07 (UV/Vis
+left panel), `numpy`
+**Depended on by:** UV/Vis tab — second user-initiated processing
+operation in the new architecture (Phase 4e); resolves Phase 4a
+friction point #2
+
+### Responsibility
+
+Divide a UV/Vis spectrum by a scalar derived from a chosen window of
+its absorbance values, producing a new `NORMALISED` `DataNode`. Each
+Apply gesture is a single provisional operation; the user inspects
+the result and decides to commit (lock in) or discard via the
+right-sidebar `ScanTreeWidget`.
+
+### Two modes (single OperationType, params discriminated by mode)
+
+A single `OperationType.NORMALISE` covers both. The discriminator is
+`params["mode"]`; the remaining keys are the mode-specific
+sub-schema. Mirrors the CS-15 BASELINE convention.
+
+| Mode | Required `params` keys | Algorithm |
+|---|---|---|
+| `peak` | `peak_lo_nm`, `peak_hi_nm` | Divide the absorbance by `np.nanmax(np.abs(absorbance[mask]))` where `mask` selects samples whose wavelength is in `[peak_lo_nm, peak_hi_nm]`. |
+| `area` | `area_lo_nm`, `area_hi_nm` | Divide the absorbance by `abs(np.trapezoid(np.abs(absorbance[mask]), wavelength_nm[mask]))` over the same window. The absolute value protects against descending wavelength arrays (B-003 root cause from Phase 4c). |
+
+There is no `none` mode — the absence of normalisation is the
+absence of a NORMALISED node, not a no-op operation. The dispatcher
+rejects `"none"` (and any other unknown mode) with `ValueError`.
+
+### Pure module
+
+The compute layer is Tk-free and graph-free:
+
+```python
+import uvvis_normalise as un
+normalised = un.compute(
+    "peak", wavelength_nm, absorbance,
+    {"peak_lo_nm": 400.0, "peak_hi_nm": 600.0},
+)
+```
+
+Each `compute_*` returns the normalised absorbance as a numpy array
+of the same shape as `absorbance`. Missing required params raise
+`KeyError`; bad inputs (shape mismatch, empty window, zero divisor)
+raise `ValueError`. The panel catches both and reports them via
+`messagebox`.
+
+### Provisional / Commit / Discard flow
+
+Per ARCHITECTURE.md §5. One Apply gesture creates exactly two nodes
+wired `parent → op → child`:
+
+* **`OperationNode`** (`type=NORMALISE`,
+  `engine="internal"`, `engine_version=PTARMIGAN_VERSION`,
+  `params={"mode": ..., **mode_specific}`,
+  `state=PROVISIONAL`).
+* **`DataNode`** (`type=NORMALISED`,
+  arrays `{wavelength_nm: parent_wl, absorbance: parent_a /
+  divisor}`, metadata carried forward from the parent plus
+  `normalisation_mode` + `normalisation_parent_id`,
+  `state=PROVISIONAL`, default style picked from the loader's
+  palette so the new curve is visually distinct).
+
+The UV/Vis tab subscribes to graph events as before; the
+`ScanTreeWidget` filter expanded from `[NodeType.UVVIS,
+NodeType.BASELINE]` to `[NodeType.UVVIS, NodeType.BASELINE,
+NodeType.NORMALISED]` so the new node appears in the right sidebar
+with the provisional indicator. Commit (`graph.commit_node`) and
+discard (`graph.discard_node`) flow through the existing
+`ScanTreeWidget` gestures.
+
+`_redraw` iterates `self._spectrum_nodes()` (UVVIS + BASELINE +
+NORMALISED) and renders all three via the same matplotlib code path
+— they share the `arrays["wavelength_nm"]` + `arrays["absorbance"]`
+convention, so no rendering branch is needed. The tab's draw-time
+`_y_with_norm` transform retired with this session.
+
+### Left-panel UI (CS-07 §"UV/Vis left panel" + Phase 4e)
+
+`NormalisationPanel` is a `tk.Frame` subclass that lives below the
+baseline section in the left panel, separated by a horizontal
+`ttk.Separator`. The panel hosts:
+
+* **Subject combobox** — chooses which UVVIS / BASELINE /
+  NORMALISED node to normalise. Chained normalisation is allowed (a
+  NORMALISED node is itself a candidate subject). Re-populated on
+  graph events that change the live set (`NODE_ADDED`,
+  `NODE_DISCARDED`, `NODE_LABEL_CHANGED`, `NODE_ACTIVE_CHANGED`).
+* **Mode combobox** — `peak` / `area`. On change the parameter row
+  frame rebuilds.
+* **Window entries** — two `tk.Entry` rows for the window endpoints
+  (`Peak lo / hi (nm)` or `Area lo / hi (nm)`). Required for both
+  modes; blanks are rejected at Apply per CS-03 params completeness.
+* **`Apply Normalisation` button** — runs `_apply()`.
+
+Anchor capture from the plot (click-on-axis) is out of scope for
+Phase 4e; the user types nm values directly. Live preview is also
+out of scope — each Apply produces a fresh provisional node, and
+iteration is via discard + re-apply.
+
+### Implementation notes (Phase 4e)
+
+* **Single `OperationType.NORMALISE` decision.** Resolved in favour
+  of one variant + a `mode`-discriminated params dict rather than
+  separate `NORMALISE_PEAK` / `NORMALISE_AREA` variants. Mirrors
+  the CS-15 BASELINE precedent so the two user-initiated UV/Vis
+  operations share the same shape.
+* **Subject is selected, not implicit.** The panel hosts its own
+  combobox of every live UVVIS / BASELINE / NORMALISED node, fed by
+  a callable the host hands over (`spectrum_nodes_fn`). Adding a
+  row-selection state to `ScanTreeWidget` was deferred (Phase 4c
+  friction point #1).
+* **NORMALISED renders identically to UVVIS / BASELINE.** All three
+  share the array-key convention. The sidebar filter and
+  `_spectrum_nodes` walk were widened rather than building a
+  parallel rendering branch.
+* **Default colour picked from the same palette.** A NORMALISED
+  node's default colour is `_PALETTE[(n_uvvis + n_baseline +
+  n_normalised) % len(_PALETTE)]` so a parent and its derivatives
+  are visually distinct without requiring the user to pick a colour.
+  Phase 4c friction point #5 already flagged the `_PALETTE`
+  duplication; carried forward here per the Phase 4e brief.
+* **Panel co-located with compute.** The brief explicitly asked for
+  the panel to live in `uvvis_normalise.py` rather than inline in
+  `uvvis_tab.py` (which is where the baseline panel lives). The
+  panel subscribes directly to graph events so the host does not
+  need to fan refresh calls into the subwidget.
+* **Phase 4a friction point #2 resolved.** The legacy
+  `_norm_mode` Tk var, top-bar `Norm:` combobox, and draw-time
+  `_y_with_norm` transform are gone. Normalisation is now an
+  explicit operation with reproducible parameters in
+  `OperationNode.params`.
+
+---
+
 ## CS-04 implementation notes (Phase 4c)
 
 * **B-001 fix — inline history expansion.** `_render_history`
@@ -1759,7 +1903,7 @@ provisional node, and iteration is via discard + re-apply.
 
 ---
 
-*Document version: 1.4 — April 2026*
+*Document version: 1.5 — April 2026*
 *1.1: CS-13 implementation notes added in Phase 4a.*
 *1.2: CS-14 Plot Settings Dialog added in Phase 4b.*
 *1.3: CS-15 UV/Vis Baseline Correction + CS-04 implementation
@@ -1767,5 +1911,9 @@ notes (Phase 4c B-001 / B-004 fixes) added in Phase 4c.*
 *1.4: CS-04 §6.1 responsive collapse rules + CS-05 universal
 section `visible` / `in_legend` rows + CS-04 / CS-05
 implementation notes added in Phase 4d (B-002 fix).*
+*1.5: CS-16 UV/Vis Normalisation added in Phase 4e
+(normalisation-as-operation; resolves Phase 4a friction #2).
+CS-03 enum comment notes the BASELINE / NORMALISE mode-
+discriminator convention.*
 *To be updated as Open Questions are resolved and new components
 are specified.*

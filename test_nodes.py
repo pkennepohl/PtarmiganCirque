@@ -146,5 +146,74 @@ class TestOperationNode(unittest.TestCase):
         self.assertEqual(b.output_ids, [])
 
 
+class TestNormalisedNodeAndOperation(unittest.TestCase):
+    """Phase 4e — pin the NORMALISED / NORMALISE contract.
+
+    The enum members existed before Phase 4e; the specific contract
+    locked here is the mode-discriminated ``params`` dict for the
+    UV/Vis NORMALISE operation (mirrors Phase 4c BASELINE per
+    CS-15 / CS-16). These tests are intentionally focused on the
+    new operation's shape, not on the rest of the enum surface
+    (which ``TestNodeTypeEnum`` and ``TestOperationTypeEnum``
+    already cover).
+    """
+
+    def test_normalised_data_node_constructs(self):
+        wl = np.linspace(200.0, 800.0, 5)
+        absorb = np.array([0.10, 0.45, 1.00, 0.30, 0.05])
+        n = DataNode(
+            id="norm1",
+            type=NodeType.NORMALISED,
+            arrays={"wavelength_nm": wl, "absorbance": absorb},
+            metadata={"x_unit": "nm", "y_unit": "absorbance",
+                      "normalisation_mode": "peak",
+                      "normalisation_parent_id": "uvvis_a"},
+            label="syn · norm (peak)",
+        )
+        self.assertEqual(n.type, NodeType.NORMALISED)
+        self.assertEqual(n.state, NodeState.PROVISIONAL)
+        self.assertIn("wavelength_nm", n.arrays)
+        self.assertIn("absorbance", n.arrays)
+        self.assertEqual(n.metadata["normalisation_mode"], "peak")
+        self.assertEqual(n.metadata["normalisation_parent_id"], "uvvis_a")
+
+    def test_normalise_op_with_peak_params(self):
+        # CS-03 params completeness: every key needed to reproduce the
+        # operation must live in ``params``. Peak mode requires the
+        # mode discriminator + the resolved peak window in nm.
+        op = OperationNode(
+            id="op_n_peak",
+            type=OperationType.NORMALISE,
+            engine="internal",
+            engine_version="0.0",
+            params={"mode": "peak",
+                    "peak_lo_nm": 400.0, "peak_hi_nm": 600.0},
+            input_ids=["uvvis_a"],
+            output_ids=["norm_a"],
+        )
+        self.assertEqual(op.type, OperationType.NORMALISE)
+        self.assertEqual(op.params["mode"], "peak")
+        self.assertEqual(op.params["peak_lo_nm"], 400.0)
+        self.assertEqual(op.params["peak_hi_nm"], 600.0)
+        self.assertEqual(op.state, NodeState.PROVISIONAL)
+        self.assertEqual(op.engine, "internal")
+
+    def test_normalise_op_with_area_params(self):
+        # Area mode: integration window endpoints in nm.
+        op = OperationNode(
+            id="op_n_area",
+            type=OperationType.NORMALISE,
+            engine="internal",
+            engine_version="0.0",
+            params={"mode": "area",
+                    "area_lo_nm": 200.0, "area_hi_nm": 800.0},
+            input_ids=["uvvis_a"],
+            output_ids=["norm_a"],
+        )
+        self.assertEqual(op.params["mode"], "area")
+        self.assertEqual(op.params["area_lo_nm"], 200.0)
+        self.assertEqual(op.params["area_hi_nm"], 800.0)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

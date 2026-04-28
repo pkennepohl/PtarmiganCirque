@@ -604,5 +604,73 @@ class TestNodesOfTypeAndActive(unittest.TestCase):
         self.assertEqual(active.id, "raw")
 
 
+class TestNormalisedNodeLifecycle(unittest.TestCase):
+    """Phase 4e — pin the NORMALISED commit / discard / clone contract.
+
+    NORMALISED is the third user-derived UV/Vis node type after UVVIS
+    and BASELINE; CS-01's lifecycle rules apply uniformly across node
+    types but it's worth a focused test that exercises the new node
+    against the same surface (commit, discard, clone, set_style,
+    parent → op → child wiring).
+    """
+
+    def _wire_uvvis_normalise_chain(self, g: ProjectGraph) -> tuple[str, str, str]:
+        parent = _data("parent", NodeType.UVVIS, state=NodeState.COMMITTED)
+        op = _op("op_n", OperationType.NORMALISE,
+                 inputs=["parent"], outputs=["norm"],
+                 state=NodeState.PROVISIONAL)
+        op.params = {"mode": "peak", "peak_lo_nm": 200.0, "peak_hi_nm": 800.0}
+        nor = _data("norm", NodeType.NORMALISED,
+                    state=NodeState.PROVISIONAL)
+        for n in (parent, op, nor):
+            g.add_node(n)
+        g.add_edge("parent", "op_n")
+        g.add_edge("op_n", "norm")
+        return "parent", "op_n", "norm"
+
+    def test_commit_promotes_normalised(self):
+        g = ProjectGraph()
+        _, _, nor_id = self._wire_uvvis_normalise_chain(g)
+        g.commit_node(nor_id)
+        self.assertEqual(g.get_node(nor_id).state, NodeState.COMMITTED)
+
+    def test_discard_marks_normalised(self):
+        g = ProjectGraph()
+        _, _, nor_id = self._wire_uvvis_normalise_chain(g)
+        g.discard_node(nor_id)
+        self.assertEqual(g.get_node(nor_id).state, NodeState.DISCARDED)
+
+    def test_clone_normalised_yields_provisional_copy(self):
+        g = ProjectGraph()
+        _, _, nor_id = self._wire_uvvis_normalise_chain(g)
+        # Set style and metadata on the source so the clone independence
+        # rules (style deep-copied, metadata deep-copied, arrays shared
+        # reference) can be checked.
+        g.set_style(nor_id, {"color": "#abcdef"})
+        g.get_node(nor_id).metadata["normalisation_mode"] = "peak"
+        g.commit_node(nor_id)
+        clone_id = g.clone_node(nor_id)
+        clone = g.get_node(clone_id)
+        self.assertEqual(clone.type, NodeType.NORMALISED)
+        self.assertEqual(clone.state, NodeState.PROVISIONAL)
+        self.assertIs(clone.arrays, g.get_node(nor_id).arrays)
+        # Mutating the clone's style / metadata must not leak back.
+        clone.style["color"] = "#000000"
+        clone.metadata["normalisation_mode"] = "area"
+        self.assertEqual(g.get_node(nor_id).style["color"], "#abcdef")
+        self.assertEqual(
+            g.get_node(nor_id).metadata["normalisation_mode"], "peak")
+
+    def test_normalise_op_recognised_by_nodes_of_type_passthrough(self):
+        # OperationType.NORMALISE is not visible via nodes_of_type
+        # (it's an op, not a data node), but the OUTPUT NORMALISED
+        # DataNode is — confirm the type filter picks it out.
+        g = ProjectGraph()
+        self._wire_uvvis_normalise_chain(g)
+        norms = g.nodes_of_type(NodeType.NORMALISED, state=None)
+        self.assertEqual(len(norms), 1)
+        self.assertEqual(norms[0].id, "norm")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
