@@ -483,6 +483,8 @@ class TestStyleDialogApplyToAll(unittest.TestCase):
             "color": "#ff0000",
             "fill": True,
             "fill_alpha": 0.2,
+            "visible": True,
+            "in_legend": True,
         }))
         seen: list = []
         dlg = self.StyleDialog(
@@ -491,10 +493,11 @@ class TestStyleDialogApplyToAll(unittest.TestCase):
         )
         dlg.update_idletasks()
 
-        # Universal section has six per-row ∀ buttons.
+        # Universal section has eight per-row ∀ buttons after Phase 4d
+        # added ``visible`` and ``in_legend`` for B-002.
         btns = self._find_apply_one_buttons(dlg)
         self.assertEqual(
-            len(btns), 6,
+            len(btns), 8,
             "expected one ∀ per universal-section row",
         )
         for b in btns:
@@ -504,7 +507,8 @@ class TestStyleDialogApplyToAll(unittest.TestCase):
         self.assertCountEqual(
             keys,
             ["linestyle", "linewidth", "alpha",
-             "color", "fill", "fill_alpha"],
+             "color", "fill", "fill_alpha",
+             "visible", "in_legend"],
         )
 
     # ---- bottom ∀ Apply to All ----
@@ -578,6 +582,189 @@ class TestStyleDialogApplyToAll(unittest.TestCase):
         # The dialog still wrote to its own node.
         self.assertAlmostEqual(
             self.graph.get_node("a").style["linewidth"], 3.0,
+        )
+
+
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestStyleDialogVisibleInLegend(unittest.TestCase):
+    """Phase 4d — universal-section ``visible`` and ``in_legend`` rows.
+
+    CS-04 row controls for visibility and legend membership collapse
+    when the sidebar narrows (B-002), so the unified StyleDialog
+    must carry matching toggles. These tests pin:
+
+    * the rows exist with their initial state read from ``node.style``
+    * toggling each writes through ``set_style``
+    * the per-row ∀ delegate fans the value out via
+      ``on_apply_to_all``
+    * an external ``set_style`` updates the dialog widget without
+      looping back through ``set_style``
+    * the bottom "∀ Apply to All" button does NOT fan out
+      ``visible`` / ``in_legend`` (intentional — bulk visibility
+      sweeps are a footgun)
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import style_dialog
+        cls.style_dialog = style_dialog
+        cls.StyleDialog = style_dialog.StyleDialog
+
+    def setUp(self):
+        self.style_dialog._open_dialogs.clear()
+        self.host = tk.Frame(_root)
+        self.graph = ProjectGraph()
+
+    def tearDown(self):
+        for dlg in list(self.style_dialog._open_dialogs.values()):
+            try:
+                dlg.destroy()
+            except Exception:
+                pass
+        self.style_dialog._open_dialogs.clear()
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    # ---- initial state from node.style ----
+
+    def test_visible_initial_state_reads_from_node_style(self):
+        self.graph.add_node(_data("a", style={"visible": False}))
+        dlg = self.StyleDialog(self.host, self.graph, "a")
+        dlg.update_idletasks()
+        var = dlg._control_vars.get("visible")
+        self.assertIsNotNone(var)
+        self.assertFalse(bool(var.get()))
+
+    def test_in_legend_initial_state_reads_from_node_style(self):
+        self.graph.add_node(_data("a", style={"in_legend": False}))
+        dlg = self.StyleDialog(self.host, self.graph, "a")
+        dlg.update_idletasks()
+        var = dlg._control_vars.get("in_legend")
+        self.assertIsNotNone(var)
+        self.assertFalse(bool(var.get()))
+
+    def test_visible_default_when_key_absent_from_style(self):
+        self.graph.add_node(_data("a"))  # empty style dict
+        dlg = self.StyleDialog(self.host, self.graph, "a")
+        dlg.update_idletasks()
+        # Default per _UNIVERSAL_DEFAULTS is True.
+        self.assertTrue(bool(dlg._control_vars["visible"].get()))
+        self.assertTrue(bool(dlg._control_vars["in_legend"].get()))
+
+    # ---- toggling writes through set_style ----
+
+    def test_toggling_visible_writes_through_set_style(self):
+        self.graph.add_node(_data("a", style={"visible": True}))
+        dlg = self.StyleDialog(self.host, self.graph, "a")
+        dlg.update_idletasks()
+
+        dlg._control_vars["visible"].set(False)
+        dlg.update_idletasks()
+        self.assertEqual(self.graph.get_node("a").style["visible"], False)
+
+    def test_toggling_in_legend_writes_through_set_style(self):
+        self.graph.add_node(_data("a", style={"in_legend": True}))
+        dlg = self.StyleDialog(self.host, self.graph, "a")
+        dlg.update_idletasks()
+
+        dlg._control_vars["in_legend"].set(False)
+        dlg.update_idletasks()
+        self.assertEqual(
+            self.graph.get_node("a").style["in_legend"], False,
+        )
+
+    # ---- external set_style updates the widget ----
+
+    def test_external_set_style_updates_visible_widget(self):
+        # An external mutation (e.g., the row's ☑ checkbox) must
+        # propagate into the dialog without firing a recursive write.
+        self.graph.add_node(_data("a", style={"visible": True}))
+        dlg = self.StyleDialog(self.host, self.graph, "a")
+        dlg.update_idletasks()
+
+        self.graph.set_style("a", {"visible": False})
+        dlg.update_idletasks()
+        self.assertFalse(bool(dlg._control_vars["visible"].get()))
+
+    # ---- per-row ∀ delegates fan-out ----
+
+    def test_per_row_apply_one_delegates_visible(self):
+        self.graph.add_node(_data("a", style={"visible": True}))
+        seen: list = []
+        dlg = self.StyleDialog(
+            self.host, self.graph, "a",
+            on_apply_to_all=lambda k, v: seen.append((k, v)),
+        )
+        dlg.update_idletasks()
+
+        dlg._delegate_apply_one("visible", False)
+        self.assertEqual(seen, [("visible", False)])
+        # Self-write also: dialog's local node ends up consistent.
+        self.assertEqual(self.graph.get_node("a").style["visible"], False)
+
+    def test_per_row_apply_one_delegates_in_legend(self):
+        self.graph.add_node(_data("a", style={"in_legend": True}))
+        seen: list = []
+        dlg = self.StyleDialog(
+            self.host, self.graph, "a",
+            on_apply_to_all=lambda k, v: seen.append((k, v)),
+        )
+        dlg.update_idletasks()
+
+        dlg._delegate_apply_one("in_legend", False)
+        self.assertEqual(seen, [("in_legend", False)])
+        self.assertEqual(
+            self.graph.get_node("a").style["in_legend"], False,
+        )
+
+    # ---- bulk ∀ excludes visible / in_legend ----
+
+    def test_bottom_apply_all_excludes_visible_and_in_legend(self):
+        # The bottom "∀ Apply to All" button is for bulk-applying
+        # *display style*, not visibility or legend membership.
+        # Phase 4d documents the exclusion in _BULK_UNIVERSAL_KEYS.
+        self.graph.add_node(_data("a", style={
+            "linestyle": "solid", "linewidth": 1.5, "alpha": 0.9,
+            "color": "#1f77b4", "fill": False, "fill_alpha": 0.08,
+            "visible": True, "in_legend": True,
+        }))
+        seen: list = []
+        dlg = self.StyleDialog(
+            self.host, self.graph, "a",
+            on_apply_to_all=lambda k, v: seen.append((k, v)),
+        )
+        dlg.update_idletasks()
+        dlg._apply_all_btn.invoke()
+
+        keys = [k for (k, _) in seen]
+        self.assertNotIn("visible", keys)
+        self.assertNotIn("in_legend", keys)
+        # And the existing exclusion (colour) still holds.
+        self.assertNotIn("color", keys)
+
+    # ---- module-level defaults + bulk key list ----
+
+    def test_universal_defaults_carry_visible_and_in_legend(self):
+        # The defaults table is the dialog's fallback when
+        # ``node.style`` lacks a key. Adding visible / in_legend to
+        # the universal section also requires them in the defaults.
+        self.assertIn("visible", self.style_dialog._UNIVERSAL_DEFAULTS)
+        self.assertIn("in_legend", self.style_dialog._UNIVERSAL_DEFAULTS)
+        self.assertEqual(
+            self.style_dialog._UNIVERSAL_DEFAULTS["visible"], True,
+        )
+        self.assertEqual(
+            self.style_dialog._UNIVERSAL_DEFAULTS["in_legend"], True,
+        )
+
+    def test_bulk_universal_keys_excludes_visible_and_in_legend(self):
+        self.assertNotIn(
+            "visible", self.style_dialog._BULK_UNIVERSAL_KEYS,
+        )
+        self.assertNotIn(
+            "in_legend", self.style_dialog._BULK_UNIVERSAL_KEYS,
         )
 
 

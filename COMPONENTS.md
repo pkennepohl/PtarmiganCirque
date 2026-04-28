@@ -367,6 +367,23 @@ updates reactively. Provides per-node controls and gestures.
 - **⚙** — open unified style dialog for this node
 - **✕** — discard (provisional nodes) or hide (committed nodes)
 
+#### Responsive collapse (B-002, Phase 4d)
+
+The row reflows on narrow sidebars. Below
+`scan_tree_widget._RESPONSIVE_COLLAPSE_PX` (currently 280 px) the
+optional set — **swatch**, **✓/–** legend toggle, **~~~~** linestyle
+canvas, **⌥n** history indicator — is `pack_forget`-ed. The minimum
+always-visible set survives every width:
+
+```
+[state] [☑] [label ············] [⚙] [✕]
+```
+
+Every collapsed control remains reachable through the unified style
+dialog (CS-05 §"Universal section" carries `visible` and `in_legend`
+controls so the row's `[☑]` and `[✓/–]` toggles have dialog parity
+even when the row is too narrow to render them).
+
 ### History expansion (inline, below row)
 
 ```
@@ -529,10 +546,20 @@ the selected node.
 | Colour | Swatch button → colorchooser + Reset button | — |
 | Fill area | Checkbutton | — |
 | Fill opacity | Scale + value label | 0.0–0.5 |
+| Visible | Checkbutton | — |
+| In legend | Checkbutton | — |
 
 Each parameter row has a ∀ button (rightmost) that applies that
 parameter to all visible nodes of the same type in the current tab.
 This carries forward the existing UV/Vis \_push\_to\_all pattern.
+
+The bottom **∀ Apply to All** button fans out every universal-section
+parameter except **Colour**, **Visible**, and **In legend**. The
+last two were added in Phase 4d (B-002) to give the dialog parity
+with the per-row `[☑]` / `[✓/–]` controls when the sidebar collapses,
+but bulk-applying them is a footgun (one click can hide every
+sibling); the per-row ∀ next to each checkbox stays available for
+deliberate fan-out.
 
 ### Conditional sections
 
@@ -745,6 +772,39 @@ ops are idempotent.
 callback. Per the graph contract the tab is already subscribed to
 `NODE_STYLE_CHANGED` and will redraw in response to dialog-driven
 mutations.
+
+### Implementation notes (Phase 4d)
+
+* **`visible` / `in_legend` joined the universal section (B-002).**
+  Two `tk.Checkbutton` rows live below "Fill opacity", reading
+  `style["visible"]` and `style["in_legend"]` respectively. Both
+  keys were added to `_UNIVERSAL_DEFAULTS` (`True` for both, the
+  same defaults `scan_tree_widget._DEFAULT_STYLE` uses, so the row
+  controls and the dialog read the same fallback). Toggling either
+  fires a write through `_write_partial` → `set_style` exactly like
+  every other universal row; the re-entrancy guard already covers
+  these paths.
+* **Bulk ∀ exclusion is intentional.** The `_BULK_UNIVERSAL_KEYS`
+  tuple still lists only `linestyle`, `linewidth`, `alpha`,
+  `fill`, `fill_alpha`. `visible` and `in_legend` are
+  reachable through their per-row ∀ buttons (deliberate fan-out)
+  but excluded from the bottom "∀ Apply to All" because
+  bulk-applying visibility is a footgun — one click could hide
+  every sibling node in the sidebar. `colour` is excluded for the
+  same family of reasons (Phase 3 implementation note).
+* **`_build_universal_checkbox_row` helper.** Factored out so
+  `visible` / `in_legend` share construction with the existing
+  `Fill area` checkbox (label + `Checkbutton` + per-row ∀ +
+  refresher). The helper returns nothing — it registers into
+  `_control_vars` and `_control_refresh` like every other
+  universal row builder.
+* **Fan-out scope (UV/Vis tab).** The tab's
+  `_on_uvvis_apply_to_all` widened from `_uvvis_nodes` (UVVIS-only)
+  to `_spectrum_nodes` (UVVIS + BASELINE). The widening applies to
+  every key, not just the new boolean ones — a user who clicks ∀
+  on a sidebar mixing UVVIS and BASELINE rows expects the value to
+  reach every row regardless of type. Future BASELINE-specific
+  style keys may need a tighter scope; revisit then.
 
 ---
 
@@ -1667,12 +1727,45 @@ provisional node, and iteration is via discard + re-apply.
   Rename menu entry) share `_begin_label_edit` per the original
   spec.
 
+## CS-04 implementation notes (Phase 4d)
+
+* **B-002 fix — responsive row collapse.** `_apply_responsive_layout`
+  hides the optional row controls (swatch, legend toggle, linestyle
+  canvas, history button) when the row's `winfo_width()` is below
+  `_RESPONSIVE_COLLAPSE_PX` (currently 280 px). The minimum
+  always-visible set (state, `[☑]` visibility, label, `[⚙]` gear,
+  `[✕]`) survives every width. `<Configure>` on each row frame
+  drives the helper.
+* **Per-row optional widgets dict.** `_optional_row_widgets[node_id]`
+  maps `"swatch" / "leg" / "ls_canvas" / "hist"` to the widgets
+  the responsive helper hides, plus `"vis_cb"` as the swatch's
+  re-pack anchor (needed because `pack(side="left")` without
+  `before=vis_cb` would land the swatch after the label, which
+  has `fill="x", expand=True` and consumes the remaining left
+  space).
+* **Restore order matches the original build order** for the
+  right-side widgets (`hist` → `ls_canvas` → `leg`) so each new
+  `side="right"` pack lands to the left of the previously packed
+  right-side controls — preserving the visual sequence
+  `leg ls_canvas hist gear x`.
+* **Optional-widgets dict cleared on rebuild and on row repopulate**
+  so a NODE_STYLE_CHANGED → `_refresh_row` cycle does not leak
+  stale widget references into the responsive layout.
+* **Tests stub `winfo_width`** to force a deterministic row width;
+  they do not depend on the host's real geometry. Tests also call
+  `update_idletasks()` between layout calls because
+  `winfo_ismapped()` reflects the result of Tk's geometry pass,
+  not the most recent `pack` / `pack_forget`.
+
 ---
 
-*Document version: 1.3 — April 2026*
+*Document version: 1.4 — April 2026*
 *1.1: CS-13 implementation notes added in Phase 4a.*
 *1.2: CS-14 Plot Settings Dialog added in Phase 4b.*
 *1.3: CS-15 UV/Vis Baseline Correction + CS-04 implementation
 notes (Phase 4c B-001 / B-004 fixes) added in Phase 4c.*
+*1.4: CS-04 §6.1 responsive collapse rules + CS-05 universal
+section `visible` / `in_legend` rows + CS-04 / CS-05
+implementation notes added in Phase 4d (B-002 fix).*
 *To be updated as Open Questions are resolved and new components
 are specified.*

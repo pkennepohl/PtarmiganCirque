@@ -746,8 +746,11 @@ class UVVisTab(tk.Frame):
         """Gear-button hand-off: open the unified ``StyleDialog`` (CS-05).
 
         ``open_style_dialog`` enforces one-dialog-per-node. The
-        ``on_apply_to_all`` callback fans the value out to every UVVIS
-        node currently in the sidebar.
+        ``on_apply_to_all`` callback fans the value out to every node
+        currently rendered in the sidebar — UVVIS and BASELINE alike
+        (Phase 4d: B-002 widened the scope so ``visible`` /
+        ``in_legend`` toggles propagate across both row types, since
+        both share the sidebar and every other row control).
         """
         open_style_dialog(
             self, self._graph, node_id,
@@ -755,13 +758,24 @@ class UVVisTab(tk.Frame):
         )
 
     def _on_uvvis_apply_to_all(self, param: str, value) -> None:
-        """∀ fan-out: write ``param=value`` onto every visible UVVIS node.
+        """∀ fan-out: write ``param=value`` onto every visible spectrum node.
 
-        "Visible" here matches ``_uvvis_nodes`` — non-DISCARDED and
-        ``active=True``. Per CS-05 each ``set_style`` is a merge, so
-        keys other than ``param`` on each target node are preserved.
+        Scope is ``_spectrum_nodes`` (UVVIS + BASELINE), not the
+        UVVIS-only ``_uvvis_nodes``. Phase 4d widened this so the
+        new ``visible`` / ``in_legend`` controls (B-002) cover the
+        whole sidebar — but the widening applies to every key, since
+        the user invoking ∀ on, say, a linewidth in a sidebar mixing
+        UVVIS and BASELINE rows expects every visible row to take
+        the value. ``set_style`` is a merge per CS-01, so keys other
+        than ``param`` on each target node are preserved.
+
+        BASELINE rows lack a baseline-specific style schema today;
+        they share the universal style keys with UVVIS, so the merge
+        is well-defined. Should a future BASELINE-specific key land
+        (e.g., a baseline-fit colour distinct from the spectrum
+        colour) the fan-out scope can be revisited.
         """
-        for node in self._uvvis_nodes():
+        for node in self._spectrum_nodes():
             self._graph.set_style(node.id, {param: value})
 
     # ══════════════════════════════════════════════════════════════════════════

@@ -101,6 +101,13 @@ _UNIVERSAL_DEFAULTS: dict[str, Any] = {
     "alpha":       0.9,
     "fill":        False,
     "fill_alpha":  0.08,
+    # Phase 4d (B-002): ``visible`` and ``in_legend`` joined the
+    # universal section so the unified style dialog covers every
+    # collapsed row control. Both keys flow through ``set_style`` /
+    # ``NODE_STYLE_CHANGED`` exactly like the other universal keys —
+    # no graph contract change.
+    "visible":     True,
+    "in_legend":   True,
 }
 
 
@@ -108,6 +115,15 @@ _UNIVERSAL_DEFAULTS: dict[str, Any] = {
 # "all style settings except colour"). The dialog reads each key's
 # current value from its own widget and delegates via ``on_apply_to_all``
 # — the tab decides which sibling nodes receive the value.
+#
+# Phase 4d note: ``visible`` and ``in_legend`` are intentionally
+# absent. They have per-row ∀ buttons (so the user can fan out a
+# specific value when they want to), but the bottom "∀ Apply to All"
+# button is for bulk-applying *display style*; sweeping visibility or
+# legend membership across every sibling is a footgun (one click can
+# silently hide every node in the sidebar). The user can still trigger
+# fan-out for those keys via the per-row ∀ button next to each
+# checkbox.
 _BULK_UNIVERSAL_KEYS: tuple[str, ...] = (
     "linestyle", "linewidth", "alpha", "fill", "fill_alpha",
 )
@@ -431,6 +447,63 @@ class StyleDialog(tk.Toplevel):
         )
         row += 1
 
+        # ── Visible (checkbutton) ─────────────────────────────────
+        # Phase 4d (B-002): the right-sidebar row's ☑ collapses on
+        # narrow widths, so the StyleDialog must carry the same
+        # toggle so the user can always reach style["visible"].
+        self._build_universal_checkbox_row(
+            sec, row,
+            label="Visible:",
+            check_text="Show on plot",
+            key="visible",
+        )
+        row += 1
+
+        # ── In legend (checkbutton) ───────────────────────────────
+        # Phase 4d (B-002): legend membership likewise has a row
+        # control that collapses; the dialog mirrors it.
+        self._build_universal_checkbox_row(
+            sec, row,
+            label="In legend:",
+            check_text="Include in legend",
+            key="in_legend",
+        )
+        row += 1
+
+    def _build_universal_checkbox_row(
+        self, parent: tk.Widget, row: int,
+        label: str, check_text: str, key: str,
+    ) -> None:
+        """Helper for ``visible`` / ``in_legend`` boolean rows.
+
+        Mirrors the ``Fill area`` row's wiring: a Checkbutton bound
+        to a ``BooleanVar``, a ``trace_add("write")`` that writes
+        through ``set_style`` (re-entrancy guard handled by
+        ``_write_partial``), a per-row ∀ button, and a refresher so
+        external ``NODE_STYLE_CHANGED`` events update the widget
+        without firing recursive write-backs.
+        """
+        var = tk.BooleanVar(value=bool(self._style_get(key)))
+        self._control_vars[key] = var
+        tk.Label(parent, text=label, font=("", 9, "bold")).grid(
+            row=row, column=0, sticky="w", pady=3,
+        )
+        tk.Checkbutton(
+            parent, text=check_text, variable=var,
+        ).grid(row=row, column=1, columnspan=2, sticky="w")
+        var.trace_add(
+            "write",
+            lambda *_, k=key, v=var:
+                self._write_partial({k: bool(v.get())}),
+        )
+        self._add_apply_one_button(
+            parent, row, 3, key, lambda v=var: bool(v.get()),
+        )
+
+        def _refresh(value, _v=var):
+            _v.set(bool(value))
+        self._control_refresh[key] = _refresh
+
     # ------------------------------------------------------------
     # Slider helper (used by universal and several conditional sections)
     # ------------------------------------------------------------
@@ -653,6 +726,7 @@ class StyleDialog(tk.Toplevel):
         for key in (
             "linestyle", "linewidth", "alpha",
             "color", "fill", "fill_alpha",
+            "visible", "in_legend",
         ):
             var = self._control_vars.get(key)
             if var is None:
@@ -664,7 +738,7 @@ class StyleDialog(tk.Toplevel):
             # Coerce types so set_style payloads are clean.
             if key in ("linewidth", "alpha", "fill_alpha"):
                 value = float(value)
-            elif key == "fill":
+            elif key in ("fill", "visible", "in_legend"):
                 value = bool(value)
             elif key in ("linestyle", "color"):
                 value = str(value)

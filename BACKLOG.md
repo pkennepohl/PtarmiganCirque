@@ -503,6 +503,55 @@ fix until the relevant subsequent Phase 4 session.**
    shim retires when Phase 7 wires Send-to-Compare. No action
    for Phase 4d/4e.
 
+### Friction points carried forward from Phase 4d
+
+These are concrete obstacles the next Phase 4 session will hit.
+Identified during Phase 4d while implementing the responsive row
+collapse and StyleDialog completeness for B-002. **Do not fix
+until the relevant subsequent Phase 4 session.**
+
+1. **Responsive collapse threshold is hard-coded.**
+   `_RESPONSIVE_COLLAPSE_PX = 280` lives at module level in
+   `scan_tree_widget.py`. Calibrating it per-display would mean
+   binding to the host's DPI / font scaling; today a single value
+   is fine because the sidebar widths Tabs use are within the same
+   order of magnitude. Revisit if a future tab packs the widget
+   into a noticeably different host (e.g., a popover) or if the
+   user reports controls collapsing on a comfortable sidebar.
+2. **No hysteresis on the collapse threshold.** Crossing 280 px
+   either way fires immediately. With a sidebar widget that
+   resizes its rows in response to its own contents this could
+   oscillate, but in practice the row's `fill="x"` and the host's
+   externally-imposed sidebar width keep things stable. If
+   oscillation is reported, add a hysteresis margin (e.g.,
+   collapse at 280, restore at 340).
+3. **`_DEFAULT_STYLE` lives in two places.** Phase 4c friction
+   point #6 already flagged this — `scan_tree_widget._DEFAULT_STYLE`
+   and `style_dialog._UNIVERSAL_DEFAULTS` carry overlapping
+   defaults for the universal style keys. Phase 4d added
+   `visible` and `in_legend` to both tables in lockstep; the
+   duplication is now larger but still manageable. A single
+   shared module (`node_styles.py`?) would eliminate the drift
+   risk. Revisit when a third caller (e.g., a save/load
+   round-trip) needs the same defaults.
+4. **Bulk ∀ exclusion list is a tuple in code, not a derived
+   property.** `_BULK_UNIVERSAL_KEYS` enumerates the keys the
+   bottom button fans out. Adding a new universal key means
+   editing both `_UNIVERSAL_DEFAULTS` and (if the key should be
+   bulk-applied) `_BULK_UNIVERSAL_KEYS`. The exclusion of
+   `colour` / `visible` / `in_legend` is documented but
+   easy to mis-match. Consider a richer registry (`{key: {bulk:
+   bool, default: ...}}`) when a fifth or sixth key joins.
+5. **UV/Vis fan-out scope is now `_spectrum_nodes`, but
+   `_has_existing_load` and the legacy "+ Add to TDDFT Overlay"
+   button still read `_uvvis_nodes`.** Phase 4c friction point
+   #6 noted the `_uvvis_nodes` / `_spectrum_nodes` divergence
+   would calcify; Phase 4d's widening narrowed the divergence
+   to two callers. Both are correct today (load duplicate-check
+   is UVVIS-specific; the overlay shim retires with Phase 7
+   Send-to-Compare). No action for Phase 4e — flag for whoever
+   touches the load path or Send-to-Compare.
+
 | Status | Priority | Item | Notes |
 |---|---|---|---|
 | ✅ | 🔴 | **Migrate UV/Vis to node model** | UVVisScan → DataNode(type=UVVIS). File load → RAW\_FILE + LOAD + UVVIS triple, all COMMITTED (Phase 4a Part A; CS-13 implementation notes) |
@@ -721,7 +770,7 @@ phase to touch files that its primary brief lists as no-modify.
 | ID | Severity | Bug | Spec ref | Resolve in |
 |---|---|---|---|---|
 | **B-001** | ✅ Phase 4c | History expansion (`⌥n` click on a sidebar row) renders at the bottom of the sidebar instead of inline below the clicked row. With two datasets loaded, clicking the top row's history shows expanded entries below the *second* row, making the visual association ambiguous | CS-04 §6.2 ("inline, below row") | Resolved by commit `610746e` — `_render_history` now packs with `after=row`; one history pane open at a time across the widget |
-| **B-002** | 🔴 | Sidebar row controls do not adapt to sidebar width. At narrow widths the row overflows. The minimum always-visible set should be: dataset name + visibility checkbox + ⚙ gear button. Every other per-row control (colour swatch, legend toggle, linestyle canvas, linewidth entry, fill checkbox, history indicator, ✕) must collapse when the row narrows. The unified StyleDialog (CS-05) must then cover every collapsed control — which it currently does not: `style["visible"]` and `style["in_legend"]` have no controls in the dialog | CS-04 §6.1 + CS-05 universal section | **Phase 4d** dedicated session (responsive row + StyleDialog completeness) |
+| **B-002** | ✅ Phase 4d | Sidebar row controls do not adapt to sidebar width. At narrow widths the row overflows. The minimum always-visible set should be: dataset name + visibility checkbox + ⚙ gear button. Every other per-row control (colour swatch, legend toggle, linestyle canvas, linewidth entry, fill checkbox, history indicator, ✕) must collapse when the row narrows. The unified StyleDialog (CS-05) must then cover every collapsed control — which it currently does not: `style["visible"]` and `style["in_legend"]` have no controls in the dialog | CS-04 §6.1 + CS-05 universal section | Resolved by commits `85c30f3` (responsive row collapse — `_apply_responsive_layout` hides the optional set below `_RESPONSIVE_COLLAPSE_PX` = 280 px) and `5f7ed47` (StyleDialog universal section gained `visible` and `in_legend` checkbutton rows with per-row ∀ delegates; bulk ∀ excludes both as a footgun guard). The minimum always-visible set landed as state · `[☑]` · label · `[⚙]` · `[✕]` (the brief's listing kept `state` and `[✕]` because dropping them would break provisional/committed affordance and the discard/hide gesture). UV/Vis ∀ fan-out widened from `_uvvis_nodes` to `_spectrum_nodes` (UVVIS + BASELINE) so toggling visibility on one row reaches every row in the same sidebar |
 | **B-003** | ✅ Phase 4c | When `Norm: area` is active the X-axis limit entries no longer take effect on Apply / Return. `Norm: none` and `Norm: peak` both work. Likely interaction between `_y_with_norm`'s area integral and the post-render axis-limit application path in `_redraw` ([uvvis_tab.py:583-593](uvvis_tab.py#L583), [uvvis_tab.py:662-671](uvvis_tab.py#L662)) — verify before fixing | UV/Vis tab `_redraw` | Resolved by commit `88ad2bf` — root cause was `np.trapz` removed in numpy 2.x; switched to `np.trapezoid` and took absolute value of the integral |
 | **B-004** | ✅ Phase 4c | No way to rename a dataset from the right sidebar via the right-click menu. CS-04 §"Context menu" lists `Rename` as a right-click entry; the implementation only landed Commit / Discard / Send to Compare. In-place double-click rename exists per Phase 2 but is undiscoverable. Add the context-menu entry; consider a label tooltip pointing at it | CS-04 §"Context menu" | Resolved by commit `7314a68` — the Rename menu entry was present since Phase 2 but `_begin_label_edit` raised `TclError` from `entry.pack(before=...)` after `pack_forget`, which silently broke both rename gestures; fixed the pack call |
 
@@ -735,8 +784,11 @@ the resolving phase + commit SHA appended to the row.
 
 ---
 
-*Document version: 1.2 — April 2026*
+*Document version: 1.3 — April 2026*
 *1.1: Known Bugs register added 2026-04-27 after Phase 4b manual testing.*
 *1.2: Phase 4c — baseline correction lands; B-001 / B-003 / B-004
 resolved; Phase 4c friction points logged.*
+*1.3: Phase 4d — responsive sidebar row collapse + StyleDialog
+universal `visible` / `in_legend`; B-002 resolved; Phase 4d
+friction points logged.*
 *Supersedes: BACKLOG.md (original)*
