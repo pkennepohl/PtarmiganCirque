@@ -65,6 +65,9 @@ Construction
                                   # knows nothing about the Compare tab
         style_dialog_cb=None,     # called with node_id; widget
                                   # knows nothing about the dialog
+        export_cb=None,           # called with node_id; host opens
+                                  # the file dialog and writes the
+                                  # file (CS-17, Phase 4f)
     )
 
 Call ``unsubscribe()`` before destroying the widget if you want to
@@ -200,6 +203,7 @@ class ScanTreeWidget(tk.Frame):
         redraw_cb: Callable[..., None],
         send_to_compare_cb: Callable[[str], None] | None = None,
         style_dialog_cb: Callable[[str], None] | None = None,
+        export_cb: Callable[[str], None] | None = None,
     ) -> None:
         super().__init__(parent)
 
@@ -210,6 +214,7 @@ class ScanTreeWidget(tk.Frame):
         self._redraw_cb = redraw_cb
         self._send_to_compare_cb = send_to_compare_cb
         self._style_dialog_cb = style_dialog_cb
+        self._export_cb = export_cb
 
         # View state.
         self._show_hidden = tk.BooleanVar(value=False)
@@ -969,6 +974,20 @@ class ScanTreeWidget(tk.Frame):
         menu.add_command(
             label="Rename",
             command=lambda nid=node_id: self._begin_rename_via_menu(nid),
+        )
+        # Export… (CS-17, Phase 4f). Available only on committed nodes
+        # — provisional rows force commit-or-discard discipline before
+        # the spectrum can leak into a downstream file. Disabled (not
+        # hidden) so the user can see the affordance and learn the
+        # rule, mirroring the Discard / Commit entries above.
+        menu.add_command(
+            label="Export…",
+            state=("normal" if (is_committed
+                                 and self._export_cb is not None)
+                   else "disabled"),
+            command=lambda nid=node_id: (
+                self._export_cb(nid) if self._export_cb else None
+            ),
         )
         menu.add_command(
             label="Show history",
