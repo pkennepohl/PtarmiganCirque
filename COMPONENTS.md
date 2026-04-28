@@ -1521,8 +1521,158 @@ on the tab.
 
 ---
 
-*Document version: 1.2 — April 2026*
+## CS-15: UV/Vis Baseline Correction
+
+**File:** `uvvis_baseline.py` (pure module) +
+`uvvis_tab.py` left panel + `_apply_baseline`
+**Depends on:** CS-01 (ProjectGraph), CS-02 (DataNode `BASELINE`
+variant), CS-03 (OperationNode `BASELINE` variant), CS-07 (UV/Vis
+left panel), `numpy`, `scipy.interpolate.CubicSpline`
+**Depended on by:** UV/Vis tab — first user-initiated processing
+operation in the new architecture (Phase 4c)
+
+### Responsibility
+
+Subtract a baseline from a UV/Vis spectrum, producing a new
+`BASELINE` `DataNode`. Each Apply gesture is a single
+provisional operation; the user inspects the result and decides
+to commit (lock in) or discard via the right-sidebar
+`ScanTreeWidget`.
+
+### Four modes (single OperationType, params discriminated by mode)
+
+A single `OperationType.BASELINE` covers all four. The
+discriminator is `params["mode"]`; the remaining keys are the
+mode-specific sub-schema.
+
+| Mode | Required `params` keys | Algorithm |
+|---|---|---|
+| `linear`     | `anchor_lo_nm`, `anchor_hi_nm`              | Two-point baseline through the absorbance values at the two anchor wavelengths (linearly interpolated from neighbouring data points). |
+| `polynomial` | `order` (int), `fit_lo_nm`, `fit_hi_nm`     | Polynomial of given order fit (`np.polyfit`) to the data inside the wavelength window; evaluated across the full input range. |
+| `spline`     | `anchors` (list of nm)                      | Cubic interpolating spline (`scipy.interpolate.CubicSpline`) through `(anchor, sampled_absorbance)` points. Falls back to quadratic / linear when `len(anchors) < 4`. |
+| `rubberband` | (none)                                       | Lower convex hull (Andrew's monotone chain) of the `(wavelength, absorbance)` point set, linearly interpolated onto the input grid. |
+
+### Pure module
+
+`uvvis_baseline` is Tk-free and graph-free:
+
+```python
+import uvvis_baseline
+corrected = uvvis_baseline.compute(
+    "linear", wavelength_nm, absorbance,
+    {"anchor_lo_nm": 200.0, "anchor_hi_nm": 800.0},
+)
+```
+
+Each `compute_*` returns the baseline-subtracted absorbance as a
+numpy array of the same shape as `absorbance`. Missing required
+params raise `KeyError`; bad inputs (shape mismatch, polynomial
+order without enough points) raise `ValueError`. The tab catches
+both and reports them via `messagebox`.
+
+### Provisional / Commit / Discard flow
+
+Per ARCHITECTURE.md §5. One Apply gesture creates exactly two
+nodes wired `parent → op → child`:
+
+* **`OperationNode`** (`type=BASELINE`,
+  `engine="internal"`, `engine_version=PTARMIGAN_VERSION`,
+  `params={"mode": ..., **mode_specific}`,
+  `state=PROVISIONAL`).
+* **`DataNode`** (`type=BASELINE`,
+  arrays `{wavelength_nm: parent_wl, absorbance: parent_a -
+  computed_baseline}`, metadata carried forward from the parent
+  plus `baseline_mode` + `baseline_parent_id`,
+  `state=PROVISIONAL`, default style picked from the loader's
+  palette so the new curve is visually distinct).
+
+The UV/Vis tab subscribes to graph events as before; the
+ScanTreeWidget filter expanded from `[NodeType.UVVIS]` to
+`[NodeType.UVVIS, NodeType.BASELINE]` so the new node appears
+in the right sidebar with the provisional indicator. Commit
+(`graph.commit_node`) and discard (`graph.discard_node`) flow
+through the existing `ScanTreeWidget` gestures.
+
+`_redraw` iterates `self._spectrum_nodes()` (UVVIS + BASELINE)
+and renders both via the same matplotlib code path — both share
+the `arrays["wavelength_nm"]` + `arrays["absorbance"]`
+convention, so no rendering branch is needed.
+
+### Left-panel UI (CS-07 §"UV/Vis left panel" + Phase 4c)
+
+* **Subject combobox** — chooses which UVVIS / BASELINE node to
+  act on. Re-populated on graph events that change the live set
+  (`NODE_ADDED`, `NODE_DISCARDED`, `NODE_LABEL_CHANGED`,
+  `NODE_ACTIVE_CHANGED`).
+* **Baseline mode combobox** — `linear` / `polynomial` /
+  `spline` / `rubberband`. On change, the parameter row frame
+  rebuilds.
+* **Conditional parameter rows** —
+  * linear: two anchor entries (nm).
+  * polynomial: order spinbox + two fit-window entries (nm).
+  * spline: comma-separated anchor entry (nm).
+  * rubberband: a single "(parameter-free convex hull)" label.
+* **`Apply Baseline` button** — runs `_apply_baseline()`.
+
+Anchor capture from the plot (click-drag-on-axis) is out of
+scope for Phase 4c; the user types nm values directly. Live
+preview is also out of scope — each Apply produces a fresh
+provisional node, and iteration is via discard + re-apply.
+
+### Implementation notes (Phase 4c)
+
+* **Single `OperationType.BASELINE` decision (Phase 4a friction
+  point #1).** Resolved in favour of one variant + a
+  `mode`-discriminated params dict rather than four separate
+  `OperationType` variants. The four sub-schemas live next to
+  each other in the params dict; reproducibility (CS-03 params
+  completeness) holds because every key needed to recompute the
+  exact baseline is captured.
+* **Subject is selected, not implicit.** The left panel hosts a
+  combobox of every live UVVIS / BASELINE node rather than
+  inferring the subject from the right sidebar (which has no
+  selection model yet). Adding a row-selection state to
+  `ScanTreeWidget` was deferred — the combobox is a smaller
+  surface that does not require a widget-wide refactor.
+* **BASELINE renders identically to UVVIS.** Both share the
+  array-key convention. The sidebar filter was widened rather
+  than building a parallel rendering branch.
+* **Default colour picked from the same palette.** A BASELINE
+  node's default colour is `_PALETTE[(n_uvvis + n_baseline) %
+  len(_PALETTE)]` so a parent and its derived baseline are
+  visually distinct without requiring the user to pick a colour.
+* **B-001, B-003, B-004 fixes shipped alongside.** Phase 4c is
+  the first user-initiated operation node, so the bug register
+  was the first time Phase 4 manually exercised the sidebar's
+  Rename / history / norm-area paths under load. Each fix is its
+  own commit; CS-04 §"Context menu" + §6.2 explicitly call out
+  what those fixes restore.
+
+---
+
+## CS-04 implementation notes (Phase 4c)
+
+* **B-001 fix — inline history expansion.** `_render_history`
+  now packs the sub-frame with `after=row` so the provenance
+  chain renders directly below the clicked row. Toggling history
+  on a different row collapses any previously expanded pane —
+  one history pane open at a time across the widget.
+* **B-004 fix — Rename context-menu entry routing.** The Rename
+  menu entry was present since Phase 2 but `_begin_label_edit`
+  raised `TclError` because it passed `before=label_widget` to
+  `entry.pack` after `label_widget.pack_forget()`. Fixed by
+  packing the Entry with `side="left"`/`expand=True` only — the
+  row's left/right pack split guarantees the Entry fills the
+  vacated slot. Both rename gestures (double-click and the
+  Rename menu entry) share `_begin_label_edit` per the original
+  spec.
+
+---
+
+*Document version: 1.3 — April 2026*
 *1.1: CS-13 implementation notes added in Phase 4a.*
 *1.2: CS-14 Plot Settings Dialog added in Phase 4b.*
+*1.3: CS-15 UV/Vis Baseline Correction + CS-04 implementation
+notes (Phase 4c B-001 / B-004 fixes) added in Phase 4c.*
 *To be updated as Open Questions are resolved and new components
 are specified.*
