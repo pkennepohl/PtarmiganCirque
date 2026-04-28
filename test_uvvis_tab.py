@@ -427,10 +427,16 @@ class TestUVVisTabSidebar(unittest.TestCase):
 
     # ----------- ∀ apply-to-all fans out via graph.set_style -----------
 
-    def test_on_uvvis_apply_to_all_writes_each_visible_uvvis_node(self):
-        # Two UVVIS + one XANES so we can confirm scope is type-bounded.
+    def test_on_uvvis_apply_to_all_writes_each_visible_spectrum_node(self):
+        # Two UVVIS + one BASELINE + one XANES so we can confirm:
+        #   * UVVIS rows receive the fan-out
+        #   * BASELINE rows also receive the fan-out (Phase 4d widened
+        #     the scope from UVVIS-only to UVVIS+BASELINE so the new
+        #     visible / in_legend toggles cover every sidebar row)
+        #   * non-spectrum rows (XANES) are still excluded
         for nid, ntype in [("u1", NodeType.UVVIS),
                            ("u2", NodeType.UVVIS),
+                           ("b1", NodeType.BASELINE),
                            ("x1", NodeType.XANES)]:
             wl = np.linspace(300, 600, 4)
             self.graph.add_node(DataNode(
@@ -446,7 +452,9 @@ class TestUVVisTabSidebar(unittest.TestCase):
 
         self.assertAlmostEqual(self.graph.get_node("u1").style["linewidth"], 3.5)
         self.assertAlmostEqual(self.graph.get_node("u2").style["linewidth"], 3.5)
-        # XANES untouched — fan-out filtered to UVVIS.
+        # BASELINE included after Phase 4d widening.
+        self.assertAlmostEqual(self.graph.get_node("b1").style["linewidth"], 3.5)
+        # XANES untouched — fan-out is sidebar-scoped, not all spectra.
         self.assertAlmostEqual(self.graph.get_node("x1").style["linewidth"], 1.5)
 
     # ----------- graph subscription drives plot redraws -----------
