@@ -864,5 +864,114 @@ class TestScanTreeWidgetResponsiveRow(unittest.TestCase):
         self.assertTrue(bool(b_swatch.winfo_ismapped()))
 
 
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestScanTreeWidgetExportMenu(unittest.TestCase):
+    """Phase 4f — CS-17: Export… row context-menu entry.
+
+    Mirrors ``TestScanTreeWidgetBugB004`` in capture style: stub
+    ``tk.Menu.tk_popup`` so the menu instance is constructed but never
+    grabs input, then introspect the resulting entries.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from scan_tree_widget import ScanTreeWidget
+        cls.ScanTreeWidget = ScanTreeWidget
+
+    def setUp(self):
+        self.host = tk.Frame(_root)
+        self.host.pack()
+        self.graph = ProjectGraph()
+
+    def tearDown(self):
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    def _capture_menu(self, widget, node_id: str) -> tk.Menu:
+        captured: dict = {}
+        original_popup = tk.Menu.tk_popup
+
+        def _stub_popup(self, x, y, *args, **kwargs):
+            captured["menu"] = self
+
+        try:
+            tk.Menu.tk_popup = _stub_popup
+            fake_event = type("E", (), {"x_root": 0, "y_root": 0})()
+            widget._show_context_menu(fake_event, node_id)
+        finally:
+            tk.Menu.tk_popup = original_popup
+        menu = captured["menu"]
+        return menu
+
+    @staticmethod
+    def _entry_state(menu: tk.Menu, label: str) -> str:
+        last = menu.index("end")
+        for i in range(last + 1):
+            if menu.type(i) == "separator":
+                continue
+            if menu.entrycget(i, "label") == label:
+                return menu.entrycget(i, "state")
+        raise AssertionError(f"{label!r} not found in menu")
+
+    def _fresh_widget(self, **kwargs):
+        _, cb = _redraw_calls()
+        widget = self.ScanTreeWidget(
+            self.host, self.graph, [NodeType.UVVIS], cb, **kwargs,
+        )
+        widget.pack()
+        return widget
+
+    def test_export_entry_present_on_committed_row(self):
+        self.graph.add_node(_data("a", state=NodeState.COMMITTED))
+        widget = self._fresh_widget(export_cb=lambda nid: None)
+        widget.update_idletasks()
+
+        menu = self._capture_menu(widget, "a")
+        labels: list[str] = []
+        last = menu.index("end")
+        for i in range(last + 1):
+            if menu.type(i) != "separator":
+                labels.append(menu.entrycget(i, "label"))
+        self.assertIn("Export…", labels)
+
+    def test_export_entry_disabled_on_provisional_row(self):
+        self.graph.add_node(_data("a", state=NodeState.PROVISIONAL))
+        widget = self._fresh_widget(export_cb=lambda nid: None)
+        widget.update_idletasks()
+
+        menu = self._capture_menu(widget, "a")
+        self.assertEqual(self._entry_state(menu, "Export…"), "disabled")
+
+    def test_export_entry_disabled_when_callback_missing(self):
+        # Even on a committed row, no callback ⇒ disabled. Pins the
+        # convention used by Send to Compare so a tab can adopt the
+        # gesture incrementally.
+        self.graph.add_node(_data("a", state=NodeState.COMMITTED))
+        widget = self._fresh_widget()  # no export_cb wired
+        widget.update_idletasks()
+
+        menu = self._capture_menu(widget, "a")
+        self.assertEqual(self._entry_state(menu, "Export…"), "disabled")
+
+    def test_export_entry_invokes_callback_with_node_id(self):
+        self.graph.add_node(_data("a", state=NodeState.COMMITTED))
+        seen: list[str] = []
+
+        widget = self._fresh_widget(export_cb=seen.append)
+        widget.update_idletasks()
+
+        menu = self._capture_menu(widget, "a")
+        last = menu.index("end")
+        export_idx = next(
+            i for i in range(last + 1)
+            if menu.type(i) != "separator"
+            and menu.entrycget(i, "label") == "Export…"
+        )
+        menu.invoke(export_idx)
+        self.assertEqual(seen, ["a"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
