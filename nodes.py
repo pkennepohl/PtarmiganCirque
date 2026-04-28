@@ -52,7 +52,8 @@ class NodeType(Enum):
     EXAFS       = auto()  # processed EXAFS (chi(k), |chi(R)|)
     UVVIS       = auto()  # UV/Vis/NIR spectrum
     DEGLITCHED  = auto()  # scan with spikes removed
-    NORMALISED  = auto()  # normalised result (XANES or UV/Vis)
+    NORMALISED  = auto()  # normalised result (XANES or UV/Vis); UV/Vis modes
+                          # are discriminated on the OperationNode (CS-16)
     SMOOTHED    = auto()  # smoothed result
     SHIFTED     = auto()  # energy-shifted result
     BASELINE    = auto()  # baseline-corrected UV/Vis
@@ -90,10 +91,13 @@ class OperationType(Enum):
 
     LOAD         = auto()  # raw file load (always produces COMMITTED RAW_FILE node)
     DEGLITCH     = auto()  # spike removal
-    NORMALISE    = auto()  # XANES or UV/Vis normalisation
+    NORMALISE    = auto()  # XANES or UV/Vis normalisation; UV/Vis discriminates
+                           # via params["mode"] ∈ {"peak", "area"} (Phase 4e / CS-16)
     SMOOTH       = auto()  # Savitzky-Golay or moving average
     SHIFT_ENERGY = auto()  # energy axis offset
-    BASELINE     = auto()  # baseline subtraction (UV/Vis)
+    BASELINE     = auto()  # baseline subtraction (UV/Vis); discriminates via
+                           # params["mode"] ∈ {"linear", "polynomial",
+                           # "spline", "rubberband"} (Phase 4c / CS-15)
     AVERAGE      = auto()  # multi-input average
     DIFFERENCE   = auto()  # two-input difference
     FEFF_RUN     = auto()  # FEFF simulation execution
