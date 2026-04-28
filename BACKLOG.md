@@ -314,7 +314,7 @@ feature.
    are documented in CS-15 along with the linear/polynomial/spline/
    rubberband algorithms. Params completeness verified by the
    integration tests in `TestUVVisTabBaseline`.
-2. **Normalisation has no UI for parameter capture.** Existing
+2. ~~**Normalisation has no UI for parameter capture.** Existing
    top-bar combobox `_norm_mode` (`none`/`peak`/`area`) at
    [uvvis_tab.py:170](uvvis_tab.py#L170) is currently a *display*
    transform applied at draw time, not an operation node. Migrating
@@ -324,7 +324,13 @@ feature.
    the left panel per CS-07 §"UV/Vis left panel". Until then, the
    existing draw-time transform stays; new normalisation modes
    (interactive normalisation, normalisation to wavelength) need the
-   left panel.
+   left panel.~~ **Resolved (Phase 4e):** kept one
+   `OperationType.NORMALISE` and discriminate via `params["mode"]
+   ∈ {"peak", "area"}` (mirrors CS-15). The new `NormalisationPanel`
+   lives in `uvvis_normalise.py` and packs into the left panel
+   below the baseline section (Part C 1e7afee, Part E ba17ef4;
+   CS-16). The legacy top-bar `Norm:` combobox + `_y_with_norm`
+   draw-time transform retired in Part E.
 3. **Send-to-Compare needs the Compare tab to exist.** ScanTreeWidget
    is constructed with `send_to_compare_cb=None`
    ([uvvis_tab.py:333](uvvis_tab.py#L333)), so the right-click "Send
@@ -552,6 +558,66 @@ until the relevant subsequent Phase 4 session.**
    Send-to-Compare). No action for Phase 4e — flag for whoever
    touches the load path or Send-to-Compare.
 
+### Friction points carried forward from Phase 4e
+
+These are concrete obstacles the next Phase 4 session will hit.
+Identified during Phase 4e while implementing
+normalisation-as-operation and resolving Phase 4a friction point
+#2. **Do not fix until the relevant subsequent Phase 4 session.**
+
+1. **`_default_*_style` lives in three places.** Phase 4d friction
+   point #3 already flagged the duplication between
+   `scan_tree_widget._DEFAULT_STYLE` and
+   `style_dialog._UNIVERSAL_DEFAULTS`; Phase 4e adds a third copy
+   in `uvvis_normalise._default_normalised_style` (mirrors the
+   `uvvis_tab._default_uvvis_style` pattern carried forward from
+   Phase 4c). Carried forward per the Phase 4e brief; the smell is
+   now visible across three modules. A single shared module
+   (`node_styles.py`?) becomes the obvious extraction when the
+   fourth caller lands (Phase 5 XANES smoothing, deglitch, or
+   shift-energy operations all need the same default).
+2. **`_PALETTE` index expression duplicated three times now.**
+   Phase 4c friction point #5 flagged the original duplication
+   (UVVIS load + BASELINE Apply); Phase 4e adds a third (NORMALISE
+   Apply: `_PALETTE[(n_uvvis + n_baseline + n_normalised) %
+   len(_PALETTE)]`). Each new spectrum-producing operation will
+   widen the index expression. The cleanest extraction is a
+   `_pick_default_color(graph)` helper that walks every spectrum
+   NodeType and picks the next palette entry. Revisit when a fourth
+   spectrum-producing operation lands (smoothing or interactive
+   normalisation).
+3. **Window endpoints are required nm Entry fields; no
+   click-on-axis capture.** Phase 4c friction point #2 flagged
+   anchor capture for baseline; the same gesture would benefit
+   normalisation (the user often wants to drag a window over a
+   visible peak rather than type 400 / 600 nm). Out of scope for
+   Phase 4e per the brief; flag for the smoothing / peak-picking
+   session that owns the `mpl_connect` plumbing.
+4. **No live preview as window endpoints change.** Like Phase 4c
+   friction point #3 (baseline), the panel forces discard +
+   re-apply to iterate. The provisional-node model conflicts with
+   "preview while sliders move" — every preview would mutate or
+   create a node. Decision deferred until a user reports it as
+   friction.
+5. **The status-bar API is fragmented.** The baseline section
+   updates `self._status_lbl.config(...)` inline; the
+   `NormalisationPanel` calls back through `_set_status_message`
+   on the host. Both work, but a future session adding a third
+   user-initiated operation (smoothing, deglitch on UV/Vis) should
+   pick one convention and migrate the other. The callback shape
+   is the cleaner of the two.
+6. **`OperationType.NORMALISE` is overloaded across techniques.**
+   The Phase 4e brief picked the existing
+   `OperationType.NORMALISE` (originally meant for XANES Larch
+   normalisation) and reused it for UV/Vis with a different
+   `params` schema. The discriminator is the OperationNode's input
+   NodeType (UVVIS/BASELINE/NORMALISED → UV/Vis params; XANES →
+   Larch params), not anything stored in the op itself. Phase 5
+   (XANES) will need to either accept the overload (params shape
+   inferred from inputs) or split into `NORMALISE_LARCH` /
+   `NORMALISE_UVVIS`. Flagging here since Phase 4e set the
+   precedent.
+
 | Status | Priority | Item | Notes |
 |---|---|---|---|
 | ✅ | 🔴 | **Migrate UV/Vis to node model** | UVVisScan → DataNode(type=UVVIS). File load → RAW\_FILE + LOAD + UVVIS triple, all COMMITTED (Phase 4a Part A; CS-13 implementation notes) |
@@ -559,7 +625,7 @@ until the relevant subsequent Phase 4 session.**
 | ✅ | 🔴 | **Replace UV/Vis style dialog with unified style dialog** | Existing UV/Vis style dialog is the reference; unified dialog supersedes it (Phase 4a Part C) |
 | ✅ | 🔴 | **Baseline correction** | Linear (two-point), polynomial (order n), spline, rubberband/convex hull. Each application creates a provisional BASELINE node (Phase 4c; CS-15) |
 | ⏳ | 🔴 | **Export processed data** | Save committed node data to CSV or TXT; include provenance header |
-| ⏳ | 🔴 | **Normalisation as explicit operation** | Normalisation creates a provisional NORMALISED node rather than modifying data in place |
+| ✅ | 🔴 | **Normalisation as explicit operation** | Normalisation creates a provisional NORMALISED node rather than modifying data in place. Two modes (peak / area), each with a window in nm; mirrors the Phase 4c BASELINE shape (Phase 4e; CS-16) |
 | ⏳ | 🔴 | **"Send to Compare" action** | Replaces "Add to TDDFT Overlay". Available on committed nodes |
 | ✅ | 🔴 | **Plot Settings dialog** | Fonts, grid, background colour, legend position, tick direction, title/label customisation. Accessed via ⚙ in top bar (Phase 4b; CS-14) |
 | ⏳ | 🟡 | **Peak picking** | Click-to-mark peaks; λ/E annotation; optional peak table export |
