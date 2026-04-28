@@ -970,7 +970,16 @@ class UVVisTab(tk.Frame):
             pk = np.nanmax(np.abs(y))
             if pk > 0: y = y / pk
         elif mode == "area":
-            area = np.trapz(np.abs(y), wavelength_nm)
+            # B-003 root cause: ``np.trapz`` was removed in numpy 2.x.
+            # When this tab ran on numpy 2.x the ``area`` branch raised
+            # ``AttributeError`` from inside the ``<Return>`` callback;
+            # Tk swallowed the traceback to stderr, so the user saw the
+            # X-limit entries silently fail to apply (the post-norm
+            # axis-limit code never ran). Use the integration absolute
+            # value of the wavelength axis so the divisor is positive
+            # regardless of whether wavelength is ascending or
+            # descending in the source array.
+            area = float(abs(np.trapezoid(np.abs(y), wavelength_nm)))
             if area > 0: y = y / area
         return y
 

@@ -737,5 +737,104 @@ class TestUVVisTabPlotSettingsIntegration(unittest.TestCase):
         self.assertEqual(self.tab._plot_config["grid"], False)
 
 
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestUVVisTabBugB003(unittest.TestCase):
+    """Phase 4c — B-003: X-axis limit entries must apply under Norm: area.
+
+    Regression: ``np.trapz`` was removed in numpy 2.x. Under
+    ``Norm: area`` the integration call inside ``_y_with_norm``
+    raised ``AttributeError`` from inside the ``<Return>`` Tk
+    callback, Tk swallowed the traceback to stderr, and the user
+    saw the X-limit entries silently fail to apply. The fix
+    switches to ``np.trapezoid`` (the numpy 2.x replacement) and
+    takes the absolute value so an inverted nm axis cannot produce
+    a negative divisor.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from uvvis_tab import UVVisTab
+        cls.UVVisTab = UVVisTab
+
+    def setUp(self):
+        self.host = tk.Frame(_root)
+        self.host.pack()
+        self.graph = ProjectGraph()
+        self.tab = self.UVVisTab(self.host, graph=self.graph)
+
+    def tearDown(self):
+        try:
+            self.tab.destroy()
+        except Exception:
+            pass
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    def _add_uvvis(self, nid: str = "u1") -> None:
+        wl = np.linspace(200.0, 800.0, 601)
+        absorb = np.exp(-((wl - 500.0) / 50.0) ** 2) + 0.05
+        self.graph.add_node(DataNode(
+            id=nid, type=NodeType.UVVIS,
+            arrays={"wavelength_nm": wl, "absorbance": absorb},
+            metadata={"source_file": "syn"},
+            label=nid, state=NodeState.COMMITTED,
+            style={"color": "#111", "linestyle": "solid",
+                   "linewidth": 1.5, "alpha": 0.9, "visible": True,
+                   "in_legend": True, "fill": False, "fill_alpha": 0.08},
+        ))
+
+    def test_xlim_entries_apply_under_norm_area(self):
+        self._add_uvvis()
+        self.tab._norm_mode.set("area")
+        self.tab._xlim_lo.set("300")
+        self.tab._xlim_hi.set("700")
+        self.tab._redraw()
+        # nm axis is rendered descending (CS-07 / migrated decision in
+        # BACKLOG.md), so x-limits land as (hi, lo).
+        x0, x1 = self.tab._ax.get_xlim()
+        self.assertAlmostEqual(x0, 700.0)
+        self.assertAlmostEqual(x1, 300.0)
+
+    def test_xlim_entries_still_apply_under_norm_peak(self):
+        # Sanity: peak normalisation has always worked; this guards
+        # against a future change breaking the working path while
+        # fixing the broken one.
+        self._add_uvvis()
+        self.tab._norm_mode.set("peak")
+        self.tab._xlim_lo.set("300")
+        self.tab._xlim_hi.set("700")
+        self.tab._redraw()
+        x0, x1 = self.tab._ax.get_xlim()
+        self.assertAlmostEqual(x0, 700.0)
+        self.assertAlmostEqual(x1, 300.0)
+
+    def test_norm_area_divisor_is_positive_with_descending_nm(self):
+        # Regression for the "inverted nm makes the area negative"
+        # hypothesis the brief flagged: even when wavelength_nm is
+        # stored descending in the source array, the divisor must be
+        # positive so y is normalised in the correct direction.
+        wl_desc = np.linspace(800.0, 200.0, 601)
+        absorb = np.exp(-((wl_desc - 500.0) / 50.0) ** 2) + 0.05
+        self.graph.add_node(DataNode(
+            id="desc", type=NodeType.UVVIS,
+            arrays={"wavelength_nm": wl_desc, "absorbance": absorb},
+            metadata={"source_file": "syn"},
+            label="desc", state=NodeState.COMMITTED,
+            style={"color": "#111", "linestyle": "solid",
+                   "linewidth": 1.5, "alpha": 0.9, "visible": True,
+                   "in_legend": True, "fill": False, "fill_alpha": 0.08},
+        ))
+        self.tab._norm_mode.set("area")
+        self.tab._redraw()
+        line = self.tab._ax.get_lines()[0]
+        ydata = line.get_ydata()
+        # Normalised by area: every value must be finite and the peak
+        # value should be positive (not flipped negative).
+        self.assertTrue(np.all(np.isfinite(ydata)))
+        self.assertGreater(float(np.max(ydata)), 0.0)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
