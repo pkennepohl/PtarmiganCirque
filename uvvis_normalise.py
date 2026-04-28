@@ -46,6 +46,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 
 from graph import GraphEvent, GraphEventType, ProjectGraph
+from node_styles import default_spectrum_style
 from nodes import (
     DataNode,
     NodeState,
@@ -203,33 +204,6 @@ def compute(mode: str, wavelength_nm, absorbance, params: Mapping | None):
         )
     fn = _DISPATCH[mode]
     return fn(wavelength_nm, absorbance, params or {})
-
-
-# ---------------------------------------------------------------------------
-# Default style for a freshly-created NORMALISED node
-# ---------------------------------------------------------------------------
-
-
-def _default_normalised_style(colour: str) -> dict:
-    """Default ``DataNode.style`` for a new NORMALISED node.
-
-    Mirrors ``uvvis_tab._default_uvvis_style`` and
-    ``scan_tree_widget._DEFAULT_STYLE``; Phase 4d friction point #3
-    already flagged the duplication. We carry it forward here per the
-    Phase 4e brief rather than extract a shared module — the third
-    copy makes the smell visible without requiring the cross-module
-    refactor that would belong in its own session.
-    """
-    return {
-        "color":      colour,
-        "linestyle":  "solid",
-        "linewidth":  1.5,
-        "alpha":      0.9,
-        "visible":    True,
-        "in_legend":  True,
-        "fill":       False,
-        "fill_alpha": 0.08,
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -533,7 +507,7 @@ class NormalisationPanel(tk.Frame):
             metadata=new_meta,
             label=f"{parent_node.label} · norm ({mode})",
             state=NodeState.PROVISIONAL,
-            style=_default_normalised_style(colour),
+            style=default_spectrum_style(colour),
         )
 
         # Insert op + data, then wire parent → op → child.

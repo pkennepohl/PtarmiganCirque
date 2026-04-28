@@ -47,6 +47,7 @@ import plot_settings_dialog
 import uvvis_baseline
 import uvvis_normalise
 import node_export
+from node_styles import default_spectrum_style
 from version import __version__ as PTARMIGAN_VERSION
 
 # ── Colour palette (loader-side default colour assignment) ────────────────────
@@ -56,25 +57,6 @@ _PALETTE = [
     "#1f77b4", "#d62728", "#2ca02c", "#ff7f0e", "#9467bd",
     "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf",
 ]
-
-# ── Default per-scan style ────────────────────────────────────────────────────
-def _default_uvvis_style(colour: str) -> dict:
-    """Default ``DataNode.style`` for a freshly-loaded UVVIS node.
-
-    Mirrors ``scan_tree_widget._DEFAULT_STYLE`` so that row controls
-    and the unified style dialog read/write the same dict. ``visible``
-    and ``in_legend`` move into the style dict (Phase 2 friction #2).
-    """
-    return {
-        "color":      colour,
-        "linestyle":  "solid",
-        "linewidth":  1.5,
-        "alpha":      0.9,
-        "visible":    True,
-        "in_legend":  True,
-        "fill":       False,
-        "fill_alpha": 0.08,
-    }
 
 # ── File-type filter ──────────────────────────────────────────────────────────
 _FILE_TYPES = [
@@ -695,7 +677,7 @@ class UVVisTab(tk.Frame):
             metadata=new_meta,
             label=f"{parent_node.label} · baseline ({mode})",
             state=NodeState.PROVISIONAL,
-            style=_default_uvvis_style(colour),
+            style=default_spectrum_style(colour),
         )
 
         # Insert op + data, then wire parent → op → child.
@@ -1007,7 +989,7 @@ class UVVisTab(tk.Frame):
             metadata=uvvis_meta,
             label=scan.display_name(),
             state=NodeState.COMMITTED,
-            style=_default_uvvis_style(colour),
+            style=default_spectrum_style(colour),
         )
 
         self._graph.add_node(raw_node)
