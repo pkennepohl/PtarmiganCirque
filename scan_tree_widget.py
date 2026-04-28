@@ -109,6 +109,16 @@ _DEFAULT_STYLE: dict[str, Any] = {
 }
 
 
+# Responsive row collapse threshold (B-002, Phase 4d). Below this row
+# pixel width the optional controls (swatch, legend toggle, linestyle
+# canvas, history button) are pack_forget-ed; the always-visible
+# minimum (state, ☑ visibility, label, ⚙ gear, ✕) keeps the row usable
+# at any width. The full set of collapsed controls remains reachable
+# through the unified StyleDialog (CS-05) — see CS-05 universal
+# section for ``visible`` / ``in_legend`` parity.
+_RESPONSIVE_COLLAPSE_PX: int = 280
+
+
 def _style_get(node: DataNode, key: str) -> Any:
     """Read a style value with the module default as a fallback."""
     return node.style.get(key, _DEFAULT_STYLE[key])
@@ -214,6 +224,13 @@ class ScanTreeWidget(tk.Frame):
         # Set of node ids currently rendered as the *leader* of a sweep
         # group (to avoid creating a separate row for the same node).
         self._sweep_leaders: set[str] = set()
+        # Per-row optional controls indexed by node id, used by the
+        # responsive collapse logic (B-002). Each entry maps a name
+        # ("swatch", "leg", "ls_canvas", "hist") to the widget that
+        # should hide when the row narrows below ``_RESPONSIVE_COLLAPSE_PX``
+        # — and to the anchor widget (``vis_cb``) the swatch needs for
+        # correct re-insertion via ``pack(before=...)``.
+        self._optional_row_widgets: dict[str, dict[str, tk.Widget]] = {}
 
         self._build_chrome()
 
@@ -378,6 +395,7 @@ class ScanTreeWidget(tk.Frame):
             child.destroy()
         self._row_frames.clear()
         self._history_frames.clear()
+        self._optional_row_widgets.clear()
 
         candidates = self._candidate_nodes()
         self._sweep_groups, self._sweep_leaders = (
@@ -417,16 +435,29 @@ class ScanTreeWidget(tk.Frame):
         self._populate_node_row(row, node)
 
     def _populate_node_row(self, row: tk.Frame, node: DataNode) -> None:
-        """Fill a row frame with the per-node controls."""
+        """Fill a row frame with the per-node controls.
+
+        The row layout follows CS-04 §6.1. The minimum always-visible
+        set (state, ☑ visibility, label, ⚙ gear, ✕) is packed
+        unconditionally; the optional set (swatch, legend toggle,
+        linestyle canvas, history button) is tracked in
+        ``self._optional_row_widgets[node.id]`` so the responsive
+        collapse logic can hide them when the row narrows below
+        ``_RESPONSIVE_COLLAPSE_PX`` (B-002, Phase 4d).
+        """
         for child in row.winfo_children():
             child.destroy()
+        # Drop any per-row tracking for this id; we'll repopulate as we
+        # rebuild the controls. Without this, a refresh after
+        # node-style change would leak stale widget references.
+        self._optional_row_widgets.pop(node.id, None)
 
-        # State indicator.
+        # State indicator (always visible).
         state_text = "🔒" if node.state == NodeState.COMMITTED else "⋯"
         state_lbl = tk.Label(row, text=state_text, width=2)
         state_lbl.pack(side="left")
 
-        # Colour swatch.
+        # Colour swatch (optional — collapses on narrow rows).
         swatch_color = _style_get(node, "color")
         swatch = tk.Button(
             row, bg=swatch_color, width=2, relief=tk.RAISED,
@@ -435,7 +466,7 @@ class ScanTreeWidget(tk.Frame):
         )
         swatch.pack(side="left", padx=2)
 
-        # Visibility checkbox (style.visible).
+        # Visibility checkbox (always visible) — style.visible.
         vis_var = tk.BooleanVar(value=bool(_style_get(node, "visible")))
         vis_cb = tk.Checkbutton(
             row, variable=vis_var,
@@ -506,9 +537,106 @@ class ScanTreeWidget(tk.Frame):
                 lambda e, nid=node.id: self._show_context_menu(e, nid),
             )
 
+        # Track optional controls so the responsive collapse logic can
+        # find them by name (B-002, Phase 4d). The ``vis_cb`` reference
+        # is stored as the swatch's re-pack anchor — without
+        # ``before=vis_cb`` a re-packed swatch lands on the wrong side
+        # of the label, which has ``fill="x", expand=True``.
+        self._optional_row_widgets[node.id] = {
+            "swatch":     swatch,
+            "leg":        leg_btn,
+            "ls_canvas":  ls_canvas,
+            "hist":       hist_btn,
+            "vis_cb":     vis_cb,
+        }
+
+        # Bind row width changes to the responsive layout helper. The
+        # bind is per row frame so the helper knows which row to
+        # apply the rule to. Configure also fires on the very first
+        # geometry pass, so this doubles as the initial calibration.
+        row.bind(
+            "<Configure>",
+            lambda _e, nid=node.id, frm=row:
+                self._apply_responsive_layout(nid, frm),
+            add="+",
+        )
+
         # Re-attach history sub-frame if currently expanded.
         if node.id in self._expanded_history:
             self._render_history(node.id)
+
+    # ------------------------------------------------------------
+    # Responsive row collapse (B-002, Phase 4d)
+    # ------------------------------------------------------------
+
+    def _apply_responsive_layout(
+        self, node_id: str, row: tk.Frame,
+    ) -> None:
+        """Hide / re-pack optional controls based on row width.
+
+        Below ``_RESPONSIVE_COLLAPSE_PX`` the optional row controls
+        (swatch, legend toggle, linestyle canvas, history button) are
+        ``pack_forget``-ed so the always-visible minimum (state, ☑
+        visibility, label, ⚙ gear, ✕) keeps the row usable on a
+        narrow sidebar. At or above the threshold the optional
+        controls are re-packed in the original layout order.
+
+        The right-side optional widgets are re-packed in the same
+        order as the initial build (``hist`` → ``ls_canvas`` → ``leg``)
+        so each subsequent ``side="right"`` pack lands to the left of
+        the previously packed right-side controls — matching the
+        original visual order ``leg ls_canvas hist gear x``. The
+        swatch is re-inserted with ``before=vis_cb`` because a plain
+        ``side="left"`` would place it after ``label`` (which has
+        ``fill="x", expand=True`` and consumes the remaining left
+        space).
+        """
+        widgets = self._optional_row_widgets.get(node_id)
+        if widgets is None:
+            return
+        try:
+            width = row.winfo_width()
+        except tk.TclError:
+            return
+        # Tk reports width=1 before the widget is realised in
+        # geometry; ignore those Configure events so we don't
+        # spuriously collapse a row that hasn't been laid out yet.
+        if width <= 1:
+            return
+
+        if width < _RESPONSIVE_COLLAPSE_PX:
+            for name in ("swatch", "leg", "ls_canvas", "hist"):
+                w = widgets.get(name)
+                if w is None:
+                    continue
+                try:
+                    if w.winfo_ismapped():
+                        w.pack_forget()
+                except tk.TclError:
+                    pass
+            return
+
+        # Wide enough — restore optional controls if any are hidden.
+        swatch = widgets.get("swatch")
+        vis_cb = widgets.get("vis_cb")
+        if (swatch is not None
+                and vis_cb is not None
+                and not swatch.winfo_ismapped()):
+            try:
+                swatch.pack(side="left", padx=2, before=vis_cb)
+            except tk.TclError:
+                pass
+
+        for name in ("hist", "ls_canvas", "leg"):
+            w = widgets.get(name)
+            if w is None:
+                continue
+            if w.winfo_ismapped():
+                continue
+            try:
+                w.pack(side="right", padx=(2, 0))
+            except tk.TclError:
+                pass
 
     # ------------------------------------------------------------
     # Sweep group row
