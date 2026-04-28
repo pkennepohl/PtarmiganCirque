@@ -676,6 +676,78 @@ Identified during Phase 4f while implementing single-node export.
    schema regression. Phase 5 / 6 should pin a stricter
    serialiser when params shapes widen.
 
+### Friction points carried forward from Phase 4g
+
+These are concrete obstacles the next Phase 4 session will hit.
+Identified during Phase 4g while implementing smoothing-as-operation
+and extracting `node_styles.default_spectrum_style` as the
+four-caller threshold sibling commit. **Do not fix until the
+relevant subsequent Phase 4 session.**
+
+1. **`_PALETTE` is now duplicated in four modules.** Phase 4c
+   friction point #5 / Phase 4e friction point #2 flagged the
+   duplication; Phase 4g adds a fourth copy in
+   `uvvis_smoothing._PALETTE` and a fourth term in the
+   `_PALETTE[(n_uvvis + n_baseline + n_normalised + n_smoothed) %
+   len(_PALETTE)]` index expression. The cleanest extraction is a
+   `_pick_default_color(graph)` helper that walks every
+   spectrum-shaped NodeType and picks the next palette entry; the
+   helper would also subsume the `n_X` count list. Defer until a
+   fifth caller lands (Phase 5 XANES smoothing or deglitch on
+   UV/Vis), or pair with the Send-to-Compare session if it touches
+   the same files.
+2. **The status-bar API split persists.** Phase 4e friction point
+   #5 noted that the baseline section updates
+   `self._status_lbl.config(...)` inline while the
+   `NormalisationPanel` calls back through `_set_status_message`.
+   The new `SmoothingPanel` follows the cleaner callback shape, so
+   two of three sections are now on the callback path. Migrating
+   the inline baseline path is a one-commit sweep but stays out of
+   this session's scope per the Phase 4g brief (no-touch list
+   includes `uvvis_baseline`).
+3. **`SmoothingPanel` reflects the same "no row-selection model"
+   workaround as baseline / normalisation.** Phase 4c friction
+   point #1 / Phase 4e friction point's subject-combobox carried
+   forward — three left-panel subwidgets now host their own
+   subject combobox. The pattern is now visible enough that a
+   single shared `SubjectComboboxAdapter` (or, as Phase 4c
+   originally suggested, a row-selection state on
+   `ScanTreeWidget`) would be a real cleanup. Revisit with
+   peak-picking (the fourth subject-list caller).
+4. **`OperationNode.params` carries `int` for `window_length` /
+   `polyorder` instead of resolved-type-tagged values.** Phase 4f
+   friction point #6 already flagged the `default=str` JSON
+   fallback; SMOOTH params are pure Python ints / strings so they
+   round-trip cleanly today, but a future XANES smoothing session
+   that wants `Decimal` precision (e.g., for k-window roll-off
+   tapers) will hit the same fallback. Phase 5 / 6 should pin a
+   stricter serialiser when params shapes widen.
+5. **The four panels in the left pane are now visually crowded.**
+   The left pane stacks Baseline (subject + mode + per-mode rows +
+   button), Normalisation (subject + mode + window rows + button),
+   Smoothing (subject + mode + per-mode rows + button) for a total
+   of three near-identical sections — and Phase 5 / 6 / OLIS
+   correction will add more. Even with the horizontal separators
+   the visual hierarchy is starting to flatten. Possibilities for
+   a future polish session: collapsible sections per CS-07
+   §"left-panel layout grammar", a dropdown that selects "active
+   operation" and renders only that section, or a mini-tab strip
+   inside the left pane. Decision deferred until a user reports
+   it as friction.
+6. **`scan_tree_widget._DEFAULT_STYLE` /
+   `style_dialog._UNIVERSAL_DEFAULTS` still carry the same eight
+   keys as `node_styles.default_spectrum_style`.** Phase 4g
+   extracted the spectrum-producing default into the new module
+   but kept the two UI-side fallback maps in their original
+   widget files (their role is "fallback when `node.style` is
+   missing a key", not "factory dict for fresh node creation").
+   The duplication is small (one additional key set in two
+   places) and the role split is real, so the carry-forward is
+   intentional. Revisit if the universal-key list grows further
+   or if a future tab needs a non-spectrum style schema (e.g.,
+   FEFF paths) where the fallback maps would diverge from the
+   spectrum factory anyway.
+
 | Status | Priority | Item | Notes |
 |---|---|---|---|
 | ✅ | 🔴 | **Migrate UV/Vis to node model** | UVVisScan → DataNode(type=UVVIS). File load → RAW\_FILE + LOAD + UVVIS triple, all COMMITTED (Phase 4a Part A; CS-13 implementation notes) |
@@ -690,7 +762,7 @@ Identified during Phase 4f while implementing single-node export.
 | ⏳ | 🟡 | **OLIS integrating sphere correction** | Three-input operation node (sample + reference + blank → corrected). See OQ-004 for multi-input UI design |
 | ⏳ | 🟡 | **Interactive normalisation** | Normalise to user-specified wavelength or integration region |
 | ⏳ | 🟡 | **Difference spectra** | Two-input operation node. See OQ-004 |
-| ⏳ | 🟡 | **Smoothing** | Savitzky-Golay or moving average; creates provisional SMOOTHED node |
+| ✅ | 🟡 | **Smoothing** | Savitzky-Golay or moving average; creates provisional SMOOTHED node. Single OperationType.SMOOTH with `params["mode"]` ∈ {"savgol", "moving_avg"} (mirrors CS-15 / CS-16). `SmoothingPanel` co-located in `uvvis_smoothing.py` (Phase 4g; CS-18). `node_styles.default_spectrum_style` extracted as the four-caller threshold sibling commit |
 | ⏳ | 🟢 | **Second derivative** | Creates provisional node; useful for resolving overlapping bands |
 | ⏳ | 🟢 | **Beer-Lambert / concentration** | Use known ε to extract concentration, or fit ε from known concentration |
 
@@ -908,11 +980,16 @@ the resolving phase + commit SHA appended to the row.
 
 ---
 
-*Document version: 1.3 — April 2026*
+*Document version: 1.4 — April 2026*
 *1.1: Known Bugs register added 2026-04-27 after Phase 4b manual testing.*
 *1.2: Phase 4c — baseline correction lands; B-001 / B-003 / B-004
 resolved; Phase 4c friction points logged.*
 *1.3: Phase 4d — responsive sidebar row collapse + StyleDialog
 universal `visible` / `in_legend`; B-002 resolved; Phase 4d
 friction points logged.*
+*1.4: Phase 4g — UV/Vis smoothing lands (CS-18); Smoothing item
+marked ✅; Phase 4g friction points logged. (Phase 4e — normalisation
+as operation — and Phase 4f — single-node export — were logged in
+their respective COMPONENTS.md sections; not separately versioned
+here.)*
 *Supersedes: BACKLOG.md (original)*

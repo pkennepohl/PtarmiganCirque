@@ -1999,6 +1999,159 @@ The UV/Vis tab is the first host (`UVVisTab._on_export_node`).
 
 ---
 
+## CS-18: UV/Vis Smoothing
+
+**File:** `uvvis_smoothing.py` (pure module + `SmoothingPanel`
+co-located) + `uvvis_tab.py` left panel
+**Depends on:** CS-01 (ProjectGraph), CS-02 (DataNode `SMOOTHED`
+variant), CS-03 (OperationNode `SMOOTH` variant), CS-07 (UV/Vis
+left panel), `numpy`, `scipy.signal.savgol_filter`
+**Depended on by:** UV/Vis tab — third user-initiated processing
+operation in the new architecture (Phase 4g); fourth
+spectrum-producing operation (counting LOAD as the zeroth)
+
+### Responsibility
+
+Smooth a UV/Vis spectrum, producing a new `SMOOTHED` `DataNode`.
+Each Apply gesture is a single provisional operation; the user
+inspects the result and decides to commit (lock in) or discard
+via the right-sidebar `ScanTreeWidget`.
+
+### Two modes (single OperationType, params discriminated by mode)
+
+A single `OperationType.SMOOTH` covers both. The discriminator is
+`params["mode"]`; the remaining keys are the mode-specific
+sub-schema. Mirrors the CS-15 (BASELINE) / CS-16 (NORMALISE)
+convention.
+
+| Mode | Required `params` keys | Algorithm |
+|---|---|---|
+| `savgol`     | `window_length` (odd int, > `polyorder`, ≤ len(absorbance)), `polyorder` (int ≥ 0) | `scipy.signal.savgol_filter`. The default starting parameters in the panel are `window_length=5`, `polyorder=2` (canonical UV/Vis Savitzky-Golay). |
+| `moving_avg` | `window_length` (int ≥ 1, ≤ len(absorbance))                                       | Reflect-padded uniform moving average. `window_length == 1` is the identity (returns a copy). Odd `window_length` keeps the kernel centred at every sample; the panel's spinbox steps in 2s to encourage that. |
+
+There is no `none` mode — the absence of smoothing is the absence
+of a SMOOTHED node, not a no-op operation. The dispatcher rejects
+`"none"` (and any other unknown mode) with `ValueError`.
+
+### Pure module
+
+The compute layer is Tk-free and graph-free:
+
+```python
+import uvvis_smoothing as us
+smoothed = us.compute(
+    "savgol", wavelength_nm, absorbance,
+    {"window_length": 11, "polyorder": 2},
+)
+```
+
+Each `compute_*` returns the smoothed absorbance as a numpy array
+of the same shape as `absorbance`. Missing required params raise
+`KeyError`; bad inputs (shape mismatch, even window length, polyorder
+≥ window length, window length > signal length) raise `ValueError`.
+The panel catches both and reports them via `messagebox`.
+
+### Provisional / Commit / Discard flow
+
+Per ARCHITECTURE.md §5. One Apply gesture creates exactly two nodes
+wired `parent → op → child`:
+
+* **`OperationNode`** (`type=SMOOTH`,
+  `engine="internal"`, `engine_version=PTARMIGAN_VERSION`,
+  `params={"mode": ..., **mode_specific}`,
+  `state=PROVISIONAL`).
+* **`DataNode`** (`type=SMOOTHED`,
+  arrays `{wavelength_nm: parent_wl, absorbance: smoothed}`,
+  metadata carried forward from the parent plus
+  `smoothing_mode` + `smoothing_parent_id`,
+  `state=PROVISIONAL`, default style picked from the loader's
+  palette so the new curve is visually distinct).
+
+The UV/Vis tab subscribes to graph events as before; the
+`ScanTreeWidget` filter expanded from `[NodeType.UVVIS,
+NodeType.BASELINE, NodeType.NORMALISED]` to `[NodeType.UVVIS,
+NodeType.BASELINE, NodeType.NORMALISED, NodeType.SMOOTHED]` so
+the new node appears in the right sidebar with the provisional
+indicator. Commit (`graph.commit_node`) and discard
+(`graph.discard_node`) flow through the existing `ScanTreeWidget`
+gestures.
+
+`_redraw` iterates `self._spectrum_nodes()` (UVVIS + BASELINE +
+NORMALISED + SMOOTHED) and renders all four via the same
+matplotlib code path — they share the `arrays["wavelength_nm"]` +
+`arrays["absorbance"]` convention, so no rendering branch is
+needed.
+
+### Left-panel UI (CS-07 §"UV/Vis left panel" + Phase 4g)
+
+`SmoothingPanel` is a `tk.Frame` subclass that lives below the
+normalisation section in the left panel, separated by a horizontal
+`ttk.Separator`. The panel hosts:
+
+* **Subject combobox** — chooses which UVVIS / BASELINE /
+  NORMALISED / SMOOTHED node to smooth. Chained smoothing is
+  allowed (a SMOOTHED node is itself a candidate subject).
+  Re-populated on graph events that change the live set
+  (`NODE_ADDED`, `NODE_DISCARDED`, `NODE_LABEL_CHANGED`,
+  `NODE_ACTIVE_CHANGED`).
+* **Mode combobox** — `savgol` / `moving_avg`. On change the
+  parameter row frame rebuilds.
+* **Per-mode parameter rows** —
+  * savgol: window-length spinbox (odd, default 5) + polyorder
+    spinbox (default 2).
+  * moving_avg: window-length spinbox (odd, default 5).
+* **`Apply Smoothing` button** — runs `_apply()`.
+
+Anchor capture from the plot is not relevant for smoothing
+(the operation is global, not window-bounded). Live preview is
+out of scope per CS-15 / CS-16 — each Apply produces a fresh
+provisional node, and iteration is via discard + re-apply.
+
+### Implementation notes (Phase 4g)
+
+* **Single `OperationType.SMOOTH` decision.** Resolved in favour
+  of one variant + a `mode`-discriminated params dict rather than
+  separate `SMOOTH_SAVGOL` / `SMOOTH_MOVING_AVG` variants. Mirrors
+  the CS-15 / CS-16 precedent so all three user-initiated UV/Vis
+  operations share the same shape.
+* **Subject is selected, not implicit.** The panel hosts its own
+  combobox of every live spectrum-shaped node, fed by a callable
+  the host hands over (`spectrum_nodes_fn`). Adding a row-selection
+  state to `ScanTreeWidget` was deferred (Phase 4c friction
+  point #1; carried forward through Phase 4e and 4g).
+* **SMOOTHED renders identically to UVVIS / BASELINE / NORMALISED.**
+  All four share the array-key convention. The sidebar filter and
+  `_spectrum_nodes` walk were widened rather than building a
+  parallel rendering branch.
+* **Default colour picked from the same palette.** A SMOOTHED
+  node's default colour is `_PALETTE[(n_uvvis + n_baseline +
+  n_normalised + n_smoothed) % len(_PALETTE)]` so a parent and its
+  derivatives are visually distinct without requiring the user to
+  pick a colour. Phase 4c friction point #5 / Phase 4e friction
+  point #2 already flagged the index-expression duplication;
+  carried forward per the Phase 4g brief.
+* **Default-style extraction (`node_styles.default_spectrum_style`).**
+  Phase 4d friction point #3 / Phase 4e friction point #1 set the
+  four-caller threshold for extracting the spectrum-producing
+  default-style dict. Phase 4g lands that extraction as a sibling
+  commit: `uvvis_tab._default_uvvis_style`,
+  `uvvis_normalise._default_normalised_style`, and the new
+  `uvvis_smoothing` SMOOTHED-node creation all import
+  `default_spectrum_style` from `node_styles.py`. The widget /
+  dialog UI fallbacks (`scan_tree_widget._DEFAULT_STYLE`,
+  `style_dialog._UNIVERSAL_DEFAULTS`) are intentionally kept
+  adjacent to the widgets that read them — their role is "fallback
+  when `node.style` is missing a key" rather than "factory dict
+  for fresh node creation".
+* **Reflect-padded edges in moving_avg.** A boxcar convolution
+  with zero padding pulls edge samples toward zero; reflect mode
+  preserves the local mean, so a constant signal comes out
+  exactly constant (pinned in the unit tests). The Savitzky-Golay
+  filter handles edges via scipy's default `mode="interp"` — also
+  edge-aware, also exact on polynomials of order ≤ `polyorder`.
+
+---
+
 ## CS-04 implementation notes (Phase 4c)
 
 * **B-001 fix — inline history expansion.** `_render_history`
@@ -2064,7 +2217,7 @@ The UV/Vis tab is the first host (`UVVisTab._on_export_node`).
 
 ---
 
-*Document version: 1.6 — April 2026*
+*Document version: 1.7 — April 2026*
 *1.1: CS-13 implementation notes added in Phase 4a.*
 *1.2: CS-14 Plot Settings Dialog added in Phase 4b.*
 *1.3: CS-15 UV/Vis Baseline Correction + CS-04 implementation
@@ -2081,5 +2234,11 @@ gains the ``Export…`` row context-menu entry + the
 ``export_cb`` constructor kwarg. CS-13 gains a forward-compat
 note tying the export header shape to the future project-save
 serialiser.*
+*1.7: CS-18 UV/Vis Smoothing added in Phase 4g (Savitzky-Golay
++ moving average; mode-discriminated SMOOTH OperationType
+mirroring CS-15 / CS-16). `node_styles.default_spectrum_style`
+extracted as the four-caller threshold for the spectrum-
+producing default-style dict; `uvvis_tab` and `uvvis_normalise`
+migrated to it alongside the new `uvvis_smoothing`.*
 *To be updated as Open Questions are resolved and new components
 are specified.*
