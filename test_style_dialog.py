@@ -483,6 +483,8 @@ class TestStyleDialogApplyToAll(unittest.TestCase):
             "color": "#ff0000",
             "fill": True,
             "fill_alpha": 0.2,
+            "visible": True,
+            "in_legend": True,
         }))
         seen: list = []
         dlg = self.StyleDialog(
@@ -491,10 +493,11 @@ class TestStyleDialogApplyToAll(unittest.TestCase):
         )
         dlg.update_idletasks()
 
-        # Universal section has six per-row ∀ buttons.
+        # Universal section has eight per-row ∀ buttons after Phase 4d
+        # added ``visible`` and ``in_legend`` for B-002.
         btns = self._find_apply_one_buttons(dlg)
         self.assertEqual(
-            len(btns), 6,
+            len(btns), 8,
             "expected one ∀ per universal-section row",
         )
         for b in btns:
@@ -504,7 +507,8 @@ class TestStyleDialogApplyToAll(unittest.TestCase):
         self.assertCountEqual(
             keys,
             ["linestyle", "linewidth", "alpha",
-             "color", "fill", "fill_alpha"],
+             "color", "fill", "fill_alpha",
+             "visible", "in_legend"],
         )
 
     # ---- bottom ∀ Apply to All ----
