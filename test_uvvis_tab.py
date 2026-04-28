@@ -737,5 +737,347 @@ class TestUVVisTabPlotSettingsIntegration(unittest.TestCase):
         self.assertEqual(self.tab._plot_config["grid"], False)
 
 
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestUVVisTabBaseline(unittest.TestCase):
+    """Phase 4c — UV/Vis baseline correction (CS-15).
+
+    Covers the left-panel chrome and the Apply gesture's
+    materialisation of a provisional ``BASELINE`` OperationNode +
+    DataNode pair. The ScanTreeWidget integration (provisional
+    indicator, commit, discard) is exercised through the existing
+    public API.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from uvvis_tab import UVVisTab
+        cls.UVVisTab = UVVisTab
+
+    def setUp(self):
+        self.host = tk.Frame(_root)
+        self.host.pack()
+        self.graph = ProjectGraph()
+        self.tab = self.UVVisTab(self.host, graph=self.graph)
+
+    def tearDown(self):
+        try:
+            self.tab.destroy()
+        except Exception:
+            pass
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    def _add_uvvis(self, nid: str = "u1") -> str:
+        wl = np.linspace(200.0, 800.0, 601)
+        peak = np.exp(-((wl - 500.0) / 25.5) ** 2)
+        bg = 0.10 + 0.0005 * wl
+        absorb = peak + bg
+        self.graph.add_node(DataNode(
+            id=nid, type=NodeType.UVVIS,
+            arrays={"wavelength_nm": wl, "absorbance": absorb},
+            metadata={"x_unit": "nm", "y_unit": "absorbance",
+                      "instrument": "synthetic",
+                      "source_file": f"syn_{nid}"},
+            label=nid, state=NodeState.COMMITTED,
+            style={"color": "#1f77b4", "linestyle": "solid",
+                   "linewidth": 1.5, "alpha": 0.9, "visible": True,
+                   "in_legend": True, "fill": False, "fill_alpha": 0.08},
+        ))
+        return nid
+
+    # ---- left panel chrome -----------------------------------------
+
+    def test_left_panel_exists(self):
+        self.assertTrue(hasattr(self.tab, "_baseline_mode"))
+        self.assertTrue(hasattr(self.tab, "_baseline_mode_cb"))
+        self.assertTrue(hasattr(self.tab, "_baseline_subject_cb"))
+        self.assertTrue(hasattr(self.tab, "_apply_baseline_btn"))
+        # All four modes are exposed on the combobox.
+        values = self.tab._baseline_mode_cb.cget("values")
+        # Tk returns either a tuple or a string of space-separated names.
+        if isinstance(values, str):
+            values = tuple(values.split())
+        self.assertEqual(
+            tuple(values),
+            ("linear", "polynomial", "spline", "rubberband"),
+        )
+
+    def test_mode_change_swaps_parameter_rows(self):
+        # Linear mode → 2 anchor entries; polynomial mode → spinbox +
+        # 2 fit-window entries (3 rows); spline mode → 1 entry;
+        # rubberband mode → "no parameters" label only.
+        self.tab._baseline_mode.set("linear")
+        self.tab.update_idletasks()
+        linear_count = len(self.tab._baseline_params_frame.winfo_children())
+
+        self.tab._baseline_mode.set("polynomial")
+        self.tab.update_idletasks()
+        poly_count = len(self.tab._baseline_params_frame.winfo_children())
+
+        self.tab._baseline_mode.set("spline")
+        self.tab.update_idletasks()
+        spline_count = len(self.tab._baseline_params_frame.winfo_children())
+
+        self.tab._baseline_mode.set("rubberband")
+        self.tab.update_idletasks()
+        rb_count = len(self.tab._baseline_params_frame.winfo_children())
+
+        # Each mode rebuilds the frame; counts differ between modes.
+        self.assertGreater(linear_count, 0)
+        self.assertGreater(poly_count, linear_count,
+                           "polynomial has more rows than linear")
+        self.assertGreater(spline_count, 0)
+        self.assertEqual(rb_count, 1,
+                         "rubberband shows only the 'no parameters' label")
+
+    # ---- Apply materialises provisional pair -----------------------
+
+    def test_apply_creates_provisional_op_and_data_node(self):
+        self._add_uvvis("u1")
+        # Pick the freshly-loaded subject in the combobox.
+        items = self.tab._baseline_subject_cb.cget("values")
+        if isinstance(items, str):
+            items = tuple(items.split())
+        self.assertTrue(len(items) >= 1, "subject combobox should list u1")
+        self.tab._baseline_subject.set(items[0])
+
+        self.tab._baseline_mode.set("linear")
+        self.tab._baseline_anchor_lo.set("200")
+        self.tab._baseline_anchor_hi.set("800")
+
+        n_before = len(self.graph.nodes)
+        op_id, out_id = self.tab._apply_baseline()
+        n_after = len(self.graph.nodes)
+        self.assertEqual(n_after - n_before, 2,
+                         "Apply must add exactly one op + one data node")
+
+        op = self.graph.get_node(op_id)
+        out = self.graph.get_node(out_id)
+        self.assertIsInstance(op, OperationNode)
+        self.assertEqual(op.type, OperationType.BASELINE)
+        self.assertEqual(op.engine, "internal")
+        self.assertEqual(op.state, NodeState.PROVISIONAL)
+        # Params completeness — mode + sub-schema for linear.
+        self.assertEqual(op.params["mode"], "linear")
+        self.assertAlmostEqual(op.params["anchor_lo_nm"], 200.0)
+        self.assertAlmostEqual(op.params["anchor_hi_nm"], 800.0)
+
+        self.assertIsInstance(out, DataNode)
+        self.assertEqual(out.type, NodeType.BASELINE)
+        self.assertEqual(out.state, NodeState.PROVISIONAL)
+        self.assertIn("wavelength_nm", out.arrays)
+        self.assertIn("absorbance", out.arrays)
+        # Edges parent → op → out.
+        self.assertEqual(self.graph.parents_of(op_id), ["u1"])
+        self.assertEqual(self.graph.children_of(op_id), [out_id])
+
+    def test_apply_corrected_data_recovers_unit_peak_height(self):
+        # End-to-end sanity: with anchors at the spectrum extremes,
+        # the corrected absorbance peak ≈ 1.0 (the synthetic Gaussian
+        # height) within tolerance.
+        self._add_uvvis("u1")
+        items = self.tab._baseline_subject_cb.cget("values")
+        if isinstance(items, str):
+            items = tuple(items.split())
+        self.tab._baseline_subject.set(items[0])
+        self.tab._baseline_mode.set("linear")
+        self.tab._baseline_anchor_lo.set("200")
+        self.tab._baseline_anchor_hi.set("800")
+
+        _, out_id = self.tab._apply_baseline()
+        out = self.graph.get_node(out_id)
+        self.assertAlmostEqual(float(out.arrays["absorbance"].max()),
+                               1.0, places=4)
+
+    # ---- ScanTreeWidget integration --------------------------------
+
+    def test_provisional_baseline_appears_in_sidebar(self):
+        self._add_uvvis("u1")
+        items = self.tab._baseline_subject_cb.cget("values")
+        if isinstance(items, str):
+            items = tuple(items.split())
+        self.tab._baseline_subject.set(items[0])
+        self.tab._baseline_mode.set("rubberband")
+        _, out_id = self.tab._apply_baseline()
+        self.tab._scan_tree.update_idletasks()
+
+        # The new BASELINE node owns a row in the right sidebar.
+        self.assertIn(out_id, self.tab._scan_tree._row_frames)
+
+        # That row's leftmost label is the provisional indicator (⋯).
+        row = self.tab._scan_tree._row_frames[out_id]
+        first_label = next(
+            (w for w in row.winfo_children() if isinstance(w, tk.Label)),
+            None,
+        )
+        self.assertIsNotNone(first_label)
+        self.assertEqual(first_label.cget("text"), "⋯")
+
+    def test_commit_promotes_baseline_state(self):
+        self._add_uvvis("u1")
+        items = self.tab._baseline_subject_cb.cget("values")
+        if isinstance(items, str):
+            items = tuple(items.split())
+        self.tab._baseline_subject.set(items[0])
+        self.tab._baseline_mode.set("rubberband")
+        _, out_id = self.tab._apply_baseline()
+
+        # Commit through the public graph API (the widget's
+        # right-click menu also calls graph.commit_node).
+        self.graph.commit_node(out_id)
+        self.assertEqual(self.graph.get_node(out_id).state,
+                         NodeState.COMMITTED)
+        self.tab._scan_tree.update_idletasks()
+        # State indicator now shows committed.
+        row = self.tab._scan_tree._row_frames[out_id]
+        first_label = next(
+            (w for w in row.winfo_children() if isinstance(w, tk.Label)),
+            None,
+        )
+        self.assertIsNotNone(first_label)
+        self.assertEqual(first_label.cget("text"), "🔒")
+
+    def test_discard_removes_baseline_from_plot(self):
+        self._add_uvvis("u1")
+        items = self.tab._baseline_subject_cb.cget("values")
+        if isinstance(items, str):
+            items = tuple(items.split())
+        self.tab._baseline_subject.set(items[0])
+        self.tab._baseline_mode.set("rubberband")
+        _, out_id = self.tab._apply_baseline()
+        self.tab.update_idletasks()
+
+        # Two lines: the parent UVVIS + the new provisional BASELINE.
+        self.assertEqual(len(self.tab._ax.get_lines()), 2)
+
+        self.graph.discard_node(out_id)
+        self.tab.update_idletasks()
+        # Only the parent UVVIS remains.
+        lines = self.tab._ax.get_lines()
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(lines[0].get_label(), "u1")
+
+    def test_subject_combobox_updates_when_baseline_added(self):
+        # After Apply, the new BASELINE node is a candidate subject
+        # itself (chained baseline correction is allowed).
+        self._add_uvvis("u1")
+        items_before = self.tab._baseline_subject_cb.cget("values")
+        if isinstance(items_before, str):
+            items_before = tuple(items_before.split())
+        self.assertEqual(len(items_before), 1)
+
+        self.tab._baseline_subject.set(items_before[0])
+        self.tab._baseline_mode.set("rubberband")
+        self.tab._apply_baseline()
+        self.tab.update_idletasks()
+
+        items_after = self.tab._baseline_subject_cb.cget("values")
+        if isinstance(items_after, str):
+            items_after = tuple(items_after.split())
+        self.assertEqual(len(items_after), 2,
+                         "subject list should now include the BASELINE node")
+
+
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestUVVisTabBugB003(unittest.TestCase):
+    """Phase 4c — B-003: X-axis limit entries must apply under Norm: area.
+
+    Regression: ``np.trapz`` was removed in numpy 2.x. Under
+    ``Norm: area`` the integration call inside ``_y_with_norm``
+    raised ``AttributeError`` from inside the ``<Return>`` Tk
+    callback, Tk swallowed the traceback to stderr, and the user
+    saw the X-limit entries silently fail to apply. The fix
+    switches to ``np.trapezoid`` (the numpy 2.x replacement) and
+    takes the absolute value so an inverted nm axis cannot produce
+    a negative divisor.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from uvvis_tab import UVVisTab
+        cls.UVVisTab = UVVisTab
+
+    def setUp(self):
+        self.host = tk.Frame(_root)
+        self.host.pack()
+        self.graph = ProjectGraph()
+        self.tab = self.UVVisTab(self.host, graph=self.graph)
+
+    def tearDown(self):
+        try:
+            self.tab.destroy()
+        except Exception:
+            pass
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    def _add_uvvis(self, nid: str = "u1") -> None:
+        wl = np.linspace(200.0, 800.0, 601)
+        absorb = np.exp(-((wl - 500.0) / 50.0) ** 2) + 0.05
+        self.graph.add_node(DataNode(
+            id=nid, type=NodeType.UVVIS,
+            arrays={"wavelength_nm": wl, "absorbance": absorb},
+            metadata={"source_file": "syn"},
+            label=nid, state=NodeState.COMMITTED,
+            style={"color": "#111", "linestyle": "solid",
+                   "linewidth": 1.5, "alpha": 0.9, "visible": True,
+                   "in_legend": True, "fill": False, "fill_alpha": 0.08},
+        ))
+
+    def test_xlim_entries_apply_under_norm_area(self):
+        self._add_uvvis()
+        self.tab._norm_mode.set("area")
+        self.tab._xlim_lo.set("300")
+        self.tab._xlim_hi.set("700")
+        self.tab._redraw()
+        # nm axis is rendered descending (CS-07 / migrated decision in
+        # BACKLOG.md), so x-limits land as (hi, lo).
+        x0, x1 = self.tab._ax.get_xlim()
+        self.assertAlmostEqual(x0, 700.0)
+        self.assertAlmostEqual(x1, 300.0)
+
+    def test_xlim_entries_still_apply_under_norm_peak(self):
+        # Sanity: peak normalisation has always worked; this guards
+        # against a future change breaking the working path while
+        # fixing the broken one.
+        self._add_uvvis()
+        self.tab._norm_mode.set("peak")
+        self.tab._xlim_lo.set("300")
+        self.tab._xlim_hi.set("700")
+        self.tab._redraw()
+        x0, x1 = self.tab._ax.get_xlim()
+        self.assertAlmostEqual(x0, 700.0)
+        self.assertAlmostEqual(x1, 300.0)
+
+    def test_norm_area_divisor_is_positive_with_descending_nm(self):
+        # Regression for the "inverted nm makes the area negative"
+        # hypothesis the brief flagged: even when wavelength_nm is
+        # stored descending in the source array, the divisor must be
+        # positive so y is normalised in the correct direction.
+        wl_desc = np.linspace(800.0, 200.0, 601)
+        absorb = np.exp(-((wl_desc - 500.0) / 50.0) ** 2) + 0.05
+        self.graph.add_node(DataNode(
+            id="desc", type=NodeType.UVVIS,
+            arrays={"wavelength_nm": wl_desc, "absorbance": absorb},
+            metadata={"source_file": "syn"},
+            label="desc", state=NodeState.COMMITTED,
+            style={"color": "#111", "linestyle": "solid",
+                   "linewidth": 1.5, "alpha": 0.9, "visible": True,
+                   "in_legend": True, "fill": False, "fill_alpha": 0.08},
+        ))
+        self.tab._norm_mode.set("area")
+        self.tab._redraw()
+        line = self.tab._ax.get_lines()[0]
+        ydata = line.get_ydata()
+        # Normalised by area: every value must be finite and the peak
+        # value should be positive (not flipped negative).
+        self.assertTrue(np.all(np.isfinite(ydata)))
+        self.assertGreater(float(np.max(ydata)), 0.0)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

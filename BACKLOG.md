@@ -300,7 +300,7 @@ feature.
 > in tab-private state. The broader graph-side view-state question
 > is still open and now interlocks with persistence (BACKLOG below).
 
-1. **No `BASELINE_*` `OperationType` variants beyond the existing
+1. ~~**No `BASELINE_*` `OperationType` variants beyond the existing
    `BASELINE`.** [nodes.py:96](nodes.py#L96) lists a single
    `BASELINE` `OperationType`, but Phase 4 (BACKLOG) calls for four
    distinct baseline modes — linear, polynomial, spline, and
@@ -308,7 +308,12 @@ feature.
    schemas. The next session needs to either (a) keep one
    `OperationType` and discriminate via `params["mode"]`, or (b)
    split into four variants. CS-03 §"Params completeness requirement"
-   bites either way: define the schema before implementing the UI.
+   bites either way: define the schema before implementing the UI.~~
+   **Resolved (Phase 4c):** kept one `OperationType.BASELINE` and
+   discriminate via `params["mode"]`; the four mode sub-schemas
+   are documented in CS-15 along with the linear/polynomial/spline/
+   rubberband algorithms. Params completeness verified by the
+   integration tests in `TestUVVisTabBaseline`.
 2. **Normalisation has no UI for parameter capture.** Existing
    top-bar combobox `_norm_mode` (`none`/`peak`/`area`) at
    [uvvis_tab.py:170](uvvis_tab.py#L170) is currently a *display*
@@ -442,12 +447,68 @@ Phase 4b while integrating the dialog into the UV/Vis pilot tab.
    different tick styles) the graph-side payload returns. Revisit
    in Phase 5/7.
 
+### Friction points carried forward from Phase 4c
+
+These are concrete obstacles the next Phase 4 session will hit.
+Identified during Phase 4c while implementing baseline correction
+and bundling the focused fixes for B-001 / B-003 / B-004. **Do not
+fix until the relevant subsequent Phase 4 session.**
+
+1. **No row-selection model on `ScanTreeWidget`.** The baseline
+   left panel uses a subject combobox listing every live UVVIS /
+   BASELINE node rather than reading a "selected row" from the
+   right sidebar (which has no selection state today). Adding a
+   selection model would let the left panel auto-track the user's
+   focus, but it widens the widget's surface noticeably. Revisit
+   when a second user-initiated operation lands (smoothing, peak
+   picking) and the duplicated combobox starts to feel like a
+   pattern.
+2. **Anchor capture from the plot is keyboard-only.** Linear,
+   polynomial, and spline modes require nm anchor wavelengths;
+   today the user types them in. A click-on-axis gesture
+   ("crosshair" mode) would be a major UX win but requires
+   matplotlib `mpl_connect` plumbing on the centre figure plus a
+   way to wire each anchor to its specific Tk variable. Out of
+   scope for Phase 4c; flag for the smoothing / peak-picking
+   session.
+3. **No live preview.** Each Apply produces a fresh provisional
+   node. Iterating means discard + re-apply. A dialog-style
+   "preview while sliders move" affordance would feel snappier
+   but conflicts with the provisional-node model (every preview
+   would mutate or create a node). Decision deferred until the
+   user reports it as friction.
+4. **Spline anchors are a comma-separated string.** The Tk Entry
+   accepting `"250, 350, 620, 750"` is the simplest UI but
+   doesn't validate until Apply. A list-managed widget (add /
+   remove / drag-reorder rows) is what CS-07 would prefer; the
+   spline mode is the only one that needs it. Revisit if the
+   peak-picking / smoothing sessions land widgets we can reuse.
+5. **`_PALETTE` is duplicated logic between UVVIS load and
+   BASELINE Apply.** Both paths index `_PALETTE` to pick a
+   default colour. Today it's two two-line snippets, but a third
+   path (smoothing, normalisation-as-operation) will make the
+   third copy. Probably extract to a `_pick_default_color(graph)`
+   helper at that point.
+6. **`_uvvis_nodes` vs. `_spectrum_nodes` divergence.** The tab
+   now has two near-identical helpers — UVVIS-only (used by
+   `_has_existing_load` and the ∀ apply-to-all callback) and
+   UVVIS+BASELINE (used by `_redraw`, the subject combobox).
+   This is fine today but will calcify into a bigger split if
+   normalisation-as-operation introduces a `NORMALISED` node
+   type the tab also wants to render. Revisit then.
+7. **Legacy "+ Add to TDDFT Overlay" button still synthesises
+   from UVVIS only.** `_add_selected_to_overlay` reads
+   `self._uvvis_nodes()` and silently skips BASELINE nodes —
+   correct today (overlay has no BASELINE knowledge) but the
+   shim retires when Phase 7 wires Send-to-Compare. No action
+   for Phase 4d/4e.
+
 | Status | Priority | Item | Notes |
 |---|---|---|---|
 | ✅ | 🔴 | **Migrate UV/Vis to node model** | UVVisScan → DataNode(type=UVVIS). File load → RAW\_FILE + LOAD + UVVIS triple, all COMMITTED (Phase 4a Part A; CS-13 implementation notes) |
 | ✅ | 🔴 | **Replace UV/Vis sidebar with ScanTreeWidget** | Retire existing compact grid table; ScanTreeWidget is the replacement (Phase 4a Part B) |
 | ✅ | 🔴 | **Replace UV/Vis style dialog with unified style dialog** | Existing UV/Vis style dialog is the reference; unified dialog supersedes it (Phase 4a Part C) |
-| ⏳ | 🔴 | **Baseline correction** | Linear (two-point), polynomial (order n), spline, rubberband/convex hull. Each application creates a provisional BASELINE node |
+| ✅ | 🔴 | **Baseline correction** | Linear (two-point), polynomial (order n), spline, rubberband/convex hull. Each application creates a provisional BASELINE node (Phase 4c; CS-15) |
 | ⏳ | 🔴 | **Export processed data** | Save committed node data to CSV or TXT; include provenance header |
 | ⏳ | 🔴 | **Normalisation as explicit operation** | Normalisation creates a provisional NORMALISED node rather than modifying data in place |
 | ⏳ | 🔴 | **"Send to Compare" action** | Replaces "Add to TDDFT Overlay". Available on committed nodes |
@@ -659,10 +720,10 @@ phase to touch files that its primary brief lists as no-modify.
 
 | ID | Severity | Bug | Spec ref | Resolve in |
 |---|---|---|---|---|
-| **B-001** | 🟡 | History expansion (`⌥n` click on a sidebar row) renders at the bottom of the sidebar instead of inline below the clicked row. With two datasets loaded, clicking the top row's history shows expanded entries below the *second* row, making the visual association ambiguous | CS-04 §6.2 ("inline, below row") | **Phase 4c** focused fix in `scan_tree_widget.py` |
+| **B-001** | ✅ Phase 4c | History expansion (`⌥n` click on a sidebar row) renders at the bottom of the sidebar instead of inline below the clicked row. With two datasets loaded, clicking the top row's history shows expanded entries below the *second* row, making the visual association ambiguous | CS-04 §6.2 ("inline, below row") | Resolved by commit `610746e` — `_render_history` now packs with `after=row`; one history pane open at a time across the widget |
 | **B-002** | 🔴 | Sidebar row controls do not adapt to sidebar width. At narrow widths the row overflows. The minimum always-visible set should be: dataset name + visibility checkbox + ⚙ gear button. Every other per-row control (colour swatch, legend toggle, linestyle canvas, linewidth entry, fill checkbox, history indicator, ✕) must collapse when the row narrows. The unified StyleDialog (CS-05) must then cover every collapsed control — which it currently does not: `style["visible"]` and `style["in_legend"]` have no controls in the dialog | CS-04 §6.1 + CS-05 universal section | **Phase 4d** dedicated session (responsive row + StyleDialog completeness) |
-| **B-003** | 🟡 | When `Norm: area` is active the X-axis limit entries no longer take effect on Apply / Return. `Norm: none` and `Norm: peak` both work. Likely interaction between `_y_with_norm`'s area integral and the post-render axis-limit application path in `_redraw` ([uvvis_tab.py:583-593](uvvis_tab.py#L583), [uvvis_tab.py:662-671](uvvis_tab.py#L662)) — verify before fixing | UV/Vis tab `_redraw` | **Phase 4c** focused fix in `uvvis_tab.py` |
-| **B-004** | 🟡 | No way to rename a dataset from the right sidebar via the right-click menu. CS-04 §"Context menu" lists `Rename` as a right-click entry; the implementation only landed Commit / Discard / Send to Compare. In-place double-click rename exists per Phase 2 but is undiscoverable. Add the context-menu entry; consider a label tooltip pointing at it | CS-04 §"Context menu" | **Phase 4c** focused fix in `scan_tree_widget.py` |
+| **B-003** | ✅ Phase 4c | When `Norm: area` is active the X-axis limit entries no longer take effect on Apply / Return. `Norm: none` and `Norm: peak` both work. Likely interaction between `_y_with_norm`'s area integral and the post-render axis-limit application path in `_redraw` ([uvvis_tab.py:583-593](uvvis_tab.py#L583), [uvvis_tab.py:662-671](uvvis_tab.py#L662)) — verify before fixing | UV/Vis tab `_redraw` | Resolved by commit `88ad2bf` — root cause was `np.trapz` removed in numpy 2.x; switched to `np.trapezoid` and took absolute value of the integral |
+| **B-004** | ✅ Phase 4c | No way to rename a dataset from the right sidebar via the right-click menu. CS-04 §"Context menu" lists `Rename` as a right-click entry; the implementation only landed Commit / Discard / Send to Compare. In-place double-click rename exists per Phase 2 but is undiscoverable. Add the context-menu entry; consider a label tooltip pointing at it | CS-04 §"Context menu" | Resolved by commit `7314a68` — the Rename menu entry was present since Phase 2 but `_begin_label_edit` raised `TclError` from `entry.pack(before=...)` after `pack_forget`, which silently broke both rename gestures; fixed the pack call |
 
 The Phase 4d responsive-row work (B-002) also needs to add `visible`
 and `in_legend` controls to the StyleDialog universal section so the
@@ -674,6 +735,8 @@ the resolving phase + commit SHA appended to the row.
 
 ---
 
-*Document version: 1.1 — April 2026*
+*Document version: 1.2 — April 2026*
 *1.1: Known Bugs register added 2026-04-27 after Phase 4b manual testing.*
+*1.2: Phase 4c — baseline correction lands; B-001 / B-003 / B-004
+resolved; Phase 4c friction points logged.*
 *Supersedes: BACKLOG.md (original)*

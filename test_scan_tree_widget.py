@@ -402,5 +402,210 @@ class TestScanTreeWidget(unittest.TestCase):
         self.assertNotIn(widget._on_graph_event, graph._subscribers)
 
 
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestScanTreeWidgetBugB001(unittest.TestCase):
+    """Phase 4c — B-001: history pane must render inline below the row.
+
+    Regression: the previous implementation packed the history
+    sub-frame at the end of the rows container (Tk's pack default)
+    and relied on a full rebuild to restore visual ordering. With
+    two rows, expanding history on the first row appeared
+    *underneath the second* row, making the row → history visual
+    association ambiguous.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from scan_tree_widget import ScanTreeWidget
+        cls.ScanTreeWidget = ScanTreeWidget
+
+    def setUp(self):
+        self.host = tk.Frame(_root)
+        self.host.pack()
+        self.graph = ProjectGraph()
+
+    def tearDown(self):
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    def _fresh_widget(self):
+        _, cb = _redraw_calls()
+        widget = self.ScanTreeWidget(
+            self.host, self.graph, [NodeType.UVVIS], cb,
+        )
+        widget.pack()
+        return widget
+
+    def test_history_frame_packs_immediately_after_clicked_row(self):
+        # Two committed UVVIS rows, neither expanded. The history
+        # toggle on the first row must place the sub-frame between
+        # the two rows in pack order.
+        a = _data("a", state=NodeState.COMMITTED)
+        b = _data("b", state=NodeState.COMMITTED)
+        self.graph.add_node(a)
+        self.graph.add_node(b)
+        widget = self._fresh_widget()
+        widget.update_idletasks()
+
+        widget._toggle_history("a")
+        widget.update_idletasks()
+
+        slaves = widget._rows_frame.pack_slaves()
+        # Three children: row_a, history_a, row_b — in that order.
+        self.assertEqual(len(slaves), 3,
+                         f"expected row_a, history_a, row_b; got {slaves}")
+        self.assertIs(slaves[0], widget._row_frames["a"])
+        self.assertIs(slaves[1], widget._history_frames["a"])
+        self.assertIs(slaves[2], widget._row_frames["b"])
+
+    def test_history_collapses_when_other_row_expanded(self):
+        # Spec: "Toggling history on a different row collapses the
+        # previous one (one history pane open at a time across the
+        # widget)."
+        self.graph.add_node(_data("a", state=NodeState.COMMITTED))
+        self.graph.add_node(_data("b", state=NodeState.COMMITTED))
+        widget = self._fresh_widget()
+        widget.update_idletasks()
+
+        widget._toggle_history("a")
+        self.assertIn("a", widget._expanded_history)
+        widget._toggle_history("b")
+        self.assertNotIn("a", widget._expanded_history)
+        self.assertIn("b", widget._expanded_history)
+        # And the new history frame sits between row_b and any
+        # subsequent row (here, only row_b after row_a).
+        slaves = widget._rows_frame.pack_slaves()
+        self.assertIs(slaves[0], widget._row_frames["a"])
+        self.assertIs(slaves[1], widget._row_frames["b"])
+        self.assertIs(slaves[2], widget._history_frames["b"])
+
+    def test_toggle_same_row_collapses_history(self):
+        self.graph.add_node(_data("a", state=NodeState.COMMITTED))
+        widget = self._fresh_widget()
+        widget.update_idletasks()
+
+        widget._toggle_history("a")
+        self.assertIn("a", widget._expanded_history)
+        widget._toggle_history("a")
+        self.assertNotIn("a", widget._expanded_history)
+        self.assertNotIn("a", widget._history_frames)
+
+
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestScanTreeWidgetBugB004(unittest.TestCase):
+    """Phase 4c — B-004: Rename context-menu entry triggers in-place edit.
+
+    Although the double-click rename pathway has worked since Phase 2,
+    the right-click menu entry was reported in Phase 4b manual testing
+    as missing. CS-04 §"Context menu" lists ``Rename`` as a
+    right-click entry. These tests pin (a) that the menu carries a
+    ``Rename`` entry and (b) that invoking it routes through the same
+    ``_begin_label_edit`` path as a double-click on the label.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from scan_tree_widget import ScanTreeWidget
+        cls.ScanTreeWidget = ScanTreeWidget
+
+    def setUp(self):
+        self.host = tk.Frame(_root)
+        self.host.pack()
+        self.graph = ProjectGraph()
+
+    def tearDown(self):
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    def _fresh_widget(self):
+        _, cb = _redraw_calls()
+        widget = self.ScanTreeWidget(
+            self.host, self.graph, [NodeType.UVVIS], cb,
+        )
+        widget.pack()
+        return widget
+
+    def test_context_menu_carries_rename_entry(self):
+        # Stub tk_popup so the menu gets constructed but never grabs
+        # input; capture the Menu so we can introspect its entries.
+        self.graph.add_node(_data("a", state=NodeState.COMMITTED))
+        widget = self._fresh_widget()
+        widget.update_idletasks()
+
+        captured: dict = {}
+        original_popup = tk.Menu.tk_popup
+
+        def _stub_popup(self, x, y, *args, **kwargs):
+            captured["menu"] = self
+
+        try:
+            tk.Menu.tk_popup = _stub_popup
+            fake_event = type("E", (), {"x_root": 0, "y_root": 0})()
+            widget._show_context_menu(fake_event, "a")
+        finally:
+            tk.Menu.tk_popup = original_popup
+
+        menu = captured.get("menu")
+        self.assertIsNotNone(menu, "context menu should have been built")
+        labels: list[str] = []
+        last = menu.index("end")
+        if last is not None:
+            for i in range(last + 1):
+                if menu.type(i) != "separator":
+                    labels.append(menu.entrycget(i, "label"))
+        self.assertIn("Rename", labels)
+
+    def test_rename_menu_invokes_in_place_edit(self):
+        # Calling the menu's Rename handler must replace the label
+        # widget with an Entry in exactly the same way a double-click
+        # does. We invoke the helper directly so we don't have to
+        # synthesise a tk_popup callback dispatch.
+        self.graph.add_node(_data("a", state=NodeState.COMMITTED))
+        widget = self._fresh_widget()
+        widget.update_idletasks()
+
+        row = widget._row_frames["a"]
+        entries_pre = [w for w in row.winfo_children()
+                       if isinstance(w, tk.Entry)]
+        self.assertEqual(entries_pre, [])
+
+        widget._begin_rename_via_menu("a")
+        widget.update_idletasks()
+
+        entries_post = [w for w in row.winfo_children()
+                        if isinstance(w, tk.Entry)]
+        self.assertEqual(len(entries_post), 1,
+                         "Rename should swap the label for an Entry")
+        self.assertEqual(entries_post[0].get(), "a")
+
+    def test_rename_menu_and_double_click_share_pathway(self):
+        # Both gestures invoke ``_begin_label_edit``. Patch the method
+        # and verify each gesture routes through it once with the
+        # expected node id.
+        self.graph.add_node(_data("a", state=NodeState.COMMITTED))
+        widget = self._fresh_widget()
+        widget.update_idletasks()
+
+        calls: list[str] = []
+        original = widget._begin_label_edit
+
+        def _spy(node_id, label_widget, row_frame):
+            calls.append(node_id)
+            # Don't actually mutate the row — we just want to confirm
+            # routing, not also test the edit body.
+
+        widget._begin_label_edit = _spy  # type: ignore[assignment]
+        try:
+            widget._begin_rename_via_menu("a")
+        finally:
+            widget._begin_label_edit = original  # type: ignore[assignment]
+
+        self.assertEqual(calls, ["a"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

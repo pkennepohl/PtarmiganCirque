@@ -44,6 +44,7 @@ from nodes import (
 from scan_tree_widget import ScanTreeWidget
 from style_dialog import open_style_dialog
 import plot_settings_dialog
+import uvvis_baseline
 from version import __version__ as PTARMIGAN_VERSION
 
 # ── Colour palette (loader-side default colour assignment) ────────────────────
@@ -185,6 +186,10 @@ class UVVisTab(tk.Frame):
         Live = state != DISCARDED *and* ``active`` is True. The list
         preserves insertion order (Python 3.7+ dict is ordered) so the
         sidebar's row order is deterministic across rebuilds.
+
+        Strictly UVVIS-typed (does not include derived BASELINE nodes);
+        callers that want to iterate every spectrum the tab renders
+        should use ``_spectrum_nodes`` instead.
         """
         out: List[DataNode] = []
         for node in self._graph.nodes_of_type(NodeType.UVVIS, state=None):
@@ -193,6 +198,26 @@ class UVVisTab(tk.Frame):
             if not node.active:
                 continue
             out.append(node)
+        return out
+
+    def _spectrum_nodes(self) -> List[DataNode]:
+        """Return every UVVIS or BASELINE DataNode the tab considers live.
+
+        The tab plots both kinds identically; ``_redraw`` and the
+        baseline subject combobox iterate this helper. BASELINE nodes
+        are listed *after* UVVIS nodes (the underlying
+        ``nodes_of_type`` walk is type-keyed) so a parent appears
+        above its derived baseline in the sidebar / subject list when
+        the dict ordering is preserved.
+        """
+        out: List[DataNode] = []
+        for ntype in (NodeType.UVVIS, NodeType.BASELINE):
+            for node in self._graph.nodes_of_type(ntype, state=None):
+                if node.state == NodeState.DISCARDED:
+                    continue
+                if not node.active:
+                    continue
+                out.append(node)
         return out
 
     def _has_existing_load(self, source_file: str, label: str) -> bool:
@@ -222,7 +247,14 @@ class UVVisTab(tk.Frame):
                               sashwidth=5, sashrelief=tk.RAISED)
         body.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
 
-        # ARCHITECTURE.md §3: plot in the centre, sidebar on the right.
+        # ARCHITECTURE.md §3: three-zone layout — left panel (engine /
+        # processing controls), centre (matplotlib figure), right
+        # (ScanTreeWidget). The left panel landed in Phase 4c (CS-07
+        # §"UV/Vis left panel" + CS-15) hosting baseline correction.
+        left_pane = tk.Frame(body, bd=1, relief=tk.SUNKEN)
+        body.add(left_pane, minsize=220)
+        self._build_left_panel(left_pane)
+
         plot_pane = tk.Frame(body)
         body.add(plot_pane, minsize=400)
         self._build_plot(plot_pane)
@@ -350,12 +382,299 @@ class UVVisTab(tk.Frame):
         self._scan_tree = ScanTreeWidget(
             parent,
             self._graph,
-            [NodeType.UVVIS],
+            [NodeType.UVVIS, NodeType.BASELINE],
             redraw_cb=self._redraw,
             send_to_compare_cb=None,
             style_dialog_cb=self._open_style_dialog_for_node,
         )
         self._scan_tree.pack(fill=tk.BOTH, expand=True, padx=2, pady=2)
+
+    # ── Left panel (baseline correction, CS-07 + CS-15) ──────────────────────
+
+    def _build_left_panel(self, parent):
+        """Construct the left panel with baseline correction controls.
+
+        Per CS-07 §"UV/Vis left panel" and CS-15 (Phase 4c). The panel
+        hosts a subject combobox (which UVVIS / BASELINE node to act
+        on), a four-mode baseline combobox (linear / polynomial /
+        spline / rubberband), conditional parameter rows, and an
+        "Apply Baseline" button. Each Apply gesture creates one
+        provisional BASELINE OperationNode + DataNode pair; the user
+        commits or discards via the ScanTreeWidget on the right.
+        """
+        F9 = ("", 9)
+        FC = ("Courier", 9)
+
+        tk.Label(parent, text="Processing",
+                 font=("", 9, "bold")).pack(anchor="w", padx=4, pady=(4, 2))
+
+        # Subject — which spectrum to baseline-correct.
+        subj_frame = tk.Frame(parent)
+        subj_frame.pack(fill=tk.X, padx=4, pady=2)
+        tk.Label(subj_frame, text="Spectrum:", font=F9).pack(anchor="w")
+        self._baseline_subject = tk.StringVar(value="")
+        self._baseline_subject_map: dict[str, str] = {}
+        self._baseline_subject_cb = ttk.Combobox(
+            subj_frame, textvariable=self._baseline_subject,
+            state="readonly", font=F9, width=24,
+        )
+        self._baseline_subject_cb.pack(fill=tk.X)
+
+        # Baseline mode.
+        mode_frame = tk.Frame(parent)
+        mode_frame.pack(fill=tk.X, padx=4, pady=(6, 2))
+        tk.Label(mode_frame, text="Baseline mode:", font=F9).pack(anchor="w")
+        self._baseline_mode = tk.StringVar(value="linear")
+        self._baseline_mode_cb = ttk.Combobox(
+            mode_frame, textvariable=self._baseline_mode,
+            values=list(uvvis_baseline.BASELINE_MODES),
+            state="readonly", font=F9, width=24,
+        )
+        self._baseline_mode_cb.pack(fill=tk.X)
+        self._baseline_mode.trace_add(
+            "write", lambda *_: self._refresh_baseline_param_rows())
+
+        # Per-mode parameter Tk vars (kept on the tab so values
+        # survive mode flips). String entries default to empty so the
+        # user is forced to enter window endpoints explicitly.
+        self._baseline_anchor_lo = tk.StringVar(value="")
+        self._baseline_anchor_hi = tk.StringVar(value="")
+        self._baseline_poly_order = tk.IntVar(value=2)
+        self._baseline_fit_lo = tk.StringVar(value="")
+        self._baseline_fit_hi = tk.StringVar(value="")
+        self._baseline_spline_anchors = tk.StringVar(value="")  # comma-sep nm
+
+        # Conditional parameter rows. The frame is rebuilt on every
+        # mode change to keep layout straightforward.
+        self._baseline_params_frame = tk.Frame(parent)
+        self._baseline_params_frame.pack(fill=tk.X, padx=4, pady=2)
+
+        # Apply button.
+        apply_frame = tk.Frame(parent)
+        apply_frame.pack(fill=tk.X, padx=4, pady=(8, 4))
+        self._apply_baseline_btn = tk.Button(
+            apply_frame, text="Apply Baseline", font=("", 9, "bold"),
+            bg="#003d7a", fg="white", activebackground="#0055aa",
+            command=self._apply_baseline,
+        )
+        self._apply_baseline_btn.pack(fill=tk.X)
+
+        # Defer non-toolkit init until the chrome is present.
+        self._refresh_baseline_param_rows()
+        self._refresh_baseline_subjects()
+
+    def _refresh_baseline_param_rows(self) -> None:
+        """Rebuild the parameter rows for the currently selected mode."""
+        if not hasattr(self, "_baseline_params_frame"):
+            return
+        for child in self._baseline_params_frame.winfo_children():
+            child.destroy()
+
+        F9 = ("", 9)
+        FC = ("Courier", 9)
+        mode = self._baseline_mode.get()
+
+        def _row(label_text: str) -> tk.Frame:
+            row = tk.Frame(self._baseline_params_frame)
+            row.pack(fill=tk.X, pady=1)
+            tk.Label(row, text=label_text, font=F9, width=15,
+                     anchor="w").pack(side=tk.LEFT)
+            return row
+
+        if mode == "linear":
+            for label, var in [
+                ("Anchor lo (nm):", self._baseline_anchor_lo),
+                ("Anchor hi (nm):", self._baseline_anchor_hi),
+            ]:
+                tk.Entry(_row(label), textvariable=var, width=10,
+                         font=FC).pack(side=tk.LEFT)
+        elif mode == "polynomial":
+            tk.Spinbox(_row("Order n:"),
+                       textvariable=self._baseline_poly_order,
+                       from_=0, to=10, width=8, font=FC,
+                       ).pack(side=tk.LEFT)
+            for label, var in [
+                ("Fit lo (nm):", self._baseline_fit_lo),
+                ("Fit hi (nm):", self._baseline_fit_hi),
+            ]:
+                tk.Entry(_row(label), textvariable=var, width=10,
+                         font=FC).pack(side=tk.LEFT)
+        elif mode == "spline":
+            tk.Label(self._baseline_params_frame,
+                     text="Anchors (nm, comma-separated):",
+                     font=F9, anchor="w").pack(fill=tk.X)
+            tk.Entry(self._baseline_params_frame,
+                     textvariable=self._baseline_spline_anchors,
+                     font=FC).pack(fill=tk.X, pady=(0, 2))
+        elif mode == "rubberband":
+            tk.Label(self._baseline_params_frame,
+                     text="(parameter-free convex hull)",
+                     fg="gray", font=F9).pack(anchor="w", pady=(4, 0))
+
+    def _refresh_baseline_subjects(self) -> None:
+        """Repopulate the subject combobox from live spectrum nodes."""
+        if not hasattr(self, "_baseline_subject_cb"):
+            return
+        nodes = self._spectrum_nodes()
+        self._baseline_subject_map = {}
+        items: List[str] = []
+        for n in nodes:
+            key = f"{n.label}  [{n.id[:6]}]"
+            items.append(key)
+            self._baseline_subject_map[key] = n.id
+        self._baseline_subject_cb.configure(values=items)
+        # Keep the user's selection if it still exists; otherwise
+        # auto-pick the first available.
+        if self._baseline_subject.get() not in items:
+            self._baseline_subject.set(items[0] if items else "")
+
+    def _collect_baseline_params(self, mode: str) -> dict:
+        """Read the left-panel widgets for ``mode`` into a params dict.
+
+        Raises ``ValueError`` (with a user-readable message) on bad
+        input. Per CS-03 the caller writes whatever this returns
+        verbatim into the OperationNode's params dict.
+        """
+        if mode == "linear":
+            try:
+                lo = float(self._baseline_anchor_lo.get())
+                hi = float(self._baseline_anchor_hi.get())
+            except ValueError:
+                raise ValueError("Both anchors must be numeric (nm).")
+            return {"anchor_lo_nm": lo, "anchor_hi_nm": hi}
+        if mode == "polynomial":
+            try:
+                order = int(self._baseline_poly_order.get())
+                lo = float(self._baseline_fit_lo.get())
+                hi = float(self._baseline_fit_hi.get())
+            except (ValueError, tk.TclError):
+                raise ValueError(
+                    "Order must be int; fit window endpoints must be numeric.")
+            return {"order": order, "fit_lo_nm": lo, "fit_hi_nm": hi}
+        if mode == "spline":
+            raw = self._baseline_spline_anchors.get().strip()
+            if not raw:
+                raise ValueError(
+                    "Spline anchors required (≥2 wavelengths in nm, comma-separated).")
+            try:
+                anchors = [float(x.strip()) for x in raw.split(",") if x.strip()]
+            except ValueError:
+                raise ValueError("Anchors must be comma-separated numbers (nm).")
+            if len(anchors) < 2:
+                raise ValueError("Spline requires at least 2 anchors.")
+            return {"anchors": anchors}
+        if mode == "rubberband":
+            return {}
+        raise ValueError(f"Unknown baseline mode: {mode!r}")
+
+    def _apply_baseline(self) -> Optional[Tuple[str, str]]:
+        """Materialise a provisional BASELINE op + node from the panel state.
+
+        One Apply gesture = one new provisional ``BASELINE``
+        OperationNode + one new provisional ``BASELINE`` DataNode,
+        wired ``parent → op → child``. Returns ``(op_id, child_id)``
+        on success or ``None`` if the user input was rejected.
+        """
+        key = self._baseline_subject.get()
+        subject_id = self._baseline_subject_map.get(key)
+        if not subject_id:
+            messagebox.showinfo(
+                "Apply Baseline",
+                "Select a spectrum first (load a file or pick from the list).",
+            )
+            return None
+        try:
+            parent_node = self._graph.get_node(subject_id)
+        except KeyError:
+            messagebox.showerror(
+                "Apply Baseline",
+                "Selected spectrum is no longer in the project graph.",
+            )
+            return None
+        if parent_node.type not in (NodeType.UVVIS, NodeType.BASELINE):
+            messagebox.showerror(
+                "Apply Baseline",
+                "Selected node is not a UV/Vis-style spectrum.",
+            )
+            return None
+
+        mode = self._baseline_mode.get()
+        try:
+            params = self._collect_baseline_params(mode)
+        except ValueError as exc:
+            messagebox.showerror("Baseline parameters", str(exc))
+            return None
+
+        wl = parent_node.arrays["wavelength_nm"]
+        absorb = parent_node.arrays["absorbance"]
+        try:
+            corrected = uvvis_baseline.compute(mode, wl, absorb, params)
+        except (ValueError, KeyError) as exc:
+            messagebox.showerror("Baseline computation", str(exc))
+            return None
+
+        op_id = uuid.uuid4().hex
+        out_id = uuid.uuid4().hex
+
+        # CS-03: capture the full parameter snapshot. ``mode`` is the
+        # discriminator; the remaining keys are the mode-specific
+        # sub-schema documented in CS-15.
+        op_params = {"mode": mode, **params}
+        op_node = OperationNode(
+            id=op_id,
+            type=OperationType.BASELINE,
+            engine="internal",
+            engine_version=PTARMIGAN_VERSION,
+            params=op_params,
+            input_ids=[subject_id],
+            output_ids=[out_id],
+            status="SUCCESS",
+            state=NodeState.PROVISIONAL,
+        )
+
+        # Default colour for the new BASELINE node — pick a fresh
+        # palette entry so the corrected curve is visually separable
+        # from its parent.
+        existing_baselines = len(
+            self._graph.nodes_of_type(NodeType.BASELINE, state=None))
+        existing_uvvis = len(
+            self._graph.nodes_of_type(NodeType.UVVIS, state=None))
+        colour = _PALETTE[
+            (existing_uvvis + existing_baselines) % len(_PALETTE)
+        ]
+
+        # Carry the parent's metadata forward, plus a baseline footer.
+        new_meta: dict = {
+            **parent_node.metadata,
+            "baseline_mode":      mode,
+            "baseline_parent_id": subject_id,
+        }
+
+        data_node = DataNode(
+            id=out_id,
+            type=NodeType.BASELINE,
+            arrays={
+                "wavelength_nm": np.asarray(wl, dtype=float),
+                "absorbance":    np.asarray(corrected, dtype=float),
+            },
+            metadata=new_meta,
+            label=f"{parent_node.label} · baseline ({mode})",
+            state=NodeState.PROVISIONAL,
+            style=_default_uvvis_style(colour),
+        )
+
+        # Insert op + data, then wire parent → op → child.
+        self._graph.add_node(op_node)
+        self._graph.add_node(data_node)
+        self._graph.add_edge(subject_id, op_id)
+        self._graph.add_edge(op_id, out_id)
+
+        self._status_lbl.config(
+            text=f"Baseline ({mode}) applied to {parent_node.label} "
+                 f"(provisional — commit / discard via the right sidebar).",
+            fg="#003d7a",
+        )
+        return op_id, out_id
 
     # ── Plot panel ────────────────────────────────────────────────────────────
 
@@ -400,6 +719,18 @@ class UVVisTab(tk.Frame):
             GraphEventType.GRAPH_CLEARED,
         ):
             self._redraw()
+        # The baseline subject combobox tracks which UVVIS / BASELINE
+        # nodes exist; refresh on the structural / label / active
+        # events that can change that set.
+        if et in (
+            GraphEventType.NODE_ADDED,
+            GraphEventType.NODE_DISCARDED,
+            GraphEventType.NODE_ACTIVE_CHANGED,
+            GraphEventType.NODE_LABEL_CHANGED,
+            GraphEventType.GRAPH_LOADED,
+            GraphEventType.GRAPH_CLEARED,
+        ):
+            self._refresh_baseline_subjects()
 
     def _on_destroy_unsubscribe(self, _event) -> None:
         try:
@@ -639,7 +970,16 @@ class UVVisTab(tk.Frame):
             pk = np.nanmax(np.abs(y))
             if pk > 0: y = y / pk
         elif mode == "area":
-            area = np.trapz(np.abs(y), wavelength_nm)
+            # B-003 root cause: ``np.trapz`` was removed in numpy 2.x.
+            # When this tab ran on numpy 2.x the ``area`` branch raised
+            # ``AttributeError`` from inside the ``<Return>`` callback;
+            # Tk swallowed the traceback to stderr, so the user saw the
+            # X-limit entries silently fail to apply (the post-norm
+            # axis-limit code never ran). Use the integration absolute
+            # value of the wavelength axis so the divisor is positive
+            # regardless of whether wavelength is ascending or
+            # descending in the source array.
+            area = float(abs(np.trapezoid(np.abs(y), wavelength_nm)))
             if area > 0: y = y / area
         return y
 
@@ -648,10 +988,12 @@ class UVVisTab(tk.Frame):
         # gestures (CS-04). Phase 4a does not yet implement preview
         # rendering for ancestor nodes, so the kwarg is currently
         # ignored; the call is honoured as a regular full redraw.
-        # Walk the ProjectGraph for live UVVIS nodes whose style has
-        # them visible; fall back to the empty-state placeholder when
-        # nothing is loaded or every loaded node is hidden.
-        live = [n for n in self._uvvis_nodes()
+        # Walk the ProjectGraph for live UVVIS / BASELINE nodes whose
+        # style has them visible; fall back to the empty-state
+        # placeholder when nothing is loaded or every loaded node is
+        # hidden. BASELINE renders identically to UVVIS — both carry
+        # ``arrays["wavelength_nm"]`` and ``arrays["absorbance"]``.
+        live = [n for n in self._spectrum_nodes()
                 if bool(n.style.get("visible", True))]
 
         if not live:

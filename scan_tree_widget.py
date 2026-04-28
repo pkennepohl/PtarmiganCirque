@@ -666,12 +666,17 @@ class ScanTreeWidget(tk.Frame):
         entry_var = tk.StringVar(value=current)
         entry = tk.Entry(row_frame, textvariable=entry_var)
 
-        # Replace the label inline.
+        # Replace the label inline. B-004 (Phase 4c) followup: passing
+        # ``before=label_widget`` to ``entry.pack`` after the label has
+        # already been ``pack_forget``-ed raises
+        # ``TclError: ... isn't packed``, which is why rename has been
+        # silently broken since Phase 2 from both gestures (double
+        # click and the Rename context menu entry). Pack with
+        # ``side="left"`` only — the row's layout puts vis_cb to our
+        # left and the right-side controls all use ``side="right"``,
+        # so the entry naturally fills the slot the label vacated.
         label_widget.pack_forget()
-        entry.pack(
-            side="left", fill="x", expand=True,
-            before=label_widget if label_widget.winfo_exists() else None,
-        )
+        entry.pack(side="left", fill="x", expand=True)
         entry.focus_set()
         entry.select_range(0, "end")
 
@@ -713,17 +718,35 @@ class ScanTreeWidget(tk.Frame):
         return sum(1 for n in chain if isinstance(n, OperationNode))
 
     def _toggle_history(self, node_id: str) -> None:
+        # B-001 (Phase 4c): only one history pane is open at a time
+        # across the widget. Toggling on a row that is already
+        # expanded collapses it; toggling on any other row collapses
+        # the previously expanded pane before opening the new one.
         if node_id in self._expanded_history:
             self._expanded_history.discard(node_id)
             frame = self._history_frames.pop(node_id, None)
             if frame is not None:
                 frame.destroy()
-        else:
-            self._expanded_history.add(node_id)
-            self._render_history(node_id)
+            return
+
+        for other_id in list(self._expanded_history):
+            self._expanded_history.discard(other_id)
+            other_frame = self._history_frames.pop(other_id, None)
+            if other_frame is not None:
+                other_frame.destroy()
+
+        self._expanded_history.add(node_id)
+        self._render_history(node_id)
 
     def _render_history(self, node_id: str) -> None:
-        """Render the inline provenance chain below the row."""
+        """Render the inline provenance chain below the row.
+
+        B-001 (Phase 4c): the sub-frame is packed with ``after=row`` so
+        it appears immediately below the clicked row, not at the end
+        of the scroll area. Tk's pack manager does support
+        ``after=`` — the previous implementation that relied on the
+        next full rebuild to restore ordering was wrong.
+        """
         row = self._row_frames.get(node_id)
         if row is None:
             return
@@ -732,13 +755,16 @@ class ScanTreeWidget(tk.Frame):
         except KeyError:
             return
 
+        # Replace any previous sub-frame for this node so the
+        # ``_refresh_row → _populate_node_row → _render_history``
+        # chain doesn't leak orphan history frames after a label or
+        # style update.
+        old = self._history_frames.pop(node_id, None)
+        if old is not None:
+            old.destroy()
+
         sub = tk.Frame(self._rows_frame)
-        # Insert immediately after the row in pack order. Tk doesn't
-        # have an "insert at index" for pack; pack simply appends.
-        # Because rebuild is the dominant flow, we accept that toggling
-        # history near the top temporarily places the sub-frame at the
-        # bottom; the next rebuild restores ordering.
-        sub.pack(side="top", fill="x", padx=(20, 4), pady=(0, 2))
+        sub.pack(after=row, side="top", fill="x", padx=(20, 4), pady=(0, 2))
         self._history_frames[node_id] = sub
 
         for ancestor in chain:
@@ -849,6 +875,14 @@ class ScanTreeWidget(tk.Frame):
             pass
 
     def _begin_rename_via_menu(self, node_id: str) -> None:
+        """Trigger the in-place rename Entry from the context-menu Rename.
+
+        Per CS-04 §"Context menu". B-004 (Phase 4c) regression-tests
+        this routing — both this method and the label's
+        ``<Double-Button-1>`` binding must end up at
+        ``_begin_label_edit`` so the user sees identical behaviour
+        from either gesture.
+        """
         row = self._row_frames.get(node_id)
         if row is None:
             return
