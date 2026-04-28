@@ -19,6 +19,7 @@ TEST_MODULES = (
     "test_style_dialog",
     "test_plot_settings_dialog",
     "test_uvvis_baseline",
+    "test_uvvis_normalise",
     "test_uvvis_tab",
 )
 

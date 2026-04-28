@@ -989,17 +989,16 @@ class TestUVVisTabBaseline(unittest.TestCase):
 
 
 @unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
-class TestUVVisTabBugB003(unittest.TestCase):
-    """Phase 4c — B-003: X-axis limit entries must apply under Norm: area.
+class TestUVVisTabNormalisationIntegration(unittest.TestCase):
+    """Phase 4e — NORMALISED nodes are first-class spectra in the tab.
 
-    Regression: ``np.trapz`` was removed in numpy 2.x. Under
-    ``Norm: area`` the integration call inside ``_y_with_norm``
-    raised ``AttributeError`` from inside the ``<Return>`` Tk
-    callback, Tk swallowed the traceback to stderr, and the user
-    saw the X-limit entries silently fail to apply. The fix
-    switches to ``np.trapezoid`` (the numpy 2.x replacement) and
-    takes the absolute value so an inverted nm axis cannot produce
-    a negative divisor.
+    Replaces TestUVVisTabBugB003 (the legacy Norm: combobox is gone;
+    its draw-time ``_y_with_norm`` transform retired with it). The
+    Phase 4c regressions it pinned (np.trapz / descending-nm sign
+    flip) live on as unit tests against ``uvvis_normalise.compute_*``
+    in test_uvvis_normalise.py — the integration concern here is
+    that NORMALISED nodes flow through the tab's render path and
+    sidebar like UVVIS / BASELINE.
     """
 
     @classmethod
@@ -1036,55 +1035,85 @@ class TestUVVisTabBugB003(unittest.TestCase):
                    "in_legend": True, "fill": False, "fill_alpha": 0.08},
         ))
 
-    def test_xlim_entries_apply_under_norm_area(self):
-        self._add_uvvis()
-        self.tab._norm_mode.set("area")
+    def _select_first_norm_subject(self):
+        items = self.tab._normalisation_panel._subject_cb.cget("values")
+        if isinstance(items, str):
+            items = tuple(items.split())
+        self.assertGreaterEqual(len(items), 1)
+        self.tab._normalisation_panel._subject_var.set(items[0])
+
+    def test_panel_present_and_unit_selector_has_no_norm_combobox(self):
+        # The legacy ``_norm_mode`` Tk var and ``_y_with_norm`` method
+        # are retired; the new panel is wired into the left pane.
+        self.assertFalse(hasattr(self.tab, "_norm_mode"))
+        self.assertFalse(hasattr(self.tab, "_y_with_norm"))
+        self.assertTrue(hasattr(self.tab, "_normalisation_panel"))
+
+    def test_normalised_node_renders_in_redraw(self):
+        # Apply normalisation through the panel; the resulting
+        # NORMALISED node must show up as a second matplotlib line on
+        # the next redraw (parent UVVIS + child NORMALISED).
+        self._add_uvvis("u1")
+        self.tab.update_idletasks()
+        self._select_first_norm_subject()
+        self.tab._normalisation_panel._mode_var.set("peak")
+        self.tab._normalisation_panel._window_lo.set("200")
+        self.tab._normalisation_panel._window_hi.set("800")
+        self.tab._normalisation_panel._apply()
+        self.tab.update_idletasks()
+        self.assertEqual(len(self.tab._ax.get_lines()), 2)
+
+    def test_xlim_entries_apply_with_normalised_node_present(self):
+        # The legacy B-003 regression was about ``_y_with_norm``
+        # raising inside the ``<Return>`` callback so X-limit entries
+        # silently failed to apply. The transform is gone, but the
+        # equivalent integration check — X-limit entries land
+        # correctly when a NORMALISED node is in the graph — is
+        # worth pinning.
+        self._add_uvvis("u1")
+        self.tab.update_idletasks()
+        self._select_first_norm_subject()
+        self.tab._normalisation_panel._mode_var.set("area")
+        self.tab._normalisation_panel._window_lo.set("200")
+        self.tab._normalisation_panel._window_hi.set("800")
+        self.tab._normalisation_panel._apply()
         self.tab._xlim_lo.set("300")
         self.tab._xlim_hi.set("700")
         self.tab._redraw()
-        # nm axis is rendered descending (CS-07 / migrated decision in
-        # BACKLOG.md), so x-limits land as (hi, lo).
+        # nm axis is rendered descending, so x-limits land as (hi, lo).
         x0, x1 = self.tab._ax.get_xlim()
         self.assertAlmostEqual(x0, 700.0)
         self.assertAlmostEqual(x1, 300.0)
 
-    def test_xlim_entries_still_apply_under_norm_peak(self):
-        # Sanity: peak normalisation has always worked; this guards
-        # against a future change breaking the working path while
-        # fixing the broken one.
-        self._add_uvvis()
-        self.tab._norm_mode.set("peak")
-        self.tab._xlim_lo.set("300")
-        self.tab._xlim_hi.set("700")
-        self.tab._redraw()
-        x0, x1 = self.tab._ax.get_xlim()
-        self.assertAlmostEqual(x0, 700.0)
-        self.assertAlmostEqual(x1, 300.0)
+    def test_normalised_node_has_sidebar_row(self):
+        self._add_uvvis("u1")
+        self.tab.update_idletasks()
+        self._select_first_norm_subject()
+        self.tab._normalisation_panel._mode_var.set("peak")
+        self.tab._normalisation_panel._window_lo.set("200")
+        self.tab._normalisation_panel._window_hi.set("800")
+        _, out_id = self.tab._normalisation_panel._apply()
+        self.tab._scan_tree.update_idletasks()
+        # The new NORMALISED node owns a row in the right sidebar
+        # (the sidebar filter widened from [UVVIS, BASELINE] to
+        # [UVVIS, BASELINE, NORMALISED] in Phase 4e Part E).
+        self.assertIn(out_id, self.tab._scan_tree._row_frames)
 
-    def test_norm_area_divisor_is_positive_with_descending_nm(self):
-        # Regression for the "inverted nm makes the area negative"
-        # hypothesis the brief flagged: even when wavelength_nm is
-        # stored descending in the source array, the divisor must be
-        # positive so y is normalised in the correct direction.
-        wl_desc = np.linspace(800.0, 200.0, 601)
-        absorb = np.exp(-((wl_desc - 500.0) / 50.0) ** 2) + 0.05
-        self.graph.add_node(DataNode(
-            id="desc", type=NodeType.UVVIS,
-            arrays={"wavelength_nm": wl_desc, "absorbance": absorb},
-            metadata={"source_file": "syn"},
-            label="desc", state=NodeState.COMMITTED,
-            style={"color": "#111", "linestyle": "solid",
-                   "linewidth": 1.5, "alpha": 0.9, "visible": True,
-                   "in_legend": True, "fill": False, "fill_alpha": 0.08},
-        ))
-        self.tab._norm_mode.set("area")
-        self.tab._redraw()
-        line = self.tab._ax.get_lines()[0]
-        ydata = line.get_ydata()
-        # Normalised by area: every value must be finite and the peak
-        # value should be positive (not flipped negative).
-        self.assertTrue(np.all(np.isfinite(ydata)))
-        self.assertGreater(float(np.max(ydata)), 0.0)
+    def test_discard_removes_normalised_from_plot(self):
+        self._add_uvvis("u1")
+        self.tab.update_idletasks()
+        self._select_first_norm_subject()
+        self.tab._normalisation_panel._mode_var.set("peak")
+        self.tab._normalisation_panel._window_lo.set("200")
+        self.tab._normalisation_panel._window_hi.set("800")
+        _, out_id = self.tab._normalisation_panel._apply()
+        self.tab.update_idletasks()
+        self.assertEqual(len(self.tab._ax.get_lines()), 2)
+        self.graph.discard_node(out_id)
+        self.tab.update_idletasks()
+        lines = self.tab._ax.get_lines()
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(lines[0].get_label(), "u1")
 
 
 if __name__ == "__main__":

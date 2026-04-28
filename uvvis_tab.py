@@ -45,6 +45,7 @@ from scan_tree_widget import ScanTreeWidget
 from style_dialog import open_style_dialog
 import plot_settings_dialog
 import uvvis_baseline
+import uvvis_normalise
 from version import __version__ as PTARMIGAN_VERSION
 
 # ── Colour palette (loader-side default colour assignment) ────────────────────
@@ -152,7 +153,6 @@ class UVVisTab(tk.Frame):
         self._x_unit_prev = "nm"
         self._y_unit      = tk.StringVar(value="A")
         self._show_nm_axis = tk.BooleanVar(value=True)
-        self._norm_mode   = tk.StringVar(value="none")
 
         # ── Axis limits (empty string = auto) ────────────────────────────────
         self._xlim_lo = tk.StringVar(value="")
@@ -201,17 +201,22 @@ class UVVisTab(tk.Frame):
         return out
 
     def _spectrum_nodes(self) -> List[DataNode]:
-        """Return every UVVIS or BASELINE DataNode the tab considers live.
+        """Return every spectrum-shaped DataNode the tab considers live.
 
-        The tab plots both kinds identically; ``_redraw`` and the
-        baseline subject combobox iterate this helper. BASELINE nodes
-        are listed *after* UVVIS nodes (the underlying
-        ``nodes_of_type`` walk is type-keyed) so a parent appears
-        above its derived baseline in the sidebar / subject list when
-        the dict ordering is preserved.
+        Spectrum-shaped today means UVVIS, BASELINE, or NORMALISED:
+        all three carry ``arrays["wavelength_nm"]`` +
+        ``arrays["absorbance"]`` and render through the same
+        matplotlib code path. ``_redraw``, the baseline subject
+        combobox, and the normalisation subject combobox all iterate
+        this helper. The walk is type-keyed (UVVIS first, then
+        BASELINE, then NORMALISED) so a parent typically appears
+        above its derivatives in the sidebar / subject list when the
+        dict ordering is preserved (Phase 4e widening from
+        ``[UVVIS, BASELINE]`` to include NORMALISED).
         """
         out: List[DataNode] = []
-        for ntype in (NodeType.UVVIS, NodeType.BASELINE):
+        for ntype in (NodeType.UVVIS, NodeType.BASELINE,
+                      NodeType.NORMALISED):
             for node in self._graph.nodes_of_type(ntype, state=None):
                 if node.state == NodeState.DISCARDED:
                     continue
@@ -298,14 +303,6 @@ class UVVisTab(tk.Frame):
                            ).pack(side=tk.LEFT)
 
         _sep()
-        tk.Label(bar, text="Norm:", font=F9).pack(side=tk.LEFT)
-        ttk.Combobox(bar, textvariable=self._norm_mode,
-                     values=["none", "peak", "area"],
-                     state="readonly", width=6, font=F9,
-                     ).pack(side=tk.LEFT, padx=2)
-        self._norm_mode.trace_add("write", lambda *_: self._redraw())
-
-        _sep()
         self._nm_cb = tk.Checkbutton(bar, text="λ(nm) axis",
                                      variable=self._show_nm_axis,
                                      command=self._redraw, font=F9)
@@ -382,25 +379,35 @@ class UVVisTab(tk.Frame):
         self._scan_tree = ScanTreeWidget(
             parent,
             self._graph,
-            [NodeType.UVVIS, NodeType.BASELINE],
+            [NodeType.UVVIS, NodeType.BASELINE, NodeType.NORMALISED],
             redraw_cb=self._redraw,
             send_to_compare_cb=None,
             style_dialog_cb=self._open_style_dialog_for_node,
         )
         self._scan_tree.pack(fill=tk.BOTH, expand=True, padx=2, pady=2)
 
-    # ── Left panel (baseline correction, CS-07 + CS-15) ──────────────────────
+    # ── Left panel (baseline correction + normalisation, CS-07 + CS-15 + CS-16) ──
 
     def _build_left_panel(self, parent):
-        """Construct the left panel with baseline correction controls.
+        """Construct the left panel with processing controls.
 
-        Per CS-07 §"UV/Vis left panel" and CS-15 (Phase 4c). The panel
-        hosts a subject combobox (which UVVIS / BASELINE node to act
-        on), a four-mode baseline combobox (linear / polynomial /
-        spline / rubberband), conditional parameter rows, and an
-        "Apply Baseline" button. Each Apply gesture creates one
-        provisional BASELINE OperationNode + DataNode pair; the user
-        commits or discards via the ScanTreeWidget on the right.
+        Per CS-07 §"UV/Vis left panel" the left panel hosts the
+        user-initiated UV/Vis operations:
+
+        * **Baseline correction** (CS-15, Phase 4c) — inline section
+          with a subject combobox, four-mode baseline combobox
+          (linear / polynomial / spline / rubberband), conditional
+          parameter rows, and an "Apply Baseline" button.
+        * **Normalisation** (CS-16, Phase 4e) — ``NormalisationPanel``
+          subwidget hosting its own subject combobox, a two-mode
+          combobox (peak / area), per-mode window entries, and an
+          "Apply Normalisation" button. Replaces the legacy top-bar
+          ``Norm:`` combobox + draw-time ``_y_with_norm`` transform
+          (Phase 4a friction point #2).
+
+        Each Apply gesture creates one provisional OperationNode +
+        DataNode pair; the user commits or discards via the
+        ``ScanTreeWidget`` on the right.
         """
         F9 = ("", 9)
         FC = ("Courier", 9)
@@ -459,9 +466,34 @@ class UVVisTab(tk.Frame):
         )
         self._apply_baseline_btn.pack(fill=tk.X)
 
+        # ── Normalisation section (CS-16, Phase 4e) ──────────────────────
+        # Visual separator between the baseline section and the
+        # normalisation section.
+        ttk.Separator(parent, orient=tk.HORIZONTAL).pack(
+            fill=tk.X, padx=4, pady=(8, 4))
+
+        self._normalisation_panel = uvvis_normalise.NormalisationPanel(
+            parent,
+            self._graph,
+            spectrum_nodes_fn=self._spectrum_nodes,
+            status_cb=self._set_status_message,
+        )
+        self._normalisation_panel.pack(fill=tk.X)
+
         # Defer non-toolkit init until the chrome is present.
         self._refresh_baseline_param_rows()
         self._refresh_baseline_subjects()
+
+    def _set_status_message(self, text: str) -> None:
+        """Status-bar callback handed to the NormalisationPanel.
+
+        The tab owns the toolbar status label; subwidgets (the
+        baseline section uses ``self._status_lbl.config`` inline,
+        the NormalisationPanel uses this callback) update it through
+        a single API so the formatting stays consistent.
+        """
+        if hasattr(self, "_status_lbl"):
+            self._status_lbl.config(text=text, fg="#003d7a")
 
     def _refresh_baseline_param_rows(self) -> None:
         """Rebuild the parameter rows for the currently selected mode."""
@@ -976,37 +1008,21 @@ class UVVisTab(tk.Frame):
         self._ax.set_axis_off()
         self._canvas.draw_idle()
 
-    def _y_with_norm(self, absorbance: np.ndarray,
-                     wavelength_nm: np.ndarray) -> np.ndarray:
-        y = _absorbance_to_y(absorbance, self._y_unit.get())
-        mode = self._norm_mode.get()
-        if mode == "peak":
-            pk = np.nanmax(np.abs(y))
-            if pk > 0: y = y / pk
-        elif mode == "area":
-            # B-003 root cause: ``np.trapz`` was removed in numpy 2.x.
-            # When this tab ran on numpy 2.x the ``area`` branch raised
-            # ``AttributeError`` from inside the ``<Return>`` callback;
-            # Tk swallowed the traceback to stderr, so the user saw the
-            # X-limit entries silently fail to apply (the post-norm
-            # axis-limit code never ran). Use the integration absolute
-            # value of the wavelength axis so the divisor is positive
-            # regardless of whether wavelength is ascending or
-            # descending in the source array.
-            area = float(abs(np.trapezoid(np.abs(y), wavelength_nm)))
-            if area > 0: y = y / area
-        return y
-
     def _redraw(self, *_args, **_kwargs):
         # Accept ``focus=node_id`` from ScanTreeWidget history-click
         # gestures (CS-04). Phase 4a does not yet implement preview
         # rendering for ancestor nodes, so the kwarg is currently
         # ignored; the call is honoured as a regular full redraw.
-        # Walk the ProjectGraph for live UVVIS / BASELINE nodes whose
-        # style has them visible; fall back to the empty-state
-        # placeholder when nothing is loaded or every loaded node is
-        # hidden. BASELINE renders identically to UVVIS — both carry
-        # ``arrays["wavelength_nm"]`` and ``arrays["absorbance"]``.
+        # Walk the ProjectGraph for live UVVIS / BASELINE / NORMALISED
+        # nodes whose style has them visible; fall back to the
+        # empty-state placeholder when nothing is loaded or every
+        # loaded node is hidden. All three render identically — they
+        # share the ``arrays["wavelength_nm"]`` /
+        # ``arrays["absorbance"]`` convention. Phase 4e retired
+        # ``_y_with_norm``: normalisation is now an explicit operation
+        # that creates a NORMALISED node with the normalised values
+        # baked into ``arrays["absorbance"]``, not a draw-time
+        # transform on the displayed y-values.
         live = [n for n in self._spectrum_nodes()
                 if bool(n.style.get("visible", True))]
 
@@ -1029,7 +1045,7 @@ class UVVisTab(tk.Frame):
             wl     = node.arrays["wavelength_nm"]
             absorb = node.arrays["absorbance"]
             x = _wavelength_to_x(wl, unit)
-            y = self._y_with_norm(absorb, wl)
+            y = _absorbance_to_y(absorb, self._y_unit.get())
             order  = np.argsort(x)
             x, y   = x[order], y[order]
             label  = node.label if style.get("in_legend", True) else None
