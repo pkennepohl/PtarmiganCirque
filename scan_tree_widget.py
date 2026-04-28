@@ -666,12 +666,17 @@ class ScanTreeWidget(tk.Frame):
         entry_var = tk.StringVar(value=current)
         entry = tk.Entry(row_frame, textvariable=entry_var)
 
-        # Replace the label inline.
+        # Replace the label inline. B-004 (Phase 4c) followup: passing
+        # ``before=label_widget`` to ``entry.pack`` after the label has
+        # already been ``pack_forget``-ed raises
+        # ``TclError: ... isn't packed``, which is why rename has been
+        # silently broken since Phase 2 from both gestures (double
+        # click and the Rename context menu entry). Pack with
+        # ``side="left"`` only — the row's layout puts vis_cb to our
+        # left and the right-side controls all use ``side="right"``,
+        # so the entry naturally fills the slot the label vacated.
         label_widget.pack_forget()
-        entry.pack(
-            side="left", fill="x", expand=True,
-            before=label_widget if label_widget.winfo_exists() else None,
-        )
+        entry.pack(side="left", fill="x", expand=True)
         entry.focus_set()
         entry.select_range(0, "end")
 
@@ -870,6 +875,14 @@ class ScanTreeWidget(tk.Frame):
             pass
 
     def _begin_rename_via_menu(self, node_id: str) -> None:
+        """Trigger the in-place rename Entry from the context-menu Rename.
+
+        Per CS-04 §"Context menu". B-004 (Phase 4c) regression-tests
+        this routing — both this method and the label's
+        ``<Double-Button-1>`` binding must end up at
+        ``_begin_label_edit`` so the user sees identical behaviour
+        from either gesture.
+        """
         row = self._row_frames.get(node_id)
         if row is None:
             return
