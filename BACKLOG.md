@@ -828,6 +828,83 @@ path. **Do not fix until the relevant subsequent Phase 4 session.**
    widths; adding the array key + a future export column is a
    one-commit sweep. Defer until a peak-table export is in scope.
 
+### Friction points carried forward from Phase 4i
+
+These are concrete obstacles the next Phase 4 session will hit.
+Identified during Phase 4i while implementing the second
+derivative and landing the second curve-shaped non-spectrum
+DataNode (`SECOND_DERIVATIVE` — derivatives are not absorbance,
+they share the schema only). **Do not fix until the relevant
+subsequent Phase 4 session.**
+
+1. **`_PALETTE` is now duplicated in six modules.** Phase 4c
+   friction #5 / Phase 4e friction #2 / Phase 4g friction #1 /
+   Phase 4h friction #1 tracked the duplication; Phase 4i adds
+   the sixth copy in `uvvis_second_derivative._PALETTE` and a
+   sixth term in the `_PALETTE[(n_uvvis + n_baseline +
+   n_normalised + n_smoothed + n_second_deriv) %
+   len(_PALETTE)]` index expression (PEAK_LIST has its own
+   index expression in `uvvis_peak_picking` so it does not add
+   to this sum). The `_pick_default_color(graph)` extraction
+   would now touch four locked modules to truly de-duplicate;
+   the cleanest path is a polish session that bundles it with
+   the left-pane density redesign (friction #2 below) so all
+   five operation modules can be edited in one phase. Defer
+   until a polish session is scheduled or a sixth caller lands
+   (Phase 5 XANES is the natural next consumer).
+2. **The left pane is now five sections tall.** Phase 4g
+   friction #5 / Phase 4h friction #5 escalated this; Phase 4i
+   lands the fifth section (Baseline + Normalisation + Smoothing
+   + Peak picking + Second derivative). On a 720-pixel-tall
+   window the Apply Second Derivative button is reliably below
+   the fold even at default font scaling. The collapsible-sections
+   / accordion / mini-tab options listed in Phase 4g friction #5
+   are now overdue. The forcing function for a redesign is
+   strong; pair with the `_pick_default_color` extraction above
+   in a single polish session.
+3. **`_spectrum_nodes` cannot widen to include `SECOND_DERIVATIVE`
+   without churning the four locked operation panels.**
+   Conceptually a peak-pick or smoothing pass on a second
+   derivative is well-defined (peak-picking the d² is a standard
+   gesture for finding inflection points in the parent). The
+   Phase 4g / 4h locks meant the panels' `parent_node.type`
+   tuples could not widen this phase, so `SECOND_DERIVATIVE`
+   lives in its own `_second_derivative_nodes()` iteration
+   and is never offered as a parent. A future session can widen
+   each of `uvvis_smoothing.SmoothingPanel._apply`,
+   `uvvis_peak_picking.PeakPickingPanel._apply`,
+   `uvvis_normalise.NormalisationPanel._apply` (and the
+   baseline path inside `uvvis_tab._apply_baseline`) to accept
+   `NodeType.SECOND_DERIVATIVE`, then promote `_spectrum_nodes`
+   to include it. Defer until a user reports it as friction.
+4. **`SECOND_DERIVATIVE` mean-spacing scaling is approximate
+   on non-uniform grids.** `compute()` divides by
+   `np.mean(np.abs(np.diff(wl)))` so the output units are
+   physical (A/nm² rather than A/sample²). This matches the
+   standard analytical-chemistry convention but is only exact
+   when the parent's wavelength sampling is uniform. UV/Vis
+   instruments produce uniform grids in practice, so this is
+   not yet a real issue. A more rigorous path would
+   re-interpolate to a uniform grid before differentiating;
+   defer until a user loads a non-uniform-grid spectrum.
+5. **No `_on_uvvis_apply_to_all` exclusion / inclusion decision
+   for `SECOND_DERIVATIVE`.** Phase 4h friction #2 flagged this
+   for `PEAK_LIST` (the ∀ button writes to `_spectrum_nodes`,
+   which excludes `PEAK_LIST` and now also `SECOND_DERIVATIVE`).
+   For curve-style keys (colour, linewidth) the exclusion is
+   correct (a derivative wants its own colour). For visibility
+   / legend toggles, the user's mental model is probably "every
+   row in the sidebar". Same per-key fan-out scope fix as Phase
+   4h friction #2; same decision deferral.
+6. **Status-bar message coupling deepens.** Five operation panels
+   now route their success messages through
+   `_set_status_message`; the existing implementation overwrites
+   the previous message with each call, so a fast user clicking
+   Apply on multiple panels in succession only sees the last one.
+   A short-lived toast / status history might be more
+   informative; defer until a user reports the message
+   overwrites as friction.
+
 | Status | Priority | Item | Notes |
 |---|---|---|---|
 | ✅ | 🔴 | **Migrate UV/Vis to node model** | UVVisScan → DataNode(type=UVVIS). File load → RAW\_FILE + LOAD + UVVIS triple, all COMMITTED (Phase 4a Part A; CS-13 implementation notes) |
@@ -843,7 +920,7 @@ path. **Do not fix until the relevant subsequent Phase 4 session.**
 | ⏳ | 🟡 | **Interactive normalisation** | Normalise to user-specified wavelength or integration region |
 | ⏳ | 🟡 | **Difference spectra** | Two-input operation node. See OQ-004 |
 | ✅ | 🟡 | **Smoothing** | Savitzky-Golay or moving average; creates provisional SMOOTHED node. Single OperationType.SMOOTH with `params["mode"]` ∈ {"savgol", "moving_avg"} (mirrors CS-15 / CS-16). `SmoothingPanel` co-located in `uvvis_smoothing.py` (Phase 4g; CS-18). `node_styles.default_spectrum_style` extracted as the four-caller threshold sibling commit |
-| ⏳ | 🟢 | **Second derivative** | Creates provisional node; useful for resolving overlapping bands |
+| ✅ | 🟢 | **Second derivative** | Single-algorithm Savitzky-Golay derivative (`scipy.signal.savgol_filter` with `deriv=2`); no mode discriminator (the savgol routine smooths and differentiates in one pass — naive `np.gradient` would be a footgun mode rather than a useful alternative). Output is a provisional `SECOND_DERIVATIVE` `DataNode` rendered as a curve overlay on the same plot (reuses the `wavelength_nm` / `absorbance` schema; the latter holds d²A/dλ² values). `SecondDerivativePanel` co-located in `uvvis_second_derivative.py` (Phase 4i; CS-20). Chained derivatives intentionally out of scope: `SECOND_DERIVATIVE` is excluded from `_spectrum_nodes` so the locked baseline / normalise / smoothing / peak-picking panels do not surface it as a candidate parent (their parent type checks would silently refuse it) |
 | ⏳ | 🟢 | **Beer-Lambert / concentration** | Use known ε to extract concentration, or fit ε from known concentration |
 
 ---
@@ -1060,7 +1137,7 @@ the resolving phase + commit SHA appended to the row.
 
 ---
 
-*Document version: 1.5 — April 2026*
+*Document version: 1.6 — April 2026*
 *1.1: Known Bugs register added 2026-04-27 after Phase 4b manual testing.*
 *1.2: Phase 4c — baseline correction lands; B-001 / B-003 / B-004
 resolved; Phase 4c friction points logged.*
@@ -1078,4 +1155,11 @@ item marked ✅; Phase 4h friction points logged (seven items: fifth
 schema vs universal style schema, deferred click-on-plot gesture,
 left-pane height pressure, PEAK_LIST not yet exportable, peak-width
 extension for future peak-table export).*
+*1.6: Phase 4i — UV/Vis second derivative lands (CS-20); Second
+derivative item marked ✅; Phase 4i friction points logged (six
+items: sixth `_PALETTE` copy, five-section left pane redesign now
+overdue, locked-panel widening to accept SECOND_DERIVATIVE as
+parent, mean-spacing approximation on non-uniform grids,
+∀ apply-to-all SECOND_DERIVATIVE exclusion, status-bar message
+overwrite under fast successive Apply gestures).*
 *Supersedes: BACKLOG.md (original)*
