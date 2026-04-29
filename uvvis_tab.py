@@ -47,6 +47,7 @@ import plot_settings_dialog
 import uvvis_baseline
 import uvvis_normalise
 import uvvis_smoothing
+import uvvis_peak_picking
 import node_export
 from node_styles import default_spectrum_style
 from version import __version__ as PTARMIGAN_VERSION
@@ -210,6 +211,26 @@ class UVVisTab(tk.Frame):
                 out.append(node)
         return out
 
+    def _peak_list_nodes(self) -> List[DataNode]:
+        """Return the PEAK_LIST DataNodes the tab considers live.
+
+        PEAK_LIST nodes are annotation overlays (CS-19, Phase 4h) and
+        live in a separate iteration from ``_spectrum_nodes`` because
+        their array shape differs (``peak_wavelengths_nm`` /
+        ``peak_absorbances`` instead of the curve-shaped
+        ``wavelength_nm`` / ``absorbance``) and they are not candidate
+        parents for baseline / normalisation / smoothing / further
+        peak picking.
+        """
+        out: List[DataNode] = []
+        for node in self._graph.nodes_of_type(NodeType.PEAK_LIST, state=None):
+            if node.state == NodeState.DISCARDED:
+                continue
+            if not node.active:
+                continue
+            out.append(node)
+        return out
+
     def _has_existing_load(self, source_file: str, label: str) -> bool:
         """Skip duplicates when the user reloads a file already in the graph."""
         for node in self._graph.nodes_of_type(NodeType.UVVIS, state=None):
@@ -366,7 +387,8 @@ class UVVisTab(tk.Frame):
             parent,
             self._graph,
             [NodeType.UVVIS, NodeType.BASELINE,
-             NodeType.NORMALISED, NodeType.SMOOTHED],
+             NodeType.NORMALISED, NodeType.SMOOTHED,
+             NodeType.PEAK_LIST],
             redraw_cb=self._redraw,
             send_to_compare_cb=None,
             style_dialog_cb=self._open_style_dialog_for_node,
@@ -374,7 +396,8 @@ class UVVisTab(tk.Frame):
         )
         self._scan_tree.pack(fill=tk.BOTH, expand=True, padx=2, pady=2)
 
-    # ── Left panel (baseline + normalisation + smoothing, CS-07 + CS-15 + CS-16 + CS-18) ──
+    # ── Left panel (baseline + normalisation + smoothing + peak picking,
+    #    CS-07 + CS-15 + CS-16 + CS-18 + CS-19) ──
 
     def _build_left_panel(self, parent):
         """Construct the left panel with processing controls.
@@ -397,6 +420,13 @@ class UVVisTab(tk.Frame):
           combobox (savgol / moving_avg), per-mode parameter rows
           (window length spinbox, plus polyorder for savgol), and
           an "Apply Smoothing" button.
+        * **Peak picking** (CS-19, Phase 4h) — ``PeakPickingPanel``
+          subwidget hosting its own subject combobox, a two-mode
+          combobox (prominence / manual), per-mode parameter rows
+          (prominence threshold + min distance, or comma-separated
+          wavelengths), and an "Apply Peak Picking" button. Each
+          Apply gesture creates a provisional ``PEAK_LIST``
+          annotation node rendered as scatter on the parent curve.
 
         Each Apply gesture creates one provisional OperationNode +
         DataNode pair; the user commits or discards via the
@@ -487,6 +517,24 @@ class UVVisTab(tk.Frame):
             status_cb=self._set_status_message,
         )
         self._smoothing_panel.pack(fill=tk.X)
+
+        # ── Peak picking section (CS-19, Phase 4h) ───────────────────────
+        # Visual separator between the smoothing section and the
+        # peak-picking section. PEAK_LIST nodes are intentionally absent
+        # from the panel's subject list (chained peak picking is
+        # undefined): _spectrum_nodes only walks UVVIS / BASELINE /
+        # NORMALISED / SMOOTHED, which is exactly the set the panel
+        # accepts as parents.
+        ttk.Separator(parent, orient=tk.HORIZONTAL).pack(
+            fill=tk.X, padx=4, pady=(8, 4))
+
+        self._peak_picking_panel = uvvis_peak_picking.PeakPickingPanel(
+            parent,
+            self._graph,
+            spectrum_nodes_fn=self._spectrum_nodes,
+            status_cb=self._set_status_message,
+        )
+        self._peak_picking_panel.pack(fill=tk.X)
 
         # Defer non-toolkit init until the chrome is present.
         self._refresh_baseline_param_rows()
@@ -1129,6 +1177,39 @@ class UVVisTab(tk.Frame):
                 ax.fill_between(x, 0, y,
                                 color=colour,
                                 alpha=style.get("fill_alpha", 0.08))
+
+        # ── Peak list overlays (CS-19, Phase 4h) ──────────────────────
+        # Render every visible PEAK_LIST node as a scatter on top of
+        # the curves above. The peak_list arrays carry samples lifted
+        # from the parent's wavelength grid, so the unit / Y-unit
+        # conversions are the same ones the curves go through.
+        # ``style["linestyle"]`` / ``linewidth`` / ``fill`` are
+        # universal style keys but have no scatter analogue; the
+        # renderer reads ``color`` / ``alpha`` / ``visible`` /
+        # ``in_legend`` and ignores the rest. Marker is fixed at "v"
+        # (downward triangle pointing at the peak); a future
+        # marker-style schema decision (CS-19 implementation note)
+        # could expose this to the user.
+        for peak_node in self._peak_list_nodes():
+            pstyle = peak_node.style
+            if not pstyle.get("visible", True):
+                continue
+            pwl = peak_node.arrays["peak_wavelengths_nm"]
+            pa = peak_node.arrays["peak_absorbances"]
+            if pwl.size == 0:
+                continue
+            px = _wavelength_to_x(np.asarray(pwl, dtype=float), unit)
+            py = _absorbance_to_y(np.asarray(pa, dtype=float),
+                                  self._y_unit.get())
+            plabel = (peak_node.label
+                      if pstyle.get("in_legend", True) else None)
+            ax.scatter(
+                px, py,
+                color=pstyle.get("color", "#333333"),
+                alpha=pstyle.get("alpha", 0.9),
+                marker="v", s=40, edgecolor="none",
+                label=plabel, zorder=3,
+            )
 
         # ── Axis labels (Plot Settings → Title and labels / Fonts) ───────────
         # ``mode = "auto"`` uses the unit-derived default; ``"custom"``
