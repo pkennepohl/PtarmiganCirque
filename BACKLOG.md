@@ -60,6 +60,56 @@ Within a phase, items can be parallelised.
 
 ---
 
+## Session structure (added end of Phase 4i)
+
+Every phase session follows this shape. The bug-elicitation step
+between commits 5 and 6 is **mandatory** — it lets the user fold
+in friction they noticed during the session before the BACKLOG
+freezes for the hand-off, so issues are not lost between threads.
+
+1. **Verification block** — confirm the previous phase's merge
+   SHA is on origin, expected files are present, full suite is
+   green. STOP and report on any mismatch.
+2. **Decision lock** — for the chosen task, record the design
+   decisions explicitly (NodeType vs metadata flag, mode-keyed
+   vs single-algorithm, parent set, render path). These go in
+   the COMPONENTS.md notes at bookkeeping time.
+3. **Commits 1–N** — pure module → tests → integration code →
+   integration tests → run-suite verification. Single-input
+   UV/Vis operations are six commits; Send-to-Compare-shaped
+   tasks are four. Tailor the count to the task; the order is
+   fixed.
+4. **Run full suite** — must be green before proceeding.
+5. **Bug / issue / feature elicitation** — pause and explicitly
+   ask the user: *"Any new bugs, issues, or feature ideas to
+   add to the BACKLOG before we freeze the docs?"* Surface what
+   you noticed during the session (left-pane density, palette
+   duplication, slow status messages, a mode that felt
+   awkward, …) so the user can confirm or extend. Wait for the
+   user's answer before continuing.
+6. **Bookkeeping commit** — update BACKLOG.md (mark item ✅,
+   add the friction list **including any user-flagged items
+   from step 5**) and COMPONENTS.md (new CS-N section,
+   doc-version footer bumped).
+7. **Merge into redesign/main** in the integration worktree
+   (`git merge --no-ff redesign/phase-XX-task-name`). Use the
+   established message format: subject + brief intro +
+   deliverables list + "Resolved during the session" +
+   Co-Authored-By trailer.
+8. **Push redesign/main to origin** (never force-push).
+9. **End-of-session report** — five sections: test count,
+   manual smoke (or "covered by integration tests"), design
+   decisions taken for spec ambiguities, friction the next
+   session will hit, final git status.
+10. **Hand-off brief** — wrap the next-session prompt in **one
+    fenced code block** (no nested fences) so the user can
+    copy-paste it straight into the next /init prompt. The
+    brief must include the verification block, the "do not
+    touch" lock list scoped to the next intent, and re-state
+    the session structure above (so the loop self-perpetuates).
+
+---
+
 ## Phase 1 — Foundation: Data Model  ✅ Complete
 
 *Nothing else should be built until this phase is complete.*
@@ -852,16 +902,23 @@ subsequent Phase 4 session.**
    five operation modules can be edited in one phase. Defer
    until a polish session is scheduled or a sixth caller lands
    (Phase 5 XANES is the natural next consumer).
-2. **The left pane is now five sections tall.** Phase 4g
-   friction #5 / Phase 4h friction #5 escalated this; Phase 4i
-   lands the fifth section (Baseline + Normalisation + Smoothing
-   + Peak picking + Second derivative). On a 720-pixel-tall
-   window the Apply Second Derivative button is reliably below
-   the fold even at default font scaling. The collapsible-sections
-   / accordion / mini-tab options listed in Phase 4g friction #5
-   are now overdue. The forcing function for a redesign is
-   strong; pair with the `_pick_default_color` extraction above
-   in a single polish session.
+2. **The left pane is now five sections tall — USER-FLAGGED at
+   end of Phase 4i, priority escalated to 🔴.** Phase 4g friction
+   #5 / Phase 4h friction #5 escalated this internally; the user
+   has now explicitly raised it as the next polish target. The
+   five sections (Baseline + Normalisation + Smoothing + Peak
+   picking + Second derivative) make the left pane unwieldy on
+   any window shorter than ~900 px. Decision locked at the
+   Phase 4i hand-off: collapsible sections with **all sections
+   collapsed by default**. Each section header is a clickable
+   strip showing the section title + a chevron (▶ collapsed, ▼
+   expanded); clicking toggles the body's pack/forget state.
+   Section state is per-tab Tk var (not persisted to project
+   yet — that is a Phase 8 concern). Pair with the
+   `_pick_default_color(graph)` extraction (friction #1) in the
+   same polish session because both touch every operation
+   module at once. See the new register entry "Collapsible
+   left-pane sections" below.
 3. **`_spectrum_nodes` cannot widen to include `SECOND_DERIVATIVE`
    without churning the four locked operation panels.**
    Conceptually a peak-pick or smoothing pass on a second
@@ -922,6 +979,7 @@ subsequent Phase 4 session.**
 | ✅ | 🟡 | **Smoothing** | Savitzky-Golay or moving average; creates provisional SMOOTHED node. Single OperationType.SMOOTH with `params["mode"]` ∈ {"savgol", "moving_avg"} (mirrors CS-15 / CS-16). `SmoothingPanel` co-located in `uvvis_smoothing.py` (Phase 4g; CS-18). `node_styles.default_spectrum_style` extracted as the four-caller threshold sibling commit |
 | ✅ | 🟢 | **Second derivative** | Single-algorithm Savitzky-Golay derivative (`scipy.signal.savgol_filter` with `deriv=2`); no mode discriminator (the savgol routine smooths and differentiates in one pass — naive `np.gradient` would be a footgun mode rather than a useful alternative). Output is a provisional `SECOND_DERIVATIVE` `DataNode` rendered as a curve overlay on the same plot (reuses the `wavelength_nm` / `absorbance` schema; the latter holds d²A/dλ² values). `SecondDerivativePanel` co-located in `uvvis_second_derivative.py` (Phase 4i; CS-20). Chained derivatives intentionally out of scope: `SECOND_DERIVATIVE` is excluded from `_spectrum_nodes` so the locked baseline / normalise / smoothing / peak-picking panels do not surface it as a candidate parent (their parent type checks would silently refuse it) |
 | ⏳ | 🟢 | **Beer-Lambert / concentration** | Use known ε to extract concentration, or fit ε from known concentration |
+| ⏳ | 🔴 | **Collapsible left-pane sections (polish session)** | USER-FLAGGED at end of Phase 4i. Each of the five operation sections (Baseline / Normalisation / Smoothing / Peak picking / Second derivative) becomes a clickable header that toggles its body's pack/forget state via a chevron (▶ collapsed, ▼ expanded). **Default is all sections collapsed** so the left pane opens as five header strips — the user expands the section they want to use. State is per-tab Tk var (not persisted to project; that is a Phase 8 concern). Pair with `_pick_default_color(graph)` extraction (BACKLOG Phase 4i friction #1) in the same session because both touch every operation module at once and unlock four modules currently held by Phase 4c / 4e / 4g / 4h locks. Resolves Phase 4i friction #2 (and Phase 4g #5 / 4h #5 carry-forwards). Use the regular six-commit shape: extract `_pick_default_color` first (single sweep across `uvvis_baseline` / `uvvis_normalise` / `uvvis_smoothing` / `uvvis_peak_picking` / `uvvis_second_derivative`), then introduce a `CollapsibleSection` wrapper widget, then convert each of the five sections, then tests, then bookkeeping |
 
 ---
 
@@ -1137,7 +1195,7 @@ the resolving phase + commit SHA appended to the row.
 
 ---
 
-*Document version: 1.6 — April 2026*
+*Document version: 1.7 — April 2026*
 *1.1: Known Bugs register added 2026-04-27 after Phase 4b manual testing.*
 *1.2: Phase 4c — baseline correction lands; B-001 / B-003 / B-004
 resolved; Phase 4c friction points logged.*
@@ -1162,4 +1220,12 @@ overdue, locked-panel widening to accept SECOND_DERIVATIVE as
 parent, mean-spacing approximation on non-uniform grids,
 ∀ apply-to-all SECOND_DERIVATIVE exclusion, status-bar message
 overwrite under fast successive Apply gestures).*
+*1.7: Post-Phase-4i — user-flagged the left-pane density issue
+(Phase 4i friction #2) and elevated it to 🔴 with a locked
+"all sections collapsed by default" decision. New Phase 4
+register entry: Collapsible left-pane sections (polish session).
+New top-level "Session structure" section formalises the
+ten-step pattern every phase session now follows; the bug /
+issue / feature elicitation step (5) is mandatory, between
+the run-suite verification (4) and the bookkeeping commit (6).*
 *Supersedes: BACKLOG.md (original)*
