@@ -2345,6 +2345,214 @@ are still a list of wavelengths).
 
 ---
 
+## CS-20: UV/Vis Second Derivative
+
+**File:** `uvvis_second_derivative.py` (pure module +
+`SecondDerivativePanel` co-located) + `uvvis_tab.py` left panel +
+render path
+**Depends on:** CS-01 (ProjectGraph), CS-02 (DataNode
+`SECOND_DERIVATIVE` variant), CS-03 (OperationNode
+`SECOND_DERIVATIVE` variant), CS-07 (UV/Vis left panel), `numpy`,
+`scipy.signal.savgol_filter`
+**Depended on by:** UV/Vis tab — fifth user-initiated processing
+operation in the new architecture (Phase 4i); second curve-shaped
+derived node whose units are not absorbance (the `wavelength_nm` /
+`absorbance` schema is reused, but the latter array holds d²A/dλ²
+values measured in A/nm²)
+
+### Responsibility
+
+Compute the second derivative of a UV/Vis spectrum, producing a new
+`SECOND_DERIVATIVE` `DataNode`. Each Apply gesture is a single
+provisional operation; the user inspects the result (rendered as a
+curve overlay on the same plot) and decides to commit or discard
+via the right-sidebar `ScanTreeWidget`. The d² of an absorption
+band has a sharp negative trough at each band centre and shoulders
+at each inflection point — the standard analytical-chemistry
+gesture for resolving overlapping bands.
+
+### Single algorithm — no mode discriminator
+
+Unlike CS-15 (BASELINE) / CS-16 (NORMALISE) / CS-18 (SMOOTH) /
+CS-19 (PEAK_PICK), `OperationType.SECOND_DERIVATIVE` carries a
+single algorithm and no `mode` discriminator in `params`. The
+algorithm is `scipy.signal.savgol_filter` with `deriv=2`. A naive
+`np.gradient(np.gradient(absorbance))` alternative was considered
+and rejected: the second-difference of a noisy signal amplifies
+noise without bound, so a "naive" mode would be a footgun rather
+than a useful alternative. The Savitzky-Golay derivative smooths
+and differentiates in one polynomial-fit pass, which is the de
+facto standard in spectroscopy (Owen 1995, Agilent App. Note
+"Derivative spectroscopy").
+
+| Required `params` keys | Constraints |
+|---|---|
+| `window_length` | odd int, ``> polyorder``, ``≤ len(absorbance)`` |
+| `polyorder`     | int ``≥ 2`` (second derivative is undefined for lower orders) |
+
+The polyorder lower bound is the key difference from CS-18: a
+second derivative needs at least a quadratic local fit, so
+polyorder ``< 2`` is rejected at compute time.
+
+### Pure module
+
+The compute layer is Tk-free and graph-free:
+
+```python
+import uvvis_second_derivative as usd
+d2 = usd.compute(
+    wavelength_nm, absorbance,
+    {"window_length": 11, "polyorder": 3},
+)
+```
+
+`compute` returns a single numpy array of the same shape as the
+input. The output is scaled by the mean wavelength spacing so the
+units are A/nm² (physical) rather than A/sample² (which would
+change with the parent's sampling density). Missing required
+params raise `KeyError`; bad inputs (shape mismatch, non-1-D
+arrays, single-sample input, even `window_length`,
+`polyorder < 2`, `polyorder >= window_length`, oversize
+`window_length`) raise `ValueError`. The panel catches both and
+reports them via `messagebox`.
+
+### Provisional / Commit / Discard flow
+
+Per ARCHITECTURE.md §5. One Apply gesture creates exactly two
+nodes wired `parent → op → child`:
+
+* **`OperationNode`** (`type=SECOND_DERIVATIVE`,
+  `engine="internal"`, `engine_version=PTARMIGAN_VERSION`,
+  `params={"window_length": ..., "polyorder": ...}`,
+  `state=PROVISIONAL`).
+* **`DataNode`** (`type=SECOND_DERIVATIVE`,
+  arrays `{wavelength_nm, absorbance}` (the latter holds d²A/dλ²
+  values), metadata carried forward from the parent plus
+  `second_derivative_parent_id` (no `_mode` key — single
+  algorithm), `state=PROVISIONAL`, default style picked from the
+  loader's palette so the curve is distinct from the parent).
+
+The UV/Vis tab subscribes to graph events as before; the
+`ScanTreeWidget` filter expanded from `[NodeType.UVVIS,
+NodeType.BASELINE, NodeType.NORMALISED, NodeType.SMOOTHED,
+NodeType.PEAK_LIST]` to include `NodeType.SECOND_DERIVATIVE` so
+the new node appears in the right sidebar with the provisional
+indicator. Commit (`graph.commit_node`) and discard
+(`graph.discard_node`) flow through the existing `ScanTreeWidget`
+gestures.
+
+### Render path — line, on the shared Y-axis
+
+`SECOND_DERIVATIVE` nodes render as `ax.plot` lines through the
+same code path as `_redraw`'s spectrum loop — the schema reuse
+(`wavelength_nm` + `absorbance`) means the loop treats them as
+just another curve. The only change in `_redraw` is widening the
+`live` source list with the result of `_second_derivative_nodes()`.
+
+The renderer reads the full eight universal style keys from
+`default_spectrum_style` (color, linestyle, linewidth, alpha,
+visible, in_legend, fill, fill_alpha) — every key is meaningful
+for a curve, unlike CS-19 where the four scatter-irrelevant keys
+were ignored. nm-axis autoscaling and user-supplied x-limits also
+pick up the derivative's wavelength range automatically because
+the same `live` list drives both.
+
+The Y-axis is shared with the absorbance curves: derivatives and
+absorbance plot on the same axis even though their units differ
+(A/nm² vs dimensionless A). This matches the standard
+analytical-chemistry convention (overlay the d² on the spectrum to
+read off where the troughs sit relative to the absorption band)
+rather than introducing a secondary Y-axis. A user who wants the
+derivative on its own axis can hide the parent curve via the
+sidebar visibility toggle.
+
+### Why SECOND_DERIVATIVE is *not* in `_spectrum_nodes`
+
+`UVVisTab._spectrum_nodes` returns the curve-shaped nodes that
+baseline / normalisation / smoothing / peak-picking accept as
+parents. SECOND_DERIVATIVE is intentionally absent from that walk
+because the locked panels (Phase 4c / 4e / 4g / 4h) reject any
+node whose type is outside `{UVVIS, BASELINE, NORMALISED,
+SMOOTHED}` — adding it to `_spectrum_nodes` would surface
+candidates those panels would silently refuse on Apply.
+SECOND_DERIVATIVE lives in `_second_derivative_nodes()` instead
+and is walked separately by `_redraw` (alongside, not part of, the
+curve loop). Chained second derivatives (the derivative of a
+derivative) are out of scope this phase as a result.
+
+A future polish session can widen each of `SmoothingPanel._apply`,
+`PeakPickingPanel._apply`, `NormalisationPanel._apply`, and the
+`uvvis_tab._apply_baseline` parent-type tuple to accept
+`NodeType.SECOND_DERIVATIVE`, then promote `_spectrum_nodes` to
+include it. Tracked in BACKLOG Phase 4i friction #3.
+
+### Left-panel UI (CS-07 §"UV/Vis left panel" + Phase 4i)
+
+`SecondDerivativePanel` is a `tk.Frame` subclass that lives below
+the peak-picking section in the left panel, separated by a
+horizontal `ttk.Separator`. The panel hosts:
+
+* **Subject combobox** — chooses which UVVIS / BASELINE /
+  NORMALISED / SMOOTHED node to differentiate. SECOND_DERIVATIVE
+  itself is *not* a candidate subject (chained derivatives out of
+  scope; see above). Re-populated on graph events that change the
+  live set (`NODE_ADDED`, `NODE_DISCARDED`, `NODE_LABEL_CHANGED`,
+  `NODE_ACTIVE_CHANGED`).
+* **Window length spinbox** — odd integers from 5 upward, default
+  11. Lower bound 5 (not 3 as in smoothing) because polyorder
+  must be ``≥ 2`` and savgol requires `window_length > polyorder`.
+* **Poly order spinbox** — integers from 2 upward, default 3.
+  Defaults are wider than CS-18 because the second derivative is
+  more noise-sensitive than the spectrum itself.
+* **`Apply Second Derivative` button** — runs `_apply()`.
+
+No mode combobox and no per-mode parameter rows (single algorithm
+— see above), so the panel is structurally simpler than the four
+earlier user-operation panels.
+
+### Implementation notes (Phase 4i)
+
+* **Single algorithm vs mode-discriminated decision.** Resolved in
+  favour of a single algorithm with no `mode` key in params. The
+  Savitzky-Golay derivative is the established convention; the
+  naive `np.gradient` alternative was rejected as a footgun
+  (noise amplification). Mode-discriminator extension would be
+  added if a wavelet-based derivative or a Tikhonov-regularised
+  derivative ever lands.
+* **NodeType.SECOND_DERIVATIVE vs SMOOTHED-with-metadata
+  decision.** Resolved in favour of a new NodeType variant.
+  Reusing SMOOTHED with a `derivative_order` metadata flag would
+  have collided with the smoothing-as-curve-cleanup interpretation
+  (the d² of a spectrum is a different scientific object) and
+  would have surfaced derivatives in `_spectrum_nodes` as if they
+  were smoothing outputs, breaking the parent-type checks in the
+  locked panels.
+* **Mean-spacing scaling for non-uniform grids.** `compute()`
+  divides by `np.mean(np.abs(np.diff(wl)))` to give the caller
+  physical units (A/nm² rather than A/sample²). For the typical
+  UV/Vis grid (uniform within < 0.1%) this is exact; for an
+  upstream resampling that produces a non-uniform grid the
+  scaling is approximate. Tracked in BACKLOG Phase 4i friction
+  #4. A more rigorous alternative would re-interpolate the parent
+  to a uniform grid before differentiating; deferred until a user
+  loads a non-uniform spectrum.
+* **Default colour picked from the same palette.** A
+  SECOND_DERIVATIVE node's default colour is `_PALETTE[(n_uvvis +
+  n_baseline + n_normalised + n_smoothed + n_second_deriv) %
+  len(_PALETTE)]` so the derivative curve is visually distinct
+  from the parent. Phase 4g / 4h friction already flagged the
+  duplicated index expression + duplicated `_PALETTE`; Phase 4i
+  adds the sixth copy. The `_pick_default_color(graph)` extraction
+  would now touch four locked modules — deferred for a polish
+  session that bundles it with the left-pane density redesign
+  (BACKLOG Phase 4i friction #1 + #2).
+* **Reuses `node_styles.default_spectrum_style`.** All eight
+  universal style keys are meaningful for a curve, so the
+  scatter-vs-line distinction that surfaced in CS-19 does not
+  apply — the renderer reads every key the dialog can write.
+
+---
+
 ## CS-04 implementation notes (Phase 4c)
 
 * **B-001 fix — inline history expansion.** `_render_history`
@@ -2410,7 +2618,7 @@ are still a list of wavelengths).
 
 ---
 
-*Document version: 1.8 — April 2026*
+*Document version: 1.9 — April 2026*
 *1.1: CS-13 implementation notes added in Phase 4a.*
 *1.2: CS-14 Plot Settings Dialog added in Phase 4b.*
 *1.3: CS-15 UV/Vis Baseline Correction + CS-04 implementation
@@ -2439,5 +2647,15 @@ CS-15 / CS-16 / CS-18). First non-curve DataNode (`PEAK_LIST`)
 in the UV/Vis path: separate `_peak_list_nodes()` helper +
 separate scatter render branch in `uvvis_tab._redraw`, with the
 sidebar filter widened to include PEAK_LIST.*
+*1.9: CS-20 UV/Vis Second Derivative added in Phase 4i (single
+Savitzky-Golay algorithm, no `mode` discriminator — first
+operation that breaks the CS-15 / CS-16 / CS-18 / CS-19
+mode-discriminator pattern). New `NodeType.SECOND_DERIVATIVE`
+that reuses the `wavelength_nm` / `absorbance` schema so the
+existing curve render path handles it; lives in its own
+`_second_derivative_nodes()` iteration outside `_spectrum_nodes`
+because chained derivatives are out of scope and the locked
+operation panels' parent-type checks would refuse it. Sidebar
+filter widened to include SECOND_DERIVATIVE.*
 *To be updated as Open Questions are resolved and new components
 are specified.*

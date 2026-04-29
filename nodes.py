@@ -65,6 +65,11 @@ class NodeType(Enum):
     PEAK_LIST   = auto()  # picked peaks of a parent UV/Vis-style spectrum;
                           # arrays = {"peak_wavelengths_nm", "peak_absorbances",
                           # "peak_prominences" (optional)} (CS-19, Phase 4h)
+    SECOND_DERIVATIVE = auto()  # d²A/dλ² of a parent UV/Vis-style spectrum;
+                          # arrays = {"wavelength_nm", "absorbance"} where the
+                          # "absorbance" key holds the derivative values (units
+                          # are A/nm² but the renderer plots on the shared
+                          # absorbance Y-axis) (CS-20, Phase 4i)
     # Add further types as new operations are implemented.
 
 
@@ -108,6 +113,11 @@ class OperationType(Enum):
     PEAK_PICK    = auto()  # UV/Vis peak picking; discriminates via
                            # params["mode"] ∈ {"prominence", "manual"}
                            # (Phase 4h / CS-19)
+    SECOND_DERIVATIVE = auto()  # UV/Vis second derivative via
+                           # Savitzky-Golay (single algorithm; no mode
+                           # discriminator). Required params:
+                           # window_length (odd int ≥ polyorder+2),
+                           # polyorder (int ≥ 2). (Phase 4i / CS-20)
     # Add further types as new operations are implemented.
 
 
