@@ -48,6 +48,7 @@ import uvvis_baseline
 import uvvis_normalise
 import uvvis_smoothing
 import uvvis_peak_picking
+import uvvis_second_derivative
 import node_export
 from node_styles import default_spectrum_style
 from version import __version__ as PTARMIGAN_VERSION
@@ -231,6 +232,31 @@ class UVVisTab(tk.Frame):
             out.append(node)
         return out
 
+    def _second_derivative_nodes(self) -> List[DataNode]:
+        """Return the SECOND_DERIVATIVE DataNodes the tab considers live.
+
+        SECOND_DERIVATIVE nodes (CS-20, Phase 4i) carry the curve
+        schema (``wavelength_nm`` / ``absorbance`` keys, where the
+        latter holds d²A/dλ² values) so the renderer plots them with
+        the same code path as UVVIS / BASELINE / NORMALISED /
+        SMOOTHED. They live in their own iteration because they are
+        intentionally absent from ``_spectrum_nodes`` — the locked
+        smoothing / baseline / normalise / peak-picking panels'
+        parent type checks reject SECOND_DERIVATIVE, so including it
+        in ``_spectrum_nodes`` would surface a node in those subject
+        comboboxes that those panels would silently refuse on Apply.
+        Chained second derivatives are out of scope this phase.
+        """
+        out: List[DataNode] = []
+        for node in self._graph.nodes_of_type(NodeType.SECOND_DERIVATIVE,
+                                              state=None):
+            if node.state == NodeState.DISCARDED:
+                continue
+            if not node.active:
+                continue
+            out.append(node)
+        return out
+
     def _has_existing_load(self, source_file: str, label: str) -> bool:
         """Skip duplicates when the user reloads a file already in the graph."""
         for node in self._graph.nodes_of_type(NodeType.UVVIS, state=None):
@@ -388,7 +414,7 @@ class UVVisTab(tk.Frame):
             self._graph,
             [NodeType.UVVIS, NodeType.BASELINE,
              NodeType.NORMALISED, NodeType.SMOOTHED,
-             NodeType.PEAK_LIST],
+             NodeType.PEAK_LIST, NodeType.SECOND_DERIVATIVE],
             redraw_cb=self._redraw,
             send_to_compare_cb=None,
             style_dialog_cb=self._open_style_dialog_for_node,
@@ -396,8 +422,9 @@ class UVVisTab(tk.Frame):
         )
         self._scan_tree.pack(fill=tk.BOTH, expand=True, padx=2, pady=2)
 
-    # ── Left panel (baseline + normalisation + smoothing + peak picking,
-    #    CS-07 + CS-15 + CS-16 + CS-18 + CS-19) ──
+    # ── Left panel (baseline + normalisation + smoothing + peak picking
+    #    + second derivative,
+    #    CS-07 + CS-15 + CS-16 + CS-18 + CS-19 + CS-20) ──
 
     def _build_left_panel(self, parent):
         """Construct the left panel with processing controls.
@@ -427,6 +454,14 @@ class UVVisTab(tk.Frame):
           wavelengths), and an "Apply Peak Picking" button. Each
           Apply gesture creates a provisional ``PEAK_LIST``
           annotation node rendered as scatter on the parent curve.
+        * **Second derivative** (CS-20, Phase 4i) —
+          ``SecondDerivativePanel`` subwidget hosting its own subject
+          combobox, two parameter spinboxes (window length + poly
+          order), and an "Apply Second Derivative" button. Single
+          algorithm (Savitzky-Golay with deriv=2) — no mode
+          combobox. Each Apply gesture creates a provisional
+          ``SECOND_DERIVATIVE`` node rendered as a curve overlay on
+          the same plot.
 
         Each Apply gesture creates one provisional OperationNode +
         DataNode pair; the user commits or discards via the
@@ -535,6 +570,26 @@ class UVVisTab(tk.Frame):
             status_cb=self._set_status_message,
         )
         self._peak_picking_panel.pack(fill=tk.X)
+
+        # ── Second derivative section (CS-20, Phase 4i) ──────────────────
+        # Visual separator between the peak-picking section and the
+        # second-derivative section. SECOND_DERIVATIVE nodes are NOT
+        # candidate parents for further derivatives this phase: the
+        # panel uses _spectrum_nodes (UVVIS / BASELINE / NORMALISED /
+        # SMOOTHED), which excludes SECOND_DERIVATIVE so chained
+        # derivatives are out of scope.
+        ttk.Separator(parent, orient=tk.HORIZONTAL).pack(
+            fill=tk.X, padx=4, pady=(8, 4))
+
+        self._second_derivative_panel = (
+            uvvis_second_derivative.SecondDerivativePanel(
+                parent,
+                self._graph,
+                spectrum_nodes_fn=self._spectrum_nodes,
+                status_cb=self._set_status_message,
+            )
+        )
+        self._second_derivative_panel.pack(fill=tk.X)
 
         # Defer non-toolkit init until the chrome is present.
         self._refresh_baseline_param_rows()
@@ -1143,6 +1198,15 @@ class UVVisTab(tk.Frame):
         # transform on the displayed y-values.
         live = [n for n in self._spectrum_nodes()
                 if bool(n.style.get("visible", True))]
+        # SECOND_DERIVATIVE nodes (CS-20, Phase 4i) ride the same
+        # curve render path as the spectrum-shaped nodes — they carry
+        # the wavelength_nm / absorbance schema, so the loop below
+        # treats them identically. They are kept out of
+        # ``_spectrum_nodes`` so the locked smoothing / baseline /
+        # normalise / peak-picking panels do not surface them as
+        # candidate parents (those panels would silently refuse them).
+        live.extend(n for n in self._second_derivative_nodes()
+                    if bool(n.style.get("visible", True)))
 
         if not live:
             self._draw_empty()
