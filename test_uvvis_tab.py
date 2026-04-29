@@ -1259,6 +1259,176 @@ class TestUVVisTabSmoothingIntegration(unittest.TestCase):
 
 
 @unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestUVVisTabPeakPickingIntegration(unittest.TestCase):
+    """Phase 4h — PEAK_LIST nodes are first-class scatter overlays.
+
+    Mirrors TestUVVisTabSmoothingIntegration (Phase 4g). The pure
+    PeakPickingPanel mechanics are pinned in test_uvvis_peak_picking.py;
+    here we only check that the panel is wired into the tab, that
+    PEAK_LIST nodes flow through the render path as scatter (not lines)
+    and through the right sidebar like UVVIS / BASELINE / NORMALISED /
+    SMOOTHED, and that PEAK_LIST nodes do NOT appear in the baseline /
+    normalisation / smoothing subject lists (chained peak picking is
+    undefined per CS-19).
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from uvvis_tab import UVVisTab
+        cls.UVVisTab = UVVisTab
+
+    def setUp(self):
+        self.host = tk.Frame(_root)
+        self.host.pack()
+        self.graph = ProjectGraph()
+        self.tab = self.UVVisTab(self.host, graph=self.graph)
+
+    def tearDown(self):
+        try:
+            self.tab.destroy()
+        except Exception:
+            pass
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    def _add_uvvis(self, nid: str = "u1") -> None:
+        wl = np.linspace(200.0, 800.0, 601)
+        absorb = (np.exp(-((wl - 350.0) / 30.0) ** 2)
+                  + 0.5 * np.exp(-((wl - 600.0) / 25.0) ** 2)
+                  + 0.05)
+        self.graph.add_node(DataNode(
+            id=nid, type=NodeType.UVVIS,
+            arrays={"wavelength_nm": wl, "absorbance": absorb},
+            metadata={"source_file": "syn"},
+            label=nid, state=NodeState.COMMITTED,
+            style={"color": "#111", "linestyle": "solid",
+                   "linewidth": 1.5, "alpha": 0.9, "visible": True,
+                   "in_legend": True, "fill": False, "fill_alpha": 0.08},
+        ))
+
+    def _select_first_peak_subject(self):
+        items = self.tab._peak_picking_panel._subject_cb.cget("values")
+        if isinstance(items, str):
+            items = tuple(items.split())
+        self.assertGreaterEqual(len(items), 1)
+        self.tab._peak_picking_panel._subject_var.set(items[0])
+
+    def test_panel_present_in_left_pane(self):
+        self.assertTrue(hasattr(self.tab, "_peak_picking_panel"))
+
+    def test_peak_list_node_renders_as_scatter_not_line(self):
+        # Apply peak picking through the panel; the resulting PEAK_LIST
+        # node must show up as a matplotlib scatter (PathCollection),
+        # NOT a Line2D — keeping the line count at 1 (the parent UVVIS).
+        self._add_uvvis("u1")
+        self.tab.update_idletasks()
+        self._select_first_peak_subject()
+        self.tab._peak_picking_panel._mode_var.set("prominence")
+        self.tab._peak_picking_panel._prominence.set("0.1")
+        self.tab._peak_picking_panel._distance.set(1)
+        self.tab._peak_picking_panel._apply()
+        self.tab.update_idletasks()
+        # Scatter is a PathCollection on ax.collections, not a Line2D.
+        self.assertEqual(len(self.tab._ax.get_lines()), 1,
+                         "peak markers must not show up as lines")
+        self.assertEqual(len(self.tab._ax.collections), 1,
+                         "exactly one scatter overlay for the peak list")
+
+    def test_peak_list_node_has_sidebar_row(self):
+        self._add_uvvis("u1")
+        self.tab.update_idletasks()
+        self._select_first_peak_subject()
+        self.tab._peak_picking_panel._mode_var.set("manual")
+        self.tab._peak_picking_panel._manual_wavelengths.set("350, 600")
+        _, out_id = self.tab._peak_picking_panel._apply()
+        self.tab._scan_tree.update_idletasks()
+        # The new PEAK_LIST node owns a row in the right sidebar (the
+        # sidebar filter widened from
+        # [UVVIS, BASELINE, NORMALISED, SMOOTHED] to include PEAK_LIST
+        # in Phase 4h).
+        self.assertIn(out_id, self.tab._scan_tree._row_frames)
+
+    def test_discard_removes_peak_list_from_plot(self):
+        self._add_uvvis("u1")
+        self.tab.update_idletasks()
+        self._select_first_peak_subject()
+        self.tab._peak_picking_panel._mode_var.set("prominence")
+        self.tab._peak_picking_panel._prominence.set("0.1")
+        _, out_id = self.tab._peak_picking_panel._apply()
+        self.tab.update_idletasks()
+        self.assertEqual(len(self.tab._ax.collections), 1)
+        self.graph.discard_node(out_id)
+        self.tab.update_idletasks()
+        self.assertEqual(len(self.tab._ax.collections), 0)
+
+    def test_peak_list_does_not_appear_in_curve_subject_lists(self):
+        # PEAK_LIST is intentionally excluded from _spectrum_nodes
+        # (CS-19): chained peak picking is undefined, and baseline /
+        # normalisation / smoothing subject combos all read the same
+        # callable.
+        self._add_uvvis("u1")
+        self.tab.update_idletasks()
+        self._select_first_peak_subject()
+        self.tab._peak_picking_panel._mode_var.set("prominence")
+        self.tab._peak_picking_panel._prominence.set("0.1")
+        self.tab._peak_picking_panel._apply()
+        self.tab.update_idletasks()
+
+        baseline_items = self.tab._baseline_subject_cb.cget("values")
+        if isinstance(baseline_items, str):
+            baseline_items = tuple(baseline_items.split())
+        norm_items = self.tab._normalisation_panel._subject_cb.cget("values")
+        if isinstance(norm_items, str):
+            norm_items = tuple(norm_items.split())
+        smooth_items = self.tab._smoothing_panel._subject_cb.cget("values")
+        if isinstance(smooth_items, str):
+            smooth_items = tuple(smooth_items.split())
+        peak_items = self.tab._peak_picking_panel._subject_cb.cget("values")
+        if isinstance(peak_items, str):
+            peak_items = tuple(peak_items.split())
+
+        # All four subject combos still list only the parent UVVIS
+        # (length 1) — the new PEAK_LIST is not a curve.
+        self.assertEqual(len(baseline_items), 1)
+        self.assertEqual(len(norm_items), 1)
+        self.assertEqual(len(smooth_items), 1)
+        self.assertEqual(len(peak_items), 1)
+
+    def test_peak_picking_status_message_routed_to_toolbar(self):
+        # The panel's status_cb is wired to the tab's
+        # _set_status_message helper (same hand-off as the
+        # NormalisationPanel / SmoothingPanel). A successful Apply
+        # must update the toolbar status label.
+        self._add_uvvis("u1")
+        self.tab.update_idletasks()
+        self._select_first_peak_subject()
+        self.tab._peak_picking_panel._mode_var.set("prominence")
+        self.tab._peak_picking_panel._prominence.set("0.1")
+        before = self.tab._status_lbl.cget("text")
+        self.tab._peak_picking_panel._apply()
+        self.tab.update_idletasks()
+        after = self.tab._status_lbl.cget("text")
+        self.assertNotEqual(before, after)
+        self.assertIn("peak", after.lower())
+
+    def test_empty_peak_list_renders_no_scatter(self):
+        # A high prominence threshold filters every peak; the PEAK_LIST
+        # node still gets created (the operation ran) but has no
+        # samples, so the renderer skips drawing for it.
+        self._add_uvvis("u1")
+        self.tab.update_idletasks()
+        self._select_first_peak_subject()
+        self.tab._peak_picking_panel._mode_var.set("prominence")
+        self.tab._peak_picking_panel._prominence.set("100.0")
+        self.tab._peak_picking_panel._apply()
+        self.tab.update_idletasks()
+        self.assertEqual(len(self.tab._ax.collections), 0,
+                         "empty peak lists must not draw a scatter")
+
+
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
 class TestUVVisTabExportIntegration(unittest.TestCase):
     """Phase 4f, CS-17 — Export… dialog flow.
 
