@@ -62,6 +62,9 @@ class NodeType(Enum):
     TDDFT       = auto()  # TD-DFT calculated spectrum (from ORCA)
     FEFF_PATHS  = auto()  # FEFF simulation result
     BXAS_RESULT = auto()  # bXAS unified fit result
+    PEAK_LIST   = auto()  # picked peaks of a parent UV/Vis-style spectrum;
+                          # arrays = {"peak_wavelengths_nm", "peak_absorbances",
+                          # "peak_prominences" (optional)} (CS-19, Phase 4h)
     # Add further types as new operations are implemented.
 
 
@@ -102,6 +105,9 @@ class OperationType(Enum):
     DIFFERENCE   = auto()  # two-input difference
     FEFF_RUN     = auto()  # FEFF simulation execution
     BXAS_FIT     = auto()  # bXAS unified background + spectral fit
+    PEAK_PICK    = auto()  # UV/Vis peak picking; discriminates via
+                           # params["mode"] ∈ {"prominence", "manual"}
+                           # (Phase 4h / CS-19)
     # Add further types as new operations are implemented.
 
 
