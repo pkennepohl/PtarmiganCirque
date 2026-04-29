@@ -2152,6 +2152,199 @@ provisional node, and iteration is via discard + re-apply.
 
 ---
 
+## CS-19: UV/Vis Peak Picking
+
+**File:** `uvvis_peak_picking.py` (pure module + `PeakPickingPanel`
+co-located) + `uvvis_tab.py` left panel + render path
+**Depends on:** CS-01 (ProjectGraph), CS-02 (DataNode `PEAK_LIST`
+variant), CS-03 (OperationNode `PEAK_PICK` variant), CS-07 (UV/Vis
+left panel), `numpy`, `scipy.signal.find_peaks`
+**Depended on by:** UV/Vis tab — fourth user-initiated processing
+operation in the new architecture (Phase 4h); first
+non-spectrum-producing operation (the output is an annotation, not
+a curve)
+
+### Responsibility
+
+Pick peaks of a UV/Vis spectrum, producing a new `PEAK_LIST`
+`DataNode`. Each Apply gesture is a single provisional operation;
+the user inspects the result (rendered as scatter markers on top of
+the parent curve) and decides to commit or discard via the
+right-sidebar `ScanTreeWidget`.
+
+### Two modes (single OperationType, params discriminated by mode)
+
+A single `OperationType.PEAK_PICK` covers both. The discriminator is
+`params["mode"]`; the remaining keys are the mode-specific
+sub-schema. Mirrors the CS-15 (BASELINE) / CS-16 (NORMALISE) /
+CS-18 (SMOOTH) convention.
+
+| Mode | Required `params` keys | Algorithm |
+|---|---|---|
+| `prominence` | `prominence` (float ≥ 0.0); optional `distance` (int ≥ 1, samples; default 1) | `scipy.signal.find_peaks` with the prominence threshold + minimum sample-spacing. Wavelength array is sorted ascending before the search; output is sorted ascending. Empty result on no-peaks-above-threshold is not an error. |
+| `manual`     | `wavelengths_nm` (list[float], length ≥ 1) | User-supplied wavelengths snapped to the parent's nearest sample; duplicates collapse so the output is deduplicated and sorted ascending. No prominence is computed for hand-picked peaks (the `peak_prominences` array is omitted from the output node). |
+
+There is no `none` mode — the absence of peak picking is the
+absence of a PEAK_LIST node, not a no-op operation. The dispatcher
+rejects `"none"` (and any other unknown mode) with `ValueError`.
+
+### Pure module
+
+The compute layer is Tk-free and graph-free:
+
+```python
+import uvvis_peak_picking as pp
+peak_wl, peak_a, peak_prom = pp.compute(
+    "prominence", wavelength_nm, absorbance,
+    {"prominence": 0.05, "distance": 5},
+)
+```
+
+Each `compute_*` returns three numpy arrays of equal length:
+`peak_wavelengths_nm`, `peak_absorbances`, `peak_prominences`. The
+prominence array is empty (length 0) for manual mode. Missing
+required params raise `KeyError`; bad inputs (shape mismatch,
+non-1-D arrays, empty arrays, negative prominence, zero distance,
+non-finite manual wavelengths) raise `ValueError`. The panel catches
+both and reports them via `messagebox`.
+
+### Provisional / Commit / Discard flow
+
+Per ARCHITECTURE.md §5. One Apply gesture creates exactly two nodes
+wired `parent → op → child`:
+
+* **`OperationNode`** (`type=PEAK_PICK`,
+  `engine="internal"`, `engine_version=PTARMIGAN_VERSION`,
+  `params={"mode": ..., **mode_specific}`,
+  `state=PROVISIONAL`).
+* **`DataNode`** (`type=PEAK_LIST`,
+  arrays `{peak_wavelengths_nm, peak_absorbances,
+  peak_prominences (prominence mode only)}`,
+  metadata carried forward from the parent plus
+  `peak_picking_mode` + `peak_picking_parent_id` + `peak_count`,
+  `state=PROVISIONAL`, default style picked from the loader's
+  palette so the markers are distinct from the parent curve).
+
+The UV/Vis tab subscribes to graph events as before; the
+`ScanTreeWidget` filter expanded from `[NodeType.UVVIS,
+NodeType.BASELINE, NodeType.NORMALISED, NodeType.SMOOTHED]` to
+include `NodeType.PEAK_LIST` so the new node appears in the right
+sidebar with the provisional indicator. Commit (`graph.commit_node`)
+and discard (`graph.discard_node`) flow through the existing
+`ScanTreeWidget` gestures.
+
+### Render path — scatter, not line
+
+PEAK_LIST nodes render as a scatter overlay (`ax.scatter`,
+`marker="v"`, `s=40`, `edgecolor="none"`, `zorder=3`) on top of the
+curves drawn by `_redraw`'s spectrum loop. Empty peak lists (zero
+samples — typically the result of a too-strict prominence threshold)
+skip rendering without error.
+
+The renderer reads only the universal style keys that have a
+scatter analogue: `color`, `alpha`, `visible`, `in_legend`. The
+remaining universal keys (`linestyle`, `linewidth`, `fill`,
+`fill_alpha`) are stored on the node for schema uniformity but
+ignored by the scatter draw.
+
+### Why PEAK_LIST is *not* in `_spectrum_nodes`
+
+`UVVisTab._spectrum_nodes` returns the curve-shaped nodes that
+baseline / normalisation / smoothing accept as parents and that
+`_redraw` plots as lines. PEAK_LIST nodes carry different array
+keys (`peak_wavelengths_nm` / `peak_absorbances` instead of the
+curve `wavelength_nm` / `absorbance`), are not candidate parents
+for further peak picking (chained peak picking is undefined), and
+render through a separate scatter path. They live in
+`_peak_list_nodes()` instead and are walked separately by
+`_redraw`.
+
+### Left-panel UI (CS-07 §"UV/Vis left panel" + Phase 4h)
+
+`PeakPickingPanel` is a `tk.Frame` subclass that lives below the
+smoothing section in the left panel, separated by a horizontal
+`ttk.Separator`. The panel hosts:
+
+* **Subject combobox** — chooses which UVVIS / BASELINE /
+  NORMALISED / SMOOTHED node to peak-pick. PEAK_LIST nodes are
+  *not* themselves candidate subjects. Re-populated on graph events
+  that change the live set (`NODE_ADDED`, `NODE_DISCARDED`,
+  `NODE_LABEL_CHANGED`, `NODE_ACTIVE_CHANGED`).
+* **Mode combobox** — `prominence` / `manual`. On change the
+  parameter row frame rebuilds.
+* **Per-mode parameter rows** —
+  * prominence: `Prominence` entry (float, default 0.05) +
+    `Min distance` spinbox (samples, default 1).
+  * manual: `Wavelengths (nm, comma-separated)` text entry.
+* **`Apply Peak Picking` button** — runs `_apply()`.
+
+Click-on-plot to add a peak (the live-pointer gesture) is out of
+scope for Phase 4h — manual mode accepts a comma-separated list of
+wavelengths instead. A future polish session can add the gesture
+without changing the OperationNode schema (the persisted params
+are still a list of wavelengths).
+
+### Implementation notes (Phase 4h)
+
+* **PEAK_LIST is the first non-curve DataNode in the UV/Vis path.**
+  CS-15 / CS-16 / CS-18 all produced new spectra (`BASELINE`,
+  `NORMALISED`, `SMOOTHED`) that share the curve array convention
+  and ride the same `_spectrum_nodes` walk + `_redraw` line loop.
+  PEAK_LIST broke that uniformity: a separate `_peak_list_nodes()`
+  helper + a separate render branch land in `uvvis_tab.py`. The
+  alternative (annotation-only metadata stored on the parent's
+  OperationNode without a downstream DataNode) was rejected because
+  the established four-operation pattern (op + data) makes the
+  scatter act like a first-class graph citizen — it has its own
+  row in the sidebar, its own commit / discard gestures, its own
+  style controls.
+* **Single `OperationType.PEAK_PICK` decision.** Resolved in favour
+  of one variant + a `mode`-discriminated params dict rather than
+  separate `PEAK_PICK_PROMINENCE` / `PEAK_PICK_MANUAL` variants.
+  Mirrors the CS-15 / CS-16 / CS-18 precedent.
+* **Subject is selected, not implicit.** The panel hosts its own
+  combobox of every live spectrum-shaped node, fed by a callable
+  the host hands over (`spectrum_nodes_fn`). Adding a row-selection
+  state to `ScanTreeWidget` was deferred (Phase 4c friction
+  point #1; carried forward through Phase 4e / 4g and now 4h).
+* **Default colour picked from the same palette.** A PEAK_LIST
+  node's default colour is `_PALETTE[(n_uvvis + n_baseline +
+  n_normalised + n_smoothed + n_peak_list) % len(_PALETTE)]` so
+  the scatter is visually distinct from the parent curve. Phase 4g
+  friction point #1 already flagged the duplicated index expression
+  + duplicated `_PALETTE`; Phase 4h adds the fifth copy and the
+  fifth term per the brief, with extraction deferred until a
+  `_pick_default_color(graph)` helper is worth the indirection.
+* **Reuses `node_styles.default_spectrum_style`.** The eight
+  universal style keys cover the four scatter-relevant keys (color,
+  alpha, visible, in_legend) plus four ignored-by-scatter keys
+  (linestyle, linewidth, fill, fill_alpha). Carrying the four
+  ignored keys on the node keeps the universal style dialog (CS-05)
+  working without a per-node-type schema branch — the renderer
+  reads what it can use and ignores the rest. A bespoke
+  `default_peak_marker_style` was considered and deferred: the
+  payoff (a `marker_size` / `marker_shape` schema) is real but
+  needs a parallel column in the style dialog and a
+  per-node-type style schema, which is bigger than peak-picking
+  itself.
+* **Marker is fixed at "v" pointing down at each peak.** A future
+  marker-style schema decision could expose this to the user.
+* **Empty peak list is a successful result, not an error.** A
+  high-prominence Apply that filters every peak still creates the
+  op + data nodes (`peak_count = 0` in the metadata footer) so the
+  user can see that the operation ran. The renderer skips the
+  scatter call when `peak_wavelengths_nm.size == 0`.
+* **Manual mode snaps to the parent's wavelength grid.** This means
+  the user's request "wavelengths_nm: [349.7]" persists in the
+  OperationNode params verbatim, but the node arrays carry the
+  snapped value (e.g. 349.5 if that is the nearest sample). The
+  snapped wavelength is what gets rendered and what the future
+  per-row export will write. The persisted params are sufficient
+  to re-run the operation on the same parent (CS-03 params
+  completeness): re-applying yields the same snapped sample.
+
+---
+
 ## CS-04 implementation notes (Phase 4c)
 
 * **B-001 fix — inline history expansion.** `_render_history`
@@ -2217,7 +2410,7 @@ provisional node, and iteration is via discard + re-apply.
 
 ---
 
-*Document version: 1.7 — April 2026*
+*Document version: 1.8 — April 2026*
 *1.1: CS-13 implementation notes added in Phase 4a.*
 *1.2: CS-14 Plot Settings Dialog added in Phase 4b.*
 *1.3: CS-15 UV/Vis Baseline Correction + CS-04 implementation
@@ -2240,5 +2433,11 @@ mirroring CS-15 / CS-16). `node_styles.default_spectrum_style`
 extracted as the four-caller threshold for the spectrum-
 producing default-style dict; `uvvis_tab` and `uvvis_normalise`
 migrated to it alongside the new `uvvis_smoothing`.*
+*1.8: CS-19 UV/Vis Peak Picking added in Phase 4h (prominence +
+manual; mode-discriminated PEAK_PICK OperationType mirroring
+CS-15 / CS-16 / CS-18). First non-curve DataNode (`PEAK_LIST`)
+in the UV/Vis path: separate `_peak_list_nodes()` helper +
+separate scatter render branch in `uvvis_tab._redraw`, with the
+sidebar filter widened to include PEAK_LIST.*
 *To be updated as Open Questions are resolved and new components
 are specified.*

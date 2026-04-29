@@ -748,6 +748,86 @@ relevant subsequent Phase 4 session.**
    FEFF paths) where the fallback maps would diverge from the
    spectrum factory anyway.
 
+### Friction points carried forward from Phase 4h
+
+These are concrete obstacles the next Phase 4 session will hit.
+Identified during Phase 4h while implementing peak picking and
+landing the first non-curve DataNode (PEAK_LIST) in the UV/Vis
+path. **Do not fix until the relevant subsequent Phase 4 session.**
+
+1. **`_PALETTE` is now duplicated in five modules.** Phase 4c
+   friction #5 / Phase 4e friction #2 / Phase 4g friction #1
+   tracked the duplication; Phase 4h adds the fifth copy in
+   `uvvis_peak_picking._PALETTE` and a fifth term in the
+   `_PALETTE[(n_uvvis + n_baseline + n_normalised + n_smoothed +
+   n_peak_list) % len(_PALETTE)]` index expression. Same cleanest
+   extraction sketched in Phase 4g friction #1: a
+   `_pick_default_color(graph)` helper that walks every
+   spectrum-shaped or annotation NodeType and picks the next
+   palette entry. Defer until a sixth caller lands (Phase 5 XANES
+   migration is the natural next palette consumer) or pair with
+   the next Phase 4 polish session that touches the same files.
+2. **`_on_uvvis_apply_to_all` does not fan out to PEAK_LIST.**
+   The unified style dialog's "apply to all" button writes a
+   single style key onto every node returned by
+   `_spectrum_nodes()` — UVVIS / BASELINE / NORMALISED /
+   SMOOTHED. PEAK_LIST is intentionally absent from that walk
+   (CS-19), but the user's mental model for ∀ is probably "every
+   row in the sidebar". For colour-style keys this is correct
+   behaviour (peak markers usually want a colour distinct from
+   their parent). For the universal `visible` / `in_legend`
+   toggles it is debatable — if the user toggles "visible off"
+   on a UVVIS row's ∀, they probably expect the sibling PEAK_LIST
+   to disappear too. Decision deferred until a user reports it
+   as friction; the cleanest fix is a per-key fan-out scope
+   (curve-style keys → `_spectrum_nodes`; visibility / legend
+   keys → every sidebar row).
+3. **PEAK_LIST style schema reuses the eight curve-style universal
+   keys but only four (color / alpha / visible / in_legend) have
+   a scatter analogue.** The remaining four (linestyle, linewidth,
+   fill, fill_alpha) are stored on the node and exposed by the
+   StyleDialog (CS-05) but the renderer ignores them for scatter.
+   The user can edit them with no visible effect, which is mildly
+   confusing. A bespoke peak-marker schema (`marker_size`,
+   `marker_shape`, `edgewidth`, ...) would resolve this but adds
+   the per-node-type style schema CS-05 was designed to avoid.
+   Revisit if a "peak label font" or "marker shape" request lands
+   from a user.
+4. **Click-on-plot to add a peak is unimplemented.** The Phase 4h
+   brief explicitly scoped peak picking to the prominence +
+   manual-list modes. Click-on-plot is the natural extension of
+   manual mode (the user clicks each peak, the renderer
+   accumulates the list, then Apply commits). It needs the same
+   matplotlib `mpl_connect` dance as the existing
+   `_on_mpl_interact` does for axis-limit capture and a small
+   amount of in-panel ephemeral state. Decision deferred — the
+   manual entry covers the same gesture for the cases users
+   typically care about (one or two known band positions).
+5. **The left pane is now visibly tall.** Phase 4g friction #5
+   already flagged the four-section stack (Baseline + Normalisation
+   + Smoothing + ?); Phase 4h lands the fourth section. On a
+   720-pixel-tall window the Apply Peak Picking button can be
+   below the fold, depending on the user's font-scaling and
+   sash position. The collapsible-sections / accordion / mini-tab
+   options listed in Phase 4g friction #5 all still apply; the
+   forcing function for a redesign is now stronger. Decision
+   deferred until a user reports it as friction (or until a fifth
+   section lands in OLIS correction or interactive normalisation).
+6. **PEAK_LIST is not exportable.** `node_export._resolve_columns`
+   is UV/Vis-shaped only (Phase 4f friction #1). PEAK_LIST has
+   different array keys (`peak_wavelengths_nm` /
+   `peak_absorbances` / optional `peak_prominences`) so the
+   row-Export… gesture errors out for a PEAK_LIST row even after
+   commit. The cleanest fix is the `NodeType → (col_names,
+   array_keys)` registry sketched in Phase 4f friction #1.
+   Resolve when Phase 5 / 6 land their first XANES / EXAFS
+   exportable nodes.
+7. **`scipy.signal.find_peaks` returns peak prominence but not
+   peak width / FWHM.** A future "peak table" export will probably
+   want widths too. `find_peaks` accepts `width=` and returns the
+   widths; adding the array key + a future export column is a
+   one-commit sweep. Defer until a peak-table export is in scope.
+
 | Status | Priority | Item | Notes |
 |---|---|---|---|
 | ✅ | 🔴 | **Migrate UV/Vis to node model** | UVVisScan → DataNode(type=UVVIS). File load → RAW\_FILE + LOAD + UVVIS triple, all COMMITTED (Phase 4a Part A; CS-13 implementation notes) |
@@ -758,7 +838,7 @@ relevant subsequent Phase 4 session.**
 | ✅ | 🔴 | **Normalisation as explicit operation** | Normalisation creates a provisional NORMALISED node rather than modifying data in place. Two modes (peak / area), each with a window in nm; mirrors the Phase 4c BASELINE shape (Phase 4e; CS-16) |
 | ⏳ | 🔴 | **"Send to Compare" action** | Replaces "Add to TDDFT Overlay". Available on committed nodes |
 | ✅ | 🔴 | **Plot Settings dialog** | Fonts, grid, background colour, legend position, tick direction, title/label customisation. Accessed via ⚙ in top bar (Phase 4b; CS-14) |
-| ⏳ | 🟡 | **Peak picking** | Click-to-mark peaks; λ/E annotation; optional peak table export |
+| ✅ | 🟡 | **Peak picking** | Two modes: prominence (`scipy.signal.find_peaks`) and manual (comma-separated wavelengths snapped to the parent grid). Single OperationType.PEAK_PICK with `params["mode"]` ∈ {"prominence", "manual"} (mirrors CS-15 / CS-16 / CS-18). Output is a provisional `PEAK_LIST` DataNode rendered as scatter on top of the parent curve. `PeakPickingPanel` co-located in `uvvis_peak_picking.py` (Phase 4h; CS-19). λ/E annotation labels + optional peak-table export deferred to a future polish session |
 | ⏳ | 🟡 | **OLIS integrating sphere correction** | Three-input operation node (sample + reference + blank → corrected). See OQ-004 for multi-input UI design |
 | ⏳ | 🟡 | **Interactive normalisation** | Normalise to user-specified wavelength or integration region |
 | ⏳ | 🟡 | **Difference spectra** | Two-input operation node. See OQ-004 |
@@ -980,7 +1060,7 @@ the resolving phase + commit SHA appended to the row.
 
 ---
 
-*Document version: 1.4 — April 2026*
+*Document version: 1.5 — April 2026*
 *1.1: Known Bugs register added 2026-04-27 after Phase 4b manual testing.*
 *1.2: Phase 4c — baseline correction lands; B-001 / B-003 / B-004
 resolved; Phase 4c friction points logged.*
@@ -992,4 +1072,10 @@ marked ✅; Phase 4g friction points logged. (Phase 4e — normalisation
 as operation — and Phase 4f — single-node export — were logged in
 their respective COMPONENTS.md sections; not separately versioned
 here.)*
+*1.5: Phase 4h — UV/Vis peak picking lands (CS-19); Peak picking
+item marked ✅; Phase 4h friction points logged (seven items: fifth
+`_PALETTE` copy, ∀ apply-to-all PEAK_LIST exclusion, peak-marker
+schema vs universal style schema, deferred click-on-plot gesture,
+left-pane height pressure, PEAK_LIST not yet exportable, peak-width
+extension for future peak-table export).*
 *Supersedes: BACKLOG.md (original)*
