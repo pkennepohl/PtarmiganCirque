@@ -50,16 +50,14 @@ import uvvis_smoothing
 import uvvis_peak_picking
 import uvvis_second_derivative
 import node_export
-from node_styles import default_spectrum_style
+from node_styles import default_spectrum_style, pick_default_color
 from version import __version__ as PTARMIGAN_VERSION
 
-# ── Colour palette (loader-side default colour assignment) ────────────────────
-# Phase 2 friction #3: the UVVIS DataNode receives ``style["color"]`` at
-# creation so the StyleDialog opens with a non-empty starting colour.
-_PALETTE = [
-    "#1f77b4", "#d62728", "#2ca02c", "#ff7f0e", "#9467bd",
-    "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf",
-]
+# Colour palette: lifted to node_styles.SPECTRUM_PALETTE in Phase 4j
+# (CS-21). Both call sites in this file (the UVVIS loader's default
+# colour assignment and _apply_baseline's BASELINE colour assignment)
+# go through node_styles.pick_default_color, which walks every
+# spectrum-shaped NodeType in one go.
 
 # ── File-type filter ──────────────────────────────────────────────────────────
 _FILE_TYPES = [
@@ -777,14 +775,10 @@ class UVVisTab(tk.Frame):
 
         # Default colour for the new BASELINE node — pick a fresh
         # palette entry so the corrected curve is visually separable
-        # from its parent.
-        existing_baselines = len(
-            self._graph.nodes_of_type(NodeType.BASELINE, state=None))
-        existing_uvvis = len(
-            self._graph.nodes_of_type(NodeType.UVVIS, state=None))
-        colour = _PALETTE[
-            (existing_uvvis + existing_baselines) % len(_PALETTE)
-        ]
+        # from its parent. CS-21 (Phase 4j) replaced the inline
+        # palette-index expression with the shared pick_default_color
+        # helper.
+        colour = pick_default_color(self._graph)
 
         # Carry the parent's metadata forward, plus a baseline footer.
         new_meta: dict = {
@@ -1091,8 +1085,10 @@ class UVVisTab(tk.Frame):
         )
 
         # 3. UVVIS DataNode — parsed arrays + style with default colour.
-        existing_count = len(self._graph.nodes_of_type(NodeType.UVVIS, state=None))
-        colour = _PALETTE[existing_count % len(_PALETTE)]
+        # CS-21 (Phase 4j) routes default-colour selection through
+        # node_styles.pick_default_color so the loader walks the same
+        # six-NodeType counter as the operation panels.
+        colour = pick_default_color(self._graph)
 
         uvvis_meta = {
             "x_unit":      "nm",

@@ -62,9 +62,14 @@ class TestUVVisTabLoaderMigration(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from uvvis_tab import UVVisTab, _PALETTE
+        # CS-21 (Phase 4j) lifted the palette into node_styles. The
+        # tab still produces colours from the same ten-entry tuple
+        # via node_styles.pick_default_color; existing assertions
+        # against ``cls._PALETTE`` keep working transparently.
+        from uvvis_tab import UVVisTab
+        from node_styles import SPECTRUM_PALETTE
         cls.UVVisTab = UVVisTab
-        cls._PALETTE = _PALETTE
+        cls._PALETTE = SPECTRUM_PALETTE
 
     def setUp(self):
         self.host = tk.Frame(_root)

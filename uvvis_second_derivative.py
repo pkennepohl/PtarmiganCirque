@@ -41,7 +41,7 @@ from tkinter import ttk, messagebox
 from scipy.signal import savgol_filter
 
 from graph import GraphEvent, GraphEventType, ProjectGraph
-from node_styles import default_spectrum_style
+from node_styles import default_spectrum_style, pick_default_color
 from nodes import (
     DataNode,
     NodeState,
@@ -55,21 +55,6 @@ from version import __version__ as PTARMIGAN_VERSION
 __all__ = [
     "compute",
     "SecondDerivativePanel",
-]
-
-
-# Local palette — duplicated from uvvis_tab._PALETTE / uvvis_normalise._PALETTE
-# / uvvis_smoothing._PALETTE / uvvis_peak_picking._PALETTE (Phase 4c friction
-# #5, Phase 4e friction #2, Phase 4g friction #1, Phase 4h friction #1 each
-# flagged the duplication). Carried forward here so a fresh
-# SECOND_DERIVATIVE node picks a palette colour distinct from its parent
-# without pulling a UI module into this (otherwise compute-only) file's
-# import graph. Phase 4i widens the duplication to FIVE callers; the
-# `_pick_default_color(graph)` extraction would now touch four locked
-# modules, so it stays deferred (BACKLOG friction #1, Phase 4i carry).
-_PALETTE = [
-    "#1f77b4", "#d62728", "#2ca02c", "#ff7f0e", "#9467bd",
-    "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf",
 ]
 
 
@@ -412,27 +397,11 @@ class SecondDerivativePanel(tk.Frame):
 
         # Default colour for the new SECOND_DERIVATIVE node — pick a
         # fresh palette entry so the derivative curve is visually
-        # separable from its parent. Palette index expression is now
-        # five-way duplicated (UVVIS load, BASELINE, NORMALISED,
-        # SMOOTHED, SECOND_DERIVATIVE); the `_pick_default_color`
-        # extraction would touch four locked modules so it stays
-        # deferred (carried forward in BACKLOG friction #1).
-        existing_uvvis = len(
-            self._graph.nodes_of_type(NodeType.UVVIS, state=None))
-        existing_baselines = len(
-            self._graph.nodes_of_type(NodeType.BASELINE, state=None))
-        existing_normalised = len(
-            self._graph.nodes_of_type(NodeType.NORMALISED, state=None))
-        existing_smoothed = len(
-            self._graph.nodes_of_type(NodeType.SMOOTHED, state=None))
-        existing_second_deriv = len(
-            self._graph.nodes_of_type(NodeType.SECOND_DERIVATIVE, state=None))
-        colour = _PALETTE[
-            (existing_uvvis + existing_baselines
-             + existing_normalised + existing_smoothed
-             + existing_second_deriv)
-            % len(_PALETTE)
-        ]
+        # separable from its parent. CS-21 (Phase 4j) replaced the
+        # inline palette-index expression with the shared
+        # pick_default_color helper that walks every spectrum-shaped
+        # NodeType in one go.
+        colour = pick_default_color(self._graph)
 
         # Carry the parent's metadata forward, plus a derivative footer
         # (mirrors CS-15's baseline_mode / baseline_parent_id, CS-16's

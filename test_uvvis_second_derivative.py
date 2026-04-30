@@ -345,8 +345,11 @@ class TestSecondDerivativePanel(unittest.TestCase):
         for key in ("color", "linestyle", "linewidth", "alpha",
                     "visible", "in_legend", "fill", "fill_alpha"):
             self.assertIn(key, out.style)
-        # Colour is one of the palette entries (not the parent's).
-        self.assertIn(out.style["color"], usd._PALETTE)
+        # Colour is one of the shared SPECTRUM_PALETTE entries (not
+        # the parent's). CS-21 (Phase 4j) lifted _PALETTE into
+        # node_styles.SPECTRUM_PALETTE.
+        from node_styles import SPECTRUM_PALETTE
+        self.assertIn(out.style["color"], SPECTRUM_PALETTE)
         self.assertNotEqual(out.style["color"], "#111")
 
     # ---- Apply rejection paths --------------------------------------

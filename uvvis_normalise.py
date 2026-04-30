@@ -46,7 +46,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 
 from graph import GraphEvent, GraphEventType, ProjectGraph
-from node_styles import default_spectrum_style
+from node_styles import default_spectrum_style, pick_default_color
 from nodes import (
     DataNode,
     NodeState,
@@ -67,17 +67,6 @@ __all__ = [
 
 
 NORMALISATION_MODES = ("peak", "area")
-
-
-# Local palette — duplicated from uvvis_tab._PALETTE (Phase 4c friction
-# point #5 flagged the duplication; Phase 4e's brief explicitly carries
-# it forward instead of extracting a helper). The values must stay in
-# sync with the loader-side palette so a consistent visual ordering is
-# preserved across UVVIS / BASELINE / NORMALISED nodes.
-_PALETTE = [
-    "#1f77b4", "#d62728", "#2ca02c", "#ff7f0e", "#9467bd",
-    "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf",
-]
 
 
 # ---------------------------------------------------------------------------
@@ -476,18 +465,10 @@ class NormalisationPanel(tk.Frame):
 
         # Default colour for the new NORMALISED node — pick a fresh
         # palette entry so the normalised curve is visually separable
-        # from its parent. Phase 4c friction #5 flagged this duplication
-        # explicitly; carried forward per the Phase 4e brief.
-        existing_uvvis = len(
-            self._graph.nodes_of_type(NodeType.UVVIS, state=None))
-        existing_baselines = len(
-            self._graph.nodes_of_type(NodeType.BASELINE, state=None))
-        existing_normalised = len(
-            self._graph.nodes_of_type(NodeType.NORMALISED, state=None))
-        colour = _PALETTE[
-            (existing_uvvis + existing_baselines + existing_normalised)
-            % len(_PALETTE)
-        ]
+        # from its parent. CS-21 (Phase 4j) replaced the inline
+        # palette-index expression with the shared pick_default_color
+        # helper that walks every spectrum-shaped NodeType in one go.
+        colour = pick_default_color(self._graph)
 
         # Carry the parent's metadata forward, plus a normalisation
         # footer (mirrors CS-15's baseline_mode / baseline_parent_id).

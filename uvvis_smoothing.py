@@ -40,7 +40,7 @@ from tkinter import ttk, messagebox
 from scipy.signal import savgol_filter
 
 from graph import GraphEvent, GraphEventType, ProjectGraph
-from node_styles import default_spectrum_style
+from node_styles import default_spectrum_style, pick_default_color
 from nodes import (
     DataNode,
     NodeState,
@@ -61,17 +61,6 @@ __all__ = [
 
 
 SMOOTHING_MODES = ("savgol", "moving_avg")
-
-
-# Local palette — duplicated from uvvis_tab._PALETTE / uvvis_normalise._PALETTE
-# (Phase 4c friction #5, Phase 4e friction #2 flagged the duplication).
-# Carried forward here so a fresh SMOOTHED node picks a palette colour
-# distinct from its parent without pulling a UI module into this
-# (otherwise compute-only) file's import graph.
-_PALETTE = [
-    "#1f77b4", "#d62728", "#2ca02c", "#ff7f0e", "#9467bd",
-    "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf",
-]
 
 
 # ---------------------------------------------------------------------------
@@ -481,24 +470,10 @@ class SmoothingPanel(tk.Frame):
 
         # Default colour for the new SMOOTHED node — pick a fresh
         # palette entry so the smoothed curve is visually separable
-        # from its parent. Phase 4c friction #5 / Phase 4e friction #2
-        # already flagged the index expression duplication; carried
-        # forward per the Phase 4g brief (SMOOTH is the fourth
-        # spectrum-producing operation that picks from the same
-        # palette).
-        existing_uvvis = len(
-            self._graph.nodes_of_type(NodeType.UVVIS, state=None))
-        existing_baselines = len(
-            self._graph.nodes_of_type(NodeType.BASELINE, state=None))
-        existing_normalised = len(
-            self._graph.nodes_of_type(NodeType.NORMALISED, state=None))
-        existing_smoothed = len(
-            self._graph.nodes_of_type(NodeType.SMOOTHED, state=None))
-        colour = _PALETTE[
-            (existing_uvvis + existing_baselines
-             + existing_normalised + existing_smoothed)
-            % len(_PALETTE)
-        ]
+        # from its parent. CS-21 (Phase 4j) replaced the inline
+        # palette-index expression with the shared pick_default_color
+        # helper that walks every spectrum-shaped NodeType in one go.
+        colour = pick_default_color(self._graph)
 
         # Carry the parent's metadata forward, plus a smoothing footer
         # (mirrors CS-15's baseline_mode / baseline_parent_id and
