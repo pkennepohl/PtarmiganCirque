@@ -1737,5 +1737,150 @@ class TestUVVisTabExportIntegration(unittest.TestCase):
         self.assertTrue(initialfile)
 
 
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestCollapsibleLeftPaneSections(unittest.TestCase):
+    """Phase 4j (CS-21) — collapsible left-pane integration."""
+
+    @classmethod
+    def setUpClass(cls):
+        from uvvis_tab import UVVisTab
+        from collapsible_section import CollapsibleSection
+        cls.UVVisTab = UVVisTab
+        cls.CollapsibleSection = CollapsibleSection
+
+    def setUp(self):
+        self.host = tk.Frame(_root)
+        self.graph = ProjectGraph()
+        self.tab = self.UVVisTab(self.host, graph=self.graph)
+        self.tab.update_idletasks()
+
+    def tearDown(self):
+        try:
+            self.tab.destroy()
+        except Exception:
+            pass
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    # ---- five sections present + named -----------------------------
+
+    def test_all_five_sections_attached_to_tab(self):
+        # Each section must be reachable as ``self.tab._{name}_section``
+        # so future "expand all" gestures and project-state restore can
+        # drive them. Pinned per the Phase 4j brief.
+        for attr in (
+            "_baseline_section",
+            "_normalisation_section",
+            "_smoothing_section",
+            "_peak_picking_section",
+            "_second_derivative_section",
+        ):
+            section = getattr(self.tab, attr, None)
+            self.assertIsInstance(
+                section, self.CollapsibleSection,
+                f"{attr} should be a CollapsibleSection")
+
+    # ---- default-collapsed state -----------------------------------
+
+    def test_all_five_sections_start_collapsed(self):
+        # Locked decision at end of Phase 4i — every section is
+        # collapsed by default. Pin every one of the five so the
+        # default-collapsed contract is loud if anything regresses.
+        for attr in (
+            "_baseline_section",
+            "_normalisation_section",
+            "_smoothing_section",
+            "_peak_picking_section",
+            "_second_derivative_section",
+        ):
+            section = getattr(self.tab, attr)
+            self.assertFalse(
+                section.is_expanded(),
+                f"{attr} should start collapsed")
+
+    def test_collapsed_section_bodies_are_not_packed(self):
+        # The body's pack visibility is the perceptual contract — when
+        # collapsed, the panel should not occupy vertical space on the
+        # left pane.
+        for attr in (
+            "_baseline_section",
+            "_normalisation_section",
+            "_smoothing_section",
+            "_peak_picking_section",
+            "_second_derivative_section",
+        ):
+            section = getattr(self.tab, attr)
+            self.assertNotIn(
+                section.body, section.pack_slaves(),
+                f"{attr}.body should be unpacked while collapsed")
+
+    # ---- panels live inside their section's body -------------------
+
+    def test_normalisation_panel_lives_in_section_body(self):
+        # The panel is constructed with ``section.body`` as parent so
+        # it inherits the section's pack visibility.
+        self.assertIs(
+            self.tab._normalisation_panel.master,
+            self.tab._normalisation_section.body)
+
+    def test_smoothing_panel_lives_in_section_body(self):
+        self.assertIs(
+            self.tab._smoothing_panel.master,
+            self.tab._smoothing_section.body)
+
+    def test_peak_picking_panel_lives_in_section_body(self):
+        self.assertIs(
+            self.tab._peak_picking_panel.master,
+            self.tab._peak_picking_section.body)
+
+    def test_second_derivative_panel_lives_in_section_body(self):
+        self.assertIs(
+            self.tab._second_derivative_panel.master,
+            self.tab._second_derivative_section.body)
+
+    def test_baseline_widgets_live_in_baseline_section_body(self):
+        # Baseline has no panel subwidget — its inline widgets pack
+        # directly into the section body. Pinning the subject combobox
+        # is enough to guarantee the parent-handoff worked.
+        bl = self.tab._baseline_section
+        # Walk the master chain until we hit the section's body.
+        master = self.tab._baseline_subject_cb.master
+        # The combobox is inside subj_frame which is inside the body.
+        self.assertIs(master.master, bl.body)
+
+    # ---- expanding makes the panel visible -------------------------
+
+    def test_expand_smoothing_section_packs_its_body(self):
+        section = self.tab._smoothing_section
+        self.assertNotIn(section.body, section.pack_slaves())
+        section.expand()
+        self.tab.update_idletasks()
+        self.assertIn(section.body, section.pack_slaves())
+        self.assertTrue(section.is_expanded())
+
+    def test_expand_then_collapse_restores_unpacked_state(self):
+        section = self.tab._peak_picking_section
+        section.expand()
+        self.tab.update_idletasks()
+        section.collapse()
+        self.tab.update_idletasks()
+        self.assertNotIn(section.body, section.pack_slaves())
+        self.assertFalse(section.is_expanded())
+
+    # ---- header click integration ----------------------------------
+
+    def test_header_click_toggles_section_via_handler(self):
+        # The CollapsibleSection unit tests already pin the bound
+        # handler path; this test pins that the integration into the
+        # tab leaves the handler reachable (no rebinding mishap).
+        section = self.tab._second_derivative_section
+        self.assertFalse(section.is_expanded())
+        section._on_header_click(None)
+        self.tab.update_idletasks()
+        self.assertTrue(section.is_expanded())
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
