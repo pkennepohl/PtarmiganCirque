@@ -15,6 +15,7 @@ import unittest
 TEST_MODULES = (
     "test_nodes",
     "test_graph",
+    "test_node_styles",
     "test_scan_tree_widget",
     "test_style_dialog",
     "test_plot_settings_dialog",
