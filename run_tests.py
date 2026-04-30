@@ -16,6 +16,7 @@ TEST_MODULES = (
     "test_nodes",
     "test_graph",
     "test_node_styles",
+    "test_collapsible_section",
     "test_scan_tree_widget",
     "test_style_dialog",
     "test_plot_settings_dialog",
