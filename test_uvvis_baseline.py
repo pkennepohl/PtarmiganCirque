@@ -196,6 +196,137 @@ class TestRubberbandMode(unittest.TestCase):
         self.assertGreaterEqual(float(out.min()), -1e-9)
 
 
+class TestScatteringMode(unittest.TestCase):
+
+    def test_recovers_peak_with_fixed_rayleigh_n(self):
+        # Pure Rayleigh background (n=4) + Gaussian peak.
+        wl = np.linspace(200.0, 800.0, 601)
+        peak = _gaussian(wl, 500.0, 25.5, height=1.0)
+        bg = 1e8 * wl ** (-4)
+        spectrum = peak + bg
+        # Fit window covers a peak-free wing.
+        out = ub.compute_scattering(
+            wl, spectrum,
+            {"n": 4, "fit_lo_nm": 200.0, "fit_hi_nm": 350.0},
+        )
+        # Background is exactly c·λ^(-4) → residual on wings is ~0.
+        self.assertAlmostEqual(float(out.max()), 1.0, places=6)
+        self.assertLess(float(np.abs(out[wl < 300]).max()), 1e-6)
+
+    def test_recovers_peak_with_n_fit(self):
+        # Same setup, but let the fit recover both c and n simultaneously.
+        wl = np.linspace(200.0, 800.0, 601)
+        peak = _gaussian(wl, 500.0, 25.5, height=1.0)
+        bg = 1e8 * wl ** (-4)
+        spectrum = peak + bg
+        out = ub.compute_scattering(
+            wl, spectrum,
+            {"n": "fit", "fit_lo_nm": 200.0, "fit_hi_nm": 350.0},
+        )
+        self.assertAlmostEqual(float(out.max()), 1.0, places=4)
+
+    def test_n_fit_is_case_insensitive(self):
+        wl = np.linspace(200.0, 800.0, 121)
+        spectrum = 1e8 * wl ** (-4) + 0.01
+        # "FIT" / "Fit" / "fit" all trigger the log-fit branch.
+        for label in ("fit", "FIT", "Fit"):
+            out = ub.compute_scattering(
+                wl, spectrum,
+                {"n": label, "fit_lo_nm": 200.0, "fit_hi_nm": 800.0},
+            )
+            self.assertEqual(out.shape, wl.shape)
+
+    def test_subtracts_pure_power_law_to_zero(self):
+        # Pure baseline, no peak — fixed n recovers c exactly.
+        wl = np.linspace(200.0, 800.0, 121)
+        spectrum = 1e8 * wl ** (-4)
+        out = ub.compute_scattering(
+            wl, spectrum,
+            {"n": 4, "fit_lo_nm": 200.0, "fit_hi_nm": 800.0},
+        )
+        np.testing.assert_allclose(out, np.zeros_like(out), atol=1e-9)
+
+    def test_n_fit_requires_positive_absorbance(self):
+        # Negative absorbance in the fit window breaks the log-fit.
+        wl = np.linspace(200.0, 800.0, 121)
+        spectrum = 1e8 * wl ** (-4)
+        spectrum[10] = -0.01
+        with self.assertRaises(ValueError):
+            ub.compute_scattering(
+                wl, spectrum,
+                {"n": "fit", "fit_lo_nm": 200.0, "fit_hi_nm": 400.0},
+            )
+
+    def test_fixed_n_tolerates_negative_absorbance(self):
+        # With n fixed, the closed-form fit is linear in c — negative
+        # absorbance values are not a problem.
+        wl = np.linspace(200.0, 800.0, 121)
+        spectrum = 1e8 * wl ** (-4)
+        spectrum[10] = -0.01  # noise dip in the fit window
+        out = ub.compute_scattering(
+            wl, spectrum,
+            {"n": 4, "fit_lo_nm": 200.0, "fit_hi_nm": 400.0},
+        )
+        self.assertEqual(out.shape, wl.shape)
+
+    def test_negative_n_rejected(self):
+        wl = np.linspace(200.0, 800.0, 11)
+        a = np.ones_like(wl)
+        with self.assertRaises(ValueError):
+            ub.compute_scattering(
+                wl, a,
+                {"n": -1.0, "fit_lo_nm": 200.0, "fit_hi_nm": 800.0},
+            )
+
+    def test_non_numeric_non_fit_n_rejected(self):
+        wl = np.linspace(200.0, 800.0, 11)
+        a = np.ones_like(wl)
+        with self.assertRaises(ValueError):
+            ub.compute_scattering(
+                wl, a,
+                {"n": "rayleigh", "fit_lo_nm": 200.0, "fit_hi_nm": 800.0},
+            )
+
+    def test_missing_param_raises(self):
+        wl = np.linspace(200.0, 800.0, 11)
+        a = np.ones_like(wl)
+        with self.assertRaises(KeyError):
+            ub.compute_scattering(wl, a, {"n": 4, "fit_lo_nm": 200.0})
+
+    def test_fit_window_endpoints_either_order(self):
+        wl = np.linspace(200.0, 800.0, 121)
+        spectrum = 1e8 * wl ** (-4) + _gaussian(wl, 500, 25.5)
+        a = ub.compute_scattering(
+            wl, spectrum,
+            {"n": 4, "fit_lo_nm": 200.0, "fit_hi_nm": 350.0},
+        )
+        b = ub.compute_scattering(
+            wl, spectrum,
+            {"n": 4, "fit_lo_nm": 350.0, "fit_hi_nm": 200.0},
+        )
+        np.testing.assert_allclose(a, b, atol=1e-12)
+
+    def test_too_few_points_in_window_raises(self):
+        wl = np.linspace(200.0, 800.0, 121)
+        a = wl ** (-4)
+        # Epsilon-width window grabs at most one point.
+        with self.assertRaises(ValueError):
+            ub.compute_scattering(
+                wl, a,
+                {"n": 4, "fit_lo_nm": 199.9, "fit_hi_nm": 200.1},
+            )
+
+    def test_non_positive_wavelength_rejected(self):
+        # λ ≤ 0 makes λ^(-n) undefined — guard at the input.
+        wl = np.linspace(0.0, 600.0, 121)
+        a = np.ones_like(wl)
+        with self.assertRaises(ValueError):
+            ub.compute_scattering(
+                wl, a,
+                {"n": 4, "fit_lo_nm": 0.0, "fit_hi_nm": 200.0},
+            )
+
+
 class TestDispatcher(unittest.TestCase):
 
     def test_dispatch_routes_each_mode(self):
@@ -221,6 +352,13 @@ class TestDispatcher(unittest.TestCase):
         np.testing.assert_allclose(
             ub.compute("rubberband", wl, spectrum, None),
             zero, atol=1e-9,
+        )
+        # Scattering: pure power-law spectrum collapses to ~zero.
+        scatter_spec = 1e8 * wl ** (-4)
+        np.testing.assert_allclose(
+            ub.compute("scattering", wl, scatter_spec,
+                       {"n": 4, "fit_lo_nm": 200.0, "fit_hi_nm": 800.0}),
+            np.zeros_like(wl), atol=1e-9,
         )
 
     def test_dispatch_unknown_mode_raises(self):
