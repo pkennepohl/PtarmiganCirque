@@ -805,7 +805,12 @@ class TestUVVisTabBaseline(unittest.TestCase):
     def test_left_panel_exists(self):
         self.assertTrue(hasattr(self.tab, "_baseline_mode"))
         self.assertTrue(hasattr(self.tab, "_baseline_mode_cb"))
-        self.assertTrue(hasattr(self.tab, "_baseline_subject_cb"))
+        # Phase 4k (CS-22): a single shared subject combobox at the
+        # top of the left pane replaces the per-section "Spectrum:"
+        # rows. ``_baseline_subject_cb`` is gone.
+        self.assertTrue(hasattr(self.tab, "_shared_subject_cb"))
+        self.assertTrue(hasattr(self.tab, "_shared_subject"))
+        self.assertFalse(hasattr(self.tab, "_baseline_subject_cb"))
         self.assertTrue(hasattr(self.tab, "_apply_baseline_btn"))
         # All four modes are exposed on the combobox.
         values = self.tab._baseline_mode_cb.cget("values")
@@ -850,11 +855,11 @@ class TestUVVisTabBaseline(unittest.TestCase):
     def test_apply_creates_provisional_op_and_data_node(self):
         self._add_uvvis("u1")
         # Pick the freshly-loaded subject in the combobox.
-        items = self.tab._baseline_subject_cb.cget("values")
+        items = self.tab._shared_subject_cb.cget("values")
         if isinstance(items, str):
             items = tuple(items.split())
         self.assertTrue(len(items) >= 1, "subject combobox should list u1")
-        self.tab._baseline_subject.set(items[0])
+        self.tab._shared_subject.set(items[0])
 
         self.tab._baseline_mode.set("linear")
         self.tab._baseline_anchor_lo.set("200")
@@ -891,10 +896,10 @@ class TestUVVisTabBaseline(unittest.TestCase):
         # the corrected absorbance peak ≈ 1.0 (the synthetic Gaussian
         # height) within tolerance.
         self._add_uvvis("u1")
-        items = self.tab._baseline_subject_cb.cget("values")
+        items = self.tab._shared_subject_cb.cget("values")
         if isinstance(items, str):
             items = tuple(items.split())
-        self.tab._baseline_subject.set(items[0])
+        self.tab._shared_subject.set(items[0])
         self.tab._baseline_mode.set("linear")
         self.tab._baseline_anchor_lo.set("200")
         self.tab._baseline_anchor_hi.set("800")
@@ -908,10 +913,10 @@ class TestUVVisTabBaseline(unittest.TestCase):
 
     def test_provisional_baseline_appears_in_sidebar(self):
         self._add_uvvis("u1")
-        items = self.tab._baseline_subject_cb.cget("values")
+        items = self.tab._shared_subject_cb.cget("values")
         if isinstance(items, str):
             items = tuple(items.split())
-        self.tab._baseline_subject.set(items[0])
+        self.tab._shared_subject.set(items[0])
         self.tab._baseline_mode.set("rubberband")
         _, out_id = self.tab._apply_baseline()
         self.tab._scan_tree.update_idletasks()
@@ -930,10 +935,10 @@ class TestUVVisTabBaseline(unittest.TestCase):
 
     def test_commit_promotes_baseline_state(self):
         self._add_uvvis("u1")
-        items = self.tab._baseline_subject_cb.cget("values")
+        items = self.tab._shared_subject_cb.cget("values")
         if isinstance(items, str):
             items = tuple(items.split())
-        self.tab._baseline_subject.set(items[0])
+        self.tab._shared_subject.set(items[0])
         self.tab._baseline_mode.set("rubberband")
         _, out_id = self.tab._apply_baseline()
 
@@ -954,10 +959,10 @@ class TestUVVisTabBaseline(unittest.TestCase):
 
     def test_discard_removes_baseline_from_plot(self):
         self._add_uvvis("u1")
-        items = self.tab._baseline_subject_cb.cget("values")
+        items = self.tab._shared_subject_cb.cget("values")
         if isinstance(items, str):
             items = tuple(items.split())
-        self.tab._baseline_subject.set(items[0])
+        self.tab._shared_subject.set(items[0])
         self.tab._baseline_mode.set("rubberband")
         _, out_id = self.tab._apply_baseline()
         self.tab.update_idletasks()
@@ -976,17 +981,17 @@ class TestUVVisTabBaseline(unittest.TestCase):
         # After Apply, the new BASELINE node is a candidate subject
         # itself (chained baseline correction is allowed).
         self._add_uvvis("u1")
-        items_before = self.tab._baseline_subject_cb.cget("values")
+        items_before = self.tab._shared_subject_cb.cget("values")
         if isinstance(items_before, str):
             items_before = tuple(items_before.split())
         self.assertEqual(len(items_before), 1)
 
-        self.tab._baseline_subject.set(items_before[0])
+        self.tab._shared_subject.set(items_before[0])
         self.tab._baseline_mode.set("rubberband")
         self.tab._apply_baseline()
         self.tab.update_idletasks()
 
-        items_after = self.tab._baseline_subject_cb.cget("values")
+        items_after = self.tab._shared_subject_cb.cget("values")
         if isinstance(items_after, str):
             items_after = tuple(items_after.split())
         self.assertEqual(len(items_after), 2,
@@ -1041,11 +1046,11 @@ class TestUVVisTabNormalisationIntegration(unittest.TestCase):
         ))
 
     def _select_first_norm_subject(self):
-        items = self.tab._normalisation_panel._subject_cb.cget("values")
+        items = self.tab._shared_subject_cb.cget("values")
         if isinstance(items, str):
             items = tuple(items.split())
         self.assertGreaterEqual(len(items), 1)
-        self.tab._normalisation_panel._subject_var.set(items[0])
+        self.tab._shared_subject.set(items[0])
 
     def test_panel_present_and_unit_selector_has_no_norm_combobox(self):
         # The legacy ``_norm_mode`` Tk var and ``_y_with_norm`` method
@@ -1167,11 +1172,11 @@ class TestUVVisTabSmoothingIntegration(unittest.TestCase):
         ))
 
     def _select_first_smooth_subject(self):
-        items = self.tab._smoothing_panel._subject_cb.cget("values")
+        items = self.tab._shared_subject_cb.cget("values")
         if isinstance(items, str):
             items = tuple(items.split())
         self.assertGreaterEqual(len(items), 1)
-        self.tab._smoothing_panel._subject_var.set(items[0])
+        self.tab._shared_subject.set(items[0])
 
     def test_panel_present_in_left_pane(self):
         self.assertTrue(hasattr(self.tab, "_smoothing_panel"))
@@ -1219,12 +1224,11 @@ class TestUVVisTabSmoothingIntegration(unittest.TestCase):
         self.assertEqual(len(lines), 1)
         self.assertEqual(lines[0].get_label(), "u1")
 
-    def test_smoothed_appears_in_baseline_and_normalisation_subject_lists(self):
-        # The tab's _spectrum_nodes() helper drives every subject
-        # combobox; widening it to include SMOOTHED means baseline /
-        # normalisation can now act on a smoothed spectrum too. This
-        # is the same shape as Phase 4e's NORMALISED-feeds-baseline
-        # widening (both panels iterate _spectrum_nodes).
+    def test_smoothed_appears_in_shared_subject_list(self):
+        # The shared subject combobox (CS-22, Phase 4k) iterates
+        # _spectrum_nodes — UVVIS / BASELINE / NORMALISED / SMOOTHED
+        # — so a freshly-Applied SMOOTHED node is itself a candidate
+        # subject for downstream ops.
         self._add_uvvis("u1")
         self.tab.update_idletasks()
         self._select_first_smooth_subject()
@@ -1233,17 +1237,12 @@ class TestUVVisTabSmoothingIntegration(unittest.TestCase):
         self.tab._smoothing_panel._polyorder.set(2)
         self.tab._smoothing_panel._apply()
         self.tab.update_idletasks()
-        # Both downstream subject combos should now list the parent
-        # plus the SMOOTHED child.
-        baseline_items = self.tab._baseline_subject_cb.cget("values")
-        if isinstance(baseline_items, str):
-            baseline_items = tuple(baseline_items.split())
-        norm_items = self.tab._normalisation_panel._subject_cb.cget(
-            "values")
-        if isinstance(norm_items, str):
-            norm_items = tuple(norm_items.split())
-        self.assertEqual(len(baseline_items), 2)
-        self.assertEqual(len(norm_items), 2)
+        items = self.tab._shared_subject_cb.cget("values")
+        if isinstance(items, str):
+            items = tuple(items.split())
+        self.assertEqual(len(items), 2,
+                         "shared subject list should contain the parent "
+                         "UVVIS plus the new SMOOTHED node")
 
     def test_smoothing_status_message_routed_to_toolbar(self):
         # The panel's status_cb is wired to the tab's
@@ -1314,11 +1313,11 @@ class TestUVVisTabPeakPickingIntegration(unittest.TestCase):
         ))
 
     def _select_first_peak_subject(self):
-        items = self.tab._peak_picking_panel._subject_cb.cget("values")
+        items = self.tab._shared_subject_cb.cget("values")
         if isinstance(items, str):
             items = tuple(items.split())
         self.assertGreaterEqual(len(items), 1)
-        self.tab._peak_picking_panel._subject_var.set(items[0])
+        self.tab._shared_subject.set(items[0])
 
     def test_panel_present_in_left_pane(self):
         self.assertTrue(hasattr(self.tab, "_peak_picking_panel"))
@@ -1368,11 +1367,10 @@ class TestUVVisTabPeakPickingIntegration(unittest.TestCase):
         self.tab.update_idletasks()
         self.assertEqual(len(self.tab._ax.collections), 0)
 
-    def test_peak_list_does_not_appear_in_curve_subject_lists(self):
+    def test_peak_list_does_not_appear_in_shared_subject_list(self):
         # PEAK_LIST is intentionally excluded from _spectrum_nodes
-        # (CS-19): chained peak picking is undefined, and baseline /
-        # normalisation / smoothing subject combos all read the same
-        # callable.
+        # (CS-19): chained peak picking is undefined, and the shared
+        # subject combobox (CS-22, Phase 4k) reads that helper.
         self._add_uvvis("u1")
         self.tab.update_idletasks()
         self._select_first_peak_subject()
@@ -1381,25 +1379,12 @@ class TestUVVisTabPeakPickingIntegration(unittest.TestCase):
         self.tab._peak_picking_panel._apply()
         self.tab.update_idletasks()
 
-        baseline_items = self.tab._baseline_subject_cb.cget("values")
-        if isinstance(baseline_items, str):
-            baseline_items = tuple(baseline_items.split())
-        norm_items = self.tab._normalisation_panel._subject_cb.cget("values")
-        if isinstance(norm_items, str):
-            norm_items = tuple(norm_items.split())
-        smooth_items = self.tab._smoothing_panel._subject_cb.cget("values")
-        if isinstance(smooth_items, str):
-            smooth_items = tuple(smooth_items.split())
-        peak_items = self.tab._peak_picking_panel._subject_cb.cget("values")
-        if isinstance(peak_items, str):
-            peak_items = tuple(peak_items.split())
-
-        # All four subject combos still list only the parent UVVIS
-        # (length 1) — the new PEAK_LIST is not a curve.
-        self.assertEqual(len(baseline_items), 1)
-        self.assertEqual(len(norm_items), 1)
-        self.assertEqual(len(smooth_items), 1)
-        self.assertEqual(len(peak_items), 1)
+        items = self.tab._shared_subject_cb.cget("values")
+        if isinstance(items, str):
+            items = tuple(items.split())
+        self.assertEqual(len(items), 1,
+                         "shared subject list should still list only the "
+                         "parent UVVIS — the new PEAK_LIST is not a curve")
 
     def test_peak_picking_status_message_routed_to_toolbar(self):
         # The panel's status_cb is wired to the tab's
@@ -1483,11 +1468,11 @@ class TestUVVisTabSecondDerivativeIntegration(unittest.TestCase):
         ))
 
     def _select_first_d2_subject(self):
-        items = self.tab._second_derivative_panel._subject_cb.cget("values")
+        items = self.tab._shared_subject_cb.cget("values")
         if isinstance(items, str):
             items = tuple(items.split())
         self.assertGreaterEqual(len(items), 1)
-        self.tab._second_derivative_panel._subject_var.set(items[0])
+        self.tab._shared_subject.set(items[0])
 
     def test_panel_present_in_left_pane(self):
         self.assertTrue(hasattr(self.tab, "_second_derivative_panel"))
@@ -1534,43 +1519,24 @@ class TestUVVisTabSecondDerivativeIntegration(unittest.TestCase):
         self.assertEqual(len(lines), 1)
         self.assertEqual(lines[0].get_label(), "u1")
 
-    def test_second_derivative_does_not_appear_in_curve_subject_lists(self):
+    def test_second_derivative_does_not_appear_in_shared_subject_list(self):
         # SECOND_DERIVATIVE is intentionally excluded from
         # _spectrum_nodes (CS-20): chained derivatives are out of
-        # scope, and the locked baseline / normalisation / smoothing /
-        # peak-picking subject combos all read the same callable.
+        # scope, and the shared subject combobox (CS-22, Phase 4k)
+        # reads that helper.
         self._add_uvvis("u1")
         self.tab.update_idletasks()
         self._select_first_d2_subject()
         self.tab._second_derivative_panel._apply()
         self.tab.update_idletasks()
 
-        baseline_items = self.tab._baseline_subject_cb.cget("values")
-        if isinstance(baseline_items, str):
-            baseline_items = tuple(baseline_items.split())
-        norm_items = self.tab._normalisation_panel._subject_cb.cget(
-            "values")
-        if isinstance(norm_items, str):
-            norm_items = tuple(norm_items.split())
-        smooth_items = self.tab._smoothing_panel._subject_cb.cget("values")
-        if isinstance(smooth_items, str):
-            smooth_items = tuple(smooth_items.split())
-        peak_items = self.tab._peak_picking_panel._subject_cb.cget("values")
-        if isinstance(peak_items, str):
-            peak_items = tuple(peak_items.split())
-        d2_items = self.tab._second_derivative_panel._subject_cb.cget(
-            "values")
-        if isinstance(d2_items, str):
-            d2_items = tuple(d2_items.split())
-
-        # All five subject combos still list only the parent UVVIS
-        # (length 1) — the new SECOND_DERIVATIVE is not a candidate
-        # subject for any further curve operation this phase.
-        self.assertEqual(len(baseline_items), 1)
-        self.assertEqual(len(norm_items), 1)
-        self.assertEqual(len(smooth_items), 1)
-        self.assertEqual(len(peak_items), 1)
-        self.assertEqual(len(d2_items), 1)
+        items = self.tab._shared_subject_cb.cget("values")
+        if isinstance(items, str):
+            items = tuple(items.split())
+        self.assertEqual(len(items), 1,
+                         "shared subject list should still list only the "
+                         "parent UVVIS — the new SECOND_DERIVATIVE is not "
+                         "a candidate subject for any further curve op")
 
     def test_second_derivative_status_message_routed_to_toolbar(self):
         # The panel's status_cb is wired to the tab's
@@ -1840,15 +1806,49 @@ class TestCollapsibleLeftPaneSections(unittest.TestCase):
             self.tab._second_derivative_panel.master,
             self.tab._second_derivative_section.body)
 
-    def test_baseline_widgets_live_in_baseline_section_body(self):
-        # Baseline has no panel subwidget — its inline widgets pack
-        # directly into the section body. Pinning the subject combobox
-        # is enough to guarantee the parent-handoff worked.
+    def test_shared_subject_combobox_lives_outside_collapsible_sections(self):
+        # Phase 4k (CS-22): the shared "Spectrum:" combobox sits at
+        # the top of the left pane, ABOVE every CollapsibleSection,
+        # so it is always visible regardless of which sections are
+        # expanded. Walk up the master chain and assert no
+        # CollapsibleSection body appears before we reach the left
+        # pane root.
+        master = self.tab._shared_subject_cb.master
+        forbidden_bodies = {
+            self.tab._baseline_section.body,
+            self.tab._normalisation_section.body,
+            self.tab._smoothing_section.body,
+            self.tab._peak_picking_section.body,
+            self.tab._second_derivative_section.body,
+        }
+        cur = master
+        depth = 0
+        while cur is not None and depth < 8:
+            self.assertNotIn(
+                cur, forbidden_bodies,
+                "shared subject combobox must not be inside a "
+                "CollapsibleSection body",
+            )
+            cur = cur.master
+            depth += 1
+
+    def test_baseline_section_body_has_no_subject_combobox(self):
+        # The inline baseline subject row was removed in Phase 4k —
+        # the section body no longer hosts any ttk.Combobox whose
+        # textvariable points at a baseline-subject Tk var (the only
+        # combobox left inside the body is the baseline-MODE combobox).
         bl = self.tab._baseline_section
-        # Walk the master chain until we hit the section's body.
-        master = self.tab._baseline_subject_cb.master
-        # The combobox is inside subj_frame which is inside the body.
-        self.assertIs(master.master, bl.body)
+        # The mode combobox is the only Combobox-typed descendant.
+        n_combos = 0
+        stack = list(bl.body.winfo_children())
+        while stack:
+            child = stack.pop()
+            stack.extend(child.winfo_children())
+            if child.winfo_class() == "TCombobox":
+                n_combos += 1
+        self.assertEqual(n_combos, 1,
+                         "baseline section body should contain only the "
+                         "mode combobox, not a subject combobox")
 
     # ---- expanding makes the panel visible -------------------------
 

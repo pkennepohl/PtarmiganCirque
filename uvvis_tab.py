@@ -191,14 +191,14 @@ class UVVisTab(tk.Frame):
         Spectrum-shaped today means UVVIS, BASELINE, NORMALISED, or
         SMOOTHED: all four carry ``arrays["wavelength_nm"]`` +
         ``arrays["absorbance"]`` and render through the same
-        matplotlib code path. ``_redraw``, the baseline subject
-        combobox, the normalisation subject combobox, and the
-        smoothing subject combobox all iterate this helper. The walk
-        is type-keyed (UVVIS first, then BASELINE, then NORMALISED,
-        then SMOOTHED) so a parent typically appears above its
-        derivatives in the sidebar / subject list when the dict
-        ordering is preserved (Phase 4g widening from
-        ``[UVVIS, BASELINE, NORMALISED]`` to include SMOOTHED).
+        matplotlib code path. ``_redraw`` and the *shared* subject
+        combobox at the top of the left pane (CS-22, Phase 4k)
+        iterate this helper. The walk is type-keyed (UVVIS first,
+        then BASELINE, then NORMALISED, then SMOOTHED) so a parent
+        typically appears above its derivatives in the sidebar /
+        subject list when the dict ordering is preserved (Phase 4g
+        widening from ``[UVVIS, BASELINE, NORMALISED]`` to include
+        SMOOTHED).
         """
         out: List[DataNode] = []
         for ntype in (NodeType.UVVIS, NodeType.BASELINE,
@@ -429,38 +429,38 @@ class UVVisTab(tk.Frame):
         """Construct the left panel with processing controls.
 
         Per CS-07 §"UV/Vis left panel" the left panel hosts the
-        user-initiated UV/Vis operations:
+        user-initiated UV/Vis operations. Phase 4k (CS-22) introduces
+        a shared "Spectrum:" combobox at the top of the pane (above
+        every CollapsibleSection); the user picks a subject once and
+        every operation panel + the inline baseline section adopts
+        it via ``set_subject``. Each panel exposes
+        ``ACCEPTED_PARENT_TYPES`` and disables its Apply button when
+        the shared selection isn't a valid parent for that op.
 
         * **Baseline correction** (CS-15, Phase 4c) — inline section
-          with a subject combobox, four-mode baseline combobox
-          (linear / polynomial / spline / rubberband), conditional
-          parameter rows, and an "Apply Baseline" button.
+          with a four-mode baseline combobox (linear / polynomial /
+          spline / rubberband), conditional parameter rows, and an
+          "Apply Baseline" button. Accepts UVVIS / BASELINE parents.
         * **Normalisation** (CS-16, Phase 4e) — ``NormalisationPanel``
-          subwidget hosting its own subject combobox, a two-mode
-          combobox (peak / area), per-mode window entries, and an
-          "Apply Normalisation" button. Replaces the legacy top-bar
-          ``Norm:`` combobox + draw-time ``_y_with_norm`` transform
-          (Phase 4a friction point #2).
-        * **Smoothing** (CS-18, Phase 4g) — ``SmoothingPanel``
-          subwidget hosting its own subject combobox, a two-mode
-          combobox (savgol / moving_avg), per-mode parameter rows
-          (window length spinbox, plus polyorder for savgol), and
-          an "Apply Smoothing" button.
+          subwidget with a two-mode combobox (peak / area), per-mode
+          window entries, and an "Apply Normalisation" button.
+          Accepts UVVIS / BASELINE / NORMALISED parents.
+        * **Smoothing** (CS-18, Phase 4g) — ``SmoothingPanel`` with
+          a two-mode combobox (savgol / moving_avg), per-mode
+          parameter rows, and an "Apply Smoothing" button. Accepts
+          UVVIS / BASELINE / NORMALISED / SMOOTHED parents.
         * **Peak picking** (CS-19, Phase 4h) — ``PeakPickingPanel``
-          subwidget hosting its own subject combobox, a two-mode
-          combobox (prominence / manual), per-mode parameter rows
-          (prominence threshold + min distance, or comma-separated
-          wavelengths), and an "Apply Peak Picking" button. Each
+          with a two-mode combobox (prominence / manual), per-mode
+          parameter rows, and an "Apply Peak Picking" button. Each
           Apply gesture creates a provisional ``PEAK_LIST``
           annotation node rendered as scatter on the parent curve.
+          Accepts UVVIS / BASELINE / NORMALISED / SMOOTHED parents.
         * **Second derivative** (CS-20, Phase 4i) —
-          ``SecondDerivativePanel`` subwidget hosting its own subject
-          combobox, two parameter spinboxes (window length + poly
-          order), and an "Apply Second Derivative" button. Single
-          algorithm (Savitzky-Golay with deriv=2) — no mode
-          combobox. Each Apply gesture creates a provisional
-          ``SECOND_DERIVATIVE`` node rendered as a curve overlay on
-          the same plot.
+          ``SecondDerivativePanel`` with two parameter spinboxes
+          (window length + poly order) and an "Apply Second
+          Derivative" button. Single algorithm (Savitzky-Golay with
+          deriv=2). Accepts UVVIS / BASELINE / NORMALISED / SMOOTHED
+          parents.
 
         Each Apply gesture creates one provisional OperationNode +
         DataNode pair; the user commits or discards via the
@@ -480,6 +480,32 @@ class UVVisTab(tk.Frame):
         tk.Label(parent, text="Processing",
                  font=("", 9, "bold")).pack(anchor="w", padx=4, pady=(4, 2))
 
+        # ── Shared subject combobox (CS-22, Phase 4k) ────────────────────
+        # USER-FLAGGED end of Phase 4j: the per-panel "Spectrum:"
+        # combobox felt redundant. Lifting it here means the user picks
+        # the spectrum once, then expands the section for whichever
+        # operation they want to apply. The combobox is always visible,
+        # above every CollapsibleSection. Each panel exposes
+        # ``set_subject`` + ``ACCEPTED_PARENT_TYPES`` (CS-22) so its
+        # Apply button is disabled when the shared selection isn't a
+        # valid parent for that op.
+        shared_frame = tk.Frame(parent)
+        shared_frame.pack(fill=tk.X, padx=4, pady=(0, 2))
+        tk.Label(shared_frame, text="Spectrum:",
+                 font=F9).pack(anchor="w")
+        self._shared_subject = tk.StringVar(value="")
+        self._shared_subject_map: dict[str, str] = {}
+        self._shared_subject_cb = ttk.Combobox(
+            shared_frame, textvariable=self._shared_subject,
+            state="readonly", font=F9, width=24,
+        )
+        self._shared_subject_cb.pack(fill=tk.X)
+        # Whenever the user picks a new subject (or _refresh repopulates
+        # the values), fan it out to every panel + the inline baseline
+        # gate.
+        self._shared_subject.trace_add(
+            "write", lambda *_: self._on_shared_subject_changed())
+
         # ── Baseline section (CS-15, Phase 4c) ───────────────────────────
         # Inline section — no panel subwidget. The widgets pack into
         # the CollapsibleSection's body frame; everything else
@@ -489,17 +515,17 @@ class UVVisTab(tk.Frame):
         self._baseline_section.pack(fill=tk.X, padx=0, pady=(2, 0))
         bl_body = self._baseline_section.body
 
-        # Subject — which spectrum to baseline-correct.
-        subj_frame = tk.Frame(bl_body)
-        subj_frame.pack(fill=tk.X, padx=4, pady=2)
-        tk.Label(subj_frame, text="Spectrum:", font=F9).pack(anchor="w")
-        self._baseline_subject = tk.StringVar(value="")
-        self._baseline_subject_map: dict[str, str] = {}
-        self._baseline_subject_cb = ttk.Combobox(
-            subj_frame, textvariable=self._baseline_subject,
-            state="readonly", font=F9, width=24,
+        # Phase 4k: the baseline section's inline subject combobox is
+        # gone — the shared combobox above the sections is the source
+        # of truth. The resolved id lives on the tab as
+        # ``self._baseline_subject_id`` (set by
+        # ``_on_shared_subject_changed``); ``_apply_baseline_btn`` is
+        # disabled when the shared selection isn't a UVVIS / BASELINE
+        # parent.
+        self._baseline_subject_id: Optional[str] = None
+        self._BASELINE_ACCEPTED_PARENT_TYPES: tuple = (
+            NodeType.UVVIS, NodeType.BASELINE,
         )
-        self._baseline_subject_cb.pack(fill=tk.X)
 
         # Baseline mode.
         mode_frame = tk.Frame(bl_body)
@@ -547,7 +573,6 @@ class UVVisTab(tk.Frame):
         self._normalisation_panel = uvvis_normalise.NormalisationPanel(
             self._normalisation_section.body,
             self._graph,
-            spectrum_nodes_fn=self._spectrum_nodes,
             status_cb=self._set_status_message,
         )
         self._normalisation_panel.pack(fill=tk.X)
@@ -559,13 +584,12 @@ class UVVisTab(tk.Frame):
         self._smoothing_panel = uvvis_smoothing.SmoothingPanel(
             self._smoothing_section.body,
             self._graph,
-            spectrum_nodes_fn=self._spectrum_nodes,
             status_cb=self._set_status_message,
         )
         self._smoothing_panel.pack(fill=tk.X)
 
         # ── Peak picking section (CS-19, Phase 4h) ───────────────────────
-        # PEAK_LIST nodes are intentionally absent from the panel's
+        # PEAK_LIST nodes are intentionally absent from the shared
         # subject list (chained peak picking is undefined):
         # _spectrum_nodes only walks UVVIS / BASELINE / NORMALISED /
         # SMOOTHED, which is exactly the set the panel accepts as
@@ -576,16 +600,16 @@ class UVVisTab(tk.Frame):
         self._peak_picking_panel = uvvis_peak_picking.PeakPickingPanel(
             self._peak_picking_section.body,
             self._graph,
-            spectrum_nodes_fn=self._spectrum_nodes,
             status_cb=self._set_status_message,
         )
         self._peak_picking_panel.pack(fill=tk.X)
 
         # ── Second derivative section (CS-20, Phase 4i) ──────────────────
         # SECOND_DERIVATIVE nodes are NOT candidate parents for further
-        # derivatives this phase: the panel uses _spectrum_nodes
-        # (UVVIS / BASELINE / NORMALISED / SMOOTHED), which excludes
-        # SECOND_DERIVATIVE so chained derivatives are out of scope.
+        # derivatives this phase: _spectrum_nodes excludes
+        # SECOND_DERIVATIVE so the shared subject combobox cannot offer
+        # one, and the panel's ACCEPTED_PARENT_TYPES rejects it as
+        # defence in depth.
         self._second_derivative_section = CollapsibleSection(
             parent, title="Second derivative", expanded=False)
         self._second_derivative_section.pack(fill=tk.X, padx=0, pady=(2, 0))
@@ -593,7 +617,6 @@ class UVVisTab(tk.Frame):
             uvvis_second_derivative.SecondDerivativePanel(
                 self._second_derivative_section.body,
                 self._graph,
-                spectrum_nodes_fn=self._spectrum_nodes,
                 status_cb=self._set_status_message,
             )
         )
@@ -601,7 +624,7 @@ class UVVisTab(tk.Frame):
 
         # Defer non-toolkit init until the chrome is present.
         self._refresh_baseline_param_rows()
-        self._refresh_baseline_subjects()
+        self._refresh_shared_subjects()
 
     def _set_status_message(self, text: str) -> None:
         """Status-bar callback handed to the NormalisationPanel.
@@ -662,22 +685,77 @@ class UVVisTab(tk.Frame):
                      text="(parameter-free convex hull)",
                      fg="gray", font=F9).pack(anchor="w", pady=(4, 0))
 
-    def _refresh_baseline_subjects(self) -> None:
-        """Repopulate the subject combobox from live spectrum nodes."""
-        if not hasattr(self, "_baseline_subject_cb"):
+    def _refresh_shared_subjects(self) -> None:
+        """Repopulate the shared subject combobox from live spectrum nodes.
+
+        Phase 4k (CS-22): a single combobox at the top of the left
+        pane drives every operation panel + the inline baseline
+        section. The host walks ``_spectrum_nodes`` (UVVIS / BASELINE
+        / NORMALISED / SMOOTHED) — the same union-of-all-accepted-
+        parents the per-panel comboboxes used to walk individually.
+        Per-panel ``ACCEPTED_PARENT_TYPES`` then narrows the
+        candidate set inside each Apply gate.
+        """
+        if not hasattr(self, "_shared_subject_cb"):
             return
         nodes = self._spectrum_nodes()
-        self._baseline_subject_map = {}
+        self._shared_subject_map = {}
         items: List[str] = []
         for n in nodes:
             key = f"{n.label}  [{n.id[:6]}]"
             items.append(key)
-            self._baseline_subject_map[key] = n.id
-        self._baseline_subject_cb.configure(values=items)
+            self._shared_subject_map[key] = n.id
+        self._shared_subject_cb.configure(values=items)
         # Keep the user's selection if it still exists; otherwise
-        # auto-pick the first available.
-        if self._baseline_subject.get() not in items:
-            self._baseline_subject.set(items[0] if items else "")
+        # auto-pick the first available. The trace fans the change
+        # out to every panel.
+        if self._shared_subject.get() not in items:
+            self._shared_subject.set(items[0] if items else "")
+        else:
+            # Selection text unchanged but the underlying node may
+            # have moved (label edit, type change). Re-fan so the
+            # gates re-evaluate with the up-to-date node.
+            self._on_shared_subject_changed()
+
+    def _resolve_shared_subject_id(self) -> Optional[str]:
+        """Map the shared combobox display string back to a node id."""
+        return self._shared_subject_map.get(self._shared_subject.get())
+
+    def _on_shared_subject_changed(self) -> None:
+        """Fan the shared subject change out to every panel + baseline.
+
+        Called by the StringVar trace whenever the user picks a new
+        subject (or ``_refresh_shared_subjects`` repopulates the
+        list). Each panel's ``set_subject`` re-evaluates its Apply
+        button state; the inline baseline section gets the same
+        treatment via ``_refresh_baseline_apply_state``.
+        """
+        node_id = self._resolve_shared_subject_id()
+        self._baseline_subject_id = node_id
+        if hasattr(self, "_normalisation_panel"):
+            self._normalisation_panel.set_subject(node_id)
+        if hasattr(self, "_smoothing_panel"):
+            self._smoothing_panel.set_subject(node_id)
+        if hasattr(self, "_peak_picking_panel"):
+            self._peak_picking_panel.set_subject(node_id)
+        if hasattr(self, "_second_derivative_panel"):
+            self._second_derivative_panel.set_subject(node_id)
+        self._refresh_baseline_apply_state()
+
+    def _refresh_baseline_apply_state(self) -> None:
+        """Disable the inline baseline Apply button when the subject is invalid."""
+        if not hasattr(self, "_apply_baseline_btn"):
+            return
+        ok = False
+        if self._baseline_subject_id is not None:
+            try:
+                node = self._graph.get_node(self._baseline_subject_id)
+            except KeyError:
+                node = None
+            if node is not None and node.type in self._BASELINE_ACCEPTED_PARENT_TYPES:
+                ok = True
+        self._apply_baseline_btn.configure(
+            state=("normal" if ok else "disabled"))
 
     def _collect_baseline_params(self, mode: str) -> dict:
         """Read the left-panel widgets for ``mode`` into a params dict.
@@ -725,13 +803,18 @@ class UVVisTab(tk.Frame):
         OperationNode + one new provisional ``BASELINE`` DataNode,
         wired ``parent → op → child``. Returns ``(op_id, child_id)``
         on success or ``None`` if the user input was rejected.
+
+        Phase 4k (CS-22): the parent is the *shared* subject selected
+        by the top-of-pane combobox. ``_apply_baseline_btn`` is
+        disabled when the shared selection isn't a UVVIS / BASELINE
+        node, but the messagebox-bearing checks below still run as
+        defence in depth.
         """
-        key = self._baseline_subject.get()
-        subject_id = self._baseline_subject_map.get(key)
+        subject_id = self._baseline_subject_id
         if not subject_id:
             messagebox.showinfo(
                 "Apply Baseline",
-                "Select a spectrum first (load a file or pick from the list).",
+                "Select a spectrum from the top of the left pane first.",
             )
             return None
         try:
@@ -742,10 +825,10 @@ class UVVisTab(tk.Frame):
                 "Selected spectrum is no longer in the project graph.",
             )
             return None
-        if parent_node.type not in (NodeType.UVVIS, NodeType.BASELINE):
+        if parent_node.type not in self._BASELINE_ACCEPTED_PARENT_TYPES:
             messagebox.showerror(
                 "Apply Baseline",
-                "Selected node is not a UV/Vis-style spectrum.",
+                "Selected node is not a valid parent for baseline correction.",
             )
             return None
 
@@ -866,9 +949,11 @@ class UVVisTab(tk.Frame):
             GraphEventType.GRAPH_CLEARED,
         ):
             self._redraw()
-        # The baseline subject combobox tracks which UVVIS / BASELINE
-        # nodes exist; refresh on the structural / label / active
-        # events that can change that set.
+        # The shared subject combobox (CS-22, Phase 4k) tracks which
+        # UVVIS / BASELINE / NORMALISED / SMOOTHED nodes exist;
+        # refresh on the structural / label / active events that can
+        # change that set. The trace on _shared_subject then fans the
+        # selection out to every panel + the inline baseline gate.
         if et in (
             GraphEventType.NODE_ADDED,
             GraphEventType.NODE_DISCARDED,
@@ -877,7 +962,7 @@ class UVVisTab(tk.Frame):
             GraphEventType.GRAPH_LOADED,
             GraphEventType.GRAPH_CLEARED,
         ):
-            self._refresh_baseline_subjects()
+            self._refresh_shared_subjects()
 
     def _on_destroy_unsubscribe(self, _event) -> None:
         try:
