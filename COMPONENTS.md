@@ -1535,13 +1535,24 @@ open_plot_settings_dialog(parent, config, on_apply=None, sections=None)
 ### Bottom buttons
 
 ```
-[ Apply ]  [ Cancel ]
+[ Apply ]  [ Save ]  [ Cancel ]
 ```
 
 - **Apply** — copy the working copy into the caller's config dict
   (in place), invoke `on_apply`, dialog stays open for further edits
+- **Save** — `_do_apply()` + `destroy()`. The "Save & Close" gesture;
+  commits the working copy, fires `on_apply`, and closes the dialog.
+  Mirrors `style_dialog.StyleDialog._do_save` so the Cancel-vs-Save
+  mental model reads the same across every modal in the app
+  (Phase 4l; CS-23)
 - **Cancel** — revert config to the snapshot taken at `__init__`,
   invoke `on_apply` if anything had to be reverted, destroy
+
+The `∀ Apply to All` slot from CS-05 StyleDialog's four-button row is
+absent here — Plot Settings is one tab-private config dict per dialog
+with no node-bulk concept to fan out to. A future cross-tab-bulk
+feature ("apply this title font size to every tab") would re-introduce
+the slot; flagged as Phase 4l friction #1 in BACKLOG.md.
 
 ### Implementation notes (Phase 4b)
 
@@ -1577,6 +1588,18 @@ snapshot is taken in `__init__` and restored on Cancel regardless of
 how many Applies happened in between. This matches the user's
 expectation of a Cancel gesture in a modal dialog. There is no
 "revert just my last change" affordance.
+
+**Save = Apply + close (CS-23).** The Save button added in Phase 4l
+is a thin wrapper: `_do_save()` calls `_do_apply()` and then
+`destroy()`. It exists so the user has an explicit "I'm done — keep
+my edits" gesture; before CS-23 the only path to commit-and-close was
+Apply followed by [X], and the protocol handler treated [X] as Cancel
+(silently reverting the just-committed edit). Save fires `on_apply`
+once before destroy — the ordering is documented but not yet
+test-pinned (Phase 4l friction #3). The `Save` button label was
+chosen over `Save & Close` to mirror the CS-05 StyleDialog vocabulary
+exactly: every modal in the app uses the same word for the same
+gesture.
 
 **Save-as-Default / Reset Defaults / Factory Reset are working-copy
 operations.** None of the three commits to the caller's config; only
@@ -3007,7 +3030,7 @@ Five Phase 4k friction items above are not addressed by CS-22:
 
 ---
 
-*Document version: 1.11 — May 2026*
+*Document version: 1.12 — May 2026*
 *1.1: CS-13 implementation notes added in Phase 4a.*
 *1.2: CS-14 Plot Settings Dialog added in Phase 4b.*
 *1.3: CS-15 UV/Vis Baseline Correction + CS-04 implementation
@@ -3066,5 +3089,16 @@ parent for the panel's op. Resolves Phase 4j friction #5
 three new USER-FLAGGED follow-ups (Commit / discard reachable
 from the left pane after Apply, Per-variant gestures on
 sweep-group rows, Plot Settings dialog Save & Close).*
+*1.12: CS-23 Plot Settings dialog Save button added in Phase 4l.
+The dialog's button row now reads `Apply · Save · Cancel`,
+matching CS-05 StyleDialog vocabulary (the `∀ Apply to All`
+slot is dropped — Plot Settings has no node-bulk concept).
+Save = `_do_apply()` + `destroy()`. Resolves Phase 4k friction
+#3 (USER-FLAGGED). Phase 4l logged nine new friction items
+including five USER-FLAGGED follow-ups: Audit dialog button-row
+vocabulary across the app, Plot config + plot defaults
+persistence to project.json, Remove duplicate section title
+from operation panels, Right-sidebar responsive layout
+extension, Scattering-functional baseline mode.*
 *To be updated as Open Questions are resolved and new components
 are specified.*

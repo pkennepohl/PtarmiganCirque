@@ -486,6 +486,10 @@ Phase 4b while integrating the dialog into the UV/Vis pilot tab.
    here is a load-time read from `project.json["plot_defaults"]`
    into `_USER_DEFAULTS`, plus a save-time write back. The dialog
    needs no API changes — only `project_io` and `binah.py` glue.
+   USER-FLAGGED at end of Phase 4l as important; canonical entry
+   for the persistence chain. See the new register entry
+   "Plot config + plot defaults persistence to project.json
+   (CS-13 follow-up)" below; Phase 4b #5 cross-refs this.
 2. **Plot Settings is wired only into UV/Vis.** Phase 4b is
    UV/Vis-only by design. Each subsequent tab (XANES, EXAFS,
    Compare) needs the same three changes: a `self._plot_config`
@@ -520,7 +524,9 @@ Phase 4b while integrating the dialog into the UV/Vis pilot tab.
    plot configs alongside the graph; otherwise reopening a project
    discards the user's plot choices. Probably a `project.json`
    `tabs[uvvis].plot_config = {...}` payload. CS-13 needs to grow
-   a `tabs` section to host it.
+   a `tabs` section to host it. See 4b #1 above (canonical entry —
+   still open) and the new register entry "Plot config + plot
+   defaults persistence to project.json (CS-13 follow-up)".
 6. **Mode indicators inside the Title-and-labels section are
    small.** The `(auto)` / `(custom)` / `(none)` Label is only 8pt
    text and easy to miss
@@ -1015,13 +1021,13 @@ Phase 4 session.**
    expansion" (🟡) is now actively biting; elevated to 🔴 and
    re-flagged. See the new register entry "Per-variant gestures on
    sweep-group rows".
-3. **Plot Settings dialog has no Save & Close button.**
+3. ~~**Plot Settings dialog has no Save & Close button.**
    USER-FLAGGED at end of Phase 4k. The dialog applies changes
    live but offers only Cancel; closing via [X] takes the Cancel
    path silently. Inconsistent with the unified StyleDialog's
    `Apply · ∀ Apply to All · Save · Cancel` shape (CS-05). See
    the new register entry "Plot Settings dialog: Save & Close
-   (consistent dialog button shape)".
+   (consistent dialog button shape)".~~ ✅ Resolved in Phase 4l (CS-23).
 4. **Auto-fall-back on subject deletion uses graph-insertion order.**
    When the shared subject vanishes (set_active=False, discard,
    GRAPH_CLEARED), `_refresh_shared_subjects` falls back to
@@ -1045,6 +1051,109 @@ Phase 4 session.**
    operation panels already expose, and `_baseline_subject_id`
    should become `_subject_id` to match.
 
+### Friction points carried forward from Phase 4l
+
+These are concrete obstacles the next Phase 4 session will hit.
+Identified during Phase 4l while adding the Save button to the
+Plot Settings dialog (CS-23) plus end-of-session bug-elicitation
+items the user surfaced from testing redesign/main. **Do not fix
+until the relevant subsequent Phase 4 session.**
+
+1. **Plot Settings dialog has no `∀ Apply to All` analogue.**
+   StyleDialog's button row is `Apply · ∀ Apply to All · Save ·
+   Cancel` (CS-05); CS-23 chose `Apply · Save · Cancel` for Plot
+   Settings because today there is one tab-private config dict per
+   dialog and no node bulk to fan out to. If a future feature ever
+   shares Plot Settings across tabs (e.g. "apply this title font
+   size to every tab in the project"), the row will need that
+   fourth button. Cheap to add when the use-case lands, but worth
+   flagging now so the convention work in #4 below treats Plot
+   Settings as a 3-button special case rather than a 4-button
+   regression.
+2. **`_do_apply` (and Save) fires `on_apply` unconditionally.**
+   Save inherits Apply's behaviour — even when the working copy is
+   identical to the live config, `on_apply` (typically `_redraw`)
+   fires. Cheap and safe today, but redundant; if the redraw grows
+   expensive (e.g. matplotlib re-tick of large overlays the user
+   pulled in via Compare) it could become noticeable. Tighten with
+   `if dict(self._working) != dict(self._config)` mirroring
+   `_do_cancel`'s "only revert if changed" guard.
+3. **Save fires `on_apply` BEFORE `destroy`.** Today's only
+   `on_apply` callback is `_redraw`, so no risk of re-entrancy. But
+   if any future callback ever opens a follow-up Toplevel parented
+   to the dialog (e.g. a "saved!" toast, a confirmation sheet), the
+   parent Toplevel will be tearing down underneath it. The ordering
+   should be pinned in the docstring or a test before the contract
+   gets an unexpected user.
+4. **Dialog button-row vocabulary not audited across the app.**
+   USER-FLAGGED at end of Phase 4l. Plot Settings ↔ StyleDialog
+   parity is now in place, but other modals (file pickers, future
+   Beer-Lambert preview, future scattering-baseline preview, etc.)
+   haven't been audited. The "consistent dialog button shape"
+   principle would be more durable as a written convention in
+   COMPONENTS.md (or ARCHITECTURE.md) so future modals start from
+   the same vocabulary rather than re-deriving it. See the new
+   register entry "Audit dialog button-row vocabulary across app
+   + write convention into ARCHITECTURE.md (USER-FLAGGED)".
+5. **`_USER_DEFAULTS` and `_plot_config` still process-lifetime
+   only.** USER-FLAGGED at end of Phase 4l. Phase 4b friction #1
+   + #5 already capture this; user explicitly asked it be elevated
+   to a discrete register item so it doesn't get lost. See the new
+   register entry "Plot config + plot defaults persistence to
+   project.json (CS-13 follow-up) (USER-FLAGGED)" below; canonical
+   chain entries are 4b #1 (USER_DEFAULTS) + 4b #5 (_plot_config).
+6. **Duplicate section title in Processing left sidebar.**
+   USER-FLAGGED at end of Phase 4l. All four operation
+   `CollapsibleSection` panels except "Baseline Correction" render a
+   second title label inside the section body (below the clickable
+   header). Likely a stale `tk.Label` left over from before
+   `CollapsibleSection` (CS-21) wrapped each panel's body — the
+   header now carries the title, so the inline label is duplicated.
+   Touches the four operation modules (`uvvis_normalise.py`,
+   `uvvis_smoothing.py`, `uvvis_peak_picking.py`,
+   `uvvis_second_derivative.py`); baseline is correct because it
+   was the original reference and never had an inline label of its
+   own. See the new register entry "Remove duplicate section title
+   from operation panels (USER-FLAGGED)".
+7. **+Add to TDDFT Overlay top-bar button is ambiguous + the
+   gesture should be per-row.** USER-FLAGGED at end of Phase 4l.
+   The existing top-bar button gives no signal about *what* it
+   adds (everything in the right sidebar? everything currently
+   visible on the plot?). Already an open register item ("Send to
+   Compare" — replaces "Add to TDDFT Overlay"); user is now
+   pinning the gesture shape: a per-row icon on each
+   ScanTreeWidget row, not a top-bar button. The right-sidebar
+   responsive-layout work in #8 below is the natural carrier
+   (the icon is one of the new always-visible cells). See the
+   updated register entry "Send to Compare action".
+8. **Right-sidebar responsive layout — minimum visible set is too
+   narrow.** USER-FLAGGED at end of Phase 4l. Phase 4d's B-002
+   landed the minimum always-visible set as
+   `state · [☑] · label · [⚙] · [✕]` collapsing below 280 px.
+   User now wants the minimum extended to include the provenance
+   icon (where the data came from) + the new per-row "Send to
+   Compare" icon (#7 above) — six cells:
+   `name · [☑] · provenance · [⚙] · [→Compare] · [✕]`. Wider
+   widths should restore the optional cells in a fixed priority
+   order: (1) colour swatch, (2) legend inclusion `[≡]`, (3)
+   linestyle canvas, (4) line width entry. Touches
+   `scan_tree_widget.py` (CS-04 §6.1, B-002 closed) plus
+   `_apply_responsive_layout` thresholds. See the new register
+   entry "Right-sidebar responsive layout extension".
+9. **Scattering-functional baseline subtraction.** USER-FLAGGED at
+   end of Phase 4l. Existing baseline modes (linear, polynomial,
+   spline, rubberband) are general-purpose; UV/Vis spectra of
+   colloidal / turbid samples have a baseline that follows
+   wavelength-dependent scattering (typically 1/λ^n with n ≈ 2–4
+   for Mie / Rayleigh regimes). A dedicated mode that fits a
+   `1/λ^n` form (n either fitted or user-fixed, e.g. n=4 for
+   Rayleigh) over a user-defined window would handle this far
+   better than forcing a polynomial. Single new
+   `OperationType.BASELINE` mode (`params["mode"] == "scattering"`,
+   plus `params["n"]` either numeric or `"fit"`); reuses the
+   provisional BASELINE node shape from CS-15. See the new
+   register entry "Scattering-functional baseline mode".
+
 | Status | Priority | Item | Notes |
 |---|---|---|---|
 | ✅ | 🔴 | **Migrate UV/Vis to node model** | UVVisScan → DataNode(type=UVVIS). File load → RAW\_FILE + LOAD + UVVIS triple, all COMMITTED (Phase 4a Part A; CS-13 implementation notes) |
@@ -1053,9 +1162,9 @@ Phase 4 session.**
 | ✅ | 🔴 | **Baseline correction** | Linear (two-point), polynomial (order n), spline, rubberband/convex hull. Each application creates a provisional BASELINE node (Phase 4c; CS-15) |
 | ✅ | 🔴 | **Export processed data** | Single-node `.csv` / `.txt` export with `# `-prefixed provenance header. Row Export… gesture on committed nodes; provisional rows render the entry disabled. Pure header builder + pure file writer + widget gesture + dialog flow (Phase 4f; CS-17) |
 | ✅ | 🔴 | **Normalisation as explicit operation** | Normalisation creates a provisional NORMALISED node rather than modifying data in place. Two modes (peak / area), each with a window in nm; mirrors the Phase 4c BASELINE shape (Phase 4e; CS-16) |
-| ⏳ | 🔴 | **"Send to Compare" action** | Replaces "Add to TDDFT Overlay". Available on committed nodes |
-| ✅ | 🔴 | **Plot Settings dialog** | Fonts, grid, background colour, legend position, tick direction, title/label customisation. Accessed via ⚙ in top bar (Phase 4b; CS-14). Phase 4k USER-FLAGGED follow-up: dialog has no Save / Save & Close button — see "Plot Settings dialog: Save & Close (consistent dialog button shape)" entry below |
-| ⏳ | 🔴 | **Plot Settings dialog: Save & Close (consistent dialog button shape) (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4k. Today the dialog applies changes live as the user edits but offers only a Cancel button (which reverts to the formatting at dialog open). There is no "Save & Close" / "OK" affordance, so a user who is happy with their edits and dismisses via the window-close [X] gets the *Cancel* path — the changes silently disappear. Other dialogs in the app already follow the established `Apply · ∀ Apply to All · Save · Cancel` shape (CS-05 unified style dialog). The Plot Settings dialog should match: persist on Save / Save & Close, revert on Cancel + window-close [X]. Important for cross-platform consistency — every dialog in Ptarmigan should use the same four-button vocabulary so the user's Cancel-vs-Save mental model is reliable. Touches `plot_settings_dialog.py` (CS-14); deep-copy snapshot of the figure / axis / legend state at `__init__` so Cancel can revert exactly the way the StyleDialog does |
+| ⏳ | 🔴 | **"Send to Compare" action** | Replaces "Add to TDDFT Overlay". Available on committed nodes. **Phase 4l USER-FLAGGED constraint**: the gesture must be a per-row icon on each ScanTreeWidget row, not the existing top-bar `+ Add to TDDFT Overlay` button — the top-bar button gives no signal about *what* it adds (everything in the right sidebar? everything visible on the plot?). Per-row icon disambiguates and feeds naturally into the right-sidebar responsive minimum (see "Right-sidebar responsive layout extension" entry below). Right-click context-menu entry remains the canonical fallback |
+| ✅ | 🔴 | **Plot Settings dialog** | Fonts, grid, background colour, legend position, tick direction, title/label customisation. Accessed via ⚙ in top bar (Phase 4b; CS-14). Button row matches CS-05 StyleDialog vocabulary `Apply · Save · Cancel` (Phase 4l; CS-23) |
+| ✅ | 🔴 | **Plot Settings dialog: Save & Close (consistent dialog button shape) (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4k. Resolved Phase 4l (CS-23): added a Save button between Apply and Cancel, equivalent to `_do_apply()` + `destroy()`. Mirrors StyleDialog's `Apply · Save · Cancel` shape (the `∀ Apply to All` slot is dropped — Plot Settings has no node-bulk concept; a future cross-tab-bulk feature would re-introduce it, see Phase 4l friction #1). Cancel + window-close [X] revert path unchanged (deep-copy snapshot was already in place). 458 tests, all green |
 | ✅ | 🟡 | **Peak picking** | Two modes: prominence (`scipy.signal.find_peaks`) and manual (comma-separated wavelengths snapped to the parent grid). Single OperationType.PEAK_PICK with `params["mode"]` ∈ {"prominence", "manual"} (mirrors CS-15 / CS-16 / CS-18). Output is a provisional `PEAK_LIST` DataNode rendered as scatter on top of the parent curve. `PeakPickingPanel` co-located in `uvvis_peak_picking.py` (Phase 4h; CS-19). λ/E annotation labels + optional peak-table export deferred to a future polish session |
 | ⏳ | 🟡 | **OLIS integrating sphere correction** | Three-input operation node (sample + reference + blank → corrected). See OQ-004 for multi-input UI design |
 | ⏳ | 🟡 | **Interactive normalisation** | Normalise to user-specified wavelength or integration region |
@@ -1070,6 +1179,11 @@ Phase 4 session.**
 | ⏳ | 🟡 | **Expand all / Collapse all gesture on left pane** | Companion polish for the new collapsible sections (Phase 4j). When a user wants to scan parameter choices across multiple sections (e.g. for a screenshot or to copy parameters from one panel to another) they currently have to click each header individually. Options: a small "▼ All / ▶ All" icon button at the top of the left pane (above the Processing label), or a right-click context menu on any section header with "Expand all" / "Collapse all" entries. Either is a small change — adds a method on `UVVisTab` that walks the five `_{name}_section` attributes and calls `expand()` / `collapse()` on each |
 | ⏳ | 🟡 | **Unit-aware wavelength / energy picker for operation panels** | USER-FLAGGED at end of Phase 4j. The five operation panels collect wavelength/energy windows via free-form Entry widgets in nm only. The plot itself supports x in nm / cm⁻¹ / eV (top-bar combobox); the panels should follow whatever unit the plot is currently displaying so a user reading peak positions off the plot can type them straight into the entry without a mental unit conversion. Likely shape: a unit-aware Spinbox / Entry that watches the tab's `_x_unit` Tk var, converts the entered value to nm at Apply time (the canonical wavelength_nm storage stays nm), and re-renders the entry's display when the user flips units. Touches every panel that has a wavelength / energy parameter (baseline polynomial fit window, baseline spline anchors, normalisation window, peak-picking manual list). Plan once Phase 4j has bedded in |
 | ⏳ | 🟢 | **Keyboard accessibility for `CollapsibleSection`** | The Phase 4j `CollapsibleSection` is a single mouse-clickable strip with no Tab focus indication or keyboard binding. For accessibility (and power users who prefer keyboard navigation) Tab-to-header + Space/Enter-to-toggle would mirror standard disclosure-widget conventions. Phase 11 (app-wide polish) — defer until other accessibility passes happen at the same time |
+| ⏳ | 🔴 | **Audit dialog button-row vocabulary across app + write convention into ARCHITECTURE.md (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4l. Phase 4l (CS-23) brought Plot Settings into parity with StyleDialog (`Apply · Save · Cancel`), but other modals in the app (file pickers, future Beer-Lambert preview, future scattering-baseline preview, future Send-to-Compare confirmation) haven't been audited. Without a written convention, future modals re-derive button vocabulary ad-hoc and the user's Cancel-vs-Save mental model erodes. Plan: walk every `tk.Toplevel` / dialog construction site, document the canonical four-button shape (`Apply · ∀ Apply to All · Save · Cancel`) in `ARCHITECTURE.md` as a UI convention with explicit rules for when each slot may be dropped (e.g. `∀ Apply to All` collapses when there is no node-bulk concept; CS-14 demonstrates), and refactor the outliers. Touches every dialog module + ARCHITECTURE.md. Pairs naturally with Phase 4l friction #1 (Plot Settings 3-button special case) |
+| ⏳ | 🔴 | **Plot config + plot defaults persistence to project.json (CS-13 follow-up) (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4l. Two persistence gaps elevated from Phase 4b friction #1 (`_USER_DEFAULTS` evaporates on app restart) + Phase 4b #5 (per-tab `_plot_config` rebuilt from scratch on every tab construction). Both should write through to `project.json` so reopening a project restores both the user's saved-default fonts/colours/etc. AND the per-tab plot configuration that was last in effect. Likely shape: `project.json` grows a top-level `plot_defaults` key (mirrors `plot_settings_dialog._USER_DEFAULTS`) plus a per-tab `tabs[<name>].plot_config = {...}` payload. `project_io.py` handles serialisation; `binah.py` wires load-time read into the dialog module + each tab's `_plot_config`. Dialog API is unchanged. Important so a user who customises font sizes (e.g. for accessibility) doesn't have to redo the work each session |
+| ⏳ | 🔴 | **Remove duplicate section title from operation panels (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4l from testing redesign/main. All four `CollapsibleSection`-wrapped operation panels (Normalisation, Smoothing, Peak picking, Second derivative) render a duplicate title label inside the section body — directly below the clickable header. Baseline Correction is correct (no inline title). Likely a stale `tk.Label` left over from before CS-21 wrapped each panel's body in a `CollapsibleSection` whose chevron-header now carries the title; the inline label was redundant and missed in the polish pass. Touches `uvvis_normalise.py`, `uvvis_smoothing.py`, `uvvis_peak_picking.py`, `uvvis_second_derivative.py`. Pure deletion — no test churn expected, though smoke-checking each panel still constructs is worth one round-trip |
+| ⏳ | 🔴 | **Right-sidebar responsive layout extension (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4l. Phase 4d's B-002 closed the responsive collapse below 280 px with the minimum visible set `state · [☑] · label · [⚙] · [✕]`. User now wants the minimum extended to include two more cells: the provenance icon (where the data came from — likely the existing 🛈/ℹ symbol or a new dedicated glyph) AND the per-row "Send to Compare" icon (see updated "Send to Compare" entry — gesture moves from the top bar to a per-row icon). Final minimum: `name · [☑] · provenance · [⚙] · [→Compare] · [✕]` (six cells). At wider widths the optional cells should restore in a fixed priority order: (1) colour swatch, (2) legend inclusion `[≡]`, (3) linestyle canvas, (4) line width entry. Touches `scan_tree_widget.py`'s `_apply_responsive_layout` (CS-04 §6.1) and the per-row builders. May need new collapse thresholds — six minimum cells need a wider floor than today's five. Cross-refs Phase 4l friction #7 + #8 |
+| ⏳ | 🟡 | **Scattering-functional baseline mode** | USER-FLAGGED at end of Phase 4l. Existing baseline modes (linear, polynomial, spline, rubberband — CS-15) are general-purpose; UV/Vis spectra of colloidal / turbid samples have a baseline that follows wavelength-dependent scattering, typically `A_scatter(λ) ∝ 1/λ^n` with `n ≈ 4` for Rayleigh / `n ≈ 2` for large-particle Mie. A polynomial fit can approximate but not capture the inverse-power form, particularly at the UV edge where scattering rises sharply. Plan: a new `OperationType.BASELINE` mode (`params["mode"] == "scattering"`) with `params["n"]` either a numeric value (e.g. `4` for Rayleigh) or `"fit"` (least-squares fit of n alongside the amplitude); fit window is the user-defined wavelength range that excludes the absorption peaks. Output is a provisional `BASELINE` node — same node-shape as the existing modes (CS-15), so renderer and ScanTreeWidget need no changes. Touches `uvvis_baseline.py` (new pure-fit helper) + the baseline section's mode combobox |
 
 ---
 
@@ -1285,7 +1399,7 @@ the resolving phase + commit SHA appended to the row.
 
 ---
 
-*Document version: 1.10 — May 2026*
+*Document version: 1.11 — May 2026*
 *1.1: Known Bugs register added 2026-04-27 after Phase 4b manual testing.*
 *1.2: Phase 4c — baseline correction lands; B-001 / B-003 / B-004
 resolved; Phase 4c friction points logged.*
@@ -1371,4 +1485,21 @@ structure step 6 extended with three responsibilities
 collapse) plus a pruning policy: items struck-through for
 ≥3 phases collapse into a "Resolved friction history" log at
 end of Phase 4 to keep active lists from re-bloating.*
+*1.11: Phase 4l — Plot Settings dialog Save button lands
+(CS-23); Phase 4k friction #3 struck through. Five new
+register entries logged: 🔴 Audit dialog button-row
+vocabulary across the app + write convention into
+ARCHITECTURE.md (USER-FLAGGED), 🔴 Plot config + plot defaults
+persistence to project.json (USER-FLAGGED, elevated from
+Phase 4b friction #1 + #5), 🔴 Remove duplicate section title
+from operation panels (USER-FLAGGED, surfaced from testing
+redesign/main), 🔴 Right-sidebar responsive layout extension
+(USER-FLAGGED — minimum visible set widened to six cells with
+provenance + Send-to-Compare icons), 🟡 Scattering-functional
+baseline mode (USER-FLAGGED — `1/λ^n` form for colloidal /
+turbid samples). Existing "Send to Compare" register entry
+extended with the Phase 4l USER-FLAGGED constraint that the
+gesture be a per-row icon, not a top-bar button. Phase 4b
+friction #1 + #5 cross-ref the new persistence register
+entry as the canonical chain.*
 *Supersedes: BACKLOG.md (original)*
