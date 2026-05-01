@@ -887,38 +887,30 @@ DataNode (`SECOND_DERIVATIVE` — derivatives are not absorbance,
 they share the schema only). **Do not fix until the relevant
 subsequent Phase 4 session.**
 
-1. **`_PALETTE` is now duplicated in six modules.** Phase 4c
-   friction #5 / Phase 4e friction #2 / Phase 4g friction #1 /
-   Phase 4h friction #1 tracked the duplication; Phase 4i adds
-   the sixth copy in `uvvis_second_derivative._PALETTE` and a
-   sixth term in the `_PALETTE[(n_uvvis + n_baseline +
-   n_normalised + n_smoothed + n_second_deriv) %
-   len(_PALETTE)]` index expression (PEAK_LIST has its own
-   index expression in `uvvis_peak_picking` so it does not add
-   to this sum). The `_pick_default_color(graph)` extraction
-   would now touch four locked modules to truly de-duplicate;
-   the cleanest path is a polish session that bundles it with
-   the left-pane density redesign (friction #2 below) so all
-   five operation modules can be edited in one phase. Defer
-   until a polish session is scheduled or a sixth caller lands
-   (Phase 5 XANES is the natural next consumer).
-2. **The left pane is now five sections tall — USER-FLAGGED at
-   end of Phase 4i, priority escalated to 🔴.** Phase 4g friction
-   #5 / Phase 4h friction #5 escalated this internally; the user
-   has now explicitly raised it as the next polish target. The
-   five sections (Baseline + Normalisation + Smoothing + Peak
-   picking + Second derivative) make the left pane unwieldy on
-   any window shorter than ~900 px. Decision locked at the
-   Phase 4i hand-off: collapsible sections with **all sections
-   collapsed by default**. Each section header is a clickable
-   strip showing the section title + a chevron (▶ collapsed, ▼
-   expanded); clicking toggles the body's pack/forget state.
-   Section state is per-tab Tk var (not persisted to project
-   yet — that is a Phase 8 concern). Pair with the
-   `_pick_default_color(graph)` extraction (friction #1) in the
-   same polish session because both touch every operation
-   module at once. See the new register entry "Collapsible
-   left-pane sections" below.
+1. ~~**`_PALETTE` is now duplicated in six modules.**~~ ✅
+   **Resolved in Phase 4j (CS-21).** The
+   `node_styles.pick_default_color(graph)` helper now walks every
+   spectrum-shaped NodeType (UVVIS, BASELINE, NORMALISED,
+   SMOOTHED, SECOND_DERIVATIVE, **and** PEAK_LIST — folded in)
+   in one go, and `node_styles.SPECTRUM_PALETTE` is the single
+   source of truth. All six pre-4j call sites collapse to
+   `colour = pick_default_color(self._graph)`. Behaviour change
+   intentional: peak_picking and second_derivative now see each
+   other's nodes in the palette counter (pre-4j they were
+   mutually palette-invisible). xas_analysis_tab and
+   exafs_analysis_tab keep their local `_PALETTE` literals — Phase
+   0 / pre-redesign code, out of scope.
+2. ~~**The left pane is now five sections tall.**~~ ✅
+   **Resolved in Phase 4j (CS-21).** Each of the five operation
+   sections is now wrapped in a `CollapsibleSection` widget
+   (`collapsible_section.py`); all five start collapsed (locked
+   default) and the header strip shows `▶ Title` (collapsed) or
+   `▼ Title` (expanded). Click anywhere on the header strip
+   toggles. Section state is per-tab Tk `BooleanVar` owned by
+   each section widget; not persisted to project (Phase 8
+   concern, by design). The four `ttk.Separator` strips between
+   sections are gone — each section's bold-font header serves
+   as the divider.
 3. **`_spectrum_nodes` cannot widen to include `SECOND_DERIVATIVE`
    without churning the four locked operation panels.**
    Conceptually a peak-pick or smoothing pass on a second
@@ -962,6 +954,61 @@ subsequent Phase 4 session.**
    informative; defer until a user reports the message
    overwrites as friction.
 
+### Friction points carried forward from Phase 4j
+
+These are concrete obstacles the next Phase 4 session will hit.
+Identified during Phase 4j while implementing the
+`pick_default_color` helper extraction and the collapsible left-pane
+sections (CS-21). **Do not fix until the relevant subsequent Phase 4
+session.**
+
+1. ~~**`tk.StringVar` in `scan_tree_widget._begin_label_edit` falls
+   back to `tkinter._default_root`.**~~ ✅ **Resolved in-phase
+   (commit 6).** Surfaced when `test_collapsible_section` joined the
+   suite as a fifth `tk.Tk()`-using test module; loading it before
+   `test_scan_tree_widget` shifted `_default_root` and the rename
+   Entry's textvariable bound to a different interpreter than its
+   master, rendering the Entry empty even with `value=current`. Fix:
+   pass `master=row_frame` explicitly to the StringVar constructor.
+   Defence-in-depth — also makes future plugin tabs / workspace
+   windows that spawn their own Tk root safe.
+2. **Behaviour change from the unified palette counter.**
+   `pick_default_color` walks all six spectrum-shaped NodeTypes
+   including PEAK_LIST and SECOND_DERIVATIVE. Pre-4j a user creating
+   one PEAK_LIST then one SECOND_DERIVATIVE would get palette[1] for
+   both (each module saw "one prior spectrum, palette[1]"). Post-4j
+   they get palette[1] then palette[2]. This is the intended
+   behaviour — the Phase 4j brief locked it as "order-independent" —
+   but worth recording for visual-regression audits and any
+   screenshot-bearing docs that assumed pre-4j ordering.
+3. **CollapsibleSection collapse state is lost on tab teardown.**
+   Per the Phase 4j brief, persistence is a Phase 8 concern; the
+   per-section `tk.BooleanVar` lives inside the widget and dies with
+   it, so re-opening a project re-collapses every section. Phase 8's
+   project save / load pass should serialise the five section flags
+   alongside the rest of the per-tab UI state.
+4. **First-run UX shows five blank chevron strips.** A user opening
+   the app for the first time sees the left pane as five collapsed
+   header strips with no parameter inputs visible. The chevron
+   glyph + `cursor="hand2"` is the only affordance. Locked design
+   decision (the user prefers click-to-expand to be the affordance
+   rather than auto-expand the first section), but worth logging as
+   a perceptual carry forward in case onboarding feedback later
+   contradicts.
+5. **Per-panel subject combobox feels redundant.** USER-FLAGGED at
+   end of Phase 4j. Each of the five operation panels has its own
+   "Spectrum:" combobox; the user proposed unifying these into a
+   single shared combobox at the top of the left pane (above the
+   collapsible sections). See the new register entry "Unify subject
+   combobox across left-pane sections (architectural)" below.
+6. **Per-panel Entry widgets for wavelength windows are unit-naïve.**
+   USER-FLAGGED at end of Phase 4j. The plot's x-axis can be in nm
+   / cm⁻¹ / eV; the panels' parameter Entry widgets only accept nm.
+   Friction when the user reads peak positions off the plot in
+   non-nm units and has to mentally convert before typing into the
+   panel. See the new register entry "Unit-aware wavelength / energy
+   picker for operation panels" below.
+
 | Status | Priority | Item | Notes |
 |---|---|---|---|
 | ✅ | 🔴 | **Migrate UV/Vis to node model** | UVVisScan → DataNode(type=UVVIS). File load → RAW\_FILE + LOAD + UVVIS triple, all COMMITTED (Phase 4a Part A; CS-13 implementation notes) |
@@ -979,7 +1026,11 @@ subsequent Phase 4 session.**
 | ✅ | 🟡 | **Smoothing** | Savitzky-Golay or moving average; creates provisional SMOOTHED node. Single OperationType.SMOOTH with `params["mode"]` ∈ {"savgol", "moving_avg"} (mirrors CS-15 / CS-16). `SmoothingPanel` co-located in `uvvis_smoothing.py` (Phase 4g; CS-18). `node_styles.default_spectrum_style` extracted as the four-caller threshold sibling commit |
 | ✅ | 🟢 | **Second derivative** | Single-algorithm Savitzky-Golay derivative (`scipy.signal.savgol_filter` with `deriv=2`); no mode discriminator (the savgol routine smooths and differentiates in one pass — naive `np.gradient` would be a footgun mode rather than a useful alternative). Output is a provisional `SECOND_DERIVATIVE` `DataNode` rendered as a curve overlay on the same plot (reuses the `wavelength_nm` / `absorbance` schema; the latter holds d²A/dλ² values). `SecondDerivativePanel` co-located in `uvvis_second_derivative.py` (Phase 4i; CS-20). Chained derivatives intentionally out of scope: `SECOND_DERIVATIVE` is excluded from `_spectrum_nodes` so the locked baseline / normalise / smoothing / peak-picking panels do not surface it as a candidate parent (their parent type checks would silently refuse it) |
 | ⏳ | 🟢 | **Beer-Lambert / concentration** | Use known ε to extract concentration, or fit ε from known concentration |
-| ⏳ | 🔴 | **Collapsible left-pane sections (polish session)** | USER-FLAGGED at end of Phase 4i. Each of the five operation sections (Baseline / Normalisation / Smoothing / Peak picking / Second derivative) becomes a clickable header that toggles its body's pack/forget state via a chevron (▶ collapsed, ▼ expanded). **Default is all sections collapsed** so the left pane opens as five header strips — the user expands the section they want to use. State is per-tab Tk var (not persisted to project; that is a Phase 8 concern). Pair with `_pick_default_color(graph)` extraction (BACKLOG Phase 4i friction #1) in the same session because both touch every operation module at once and unlock four modules currently held by Phase 4c / 4e / 4g / 4h locks. Resolves Phase 4i friction #2 (and Phase 4g #5 / 4h #5 carry-forwards). Use the regular six-commit shape: extract `_pick_default_color` first (single sweep across `uvvis_baseline` / `uvvis_normalise` / `uvvis_smoothing` / `uvvis_peak_picking` / `uvvis_second_derivative`), then introduce a `CollapsibleSection` wrapper widget, then convert each of the five sections, then tests, then bookkeeping |
+| ✅ | 🔴 | **Collapsible left-pane sections (polish session)** | Each of the five operation sections (Baseline / Normalisation / Smoothing / Peak picking / Second derivative) is now wrapped in a clickable `CollapsibleSection` header with a chevron (▶ collapsed, ▼ expanded). **All five sections start collapsed.** State is per-tab Tk `BooleanVar` owned by each section widget; not persisted to project (Phase 8 concern). Paired with the `pick_default_color(graph)` extraction in the same phase — both touched every operation module at once and a single phase unlocked all four (Phase 4c / 4e / 4g / 4h). Resolved Phase 4i friction #1 + #2 + Phase 4g #5 / 4h #5 carry-forwards (Phase 4j; CS-21) |
+| ⏳ | 🔴 | **Unify subject combobox across left-pane sections (architectural)** | USER-FLAGGED at end of Phase 4j. Today each of the five operation panels owns its own subject combobox; the user proposed a single shared combobox at the top of the left pane (always visible, above the collapsible sections), so the user picks the spectrum once and then expands the section for the operation they want. Requires a "shared subject changed" event hand-off to each panel, a per-panel "compatible parent" gate that disables the panel's Apply button when the shared selection isn't a valid parent for that op (e.g. peak_picking accepts UVVIS/BASELINE/NORMALISED/SMOOTHED but not PEAK_LIST or SECOND_DERIVATIVE), and removal of the per-panel `_subject_cb` widgets and their refresh callbacks. Worth a dedicated polish session — touches all four operation panels plus the inline baseline section. Defer until immediately after Phase 4j has been used in anger for a few sessions so the right shared-combobox UX can be informed by real usage |
+| ⏳ | 🟡 | **"Expand all" / "Collapse all" gesture on left pane** | Companion polish for the new collapsible sections (Phase 4j). When a user wants to scan parameter choices across multiple sections (e.g. for a screenshot or to copy parameters from one panel to another) they currently have to click each header individually. Options: a small "▼ All / ▶ All" icon button at the top of the left pane (above the Processing label), or a right-click context menu on any section header with "Expand all" / "Collapse all" entries. Either is a small change — adds a method on `UVVisTab` that walks the five `_{name}_section` attributes and calls `expand()` / `collapse()` on each |
+| ⏳ | 🟡 | **Unit-aware wavelength / energy picker for operation panels** | USER-FLAGGED at end of Phase 4j. The five operation panels collect wavelength/energy windows via free-form Entry widgets in nm only. The plot itself supports x in nm / cm⁻¹ / eV (top-bar combobox); the panels should follow whatever unit the plot is currently displaying so a user reading peak positions off the plot can type them straight into the entry without a mental unit conversion. Likely shape: a unit-aware Spinbox / Entry that watches the tab's `_x_unit` Tk var, converts the entered value to nm at Apply time (the canonical wavelength_nm storage stays nm), and re-renders the entry's display when the user flips units. Touches every panel that has a wavelength / energy parameter (baseline polynomial fit window, baseline spline anchors, normalisation window, peak-picking manual list). Plan once Phase 4j has bedded in |
+| ⏳ | 🟢 | **Keyboard accessibility for `CollapsibleSection`** | The Phase 4j `CollapsibleSection` is a single mouse-clickable strip with no Tab focus indication or keyboard binding. For accessibility (and power users who prefer keyboard navigation) Tab-to-header + Space/Enter-to-toggle would mirror standard disclosure-widget conventions. Phase 11 (app-wide polish) — defer until other accessibility passes happen at the same time |
 
 ---
 
@@ -1195,7 +1246,7 @@ the resolving phase + commit SHA appended to the row.
 
 ---
 
-*Document version: 1.7 — April 2026*
+*Document version: 1.8 — April 2026*
 *1.1: Known Bugs register added 2026-04-27 after Phase 4b manual testing.*
 *1.2: Phase 4c — baseline correction lands; B-001 / B-003 / B-004
 resolved; Phase 4c friction points logged.*
@@ -1228,4 +1279,21 @@ New top-level "Session structure" section formalises the
 ten-step pattern every phase session now follows; the bug /
 issue / feature elicitation step (5) is mandatory, between
 the run-suite verification (4) and the bookkeeping commit (6).*
+*1.8: Phase 4j — collapsible left-pane sections lands (CS-21);
+Collapsible left-pane sections register entry marked ✅; Phase
+4i friction #1 (palette duplication) and #2 (left-pane density)
+both resolved in this phase. New `node_styles.pick_default_color`
+helper unifies the six pre-4j palette-index expressions; new
+`collapsible_section.py` widget wraps each of the five operation
+sections with a clickable chevron header. Production fix landed
+in-phase: `scan_tree_widget._begin_label_edit` now binds its
+StringVar to an explicit master so multi-Tk-root code paths stay
+correct. Phase 4j friction logged (six items: StringVar fix
+already resolved, palette-counter behaviour change, section
+state not persisted, first-run UX, per-panel subject combobox
+redundancy, unit-naïve wavelength entries). Four new register
+entries: 🔴 Unify subject combobox across left-pane sections
+(architectural, USER-FLAGGED), 🟡 Expand all / Collapse all
+gesture, 🟡 Unit-aware wavelength / energy picker (USER-FLAGGED),
+🟢 Keyboard accessibility for CollapsibleSection (Phase 11).*
 *Supersedes: BACKLOG.md (original)*
