@@ -1665,9 +1665,9 @@ provisional operation; the user inspects the result and decides
 to commit (lock in) or discard via the right-sidebar
 `ScanTreeWidget`.
 
-### Four modes (single OperationType, params discriminated by mode)
+### Five modes (single OperationType, params discriminated by mode)
 
-A single `OperationType.BASELINE` covers all four. The
+A single `OperationType.BASELINE` covers all five. The
 discriminator is `params["mode"]`; the remaining keys are the
 mode-specific sub-schema.
 
@@ -1677,6 +1677,7 @@ mode-specific sub-schema.
 | `polynomial` | `order` (int), `fit_lo_nm`, `fit_hi_nm`     | Polynomial of given order fit (`np.polyfit`) to the data inside the wavelength window; evaluated across the full input range. |
 | `spline`     | `anchors` (list of nm)                      | Cubic interpolating spline (`scipy.interpolate.CubicSpline`) through `(anchor, sampled_absorbance)` points. Falls back to quadratic / linear when `len(anchors) < 4`. |
 | `rubberband` | (none)                                       | Lower convex hull (Andrew's monotone chain) of the `(wavelength, absorbance)` point set, linearly interpolated onto the input grid. |
+| `scattering` (CS-24) | `n` (float ≥ 0 OR string `"fit"`), `fit_lo_nm`, `fit_hi_nm` | Power-law `B(λ) = c · λ^(-n)` for colloidal / turbid samples. Fixed `n` → closed-form least-squares for the amplitude `c` only. `n="fit"` → log–log linear regression (`log A = log c − n · log λ`) recovers both; requires absorbance > 0 throughout the fit window. Baseline is fit on the window and subtracted across the full input range. |
 
 ### Pure module
 
@@ -1731,13 +1732,19 @@ convention, so no rendering branch is needed.
   (`NODE_ADDED`, `NODE_DISCARDED`, `NODE_LABEL_CHANGED`,
   `NODE_ACTIVE_CHANGED`).
 * **Baseline mode combobox** — `linear` / `polynomial` /
-  `spline` / `rubberband`. On change, the parameter row frame
-  rebuilds.
+  `spline` / `rubberband` / `scattering`. On change, the parameter
+  row frame rebuilds. Combobox values pull from
+  `uvvis_baseline.BASELINE_MODES` so adding a mode in the pure
+  module auto-grows the combobox.
 * **Conditional parameter rows** —
   * linear: two anchor entries (nm).
   * polynomial: order spinbox + two fit-window entries (nm).
   * spline: comma-separated anchor entry (nm).
   * rubberband: a single "(parameter-free convex hull)" label.
+  * scattering (CS-24): `n:` Entry (default `"4"` ≈ Rayleigh) +
+    `Fit n` Checkbutton (disables the n entry when checked) +
+    two fit-window entries (nm). When the checkbox is on,
+    `_collect_baseline_params` emits `params["n"] = "fit"`.
 * **`Apply Baseline` button** — runs `_apply_baseline()`.
 
 Anchor capture from the plot (click-drag-on-axis) is out of
@@ -1773,6 +1780,52 @@ provisional node, and iteration is via discard + re-apply.
   Rename / history / norm-area paths under load. Each fix is its
   own commit; CS-04 §"Context menu" + §6.2 explicitly call out
   what those fixes restore.
+
+### Implementation notes (Phase 4m, CS-24 — scattering mode)
+
+* **Power-law form per the brief.** `B(λ) = c · λ^(-n)` — a pure
+  proportional fit with no additive constant. This matches the
+  Phase 4l USER-FLAGGED register entry verbatim (`A_scatter(λ) ∝
+  1/λ^n`). A composite "scattering+offset" mode (`B(λ) = a + c ·
+  λ^(-n)`) is the natural follow-up if users find that the pure
+  form leaves a flat residual; deferred to a future session and
+  logged as Phase 4m friction #3.
+* **Fit window vocabulary reused from polynomial mode.** Same
+  `fit_lo_nm` / `fit_hi_nm` keys, same semantics ("peak-free
+  window; baseline subtracted across the full input range"),
+  same swap-on-out-of-order tolerance. The user types nm anchors
+  directly, identical to the polynomial flow.
+* **`n` is dual-typed: numeric or `"fit"`.** Numeric `n` → linear
+  least-squares for `c` only via the closed-form `c = Σ(A·λ^-n) /
+  Σ(λ^-2n)`. `n="fit"` → linear regression in log space (`log A =
+  log c − n·log λ`) recovers both parameters simultaneously.
+  Log-fit requires absorbance > 0 throughout the fit window —
+  otherwise raises `ValueError` (the dialog routes to messagebox
+  like the other modes). Numeric n tolerates noise dipping
+  negative.
+* **`params["n"] = "fit"` is preserved verbatim in `op.params`.**
+  CS-03's "params sufficient to reproduce" rule is satisfied
+  because rerunning the op recovers the same n via the same log
+  fit. The recovered numeric n is *not* persisted into the
+  OperationNode today; surfacing it in a sibling
+  `params["n_fitted"]` (so export headers and tooltips can read
+  it without re-running the fit) is logged as Phase 4m friction
+  #2 — same shape applies to any future op that fits a parameter
+  the user didn't pin.
+* **No new enum, no renderer changes.** `OperationType.BASELINE`
+  + `NodeType.BASELINE` already exist (CS-15); `_DISPATCH` and
+  `BASELINE_MODES` grew by one entry; `_collect_baseline_params`
+  gained a single branch. The provisional → commit / discard
+  flow, the ScanTreeWidget filter, the curve render path, and
+  `_spectrum_nodes()` all needed zero changes.
+* **UI: Fit-n disables the n entry on rebuild.** The "Fit n"
+  Checkbutton's command calls `_sync_n_entry_state` which sets
+  the n Entry's `state="disabled"` while the checkbox is on. The
+  contract relies on the param-row rebuild order
+  (`_refresh_baseline_param_rows` calls `_sync_n_entry_state` at
+  the end of the scattering branch); same brittleness pattern as
+  the polynomial-order Spinbox pre-CS-21. Logged as Phase 4m
+  friction #1.
 
 ---
 
@@ -3030,7 +3083,7 @@ Five Phase 4k friction items above are not addressed by CS-22:
 
 ---
 
-*Document version: 1.12 — May 2026*
+*Document version: 1.13 — May 2026*
 *1.1: CS-13 implementation notes added in Phase 4a.*
 *1.2: CS-14 Plot Settings Dialog added in Phase 4b.*
 *1.3: CS-15 UV/Vis Baseline Correction + CS-04 implementation
@@ -3100,5 +3153,21 @@ vocabulary across the app, Plot config + plot defaults
 persistence to project.json, Remove duplicate section title
 from operation panels, Right-sidebar responsive layout
 extension, Scattering-functional baseline mode.*
+*1.13: CS-24 Scattering baseline mode added in Phase 4m as the
+fifth `OperationType.BASELINE` mode. Pure helper
+`uvvis_baseline.compute_scattering` fits `B(λ) = c · λ^(-n)`
+over a peak-free window and subtracts the result across the
+full input range; `params["n"]` is either numeric (closed-form
+fit for `c` only) or the string `"fit"` (log–log linear
+regression for both `c` and `n`). UI gains a fifth combobox
+entry + parameter row (`n:` Entry, `Fit n` Checkbutton, fit
+window endpoints). Renderer / sidebar / `_spectrum_nodes` need
+no changes — the new mode reuses the CS-15 BASELINE node shape
+end-to-end. Resolves Phase 4l friction #9 (USER-FLAGGED). Phase
+4m logged five new friction items, all observed-during-session
+(no new USER-FLAGGED elevations): Fit-n state-rebuild brittleness,
+n-fit diagnostic loss, scattering+offset composite mode, fit
+window error message gap, missing checkbox-disables-entry
+integration test.*
 *To be updated as Open Questions are resolved and new components
 are specified.*
