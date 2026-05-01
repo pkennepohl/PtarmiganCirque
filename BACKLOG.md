@@ -87,10 +87,46 @@ freezes for the hand-off, so issues are not lost between threads.
    duplication, slow status messages, a mode that felt
    awkward, …) so the user can confirm or extend. Wait for the
    user's answer before continuing.
-6. **Bookkeeping commit** — update BACKLOG.md (mark item ✅,
-   add the friction list **including any user-flagged items
-   from step 5**) and COMPONENTS.md (new CS-N section,
-   doc-version footer bumped).
+6. **Bookkeeping commit** — three responsibilities:
+
+   a. **Mark the new register item ✅** and add a fresh
+      "Friction points carried forward from Phase 4X" section
+      **including any user-flagged items from step 5**.
+
+   b. **Mark resolved prior-phase friction items** —
+      strike-through the matching entries in earlier friction
+      lists with `~~original text~~` followed by
+      `✅ **Resolved in Phase 4X (CS-NN).**` plus a one-line
+      explanation. Walk every prior friction section the
+      current phase plausibly touches, not just the immediate
+      predecessor — palette duplication chained across five
+      phase sections before CS-21 retired it; subject combobox
+      chained across three before CS-22; the cleanup is wasted
+      if it only catches the most-recent occurrence.
+
+   c. **Collapse repeating chains to one canonical entry.**
+      When the same root issue appears in N≥2 friction lists,
+      keep the first occurrence with full prose and replace
+      later occurrences with one-line cross-references:
+      `~~**Short title.**~~ See 4X #N above (canonical entry
+      — still open).` New friction items added in the current
+      phase should also cross-ref any prior entry with the
+      same root, so a future cleanup pass can find the chain.
+
+   COMPONENTS.md updates: new CS-N section + doc-version
+   footer bumped.
+
+   **Pruning policy (after ~3 phases of staleness):** items
+   that have been struck-through for three or more phases,
+   AND whose chain is fully closed, should be pruned from
+   their per-phase friction sections into a single
+   "Resolved friction history" log at the bottom of Phase 4
+   (one line per resolved chain: `Palette duplication
+   (4c→4e→4g→4h→4i): ✅ resolved Phase 4j (CS-21)`). The
+   per-phase sections then carry only items still open or
+   recently-resolved. This keeps active friction lists from
+   re-bloating over the long phase 5 / 6 / 7 sequence; the
+   audit trail survives in the consolidated log.
 7. **Merge into redesign/main** in the integration worktree
    (`git merge --no-ff redesign/phase-XX-task-name`). Use the
    established message format: subject + brief intro +
@@ -515,10 +551,14 @@ fix until the relevant subsequent Phase 4 session.**
    BASELINE node rather than reading a "selected row" from the
    right sidebar (which has no selection state today). Adding a
    selection model would let the left panel auto-track the user's
-   focus, but it widens the widget's surface noticeably. Revisit
-   when a second user-initiated operation lands (smoothing, peak
-   picking) and the duplicated combobox starts to feel like a
-   pattern.
+   focus, but it widens the widget's surface noticeably. **Subject-
+   combobox aspect resolved in Phase 4k (CS-22)** — a single shared
+   combobox at top of left pane replaces the per-panel duplication.
+   Per-row selection on the right-side ScanTreeWidget is still
+   open and now forcing-functioned by the Phase 4k register entry
+   "Per-variant gestures on sweep-group rows" (USER-FLAGGED 🔴).
+   Cross-refs: 4f #2 (export per-row, not per-selection), 4g #3
+   (subject-combobox aspect — resolved with this).
 2. **Anchor capture from the plot is keyboard-only.** Linear,
    polynomial, and spline modes require nm anchor wavelengths;
    today the user types them in. A click-on-axis gesture
@@ -539,19 +579,21 @@ fix until the relevant subsequent Phase 4 session.**
    remove / drag-reorder rows) is what CS-07 would prefer; the
    spline mode is the only one that needs it. Revisit if the
    peak-picking / smoothing sessions land widgets we can reuse.
-5. **`_PALETTE` is duplicated logic between UVVIS load and
-   BASELINE Apply.** Both paths index `_PALETTE` to pick a
-   default colour. Today it's two two-line snippets, but a third
-   path (smoothing, normalisation-as-operation) will make the
-   third copy. Probably extract to a `_pick_default_color(graph)`
-   helper at that point.
-6. **`_uvvis_nodes` vs. `_spectrum_nodes` divergence.** The tab
-   now has two near-identical helpers — UVVIS-only (used by
-   `_has_existing_load` and the ∀ apply-to-all callback) and
-   UVVIS+BASELINE (used by `_redraw`, the subject combobox).
-   This is fine today but will calcify into a bigger split if
-   normalisation-as-operation introduces a `NORMALISED` node
-   type the tab also wants to render. Revisit then.
+5. ~~**`_PALETTE` is duplicated logic between UVVIS load and
+   BASELINE Apply.**~~ ✅ **Resolved in Phase 4j (CS-21).**
+   Original duplication chain: 4c #5 → 4e #2 → 4g #1 → 4h #1
+   → 4i #1. `node_styles.pick_default_color(graph)` collapses
+   all five call sites and `node_styles.SPECTRUM_PALETTE` is
+   the single source of truth.
+6. ~~**`_uvvis_nodes` vs. `_spectrum_nodes` divergence.**~~ ✅
+   **Largely sidestepped (Phase 4c → 4d → 4j evolution).**
+   The two helpers continued to coexist as their roles
+   diverged: `_uvvis_nodes` is now used only by
+   `_has_existing_load` (UVVIS-specific duplicate-load check)
+   and the legacy "+ Add to TDDFT Overlay" shim — both correct
+   today. The shim retires with Phase 7 (Send-to-Compare); the
+   load-path use is intentionally type-narrow. No further
+   convergence work needed.
 7. **Legacy "+ Add to TDDFT Overlay" button still synthesises
    from UVVIS only.** `_add_selected_to_overlay` reads
    `self._uvvis_nodes()` and silently skips BASELINE nodes —
@@ -581,15 +623,17 @@ until the relevant subsequent Phase 4 session.**
    externally-imposed sidebar width keep things stable. If
    oscillation is reported, add a hysteresis margin (e.g.,
    collapse at 280, restore at 340).
-3. **`_DEFAULT_STYLE` lives in two places.** Phase 4c friction
-   point #6 already flagged this — `scan_tree_widget._DEFAULT_STYLE`
-   and `style_dialog._UNIVERSAL_DEFAULTS` carry overlapping
-   defaults for the universal style keys. Phase 4d added
-   `visible` and `in_legend` to both tables in lockstep; the
-   duplication is now larger but still manageable. A single
-   shared module (`node_styles.py`?) would eliminate the drift
-   risk. Revisit when a third caller (e.g., a save/load
-   round-trip) needs the same defaults.
+3. ~~**`_DEFAULT_STYLE` lives in two places.**~~ ✅ **Partially
+   resolved in Phase 4g (CS-18 sibling commit).** The
+   spectrum-producing factory dict is now
+   `node_styles.default_spectrum_style` — a single source of
+   truth for fresh-node creation. The two UI-side fallback maps
+   (`scan_tree_widget._DEFAULT_STYLE`, `style_dialog._UNIVERSAL_DEFAULTS`)
+   intentionally remain in their widget files: their role is
+   "fallback when `node.style` is missing a key" rather than
+   "factory dict for fresh node creation" (Phase 4g #6
+   documents the role split). Residual chain: 4d #3 → 4e #1
+   → 4g #6 (intentional carry-forward).
 4. **Bulk ∀ exclusion list is a tuple in code, not a derived
    property.** `_BULK_UNIVERSAL_KEYS` enumerates the keys the
    bottom button fans out. Adding a new universal key means
@@ -598,15 +642,13 @@ until the relevant subsequent Phase 4 session.**
    `colour` / `visible` / `in_legend` is documented but
    easy to mis-match. Consider a richer registry (`{key: {bulk:
    bool, default: ...}}`) when a fifth or sixth key joins.
-5. **UV/Vis fan-out scope is now `_spectrum_nodes`, but
+5. ~~**UV/Vis fan-out scope is now `_spectrum_nodes`, but
    `_has_existing_load` and the legacy "+ Add to TDDFT Overlay"
-   button still read `_uvvis_nodes`.** Phase 4c friction point
-   #6 noted the `_uvvis_nodes` / `_spectrum_nodes` divergence
-   would calcify; Phase 4d's widening narrowed the divergence
-   to two callers. Both are correct today (load duplicate-check
-   is UVVIS-specific; the overlay shim retires with Phase 7
-   Send-to-Compare). No action for Phase 4e — flag for whoever
-   touches the load path or Send-to-Compare.
+   button still read `_uvvis_nodes`.**~~ ✅ **Closed — both
+   residual callers are correct as-is.** See 4c #6 above; the
+   load-path read is intentionally UVVIS-specific and the
+   overlay shim retires with Phase 7 (Send-to-Compare). No
+   convergence work needed.
 
 ### Friction points carried forward from Phase 4e
 
@@ -615,27 +657,15 @@ Identified during Phase 4e while implementing
 normalisation-as-operation and resolving Phase 4a friction point
 #2. **Do not fix until the relevant subsequent Phase 4 session.**
 
-1. **`_default_*_style` lives in three places.** Phase 4d friction
-   point #3 already flagged the duplication between
-   `scan_tree_widget._DEFAULT_STYLE` and
-   `style_dialog._UNIVERSAL_DEFAULTS`; Phase 4e adds a third copy
-   in `uvvis_normalise._default_normalised_style` (mirrors the
-   `uvvis_tab._default_uvvis_style` pattern carried forward from
-   Phase 4c). Carried forward per the Phase 4e brief; the smell is
-   now visible across three modules. A single shared module
-   (`node_styles.py`?) becomes the obvious extraction when the
-   fourth caller lands (Phase 5 XANES smoothing, deglitch, or
-   shift-energy operations all need the same default).
-2. **`_PALETTE` index expression duplicated three times now.**
-   Phase 4c friction point #5 flagged the original duplication
-   (UVVIS load + BASELINE Apply); Phase 4e adds a third (NORMALISE
-   Apply: `_PALETTE[(n_uvvis + n_baseline + n_normalised) %
-   len(_PALETTE)]`). Each new spectrum-producing operation will
-   widen the index expression. The cleanest extraction is a
-   `_pick_default_color(graph)` helper that walks every spectrum
-   NodeType and picks the next palette entry. Revisit when a fourth
-   spectrum-producing operation lands (smoothing or interactive
-   normalisation).
+1. ~~**`_default_*_style` lives in three places.**~~ ✅ **Resolved
+   in Phase 4g (CS-18 sibling commit).** `node_styles.default_spectrum_style`
+   is now the single factory dict for spectrum-producing
+   operations; every `_default_*_style` call site collapses to it.
+   Same chain as 4d #3 above. Residual fallback maps are
+   intentional (4g #6).
+2. ~~**`_PALETTE` index expression duplicated three times now.**~~
+   ✅ **Resolved in Phase 4j (CS-21).** See 4c #5 above for the
+   full chain.
 3. **Window endpoints are required nm Entry fields; no
    click-on-axis capture.** Phase 4c friction point #2 flagged
    anchor capture for baseline; the same gesture would benefit
@@ -650,12 +680,17 @@ normalisation-as-operation and resolving Phase 4a friction point
    create a node. Decision deferred until a user reports it as
    friction.
 5. **The status-bar API is fragmented.** The baseline section
-   updates `self._status_lbl.config(...)` inline; the
-   `NormalisationPanel` calls back through `_set_status_message`
-   on the host. Both work, but a future session adding a third
-   user-initiated operation (smoothing, deglitch on UV/Vis) should
-   pick one convention and migrate the other. The callback shape
-   is the cleaner of the two.
+   updates `self._status_lbl.config(...)` inline; the four
+   operation panels (`NormalisationPanel`, `SmoothingPanel`,
+   `PeakPickingPanel`, `SecondDerivativePanel`) all call back
+   through `_set_status_message`. Migrating the inline baseline
+   path is a one-commit sweep. **Plus:** the existing
+   `_set_status_message` overwrites the previous message with
+   each call (Phase 4i #6), so a fast user clicking Apply on
+   multiple panels in succession only sees the last one — a
+   short-lived toast / status history might be more
+   informative. Cross-refs: 4g #2, 4i #6 (same root issue —
+   tracked here as the canonical entry).
 6. **`OperationType.NORMALISE` is overloaded across techniques.**
    The Phase 4e brief picked the existing
    `OperationType.NORMALISE` (originally meant for XANES Larch
@@ -682,12 +717,12 @@ Identified during Phase 4f while implementing single-node export.
    tab plugs into at startup, so `node_export` stays
    technique-agnostic. Resolve when Phase 5 / 6 land their first
    exportable node types.
-2. **Export is per-row, not per-selection.** The Phase 4f brief
-   explicitly forbade adding a row-selection model (Phase 4c
-   friction point #1) and forbade multi-node "Export selection".
-   Both decisions interlock: a per-selection export needs a
-   selection state on `ScanTreeWidget`. Carry both forward
-   together.
+2. **Export is per-row, not per-selection.** A per-selection
+   export needs a row-selection model on `ScanTreeWidget` —
+   tracked at 4c #1 (still open after Phase 4k partial
+   resolution; right-side selection is still the gap, now
+   forcing-functioned by the Phase 4k "Per-variant gestures"
+   register entry).
 3. **Provenance header timestamp is the *export* time, not the
    commit time.** The header records `exported_at=<UTC now>`,
    meaning two exports of the same committed node carry different
@@ -721,10 +756,13 @@ Identified during Phase 4f while implementing single-node export.
    scalars or any non-JSON-primitive that slipped past CS-03's
    "must be JSON-serialisable" rule serialise as their `repr`,
    which round-trips as a string — not the original numeric. No
-   such cases exist today (BASELINE / NORMALISE params are pure
-   Python floats / strings), but the fallback hides a future
+   such cases exist today (BASELINE / NORMALISE / SMOOTH /
+   PEAK_PICK / SECOND_DERIVATIVE params are all pure Python
+   floats / ints / strings), but the fallback hides a future
    schema regression. Phase 5 / 6 should pin a stricter
-   serialiser when params shapes widen.
+   serialiser when params shapes widen (e.g., XANES Larch
+   k-window taper `Decimal` precision). Cross-ref: 4g #4 (same
+   root issue — tracked here as the canonical entry).
 
 ### Friction points carried forward from Phase 4g
 
@@ -734,56 +772,23 @@ and extracting `node_styles.default_spectrum_style` as the
 four-caller threshold sibling commit. **Do not fix until the
 relevant subsequent Phase 4 session.**
 
-1. **`_PALETTE` is now duplicated in four modules.** Phase 4c
-   friction point #5 / Phase 4e friction point #2 flagged the
-   duplication; Phase 4g adds a fourth copy in
-   `uvvis_smoothing._PALETTE` and a fourth term in the
-   `_PALETTE[(n_uvvis + n_baseline + n_normalised + n_smoothed) %
-   len(_PALETTE)]` index expression. The cleanest extraction is a
-   `_pick_default_color(graph)` helper that walks every
-   spectrum-shaped NodeType and picks the next palette entry; the
-   helper would also subsume the `n_X` count list. Defer until a
-   fifth caller lands (Phase 5 XANES smoothing or deglitch on
-   UV/Vis), or pair with the Send-to-Compare session if it touches
-   the same files.
-2. **The status-bar API split persists.** Phase 4e friction point
-   #5 noted that the baseline section updates
-   `self._status_lbl.config(...)` inline while the
-   `NormalisationPanel` calls back through `_set_status_message`.
-   The new `SmoothingPanel` follows the cleaner callback shape, so
-   two of three sections are now on the callback path. Migrating
-   the inline baseline path is a one-commit sweep but stays out of
-   this session's scope per the Phase 4g brief (no-touch list
-   includes `uvvis_baseline`).
-3. **`SmoothingPanel` reflects the same "no row-selection model"
-   workaround as baseline / normalisation.** Phase 4c friction
-   point #1 / Phase 4e friction point's subject-combobox carried
-   forward — three left-panel subwidgets now host their own
-   subject combobox. The pattern is now visible enough that a
-   single shared `SubjectComboboxAdapter` (or, as Phase 4c
-   originally suggested, a row-selection state on
-   `ScanTreeWidget`) would be a real cleanup. Revisit with
-   peak-picking (the fourth subject-list caller).
-4. **`OperationNode.params` carries `int` for `window_length` /
-   `polyorder` instead of resolved-type-tagged values.** Phase 4f
-   friction point #6 already flagged the `default=str` JSON
-   fallback; SMOOTH params are pure Python ints / strings so they
-   round-trip cleanly today, but a future XANES smoothing session
-   that wants `Decimal` precision (e.g., for k-window roll-off
-   tapers) will hit the same fallback. Phase 5 / 6 should pin a
-   stricter serialiser when params shapes widen.
-5. **The four panels in the left pane are now visually crowded.**
-   The left pane stacks Baseline (subject + mode + per-mode rows +
-   button), Normalisation (subject + mode + window rows + button),
-   Smoothing (subject + mode + per-mode rows + button) for a total
-   of three near-identical sections — and Phase 5 / 6 / OLIS
-   correction will add more. Even with the horizontal separators
-   the visual hierarchy is starting to flatten. Possibilities for
-   a future polish session: collapsible sections per CS-07
-   §"left-panel layout grammar", a dropdown that selects "active
-   operation" and renders only that section, or a mini-tab strip
-   inside the left pane. Decision deferred until a user reports
-   it as friction.
+1. ~~**`_PALETTE` is now duplicated in four modules.**~~ ✅
+   **Resolved in Phase 4j (CS-21).** See 4c #5 above for the
+   full chain.
+2. ~~**The status-bar API split persists.**~~ See 4e #5 above
+   (canonical entry — still open).
+3. ~~**`SmoothingPanel` reflects the same "no row-selection model"
+   workaround as baseline / normalisation.**~~ ✅ **Subject-
+   combobox aspect resolved in Phase 4k (CS-22).** Row-selection
+   on the right-side ScanTreeWidget is the residual gap — see
+   4c #1.
+4. ~~**`OperationNode.params` carries `int` for `window_length` /
+   `polyorder` instead of resolved-type-tagged values.**~~ See
+   4f #6 above (canonical entry — still open).
+5. ~~**The four panels in the left pane are now visually crowded.**~~
+   ✅ **Resolved in Phase 4j (CS-21).** Each section is now a
+   `CollapsibleSection` (collapsed-by-default); the user expands
+   only the section they're working in.
 6. **`scan_tree_widget._DEFAULT_STYLE` /
    `style_dialog._UNIVERSAL_DEFAULTS` still carry the same eight
    keys as `node_styles.default_spectrum_style`.** Phase 4g
@@ -805,18 +810,9 @@ Identified during Phase 4h while implementing peak picking and
 landing the first non-curve DataNode (PEAK_LIST) in the UV/Vis
 path. **Do not fix until the relevant subsequent Phase 4 session.**
 
-1. **`_PALETTE` is now duplicated in five modules.** Phase 4c
-   friction #5 / Phase 4e friction #2 / Phase 4g friction #1
-   tracked the duplication; Phase 4h adds the fifth copy in
-   `uvvis_peak_picking._PALETTE` and a fifth term in the
-   `_PALETTE[(n_uvvis + n_baseline + n_normalised + n_smoothed +
-   n_peak_list) % len(_PALETTE)]` index expression. Same cleanest
-   extraction sketched in Phase 4g friction #1: a
-   `_pick_default_color(graph)` helper that walks every
-   spectrum-shaped or annotation NodeType and picks the next
-   palette entry. Defer until a sixth caller lands (Phase 5 XANES
-   migration is the natural next palette consumer) or pair with
-   the next Phase 4 polish session that touches the same files.
+1. ~~**`_PALETTE` is now duplicated in five modules.**~~ ✅
+   **Resolved in Phase 4j (CS-21).** See 4c #5 above for the
+   full chain.
 2. **`_on_uvvis_apply_to_all` does not fan out to PEAK_LIST.**
    The unified style dialog's "apply to all" button writes a
    single style key onto every node returned by
@@ -853,16 +849,8 @@ path. **Do not fix until the relevant subsequent Phase 4 session.**
    amount of in-panel ephemeral state. Decision deferred — the
    manual entry covers the same gesture for the cases users
    typically care about (one or two known band positions).
-5. **The left pane is now visibly tall.** Phase 4g friction #5
-   already flagged the four-section stack (Baseline + Normalisation
-   + Smoothing + ?); Phase 4h lands the fourth section. On a
-   720-pixel-tall window the Apply Peak Picking button can be
-   below the fold, depending on the user's font-scaling and
-   sash position. The collapsible-sections / accordion / mini-tab
-   options listed in Phase 4g friction #5 all still apply; the
-   forcing function for a redesign is now stronger. Decision
-   deferred until a user reports it as friction (or until a fifth
-   section lands in OLIS correction or interactive normalisation).
+5. ~~**The left pane is now visibly tall.**~~ ✅ **Resolved in
+   Phase 4j (CS-21).** See 4g #5 above for the full chain.
 6. **PEAK_LIST is not exportable.** `node_export._resolve_columns`
    is UV/Vis-shaped only (Phase 4f friction #1). PEAK_LIST has
    different array keys (`peak_wavelengths_nm` /
@@ -936,23 +924,15 @@ subsequent Phase 4 session.**
    not yet a real issue. A more rigorous path would
    re-interpolate to a uniform grid before differentiating;
    defer until a user loads a non-uniform-grid spectrum.
-5. **No `_on_uvvis_apply_to_all` exclusion / inclusion decision
-   for `SECOND_DERIVATIVE`.** Phase 4h friction #2 flagged this
-   for `PEAK_LIST` (the ∀ button writes to `_spectrum_nodes`,
-   which excludes `PEAK_LIST` and now also `SECOND_DERIVATIVE`).
-   For curve-style keys (colour, linewidth) the exclusion is
-   correct (a derivative wants its own colour). For visibility
-   / legend toggles, the user's mental model is probably "every
-   row in the sidebar". Same per-key fan-out scope fix as Phase
-   4h friction #2; same decision deferral.
-6. **Status-bar message coupling deepens.** Five operation panels
-   now route their success messages through
-   `_set_status_message`; the existing implementation overwrites
-   the previous message with each call, so a fast user clicking
-   Apply on multiple panels in succession only sees the last one.
-   A short-lived toast / status history might be more
-   informative; defer until a user reports the message
-   overwrites as friction.
+5. ~~**No `_on_uvvis_apply_to_all` exclusion / inclusion decision
+   for `SECOND_DERIVATIVE`.**~~ See 4h #2 above (canonical entry
+   — still open). The per-key fan-out scope fix would cover
+   PEAK_LIST and SECOND_DERIVATIVE in one pass.
+6. ~~**Status-bar message coupling deepens.**~~ See 4e #5 above
+   (canonical entry — still open). Phase 4i was the last phase
+   that added a panel-side `_set_status_message` caller; the
+   "overwrites previous message" friction now affects five
+   sections rather than three.
 
 ### Friction points carried forward from Phase 4j
 
@@ -995,12 +975,13 @@ session.**
    rather than auto-expand the first section), but worth logging as
    a perceptual carry forward in case onboarding feedback later
    contradicts.
-5. **Per-panel subject combobox feels redundant.** USER-FLAGGED at
-   end of Phase 4j. Each of the five operation panels has its own
-   "Spectrum:" combobox; the user proposed unifying these into a
-   single shared combobox at the top of the left pane (above the
-   collapsible sections). See the new register entry "Unify subject
-   combobox across left-pane sections (architectural)" below.
+5. ~~**Per-panel subject combobox feels redundant.**~~ ✅
+   **Resolved in Phase 4k (CS-22).** USER-FLAGGED at end of
+   Phase 4j. Replaced by a single shared `_shared_subject_cb`
+   at top of left pane; each panel exposes
+   `set_subject(node_id)` + `ACCEPTED_PARENT_TYPES`. See the
+   "Unify subject combobox across left-pane sections" register
+   entry above (now ✅).
 6. **Per-panel Entry widgets for wavelength windows are unit-naïve.**
    USER-FLAGGED at end of Phase 4j. The plot's x-axis can be in nm
    / cm⁻¹ / eV; the panels' parameter Entry widgets only accept nm.
@@ -1304,7 +1285,7 @@ the resolving phase + commit SHA appended to the row.
 
 ---
 
-*Document version: 1.9 — May 2026*
+*Document version: 1.10 — May 2026*
 *1.1: Known Bugs register added 2026-04-27 after Phase 4b manual testing.*
 *1.2: Phase 4c — baseline correction lands; B-001 / B-003 / B-004
 resolved; Phase 4c friction points logged.*
@@ -1371,4 +1352,23 @@ Commit / discard reachable from the left pane after Apply
 (USER-FLAGGED), 🔴 Per-variant gestures on sweep-group rows
 (USER-FLAGGED, elevated from Phase 2 carry-forward), 🔴 Plot
 Settings dialog: Save & Close (USER-FLAGGED).*
+*1.10: Post-Phase-4k — friction-list cleanup pass. USER-FLAGGED
+that the cumulative friction list (13 sections, 83 items)
+was getting unwieldy and increasingly misleading: many items
+were silently resolved by later phases without strike-through,
+and three repeating chains (palette duplication, left-pane
+density, status-bar API split) had grown to 5 / 3 / 3
+duplicate entries each. Cleanup pass: strikethrough + ✅
+resolution stamps on 11 silently-resolved items (palette dup
+chain 4c→4h, left-pane density chain 4g/4h, default-style
+duplication chain 4d/4e, subject-combobox chain 4c/4g/4j,
+`_uvvis_nodes` divergence 4c/4d). Cross-references added to
+collapse repeating chains to one canonical entry per root
+issue (status-bar at 4e #5; ∀ apply-to-all scope at 4h #2;
+JSON `default=str` at 4f #6; click-on-axis at 4c #2). Session
+structure step 6 extended with three responsibilities
+(register update + prior-phase strike-through + chain
+collapse) plus a pruning policy: items struck-through for
+≥3 phases collapse into a "Resolved friction history" log at
+end of Phase 4 to keep active lists from re-bloating.*
 *Supersedes: BACKLOG.md (original)*
