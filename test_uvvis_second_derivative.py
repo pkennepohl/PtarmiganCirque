@@ -225,10 +225,8 @@ class TestSecondDerivativePanel(unittest.TestCase):
         self.host = tk.Frame(_root)
         self.host.pack()
         self.graph = ProjectGraph()
-        self.panel = usd.SecondDerivativePanel(
-            self.host, self.graph,
-            spectrum_nodes_fn=self._spectrum_nodes,
-        )
+        # Phase 4k: subject is pushed in by the host via set_subject.
+        self.panel = usd.SecondDerivativePanel(self.host, self.graph)
         self.panel.pack()
 
     def tearDown(self):
@@ -243,20 +241,6 @@ class TestSecondDerivativePanel(unittest.TestCase):
 
     # ---- helpers -----------------------------------------------------
 
-    def _spectrum_nodes(self):
-        # Mirrors the host's _spectrum_nodes — UVVIS / BASELINE /
-        # NORMALISED / SMOOTHED, *not* SECOND_DERIVATIVE itself.
-        out = []
-        for ntype in (NodeType.UVVIS, NodeType.BASELINE,
-                      NodeType.NORMALISED, NodeType.SMOOTHED):
-            for n in self.graph.nodes_of_type(ntype, state=None):
-                if n.state == NodeState.DISCARDED:
-                    continue
-                if not n.active:
-                    continue
-                out.append(n)
-        return out
-
     def _add_uvvis(self, nid: str = "u1") -> None:
         wl = np.linspace(200.0, 800.0, 601)
         absorb = _gaussian(wl, 500.0, 25.5, height=1.0) + 0.05
@@ -270,28 +254,64 @@ class TestSecondDerivativePanel(unittest.TestCase):
                    "in_legend": True, "fill": False, "fill_alpha": 0.08},
         ))
 
-    # ---- subject combobox -------------------------------------------
+    # ---- shared-subject hand-off (Phase 4k, CS-22) ------------------
 
-    def test_subject_combobox_tracks_added_uvvis_node(self):
-        items_before = self.panel._subject_cb.cget("values")
-        if isinstance(items_before, str):
-            items_before = tuple(items_before.split())
-        self.assertEqual(len(items_before), 0)
+    def _apply_btn_state(self) -> str:
+        return str(self.panel._apply_btn.cget("state"))
+
+    def test_apply_disabled_when_no_subject(self):
+        self.assertEqual(self._apply_btn_state(), "disabled")
+
+    def test_set_subject_with_uvvis_enables_apply(self):
         self._add_uvvis("u1")
-        self.panel.update_idletasks()
-        items_after = self.panel._subject_cb.cget("values")
-        if isinstance(items_after, str):
-            items_after = tuple(items_after.split())
-        self.assertEqual(len(items_after), 1)
+        self.panel.set_subject("u1")
+        self.assertEqual(self._apply_btn_state(), "normal")
+
+    def test_set_subject_none_disables_apply(self):
+        self._add_uvvis("u1")
+        self.panel.set_subject("u1")
+        self.assertEqual(self._apply_btn_state(), "normal")
+        self.panel.set_subject(None)
+        self.assertEqual(self._apply_btn_state(), "disabled")
+
+    def test_set_subject_unknown_id_disables_apply(self):
+        self.panel.set_subject("does-not-exist")
+        self.assertEqual(self._apply_btn_state(), "disabled")
+
+    def test_set_subject_second_derivative_disables_apply(self):
+        # Chained second derivatives are intentionally rejected —
+        # SECOND_DERIVATIVE is not in ACCEPTED_PARENT_TYPES, so even
+        # if a caller pushes one in via set_subject the gate disables
+        # Apply. Mirrors the locked SmoothingPanel parent type set.
+        wl = np.linspace(200.0, 800.0, 11)
+        self.graph.add_node(DataNode(
+            id="d1", type=NodeType.SECOND_DERIVATIVE,
+            arrays={"wavelength_nm": wl, "absorbance": np.zeros_like(wl)},
+            metadata={}, label="d1", state=NodeState.PROVISIONAL,
+            style={"color": "#111", "linestyle": "solid",
+                   "linewidth": 1.5, "alpha": 0.9, "visible": True,
+                   "in_legend": True, "fill": False, "fill_alpha": 0.08},
+        ))
+        self.panel.set_subject("d1")
+        self.assertEqual(self._apply_btn_state(), "disabled")
+
+    def test_accepted_parent_types_constant(self):
+        self.assertEqual(
+            usd.SecondDerivativePanel.ACCEPTED_PARENT_TYPES,
+            (NodeType.UVVIS, NodeType.BASELINE,
+             NodeType.NORMALISED, NodeType.SMOOTHED),
+        )
 
     # ---- Apply happy paths ------------------------------------------
 
     def _select_first_subject(self):
-        items = self.panel._subject_cb.cget("values")
-        if isinstance(items, str):
-            items = tuple(items.split())
-        self.assertGreaterEqual(len(items), 1)
-        self.panel._subject_var.set(items[0])
+        for ntype in (NodeType.UVVIS, NodeType.BASELINE,
+                      NodeType.NORMALISED, NodeType.SMOOTHED):
+            for n in self.graph.nodes_of_type(ntype, state=None):
+                if n.state != NodeState.DISCARDED and n.active:
+                    self.panel.set_subject(n.id)
+                    return
+        self.fail("no candidate subject node in graph")
 
     def test_apply_creates_provisional_op_and_second_derivative_node(self):
         self._add_uvvis("u1")
@@ -422,22 +442,17 @@ class TestSecondDerivativePanel(unittest.TestCase):
         self.assertEqual(self.graph.get_node(out_id).state,
                          NodeState.DISCARDED)
 
-    def test_subject_combobox_excludes_second_derivative_after_apply(self):
+    def test_chained_second_derivative_subject_is_rejected(self):
         # Chained second derivatives are intentionally excluded — the
-        # subject helper does not return SECOND_DERIVATIVE nodes, so
-        # applying a second derivative does NOT add a new candidate
-        # subject. Mirrors the locked SmoothingPanel parent type set.
+        # host's _spectrum_nodes does not return SECOND_DERIVATIVE
+        # nodes, so the shared subject combobox cannot offer one. As
+        # defence in depth, ``set_subject`` of a SECOND_DERIVATIVE id
+        # also disables Apply (panel-level gate).
         self._add_uvvis("u1")
         self._select_first_subject()
-        self.panel._apply()
-        self.panel.update_idletasks()
-        items = self.panel._subject_cb.cget("values")
-        if isinstance(items, str):
-            items = tuple(items.split())
-        self.assertEqual(len(items), 1,
-                         "subject list should NOT include the new "
-                         "SECOND_DERIVATIVE node (chained derivatives "
-                         "out of scope)")
+        _, out_id = self.panel._apply()  # creates a SECOND_DERIVATIVE
+        self.panel.set_subject(out_id)
+        self.assertEqual(self._apply_btn_state(), "disabled")
 
 
 if __name__ == "__main__":

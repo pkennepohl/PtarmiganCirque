@@ -207,13 +207,10 @@ class TestNormalisationPanel(unittest.TestCase):
         self.host = tk.Frame(_root)
         self.host.pack()
         self.graph = ProjectGraph()
-        # The panel asks the host for the live spectrum nodes via a
-        # callable; here the closure simply lists every non-discarded
-        # data node of the three relevant types.
-        self.panel = un.NormalisationPanel(
-            self.host, self.graph,
-            spectrum_nodes_fn=self._spectrum_nodes,
-        )
+        # Phase 4k: the panel no longer owns a subject combobox or a
+        # graph subscription; the host pushes the shared subject in
+        # via ``set_subject``.
+        self.panel = un.NormalisationPanel(self.host, self.graph)
         self.panel.pack()
 
     def tearDown(self):
@@ -228,18 +225,6 @@ class TestNormalisationPanel(unittest.TestCase):
 
     # ---- helpers -----------------------------------------------------
 
-    def _spectrum_nodes(self):
-        out = []
-        for ntype in (NodeType.UVVIS, NodeType.BASELINE,
-                      NodeType.NORMALISED):
-            for n in self.graph.nodes_of_type(ntype, state=None):
-                if n.state == NodeState.DISCARDED:
-                    continue
-                if not n.active:
-                    continue
-                out.append(n)
-        return out
-
     def _add_uvvis(self, nid: str = "u1") -> None:
         wl = np.linspace(200.0, 800.0, 601)
         absorb = _gaussian(wl, 500.0, 25.5, height=1.0) + 0.05
@@ -253,19 +238,51 @@ class TestNormalisationPanel(unittest.TestCase):
                    "in_legend": True, "fill": False, "fill_alpha": 0.08},
         ))
 
-    # ---- subject combobox -------------------------------------------
+    # ---- shared-subject hand-off (Phase 4k, CS-22) ------------------
 
-    def test_subject_combobox_tracks_added_uvvis_node(self):
-        items_before = self.panel._subject_cb.cget("values")
-        if isinstance(items_before, str):
-            items_before = tuple(items_before.split())
-        self.assertEqual(len(items_before), 0)
+    def _apply_btn_state(self) -> str:
+        return str(self.panel._apply_btn.cget("state"))
+
+    def test_apply_disabled_when_no_subject(self):
+        self.assertEqual(self._apply_btn_state(), "disabled")
+
+    def test_set_subject_with_uvvis_enables_apply(self):
         self._add_uvvis("u1")
-        self.panel.update_idletasks()
-        items_after = self.panel._subject_cb.cget("values")
-        if isinstance(items_after, str):
-            items_after = tuple(items_after.split())
-        self.assertEqual(len(items_after), 1)
+        self.panel.set_subject("u1")
+        self.assertEqual(self._apply_btn_state(), "normal")
+
+    def test_set_subject_none_disables_apply(self):
+        self._add_uvvis("u1")
+        self.panel.set_subject("u1")
+        self.assertEqual(self._apply_btn_state(), "normal")
+        self.panel.set_subject(None)
+        self.assertEqual(self._apply_btn_state(), "disabled")
+
+    def test_set_subject_unknown_id_disables_apply(self):
+        self.panel.set_subject("does-not-exist")
+        self.assertEqual(self._apply_btn_state(), "disabled")
+
+    def test_set_subject_unaccepted_type_disables_apply(self):
+        # SMOOTHED is not in NormalisationPanel.ACCEPTED_PARENT_TYPES
+        # (peak/area normalise should run before smoothing).
+        wl = np.linspace(200.0, 800.0, 601)
+        absorb = _gaussian(wl, 500.0, 25.5, height=1.0) + 0.05
+        self.graph.add_node(DataNode(
+            id="s1", type=NodeType.SMOOTHED,
+            arrays={"wavelength_nm": wl, "absorbance": absorb},
+            metadata={}, label="s1", state=NodeState.PROVISIONAL,
+            style={"color": "#111", "linestyle": "solid",
+                   "linewidth": 1.5, "alpha": 0.9, "visible": True,
+                   "in_legend": True, "fill": False, "fill_alpha": 0.08},
+        ))
+        self.panel.set_subject("s1")
+        self.assertEqual(self._apply_btn_state(), "disabled")
+
+    def test_accepted_parent_types_constant(self):
+        self.assertEqual(
+            un.NormalisationPanel.ACCEPTED_PARENT_TYPES,
+            (NodeType.UVVIS, NodeType.BASELINE, NodeType.NORMALISED),
+        )
 
     def test_param_rows_rebuild_on_mode_change(self):
         self._add_uvvis()
@@ -282,11 +299,15 @@ class TestNormalisationPanel(unittest.TestCase):
     # ---- Apply happy paths ------------------------------------------
 
     def _select_first_subject(self):
-        items = self.panel._subject_cb.cget("values")
-        if isinstance(items, str):
-            items = tuple(items.split())
-        self.assertGreaterEqual(len(items), 1)
-        self.panel._subject_var.set(items[0])
+        # Phase 4k: subject is pushed in by the host. Pick the first
+        # non-discarded node from the graph and adopt it.
+        for ntype in (NodeType.UVVIS, NodeType.BASELINE,
+                      NodeType.NORMALISED):
+            for n in self.graph.nodes_of_type(ntype, state=None):
+                if n.state != NodeState.DISCARDED and n.active:
+                    self.panel.set_subject(n.id)
+                    return
+        self.fail("no candidate subject node in graph")
 
     def test_apply_peak_creates_provisional_op_and_normalised_node(self):
         self._add_uvvis("u1")
@@ -408,21 +429,19 @@ class TestNormalisationPanel(unittest.TestCase):
         self.assertEqual(self.graph.get_node(out_id).state,
                          NodeState.DISCARDED)
 
-    def test_subject_combobox_includes_normalised_after_apply(self):
+    def test_chained_normalisation_accepts_normalised_subject(self):
         # Chained normalisation is allowed: a NORMALISED node is itself
-        # a candidate subject for further normalisation.
+        # a valid parent for further normalisation. The shared
+        # subject combobox lives on the tab now (Phase 4k); here we
+        # check the panel-side gate accepts a NORMALISED parent.
         self._add_uvvis("u1")
         self._select_first_subject()
         self.panel._mode_var.set("peak")
         self.panel._window_lo.set("200")
         self.panel._window_hi.set("800")
-        self.panel._apply()
-        self.panel.update_idletasks()
-        items = self.panel._subject_cb.cget("values")
-        if isinstance(items, str):
-            items = tuple(items.split())
-        self.assertEqual(len(items), 2,
-                         "subject list should include the new NORMALISED node")
+        _, out_id = self.panel._apply()
+        self.panel.set_subject(out_id)
+        self.assertEqual(self._apply_btn_state(), "normal")
 
 
 if __name__ == "__main__":
