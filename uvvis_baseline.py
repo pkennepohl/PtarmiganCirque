@@ -1,11 +1,11 @@
-"""UV/Vis baseline correction algorithms (Phase 4c, CS-15).
+"""UV/Vis baseline correction algorithms (Phase 4c CS-15, Phase 4m CS-24).
 
 Pure computational module — no Tk, no graph, no I/O. Each ``compute_*``
 takes ``(wavelength_nm, absorbance, params)`` and returns the
 baseline-subtracted absorbance as a numpy array of the same shape as
 the input.
 
-Four modes per the Phase 4c brief:
+Five modes:
 
 * **linear** — two-point baseline. Sample the absorbance at
   ``anchor_lo_nm`` and ``anchor_hi_nm`` (linearly interpolated from
@@ -22,6 +22,12 @@ Four modes per the Phase 4c brief:
 * **rubberband** — parameter-free convex-hull lower envelope. Builds
   the lower convex hull of the (wavelength, absorbance) point set and
   subtracts it as the baseline.
+* **scattering** (CS-24) — power-law baseline ``B(λ) = c · λ^(-n)``
+  for colloidal / turbid samples, where ``n`` is either supplied
+  numerically (``4`` ≈ Rayleigh, ``2`` ≈ large-particle Mie) or
+  fit alongside the amplitude (``n="fit"``). Fit window is the
+  peak-free wavelength range; baseline is subtracted across the
+  full input range.
 
 Params completeness (CS-03): each mode lists exactly the keys it reads
 from ``params``. Missing keys raise ``KeyError`` (the calling tab is
@@ -41,12 +47,13 @@ __all__ = [
     "compute_polynomial",
     "compute_spline",
     "compute_rubberband",
+    "compute_scattering",
     "compute",
     "BASELINE_MODES",
 ]
 
 
-BASELINE_MODES = ("linear", "polynomial", "spline", "rubberband")
+BASELINE_MODES = ("linear", "polynomial", "spline", "rubberband", "scattering")
 
 
 # ---------------------------------------------------------------------------
@@ -227,6 +234,93 @@ def compute_rubberband(
 
 
 # ---------------------------------------------------------------------------
+# Scattering (power-law c · λ^(-n) for colloidal / turbid samples — CS-24)
+# ---------------------------------------------------------------------------
+
+
+def compute_scattering(
+    wavelength_nm, absorbance, params: Mapping,
+) -> np.ndarray:
+    """Power-law scattering baseline subtraction.
+
+    Required ``params`` keys:
+
+    * ``n`` — either a numeric exponent (``float`` ≥ 0; e.g. ``4`` for
+      Rayleigh, ``2`` for large-particle Mie) or the string ``"fit"``
+      to recover ``n`` alongside the amplitude.
+    * ``fit_lo_nm``, ``fit_hi_nm`` — wavelength window for the fit
+      (intended to exclude absorption peaks). The baseline is fit on
+      the window and subtracted across the full input range.
+
+    With ``n`` numeric, a closed-form linear least-squares fit
+    determines the amplitude ``c`` only. With ``n="fit"``, the fit
+    is performed in log–log space (``log A = log c − n · log λ``);
+    this requires absorbance > 0 throughout the fit window.
+    """
+    wl, a = _coerce(wavelength_nm, absorbance)
+    n_in = params["n"]  # KeyError if missing
+    lo = float(params["fit_lo_nm"])
+    hi = float(params["fit_hi_nm"])
+    if lo > hi:
+        lo, hi = hi, lo
+
+    mask = (wl >= lo) & (wl <= hi)
+    if int(mask.sum()) < 2:
+        raise ValueError(
+            f"scattering baseline needs ≥ 2 points in fit window "
+            f"[{lo}, {hi}]; found {int(mask.sum())}"
+        )
+    wl_w = wl[mask]
+    a_w = a[mask]
+    if np.any(wl_w <= 0):
+        raise ValueError(
+            "scattering baseline requires positive wavelengths "
+            "(λ^(-n) is undefined at λ ≤ 0)"
+        )
+
+    fit_n = isinstance(n_in, str) and n_in.lower() == "fit"
+    if fit_n:
+        if np.any(a_w <= 0):
+            raise ValueError(
+                "scattering baseline n='fit' requires absorbance > 0 "
+                f"throughout the fit window [{lo}, {hi}] "
+                "(log–log fit cannot accept zero or negative values)"
+            )
+        # log A = log c − n · log λ  →  linear fit in log space.
+        slope, intercept = np.polyfit(np.log(wl_w), np.log(a_w), 1)
+        n_val = float(-slope)
+        c_val = float(np.exp(intercept))
+    else:
+        try:
+            n_val = float(n_in)
+        except (TypeError, ValueError):
+            raise ValueError(
+                f"scattering baseline 'n' must be a number or \"fit\"; "
+                f"got {n_in!r}"
+            )
+        if n_val < 0:
+            raise ValueError(
+                f"scattering baseline n must be ≥ 0; got {n_val}"
+            )
+        # B = c · λ^(-n) → minimise Σ (A − c · x)² with x = λ^(-n).
+        x = wl_w ** (-n_val)
+        denom = float(np.dot(x, x))
+        if denom == 0.0:
+            raise ValueError(
+                "scattering baseline fit is degenerate (λ^(-n) = 0)"
+            )
+        c_val = float(np.dot(a_w, x) / denom)
+
+    if np.any(wl <= 0):
+        raise ValueError(
+            "scattering baseline requires positive wavelengths "
+            "(λ^(-n) is undefined at λ ≤ 0)"
+        )
+    baseline = c_val * (wl ** (-n_val))
+    return a - baseline
+
+
+# ---------------------------------------------------------------------------
 # Dispatcher
 # ---------------------------------------------------------------------------
 
@@ -236,6 +330,7 @@ _DISPATCH = {
     "polynomial": compute_polynomial,
     "spline":     compute_spline,
     "rubberband": compute_rubberband,
+    "scattering": compute_scattering,
 }
 
 
