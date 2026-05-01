@@ -2734,6 +2734,214 @@ forward-defence fix as well as a test-stability fix.
 
 ---
 
+## CS-22: Shared subject combobox + per-panel set_subject contract
+
+**Files:** `uvvis_tab.py` (extended), `uvvis_normalise.py` (extended),
+`uvvis_smoothing.py` (extended), `uvvis_peak_picking.py` (extended),
+`uvvis_second_derivative.py` (extended)
+**Depends on:** CS-01 (`ProjectGraph.subscribe`), CS-02 (`NodeType`),
+CS-07 (UV/Vis left panel layout), CS-15 / CS-16 / CS-18 / CS-19 / CS-20
+(the four operation panels' `_apply` shape), CS-21 (`CollapsibleSection`
+— the shared combobox sits *above* every section)
+**Depended on by:** future Phase 4 register entries that touch the
+left pane (Commit / discard reachable from the left pane after Apply,
+Per-variant gestures on sweep-group rows, Plot Settings dialog Save
+& Close)
+
+### Responsibility
+
+Lift the per-panel "Spectrum:" combobox out of the four operation
+panels and the inline baseline section, replacing them with one
+shared combobox at the top of the left pane (always visible, above
+every CollapsibleSection). USER-FLAGGED at end of Phase 4j: each of
+the five operation panels owning its own subject combobox felt
+redundant — picking the spectrum once and then expanding the
+section for whichever operation the user wants is the correct
+shape.
+
+CS-22 is purely a UI / integration refactor. No new pure module,
+no new NodeType, no new OperationType, no new arrays schema. The
+four pure-compute layers under `uvvis_*.py` are untouched.
+
+### `UVVisTab` — shared subject plumbing
+
+```
+self._shared_subject       : tk.StringVar           # display text
+self._shared_subject_map   : dict[str, str]         # display → node id
+self._shared_subject_cb    : ttk.Combobox           # the widget
+```
+
+The combobox is packed directly into the left-pane parent frame
+(NOT inside any `CollapsibleSection`), between the "Processing"
+header label and the Baseline section.
+
+```
+self._baseline_subject_id  : Optional[str]                       # resolved id
+self._BASELINE_ACCEPTED_PARENT_TYPES = (NodeType.UVVIS, NodeType.BASELINE)
+```
+
+Inline baseline section's parent-type tuple is held on the tab
+because the inline section has no panel class to attach a
+`ACCEPTED_PARENT_TYPES` constant to. Naming-inconsistency carry-
+forward documented in the Phase 4k friction list.
+
+### Hand-off contract — `set_subject(node_id)`
+
+Each of the four operation panels now exposes:
+
+```
+class <Panel>(tk.Frame):
+    ACCEPTED_PARENT_TYPES: tuple[NodeType, ...]   # class constant
+    def set_subject(self, node_id: Optional[str]) -> None: ...
+```
+
+`set_subject` stores the id internally as `self._subject_id` and
+re-evaluates the Apply button state via `_refresh_apply_state`:
+the button is enabled iff `node_id is not None` AND the resolved
+node's type is in `ACCEPTED_PARENT_TYPES`. The `_apply()` body
+resolves the parent via `self._subject_id` rather than reading
+from a combobox.
+
+`ACCEPTED_PARENT_TYPES` per panel — locked, do not widen without
+coming back to this section:
+
+| Panel | Accepted parent types |
+|---|---|
+| `NormalisationPanel` | UVVIS, BASELINE, NORMALISED |
+| `SmoothingPanel` | UVVIS, BASELINE, NORMALISED, SMOOTHED |
+| `PeakPickingPanel` | UVVIS, BASELINE, NORMALISED, SMOOTHED |
+| `SecondDerivativePanel` | UVVIS, BASELINE, NORMALISED, SMOOTHED |
+| (inline baseline on tab) | UVVIS, BASELINE |
+
+The shared combobox lists the *union* of acceptable parents
+(`_spectrum_nodes` walks UVVIS / BASELINE / NORMALISED / SMOOTHED).
+PEAK_LIST and SECOND_DERIVATIVE remain excluded from the list —
+chained derivatives / chained peak picks stay out of scope.
+
+### Fan-out — `_on_shared_subject_changed`
+
+A `trace_add("write", ...)` on `_shared_subject` calls
+`_on_shared_subject_changed`, which:
+
+1. Resolves the display text → node id via `_shared_subject_map`.
+2. Stores it on the tab as `_baseline_subject_id`.
+3. Calls `set_subject(node_id)` on each of the four panels.
+4. Calls `_refresh_baseline_apply_state` (mirrors the panels'
+   `_refresh_apply_state` shape, but on the tab because the
+   inline baseline section has no panel class).
+
+Every Apply button on the left pane therefore re-evaluates its
+gate exactly once per shared-subject change.
+
+### Repopulation — `_refresh_shared_subjects`
+
+Driven by `_on_graph_event` on every `NODE_ADDED` / `DISCARDED` /
+`ACTIVE_CHANGED` / `LABEL_CHANGED` / `GRAPH_LOADED` /
+`GRAPH_CLEARED`. Walks `_spectrum_nodes`, rebuilds
+`_shared_subject_map`, and either preserves the user's selection
+(if its display text still exists) or auto-falls-back to the
+first available item. The trace fans the change out either way,
+so panel gates always reflect the current selection.
+
+### Defence-in-depth at Apply time
+
+The messagebox-bearing checks in each `_apply()` are retained
+even though the gate normally prevents Apply from being clicked:
+
+```
+subject_id = self._subject_id
+if not subject_id:
+    messagebox.showinfo(...)
+    return None
+try:
+    parent_node = self._graph.get_node(subject_id)
+except KeyError:
+    messagebox.showerror(...)
+    return None
+if parent_node.type not in self.ACCEPTED_PARENT_TYPES:
+    messagebox.showerror(...)
+    return None
+```
+
+These survive the refactor because (a) a programmatic invocation
+(test code, future plugin) can call `_apply()` directly without
+going through the gate, and (b) graph events that fire between
+`set_subject` and the user's click could in principle invalidate
+the subject; the defensive check turns an exception into a
+user-readable messagebox.
+
+### Test coverage
+
+* `test_uvvis_normalise.py`, `test_uvvis_smoothing.py`,
+  `test_uvvis_peak_picking.py`, `test_uvvis_second_derivative.py`
+  — six new panel-level tests each: `test_apply_disabled_when_no_subject`,
+  `test_set_subject_with_uvvis_enables_apply`,
+  `test_set_subject_none_disables_apply`,
+  `test_set_subject_unknown_id_disables_apply`,
+  `test_set_subject_<unaccepted>_disables_apply` (panel-specific
+  example), `test_accepted_parent_types_constant` (guards against
+  silent widening). Existing apply-path tests reworked to use
+  `set_subject` instead of poking the dropped `_subject_var` /
+  `_subject_cb`.
+* `test_uvvis_tab.TestUVVisTabSharedSubject` (new, 11 tests) —
+  end-to-end: combobox empty / auto-select / SMOOTHED appears /
+  PEAK_LIST and SECOND_DERIVATIVE excluded, hide-selected falls
+  back, label-edit preserves resolved id, UVVIS enables every
+  panel's Apply, SMOOTHED disables normalise + baseline only,
+  empty graph disables every Apply, four panels share one
+  combobox widget (no `_subject_cb` attribute).
+* `test_uvvis_tab.test_left_panel_exists` — extended to assert
+  `_shared_subject_cb` and `_shared_subject` are present and
+  `_baseline_subject_cb` is *absent*.
+* `test_uvvis_tab.test_shared_subject_combobox_lives_outside_collapsible_sections`
+  + `test_baseline_section_body_has_no_subject_combobox` — pin
+  the structural invariant: the shared combobox is OUTSIDE every
+  CollapsibleSection body, and the baseline section body holds
+  exactly one Combobox descendant (the mode combobox).
+
+### Migration sites
+
+| Site | Pre-4k | Post-4k |
+|---|---|---|
+| `NormalisationPanel.__init__` | `(parent, graph, spectrum_nodes_fn=...)` + inline subject combobox | `(parent, graph, status_cb=None)` — no subject widget |
+| `SmoothingPanel.__init__` | same shape | same change |
+| `PeakPickingPanel.__init__` | same shape | same change |
+| `SecondDerivativePanel.__init__` | same shape | same change |
+| `uvvis_tab._build_left_panel` | inline `_baseline_subject_cb` + per-panel subject combos | one `_shared_subject_cb` at top of pane |
+| `uvvis_tab._refresh_baseline_subjects` | refreshed inline baseline combobox | renamed to `_refresh_shared_subjects`, drives the shared widget |
+| `uvvis_tab._apply_baseline` | resolved via `_baseline_subject_map[_baseline_subject.get()]` | resolved via `self._baseline_subject_id` |
+
+The four panels' `_subject_var` / `_subject_map` / `_subject_cb`
+ivars + `refresh_subjects` public API + per-panel
+`self._graph.subscribe(self._on_graph_event)` + `<Destroy>`
+unsubscribe are all gone.
+
+### Unresolved (deferred to subsequent Phase 4 sessions)
+
+Five Phase 4k friction items above are not addressed by CS-22:
+
+* **Three USER-FLAGGED carry-forwards** — each has its own register
+  entry: Commit / discard reachable from the left pane after Apply,
+  Per-variant gestures on sweep-group rows (elevated from Phase 2
+  carry-forward), Plot Settings dialog Save & Close.
+* **Auto-fall-back uses graph-insertion order.** When the selected
+  subject vanishes, fall-back is `items[0]` — first UVVIS in the
+  graph's insertion order. "Previous in list" / "freshly-added"
+  policies may feel less surprising; lock-worthy debate.
+* **Apply-disabled state has no inline explanation.** The
+  per-panel gate disables the button silently; a small inline
+  caption inside each panel explaining "Selected node is not a
+  valid parent for this op" would teach the user the per-op
+  acceptance set.
+* **`_baseline_subject_id` lives on the tab; `_subject_id` lives on
+  each panel.** Resolved when the inline baseline section is
+  extracted into a `BaselinePanel` widget — at that point
+  `_BASELINE_ACCEPTED_PARENT_TYPES` should join the public
+  `ACCEPTED_PARENT_TYPES` API the four operation panels already
+  expose.
+
+---
+
 ## CS-04 implementation notes (Phase 4c)
 
 * **B-001 fix — inline history expansion.** `_render_history`
@@ -2799,7 +3007,7 @@ forward-defence fix as well as a test-stability fix.
 
 ---
 
-*Document version: 1.10 — April 2026*
+*Document version: 1.11 — May 2026*
 *1.1: CS-13 implementation notes added in Phase 4a.*
 *1.2: CS-14 Plot Settings Dialog added in Phase 4b.*
 *1.3: CS-15 UV/Vis Baseline Correction + CS-04 implementation
@@ -2847,5 +3055,16 @@ used to wrap each of the five UV/Vis operation sections. CS-07 §"UV/Vis
 left panel" updated to show the collapsed-by-default header strips.
 Defence-in-depth production fix in `scan_tree_widget._begin_label_edit`
 (StringVar bound to explicit master) shipped alongside.*
+*1.11: CS-22 Shared subject combobox + per-panel set_subject
+contract added in Phase 4k. The five per-panel `_subject_cb`
+widgets are gone; one shared `_shared_subject_cb` at the top of
+the left pane drives every panel + the inline baseline section
+via `set_subject(node_id)` + `ACCEPTED_PARENT_TYPES`. Apply
+buttons gate-disable when the shared selection isn't a valid
+parent for the panel's op. Resolves Phase 4j friction #5
+(USER-FLAGGED). Phase 4k logged six new friction items including
+three new USER-FLAGGED follow-ups (Commit / discard reachable
+from the left pane after Apply, Per-variant gestures on
+sweep-group rows, Plot Settings dialog Save & Close).*
 *To be updated as Open Questions are resolved and new components
 are specified.*
