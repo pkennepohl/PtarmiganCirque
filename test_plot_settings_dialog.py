@@ -233,6 +233,62 @@ class TestPlotSettingsDialogShell(unittest.TestCase):
         dlg._do_apply()
         self.assertTrue(bool(dlg.winfo_exists()))
 
+    # ----------- Save commits working copy and closes (CS-23) -----------
+
+    def test_save_button_is_present(self):
+        """CS-23: button row is Apply · Save · Cancel."""
+        dlg = self.PlotSettingsDialog(self.host, self.config)
+        dlg.update_idletasks()
+        self.assertTrue(hasattr(dlg, "_save_btn"))
+        self.assertEqual(str(dlg._save_btn.cget("text")), "Save")
+
+    def test_save_commits_working_copy_to_config(self):
+        """Save mutates the caller's config in place, like Apply."""
+        self.config["title_font_size"] = 12
+        dlg = self.PlotSettingsDialog(self.host, self.config)
+        dlg.update_idletasks()
+
+        dlg._control_vars["title_font_size"].set(18)
+        dlg.update_idletasks()
+        self.assertEqual(self.config["title_font_size"], 12)  # not yet
+
+        dlg._do_save()
+        self.assertEqual(self.config["title_font_size"], 18)
+
+    def test_save_fires_on_apply_exactly_once(self):
+        seen: list = []
+        dlg = self.PlotSettingsDialog(
+            self.host, self.config, on_apply=lambda: seen.append(1),
+        )
+        dlg.update_idletasks()
+
+        dlg._control_vars["grid"].set(False)
+        dlg._do_save()
+        self.assertEqual(seen, [1])
+
+    def test_save_destroys_dialog(self):
+        dlg = self.PlotSettingsDialog(self.host, self.config)
+        dlg.update_idletasks()
+        dlg._do_save()
+        self.assertEqual(int(dlg.winfo_exists()), 0)
+
+    def test_save_with_no_edits_still_commits_identity(self):
+        """Save on an unedited dialog leaves the config equivalent and
+        closes — the user-flow guarantee that opening + Save never
+        loses information, even when nothing changed."""
+        self.config.update({"title_font_size": 14, "grid": True})
+        snapshot = dict(self.config)
+        dlg = self.PlotSettingsDialog(self.host, self.config)
+        dlg.update_idletasks()
+
+        dlg._do_save()
+        # Working copy carries every factory-default key, so the
+        # post-save config is a superset of the pre-save snapshot;
+        # the snapshot keys must round-trip unchanged.
+        for key, value in snapshot.items():
+            self.assertEqual(self.config[key], value)
+        self.assertEqual(int(dlg.winfo_exists()), 0)
+
     # ----------- Cancel reverts and closes -----------
 
     def test_cancel_reverts_intermediate_apply(self):

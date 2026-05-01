@@ -19,10 +19,12 @@ Behavioural model
 * **Working copy semantics.** Slider, spinbox, checkbox, and combobox
   edits update an in-memory working copy of the configuration dict.
   Nothing reaches the tab's actual config (or the plot) until the user
-  clicks Apply. Cancel and the window-close [X] discard the working
-  copy and revert the config to the snapshot taken at ``__init__``.
-  Live preview after Apply is allowed — the dialog stays open so the
-  user can iterate.
+  clicks Apply or Save. Apply commits and stays open for further
+  iteration; Save commits and closes ("Save & Close"). Cancel and the
+  window-close [X] discard the working copy and revert the config to
+  the snapshot taken at ``__init__``. The button row matches the CS-05
+  StyleDialog vocabulary — ``Apply · Save · Cancel`` — so Cancel-vs-Save
+  reads the same across every modal in the app (CS-23, Phase 4l).
 
 * **Save-as-Default / Reset Defaults / Factory Reset.** Three buttons
   inside the Fonts section (per CS-06 layout) modify the working copy
@@ -663,10 +665,17 @@ class PlotSettingsDialog(tk.Toplevel):
             pass
 
     # ------------------------------------------------------------
-    # Bottom button row (Apply / Cancel)
+    # Bottom button row (Apply / Save / Cancel)
     # ------------------------------------------------------------
 
     def _build_button_row(self) -> None:
+        """Apply · Save · Cancel row at the bottom (CS-23).
+
+        Mirrors the CS-05 StyleDialog vocabulary: ``Apply`` commits and
+        keeps the dialog open for further iteration; ``Save`` commits
+        and closes (the "Save & Close" gesture); ``Cancel`` reverts to
+        the snapshot taken at ``__init__`` and closes.
+        """
         btn_row = tk.Frame(self)
         btn_row.pack(pady=(4, 10))
 
@@ -675,8 +684,13 @@ class PlotSettingsDialog(tk.Toplevel):
         )
         self._apply_btn.pack(side=tk.LEFT, padx=3)
 
+        self._save_btn = tk.Button(
+            btn_row, text="Save", width=8, command=self._do_save,
+        )
+        self._save_btn.pack(side=tk.LEFT, padx=3)
+
         self._cancel_btn = tk.Button(
-            btn_row, text="Cancel", width=10, command=self._do_cancel,
+            btn_row, text="Cancel", width=8, command=self._do_cancel,
         )
         self._cancel_btn.pack(side=tk.LEFT, padx=3)
 
@@ -702,6 +716,18 @@ class PlotSettingsDialog(tk.Toplevel):
                 _log.warning(
                     "plot_settings_dialog: on_apply raised", exc_info=True,
                 )
+
+    def _do_save(self) -> None:
+        """Commit the working copy and close the dialog (CS-23).
+
+        Equivalent to ``_do_apply`` + ``destroy``. This is the explicit
+        "Save & Close" gesture the user expects from a modal dialog;
+        before CS-23 the only persist-and-close path required hitting
+        Apply then closing via [X], which the protocol handler treated
+        as Cancel — silently reverting the just-committed edit.
+        """
+        self._do_apply()
+        self.destroy()
 
     def _do_cancel(self) -> None:
         """Revert to the snapshot taken at __init__ and close.
