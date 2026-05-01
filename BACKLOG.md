@@ -1140,7 +1140,7 @@ until the relevant subsequent Phase 4 session.**
    `scan_tree_widget.py` (CS-04 §6.1, B-002 closed) plus
    `_apply_responsive_layout` thresholds. See the new register
    entry "Right-sidebar responsive layout extension".
-9. **Scattering-functional baseline subtraction.** USER-FLAGGED at
+9. ~~**Scattering-functional baseline subtraction.** USER-FLAGGED at
    end of Phase 4l. Existing baseline modes (linear, polynomial,
    spline, rubberband) are general-purpose; UV/Vis spectra of
    colloidal / turbid samples have a baseline that follows
@@ -1152,7 +1152,67 @@ until the relevant subsequent Phase 4 session.**
    `OperationType.BASELINE` mode (`params["mode"] == "scattering"`,
    plus `params["n"]` either numeric or `"fit"`); reuses the
    provisional BASELINE node shape from CS-15. See the new
-   register entry "Scattering-functional baseline mode".
+   register entry "Scattering-functional baseline mode".~~ ✅ Resolved in Phase 4m (CS-24).
+
+### Friction points carried forward from Phase 4m
+
+These are concrete obstacles the next Phase 4 session will hit.
+Identified during Phase 4m while adding the scattering-functional
+baseline mode (CS-24). All five are observed-during-session items;
+no new user-flagged elevations this phase. **Do not fix until the
+relevant subsequent Phase 4 session.**
+
+1. **Scattering "Fit n" Tk var state survives mode flips and
+   re-enters the rebuild on every refresh.** When the user enables
+   Fit-n, switches to e.g. polynomial, then comes back to scattering,
+   `_baseline_scattering_fit_n` is still `True` and the Entry's
+   "disabled" state is set by `_sync_n_entry_state` as part of the
+   refresh callback. It works today only because the refresh call
+   the checkbox was registered on is invoked at the end of the
+   builder. Same brittleness pattern as the polynomial-order Spinbox
+   pre-CS-21. Cheap to harden by lifting the checkbox-disables-entry
+   contract into a single declarative guard rather than relying on
+   the rebuild ordering.
+2. **Scattering n="fit" loses the resolved numeric n in `op.params`.**
+   With the Fit-n checkbox on, `_collect_baseline_params` writes
+   `params["n"] = "fit"` verbatim — this is reproducible (rerunning
+   the op recovers the same n via the same log fit), but the
+   recovered n is never persisted, so a downstream consumer
+   (export header, provenance footer, future "show fit results")
+   can't read it without re-running. CS-03 says params must be
+   sufficient to reproduce; this satisfies the letter but loses the
+   diagnostic. Plan: add a sibling `params["n_fitted"]` (float) on
+   the OperationNode whenever the fit ran, and surface it in the
+   ScanTreeWidget tooltip and the export header. Same shape applies
+   the day a future op fits a parameter the user didn't pin.
+3. **Composite "scattering + offset" mode is not covered.** Real
+   colloidal samples often have both a Rayleigh / Mie tail AND an
+   instrument or solvent offset: `B(λ) = a + c · λ^(-n)`. CS-24
+   captures the pure power-law form per the Phase 4l brief; a
+   composite mode (additive constant fit alongside c and optionally
+   n) is the natural follow-up if users find that pure scattering
+   leaves a flat residual. Likely shape: a sixth `mode == "scattering+offset"`
+   that fits 2–3 parameters by linear least squares with `x = [1, λ^(-n)]`
+   columns (when n is fixed) or by a small nonlinear solver (when
+   n is fit alongside c and a).
+4. **Fit-window-out-of-range errors don't show the spectrum's actual
+   nm range.** Polynomial and scattering both raise "needs ≥ N points
+   in fit window [x, y]" when the user types a window outside the
+   data; the messagebox shows the requested window but not the data
+   range, so a user typing "200–350" on a spectrum that starts at
+   400 has to re-read the plot to figure out the offset. Trivial to
+   widen the error message to include `[wl.min(), wl.max()]`. Touches
+   `uvvis_baseline.py` (polynomial + scattering paths). Same diagnostic
+   gap likely exists in `uvvis_normalise.py` peak / area windows.
+5. **No integration test asserting the Fit-n checkbox disables the
+   `n` Entry.** The mode-rebuild test confirms the scattering branch
+   produces three rows; CS-03 capture is asserted via the params
+   round-trip; but the visual state contract (checkbox on → entry
+   disabled) is only covered by the inner `_sync_n_entry_state`
+   wiring, not by an integration assertion. One short test that
+   toggles `_baseline_scattering_fit_n` and re-reads the n Entry's
+   `state` would pin the contract before someone refactors the
+   rebuild order.
 
 | Status | Priority | Item | Notes |
 |---|---|---|---|
@@ -1183,7 +1243,7 @@ until the relevant subsequent Phase 4 session.**
 | ⏳ | 🔴 | **Plot config + plot defaults persistence to project.json (CS-13 follow-up) (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4l. Two persistence gaps elevated from Phase 4b friction #1 (`_USER_DEFAULTS` evaporates on app restart) + Phase 4b #5 (per-tab `_plot_config` rebuilt from scratch on every tab construction). Both should write through to `project.json` so reopening a project restores both the user's saved-default fonts/colours/etc. AND the per-tab plot configuration that was last in effect. Likely shape: `project.json` grows a top-level `plot_defaults` key (mirrors `plot_settings_dialog._USER_DEFAULTS`) plus a per-tab `tabs[<name>].plot_config = {...}` payload. `project_io.py` handles serialisation; `binah.py` wires load-time read into the dialog module + each tab's `_plot_config`. Dialog API is unchanged. Important so a user who customises font sizes (e.g. for accessibility) doesn't have to redo the work each session |
 | ⏳ | 🔴 | **Remove duplicate section title from operation panels (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4l from testing redesign/main. All four `CollapsibleSection`-wrapped operation panels (Normalisation, Smoothing, Peak picking, Second derivative) render a duplicate title label inside the section body — directly below the clickable header. Baseline Correction is correct (no inline title). Likely a stale `tk.Label` left over from before CS-21 wrapped each panel's body in a `CollapsibleSection` whose chevron-header now carries the title; the inline label was redundant and missed in the polish pass. Touches `uvvis_normalise.py`, `uvvis_smoothing.py`, `uvvis_peak_picking.py`, `uvvis_second_derivative.py`. Pure deletion — no test churn expected, though smoke-checking each panel still constructs is worth one round-trip |
 | ⏳ | 🔴 | **Right-sidebar responsive layout extension (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4l. Phase 4d's B-002 closed the responsive collapse below 280 px with the minimum visible set `state · [☑] · label · [⚙] · [✕]`. User now wants the minimum extended to include two more cells: the provenance icon (where the data came from — likely the existing 🛈/ℹ symbol or a new dedicated glyph) AND the per-row "Send to Compare" icon (see updated "Send to Compare" entry — gesture moves from the top bar to a per-row icon). Final minimum: `name · [☑] · provenance · [⚙] · [→Compare] · [✕]` (six cells). At wider widths the optional cells should restore in a fixed priority order: (1) colour swatch, (2) legend inclusion `[≡]`, (3) linestyle canvas, (4) line width entry. Touches `scan_tree_widget.py`'s `_apply_responsive_layout` (CS-04 §6.1) and the per-row builders. May need new collapse thresholds — six minimum cells need a wider floor than today's five. Cross-refs Phase 4l friction #7 + #8 |
-| ⏳ | 🟡 | **Scattering-functional baseline mode** | USER-FLAGGED at end of Phase 4l. Existing baseline modes (linear, polynomial, spline, rubberband — CS-15) are general-purpose; UV/Vis spectra of colloidal / turbid samples have a baseline that follows wavelength-dependent scattering, typically `A_scatter(λ) ∝ 1/λ^n` with `n ≈ 4` for Rayleigh / `n ≈ 2` for large-particle Mie. A polynomial fit can approximate but not capture the inverse-power form, particularly at the UV edge where scattering rises sharply. Plan: a new `OperationType.BASELINE` mode (`params["mode"] == "scattering"`) with `params["n"]` either a numeric value (e.g. `4` for Rayleigh) or `"fit"` (least-squares fit of n alongside the amplitude); fit window is the user-defined wavelength range that excludes the absorption peaks. Output is a provisional `BASELINE` node — same node-shape as the existing modes (CS-15), so renderer and ScanTreeWidget need no changes. Touches `uvvis_baseline.py` (new pure-fit helper) + the baseline section's mode combobox |
+| ✅ | 🟡 | **Scattering-functional baseline mode** | USER-FLAGGED at end of Phase 4l. Resolved Phase 4m (CS-24): new `params["mode"] == "scattering"` discriminator on `OperationType.BASELINE`. Helper `compute_scattering(wavelength_nm, absorbance, params)` fits `B(λ) = c · λ^(-n)` over a user-defined peak-free window and subtracts the result across the full input range. `params["n"]` is either a numeric exponent (closed-form least-squares for `c` only) or the string `"fit"` (log–log linear regression for both `c` and `n`; requires absorbance > 0 throughout the fit window). UI parameter row: `n:` Entry (default `"4"` ≈ Rayleigh) + `Fit n` Checkbutton (disables the n entry when checked) + `Fit lo (nm):` / `Fit hi (nm):` entries. `BASELINE_MODES` grew from 4 to 5; combobox auto-pulled the new entry; `_DISPATCH` and `_collect_baseline_params` gained the new branch. Reuses provisional BASELINE node shape from CS-15 — renderer and ScanTreeWidget needed no changes. 472 tests, all green (12 pure-module + 2 integration new) |
 
 ---
 
@@ -1399,7 +1459,7 @@ the resolving phase + commit SHA appended to the row.
 
 ---
 
-*Document version: 1.11 — May 2026*
+*Document version: 1.12 — May 2026*
 *1.1: Known Bugs register added 2026-04-27 after Phase 4b manual testing.*
 *1.2: Phase 4c — baseline correction lands; B-001 / B-003 / B-004
 resolved; Phase 4c friction points logged.*

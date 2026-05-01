@@ -819,8 +819,16 @@ class TestUVVisTabBaseline(unittest.TestCase):
             values = tuple(values.split())
         self.assertEqual(
             tuple(values),
-            ("linear", "polynomial", "spline", "rubberband"),
+            ("linear", "polynomial", "spline", "rubberband", "scattering"),
         )
+        # CS-24 (Phase 4m) scattering mode Tk vars exist on the tab.
+        self.assertTrue(hasattr(self.tab, "_baseline_scattering_n"))
+        self.assertTrue(hasattr(self.tab, "_baseline_scattering_fit_n"))
+        self.assertTrue(hasattr(self.tab, "_baseline_scattering_fit_lo"))
+        self.assertTrue(hasattr(self.tab, "_baseline_scattering_fit_hi"))
+        # Default n is "4" (Rayleigh); fit-n checkbox starts unchecked.
+        self.assertEqual(self.tab._baseline_scattering_n.get(), "4")
+        self.assertFalse(self.tab._baseline_scattering_fit_n.get())
 
     def test_mode_change_swaps_parameter_rows(self):
         # Linear mode → 2 anchor entries; polynomial mode → spinbox +
@@ -842,6 +850,10 @@ class TestUVVisTabBaseline(unittest.TestCase):
         self.tab.update_idletasks()
         rb_count = len(self.tab._baseline_params_frame.winfo_children())
 
+        self.tab._baseline_mode.set("scattering")
+        self.tab.update_idletasks()
+        scatter_count = len(self.tab._baseline_params_frame.winfo_children())
+
         # Each mode rebuilds the frame; counts differ between modes.
         self.assertGreater(linear_count, 0)
         self.assertGreater(poly_count, linear_count,
@@ -849,6 +861,9 @@ class TestUVVisTabBaseline(unittest.TestCase):
         self.assertGreater(spline_count, 0)
         self.assertEqual(rb_count, 1,
                          "rubberband shows only the 'no parameters' label")
+        # Scattering: 3 rows (n+checkbox / fit lo / fit hi).
+        self.assertEqual(scatter_count, 3,
+                         "scattering shows n+fit-n + fit lo + fit hi rows")
 
     # ---- Apply materialises provisional pair -----------------------
 
@@ -908,6 +923,75 @@ class TestUVVisTabBaseline(unittest.TestCase):
         out = self.graph.get_node(out_id)
         self.assertAlmostEqual(float(out.arrays["absorbance"].max()),
                                1.0, places=4)
+
+    def _add_uvvis_scattering_bg(self, nid: str = "us1") -> str:
+        """UVVIS spectrum with a Rayleigh-like (c·λ^-4) background."""
+        wl = np.linspace(200.0, 800.0, 601)
+        peak = np.exp(-((wl - 500.0) / 25.5) ** 2)
+        bg = 1e8 * wl ** (-4)
+        absorb = peak + bg
+        self.graph.add_node(DataNode(
+            id=nid, type=NodeType.UVVIS,
+            arrays={"wavelength_nm": wl, "absorbance": absorb},
+            metadata={"x_unit": "nm", "y_unit": "absorbance",
+                      "instrument": "synthetic-scattering",
+                      "source_file": f"syn_{nid}"},
+            label=nid, state=NodeState.COMMITTED,
+            style={"color": "#1f77b4", "linestyle": "solid",
+                   "linewidth": 1.5, "alpha": 0.9, "visible": True,
+                   "in_legend": True, "fill": False, "fill_alpha": 0.08},
+        ))
+        return nid
+
+    def test_apply_scattering_fixed_n_recovers_unit_peak(self):
+        # CS-24: scattering mode with n=4 (Rayleigh) over a peak-free
+        # window subtracts the c·λ^-4 background almost exactly.
+        self._add_uvvis_scattering_bg("us1")
+        items = self.tab._shared_subject_cb.cget("values")
+        if isinstance(items, str):
+            items = tuple(items.split())
+        self.tab._shared_subject.set(items[0])
+        self.tab._baseline_mode.set("scattering")
+        self.tab._baseline_scattering_n.set("4")
+        self.tab._baseline_scattering_fit_n.set(False)
+        self.tab._baseline_scattering_fit_lo.set("200")
+        self.tab._baseline_scattering_fit_hi.set("350")
+
+        op_id, out_id = self.tab._apply_baseline()
+        op = self.graph.get_node(op_id)
+        out = self.graph.get_node(out_id)
+        self.assertEqual(op.type, OperationType.BASELINE)
+        self.assertEqual(op.params["mode"], "scattering")
+        # Numeric n flows through as a float (CS-03 verbatim capture).
+        self.assertAlmostEqual(op.params["n"], 4.0)
+        self.assertAlmostEqual(op.params["fit_lo_nm"], 200.0)
+        self.assertAlmostEqual(op.params["fit_hi_nm"], 350.0)
+        self.assertEqual(out.type, NodeType.BASELINE)
+        self.assertAlmostEqual(float(out.arrays["absorbance"].max()),
+                               1.0, places=4)
+
+    def test_apply_scattering_fit_n_records_string_in_params(self):
+        # CS-24: when "Fit n" is checked, params["n"] is the string
+        # "fit" — the helper recovers n alongside c.
+        self._add_uvvis_scattering_bg("us1")
+        items = self.tab._shared_subject_cb.cget("values")
+        if isinstance(items, str):
+            items = tuple(items.split())
+        self.tab._shared_subject.set(items[0])
+        self.tab._baseline_mode.set("scattering")
+        self.tab._baseline_scattering_fit_n.set(True)
+        self.tab._baseline_scattering_fit_lo.set("200")
+        self.tab._baseline_scattering_fit_hi.set("350")
+
+        op_id, out_id = self.tab._apply_baseline()
+        op = self.graph.get_node(op_id)
+        # The discriminator (n="fit") is preserved verbatim per CS-03,
+        # so a re-run from the captured params reproduces the result.
+        self.assertEqual(op.params["mode"], "scattering")
+        self.assertEqual(op.params["n"], "fit")
+        out = self.graph.get_node(out_id)
+        self.assertAlmostEqual(float(out.arrays["absorbance"].max()),
+                               1.0, places=3)
 
     # ---- ScanTreeWidget integration --------------------------------
 

@@ -550,6 +550,15 @@ class UVVisTab(tk.Frame):
         self._baseline_fit_lo = tk.StringVar(value="")
         self._baseline_fit_hi = tk.StringVar(value="")
         self._baseline_spline_anchors = tk.StringVar(value="")  # comma-sep nm
+        # CS-24 (Phase 4m) scattering mode: power-law c · λ^(-n).
+        # ``_baseline_scattering_n`` defaults to "4" (Rayleigh); the
+        # ``_baseline_scattering_fit_n`` BooleanVar, when checked,
+        # makes ``_collect_baseline_params`` emit ``params["n"]="fit"``
+        # so the helper recovers n alongside the amplitude.
+        self._baseline_scattering_n = tk.StringVar(value="4")
+        self._baseline_scattering_fit_n = tk.BooleanVar(value=False)
+        self._baseline_scattering_fit_lo = tk.StringVar(value="")
+        self._baseline_scattering_fit_hi = tk.StringVar(value="")
 
         # Conditional parameter rows. The frame is rebuilt on every
         # mode change to keep layout straightforward.
@@ -684,6 +693,33 @@ class UVVisTab(tk.Frame):
             tk.Label(self._baseline_params_frame,
                      text="(parameter-free convex hull)",
                      fg="gray", font=F9).pack(anchor="w", pady=(4, 0))
+        elif mode == "scattering":
+            # n entry + "Fit n" checkbox on the same row; checkbox
+            # disables the entry so the user sees which way the fit
+            # branch is pinned.
+            n_row = _row("n:")
+            n_entry = tk.Entry(n_row, textvariable=self._baseline_scattering_n,
+                               width=8, font=FC)
+            n_entry.pack(side=tk.LEFT)
+
+            def _sync_n_entry_state(*_):
+                n_entry.configure(
+                    state=("disabled"
+                           if self._baseline_scattering_fit_n.get()
+                           else "normal"))
+
+            tk.Checkbutton(
+                n_row, text="Fit n",
+                variable=self._baseline_scattering_fit_n,
+                font=F9, command=_sync_n_entry_state,
+            ).pack(side=tk.LEFT, padx=(8, 0))
+            _sync_n_entry_state()
+            for label, var in [
+                ("Fit lo (nm):", self._baseline_scattering_fit_lo),
+                ("Fit hi (nm):", self._baseline_scattering_fit_hi),
+            ]:
+                tk.Entry(_row(label), textvariable=var, width=10,
+                         font=FC).pack(side=tk.LEFT)
 
     def _refresh_shared_subjects(self) -> None:
         """Repopulate the shared subject combobox from live spectrum nodes.
@@ -794,6 +830,21 @@ class UVVisTab(tk.Frame):
             return {"anchors": anchors}
         if mode == "rubberband":
             return {}
+        if mode == "scattering":
+            try:
+                lo = float(self._baseline_scattering_fit_lo.get())
+                hi = float(self._baseline_scattering_fit_hi.get())
+            except ValueError:
+                raise ValueError(
+                    "Fit window endpoints must be numeric (nm).")
+            if self._baseline_scattering_fit_n.get():
+                return {"n": "fit", "fit_lo_nm": lo, "fit_hi_nm": hi}
+            try:
+                n_val = float(self._baseline_scattering_n.get())
+            except ValueError:
+                raise ValueError(
+                    "n must be numeric (or check 'Fit n' to fit it).")
+            return {"n": n_val, "fit_lo_nm": lo, "fit_hi_nm": hi}
         raise ValueError(f"Unknown baseline mode: {mode!r}")
 
     def _apply_baseline(self) -> Optional[Tuple[str, str]]:
