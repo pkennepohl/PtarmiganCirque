@@ -1882,5 +1882,255 @@ class TestCollapsibleLeftPaneSections(unittest.TestCase):
         self.assertTrue(section.is_expanded())
 
 
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestUVVisTabSharedSubject(unittest.TestCase):
+    """Phase 4k (CS-22) — shared subject combobox hand-off.
+
+    The four operation panels (NormalisationPanel, SmoothingPanel,
+    PeakPickingPanel, SecondDerivativePanel) and the inline baseline
+    section all read the same source of truth for "which node is the
+    user operating on": ``UVVisTab._shared_subject`` + the trace-
+    driven ``_on_shared_subject_changed`` fan-out. These tests pin
+    the end-to-end behaviour: combobox membership, selection
+    persistence across graph events, and per-panel Apply-gate
+    interactions when the shared selection isn't a valid parent for
+    the panel's op.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from uvvis_tab import UVVisTab
+        cls.UVVisTab = UVVisTab
+
+    def setUp(self):
+        self.host = tk.Frame(_root)
+        self.host.pack()
+        self.graph = ProjectGraph()
+        self.tab = self.UVVisTab(self.host, graph=self.graph)
+        self.tab.pack(fill=tk.BOTH, expand=True)
+        self.tab.update_idletasks()
+
+    def tearDown(self):
+        try:
+            self.tab.destroy()
+        except Exception:
+            pass
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    # ---- helpers ----------------------------------------------------
+
+    def _add_uvvis(self, nid: str = "u1") -> str:
+        wl = np.linspace(200.0, 800.0, 601)
+        absorb = np.exp(-((wl - 500.0) ** 2) / (2.0 * 25.5 ** 2)) + 0.05
+        self.graph.add_node(DataNode(
+            id=nid, type=NodeType.UVVIS,
+            arrays={"wavelength_nm": wl, "absorbance": absorb},
+            metadata={"_load_id": f"L_{nid}", "source_file": f"syn_{nid}"},
+            label=nid, state=NodeState.COMMITTED,
+            style={"color": "#1f77b4", "linestyle": "solid",
+                   "linewidth": 1.5, "alpha": 0.9, "visible": True,
+                   "in_legend": True, "fill": False, "fill_alpha": 0.08},
+        ))
+        return nid
+
+    def _select_shared(self, node_id: str) -> None:
+        # Translate node id → display key, then set the shared
+        # StringVar (mirrors what the user does by picking from the
+        # combobox dropdown). The trace fans the change out.
+        for key, nid in self.tab._shared_subject_map.items():
+            if nid == node_id:
+                self.tab._shared_subject.set(key)
+                self.tab.update_idletasks()
+                return
+        self.fail(f"node {node_id!r} not in shared subject map")
+
+    # ---- combobox membership ---------------------------------------
+
+    def test_shared_combobox_starts_empty_with_no_nodes(self):
+        items = self.tab._shared_subject_cb.cget("values")
+        if isinstance(items, str):
+            items = tuple(items.split())
+        self.assertEqual(len(items), 0)
+        self.assertEqual(self.tab._shared_subject.get(), "")
+
+    def test_adding_uvvis_node_populates_combobox_and_auto_selects(self):
+        self._add_uvvis("u1")
+        self.tab.update_idletasks()
+        items = self.tab._shared_subject_cb.cget("values")
+        if isinstance(items, str):
+            items = tuple(items.split())
+        self.assertEqual(len(items), 1)
+        # Auto-pick the only available node.
+        self.assertNotEqual(self.tab._shared_subject.get(), "")
+        self.assertEqual(self.tab._resolve_shared_subject_id(), "u1")
+
+    def test_smoothed_node_appears_in_shared_combobox_after_apply(self):
+        self._add_uvvis("u1")
+        self.tab.update_idletasks()
+        # Smoothing panel adopts the shared subject u1; Apply
+        # creates a SMOOTHED child.
+        self.tab._smoothing_panel._mode_var.set("savgol")
+        self.tab._smoothing_panel._window_length.set(5)
+        self.tab._smoothing_panel._polyorder.set(2)
+        self.tab._smoothing_panel._apply()
+        self.tab.update_idletasks()
+        items = self.tab._shared_subject_cb.cget("values")
+        if isinstance(items, str):
+            items = tuple(items.split())
+        self.assertEqual(len(items), 2,
+                         "shared list should now include parent + SMOOTHED")
+
+    def test_peak_list_node_does_not_appear_in_shared_combobox(self):
+        self._add_uvvis("u1")
+        self.tab.update_idletasks()
+        # Peak picking on u1 produces a PEAK_LIST — not a candidate
+        # subject for further curve operations.
+        self.tab._peak_picking_panel._mode_var.set("prominence")
+        self.tab._peak_picking_panel._prominence.set("0.1")
+        self.tab._peak_picking_panel._apply()
+        self.tab.update_idletasks()
+        items = self.tab._shared_subject_cb.cget("values")
+        if isinstance(items, str):
+            items = tuple(items.split())
+        self.assertEqual(len(items), 1,
+                         "PEAK_LIST must not appear in the shared list")
+
+    def test_second_derivative_node_does_not_appear_in_shared_combobox(self):
+        self._add_uvvis("u1")
+        self.tab.update_idletasks()
+        self.tab._second_derivative_panel._apply()
+        self.tab.update_idletasks()
+        items = self.tab._shared_subject_cb.cget("values")
+        if isinstance(items, str):
+            items = tuple(items.split())
+        self.assertEqual(len(items), 1,
+                         "SECOND_DERIVATIVE must not appear in the shared list")
+
+    def test_hiding_selected_node_moves_selection(self):
+        # Two committed UVVIS nodes; pick u2; flip u2's active flag
+        # off (the equivalent of "remove from list" for committed
+        # rows in the right sidebar). _spectrum_nodes filters
+        # inactive nodes, so the shared combobox repopulates with
+        # only u1 and the selection auto-falls back.
+        self._add_uvvis("u1")
+        self._add_uvvis("u2")
+        self.tab.update_idletasks()
+        self._select_shared("u2")
+        self.assertEqual(self.tab._resolve_shared_subject_id(), "u2")
+        self.graph.set_active("u2", False)
+        self.tab.update_idletasks()
+        self.assertEqual(self.tab._resolve_shared_subject_id(), "u1")
+
+    # ---- fan-out to panels -----------------------------------------
+
+    def test_selecting_uvvis_enables_every_panel_apply_button(self):
+        # Sanity: with a UVVIS subject selected, every panel + the
+        # inline baseline Apply button is enabled (UVVIS is in every
+        # panel's ACCEPTED_PARENT_TYPES).
+        self._add_uvvis("u1")
+        self.tab.update_idletasks()
+        self._select_shared("u1")
+        self.assertEqual(
+            str(self.tab._normalisation_panel._apply_btn.cget("state")),
+            "normal")
+        self.assertEqual(
+            str(self.tab._smoothing_panel._apply_btn.cget("state")),
+            "normal")
+        self.assertEqual(
+            str(self.tab._peak_picking_panel._apply_btn.cget("state")),
+            "normal")
+        self.assertEqual(
+            str(self.tab._second_derivative_panel._apply_btn.cget("state")),
+            "normal")
+        self.assertEqual(
+            str(self.tab._apply_baseline_btn.cget("state")),
+            "normal")
+
+    def test_smoothed_subject_disables_normalise_and_baseline_apply(self):
+        # SMOOTHED is *not* in NormalisationPanel.ACCEPTED_PARENT_TYPES
+        # (peak/area normalise should run on raw / baseline-corrected
+        # / already-normalised curves, before smoothing) and *not* in
+        # the inline baseline section's accepted parents (UVVIS /
+        # BASELINE only). Selecting a SMOOTHED subject must disable
+        # both Apply buttons; the smoothing / peak-picking / 2nd-
+        # derivative buttons stay enabled (they accept SMOOTHED).
+        self._add_uvvis("u1")
+        self.tab.update_idletasks()
+        # Materialise a SMOOTHED child of u1 via the smoothing panel.
+        self.tab._smoothing_panel._mode_var.set("savgol")
+        self.tab._smoothing_panel._window_length.set(5)
+        self.tab._smoothing_panel._polyorder.set(2)
+        _, smoothed_id = self.tab._smoothing_panel._apply()
+        self.tab.update_idletasks()
+        # Now flip the shared subject to the SMOOTHED child.
+        self._select_shared(smoothed_id)
+
+        self.assertEqual(
+            str(self.tab._normalisation_panel._apply_btn.cget("state")),
+            "disabled",
+            "normalisation does not accept SMOOTHED parents")
+        self.assertEqual(
+            str(self.tab._apply_baseline_btn.cget("state")),
+            "disabled",
+            "inline baseline section does not accept SMOOTHED parents")
+
+        # The other three still accept SMOOTHED.
+        self.assertEqual(
+            str(self.tab._smoothing_panel._apply_btn.cget("state")),
+            "normal")
+        self.assertEqual(
+            str(self.tab._peak_picking_panel._apply_btn.cget("state")),
+            "normal")
+        self.assertEqual(
+            str(self.tab._second_derivative_panel._apply_btn.cget("state")),
+            "normal")
+
+    def test_no_subject_disables_every_apply_button(self):
+        # Empty graph → no shared subject → every Apply is disabled.
+        self.assertEqual(
+            str(self.tab._normalisation_panel._apply_btn.cget("state")),
+            "disabled")
+        self.assertEqual(
+            str(self.tab._smoothing_panel._apply_btn.cget("state")),
+            "disabled")
+        self.assertEqual(
+            str(self.tab._peak_picking_panel._apply_btn.cget("state")),
+            "disabled")
+        self.assertEqual(
+            str(self.tab._second_derivative_panel._apply_btn.cget("state")),
+            "disabled")
+        self.assertEqual(
+            str(self.tab._apply_baseline_btn.cget("state")),
+            "disabled")
+
+    def test_label_edit_preserves_selection(self):
+        # Editing the selected node's label fires NODE_LABEL_CHANGED;
+        # the shared combobox repopulates its display strings, but
+        # the resolved id underneath the selection must be unchanged.
+        self._add_uvvis("u1")
+        self.tab.update_idletasks()
+        self._select_shared("u1")
+        self.graph.set_label("u1", "u1-renamed")
+        self.tab.update_idletasks()
+        self.assertEqual(self.tab._resolve_shared_subject_id(), "u1")
+
+    def test_panels_share_one_combobox_widget(self):
+        # CS-22 invariant: every panel reads the SAME widget instance,
+        # not a per-panel copy. The four panels no longer hold a
+        # ``_subject_cb`` attribute at all — that's what allowed the
+        # subject row to disappear from each section's body.
+        self.assertFalse(
+            hasattr(self.tab._normalisation_panel, "_subject_cb"))
+        self.assertFalse(
+            hasattr(self.tab._smoothing_panel, "_subject_cb"))
+        self.assertFalse(
+            hasattr(self.tab._peak_picking_panel, "_subject_cb"))
+        self.assertFalse(
+            hasattr(self.tab._second_derivative_panel, "_subject_cb"))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
