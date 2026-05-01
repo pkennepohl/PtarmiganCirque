@@ -1009,6 +1009,61 @@ session.**
    panel. See the new register entry "Unit-aware wavelength / energy
    picker for operation panels" below.
 
+### Friction points carried forward from Phase 4k
+
+These are concrete obstacles the next Phase 4 session will hit.
+Identified during Phase 4k while replacing the per-panel subject
+combobox with the shared `_shared_subject_cb` at the top of the
+left pane (CS-22). **Do not fix until the relevant subsequent
+Phase 4 session.**
+
+1. **No "accept" gesture reachable from the left pane.**
+   USER-FLAGGED at end of Phase 4k. After Apply on the left, the
+   only path to commit / discard the new provisional node is the
+   right-click context menu on the right-side ScanTreeWidget row.
+   Important when sequential operations need to be logged; the
+   user wants confirm-as-they-go, not "remember which row was just
+   added and traverse to it". See the new register entry
+   "Commit / discard reachable from the left pane after Apply".
+2. **Sweep-group rows hide per-variant gestures.**
+   USER-FLAGGED at end of Phase 4k. When a parent has 2+
+   provisional children, the right-side ScanTreeWidget collapses
+   them into a sweep-group leader row with `✕all`; the user can
+   expand to see the variants but cannot commit / discard / style
+   any single one. Phase 2 carry-forward "Sweep group inline
+   expansion" (🟡) is now actively biting; elevated to 🔴 and
+   re-flagged. See the new register entry "Per-variant gestures on
+   sweep-group rows".
+3. **Plot Settings dialog has no Save & Close button.**
+   USER-FLAGGED at end of Phase 4k. The dialog applies changes
+   live but offers only Cancel; closing via [X] takes the Cancel
+   path silently. Inconsistent with the unified StyleDialog's
+   `Apply · ∀ Apply to All · Save · Cancel` shape (CS-05). See
+   the new register entry "Plot Settings dialog: Save & Close
+   (consistent dialog button shape)".
+4. **Auto-fall-back on subject deletion uses graph-insertion order.**
+   When the shared subject vanishes (set_active=False, discard,
+   GRAPH_CLEARED), `_refresh_shared_subjects` falls back to
+   `items[0]` — the first UVVIS in graph insertion order. In a
+   long session with several spectra, that may not be the user's
+   mental "next thing"; "previous in list" or "freshly-added"
+   policies may feel less surprising. Lock-worthy debate, not
+   urgent.
+5. **Apply-disabled state has no inline explanation.**
+   Picking a SMOOTHED node with the normalisation section
+   expanded leaves the Apply button disabled with no hint as to
+   why. A small inline "Selected node is not a valid parent for
+   this op" caption inside each panel (or a tooltip on the
+   disabled button) would teach the user the per-op acceptance
+   set without consulting docs.
+6. **`_baseline_subject_id` lives on `UVVisTab`; `_subject_id` lives
+   on each panel.** Inconsistent naming + visibility. The inline
+   baseline section will likely become a `BaselinePanel` widget
+   in a later phase; at that point `_BASELINE_ACCEPTED_PARENT_TYPES`
+   should join the public `ACCEPTED_PARENT_TYPES` API the four
+   operation panels already expose, and `_baseline_subject_id`
+   should become `_subject_id` to match.
+
 | Status | Priority | Item | Notes |
 |---|---|---|---|
 | ✅ | 🔴 | **Migrate UV/Vis to node model** | UVVisScan → DataNode(type=UVVIS). File load → RAW\_FILE + LOAD + UVVIS triple, all COMMITTED (Phase 4a Part A; CS-13 implementation notes) |
@@ -1018,7 +1073,8 @@ session.**
 | ✅ | 🔴 | **Export processed data** | Single-node `.csv` / `.txt` export with `# `-prefixed provenance header. Row Export… gesture on committed nodes; provisional rows render the entry disabled. Pure header builder + pure file writer + widget gesture + dialog flow (Phase 4f; CS-17) |
 | ✅ | 🔴 | **Normalisation as explicit operation** | Normalisation creates a provisional NORMALISED node rather than modifying data in place. Two modes (peak / area), each with a window in nm; mirrors the Phase 4c BASELINE shape (Phase 4e; CS-16) |
 | ⏳ | 🔴 | **"Send to Compare" action** | Replaces "Add to TDDFT Overlay". Available on committed nodes |
-| ✅ | 🔴 | **Plot Settings dialog** | Fonts, grid, background colour, legend position, tick direction, title/label customisation. Accessed via ⚙ in top bar (Phase 4b; CS-14) |
+| ✅ | 🔴 | **Plot Settings dialog** | Fonts, grid, background colour, legend position, tick direction, title/label customisation. Accessed via ⚙ in top bar (Phase 4b; CS-14). Phase 4k USER-FLAGGED follow-up: dialog has no Save / Save & Close button — see "Plot Settings dialog: Save & Close (consistent dialog button shape)" entry below |
+| ⏳ | 🔴 | **Plot Settings dialog: Save & Close (consistent dialog button shape) (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4k. Today the dialog applies changes live as the user edits but offers only a Cancel button (which reverts to the formatting at dialog open). There is no "Save & Close" / "OK" affordance, so a user who is happy with their edits and dismisses via the window-close [X] gets the *Cancel* path — the changes silently disappear. Other dialogs in the app already follow the established `Apply · ∀ Apply to All · Save · Cancel` shape (CS-05 unified style dialog). The Plot Settings dialog should match: persist on Save / Save & Close, revert on Cancel + window-close [X]. Important for cross-platform consistency — every dialog in Ptarmigan should use the same four-button vocabulary so the user's Cancel-vs-Save mental model is reliable. Touches `plot_settings_dialog.py` (CS-14); deep-copy snapshot of the figure / axis / legend state at `__init__` so Cancel can revert exactly the way the StyleDialog does |
 | ✅ | 🟡 | **Peak picking** | Two modes: prominence (`scipy.signal.find_peaks`) and manual (comma-separated wavelengths snapped to the parent grid). Single OperationType.PEAK_PICK with `params["mode"]` ∈ {"prominence", "manual"} (mirrors CS-15 / CS-16 / CS-18). Output is a provisional `PEAK_LIST` DataNode rendered as scatter on top of the parent curve. `PeakPickingPanel` co-located in `uvvis_peak_picking.py` (Phase 4h; CS-19). λ/E annotation labels + optional peak-table export deferred to a future polish session |
 | ⏳ | 🟡 | **OLIS integrating sphere correction** | Three-input operation node (sample + reference + blank → corrected). See OQ-004 for multi-input UI design |
 | ⏳ | 🟡 | **Interactive normalisation** | Normalise to user-specified wavelength or integration region |
@@ -1027,8 +1083,10 @@ session.**
 | ✅ | 🟢 | **Second derivative** | Single-algorithm Savitzky-Golay derivative (`scipy.signal.savgol_filter` with `deriv=2`); no mode discriminator (the savgol routine smooths and differentiates in one pass — naive `np.gradient` would be a footgun mode rather than a useful alternative). Output is a provisional `SECOND_DERIVATIVE` `DataNode` rendered as a curve overlay on the same plot (reuses the `wavelength_nm` / `absorbance` schema; the latter holds d²A/dλ² values). `SecondDerivativePanel` co-located in `uvvis_second_derivative.py` (Phase 4i; CS-20). Chained derivatives intentionally out of scope: `SECOND_DERIVATIVE` is excluded from `_spectrum_nodes` so the locked baseline / normalise / smoothing / peak-picking panels do not surface it as a candidate parent (their parent type checks would silently refuse it) |
 | ⏳ | 🟢 | **Beer-Lambert / concentration** | Use known ε to extract concentration, or fit ε from known concentration |
 | ✅ | 🔴 | **Collapsible left-pane sections (polish session)** | Each of the five operation sections (Baseline / Normalisation / Smoothing / Peak picking / Second derivative) is now wrapped in a clickable `CollapsibleSection` header with a chevron (▶ collapsed, ▼ expanded). **All five sections start collapsed.** State is per-tab Tk `BooleanVar` owned by each section widget; not persisted to project (Phase 8 concern). Paired with the `pick_default_color(graph)` extraction in the same phase — both touched every operation module at once and a single phase unlocked all four (Phase 4c / 4e / 4g / 4h). Resolved Phase 4i friction #1 + #2 + Phase 4g #5 / 4h #5 carry-forwards (Phase 4j; CS-21) |
-| ⏳ | 🔴 | **Unify subject combobox across left-pane sections (architectural)** | USER-FLAGGED at end of Phase 4j. Today each of the five operation panels owns its own subject combobox; the user proposed a single shared combobox at the top of the left pane (always visible, above the collapsible sections), so the user picks the spectrum once and then expands the section for the operation they want. Requires a "shared subject changed" event hand-off to each panel, a per-panel "compatible parent" gate that disables the panel's Apply button when the shared selection isn't a valid parent for that op (e.g. peak_picking accepts UVVIS/BASELINE/NORMALISED/SMOOTHED but not PEAK_LIST or SECOND_DERIVATIVE), and removal of the per-panel `_subject_cb` widgets and their refresh callbacks. Worth a dedicated polish session — touches all four operation panels plus the inline baseline section. Defer until immediately after Phase 4j has been used in anger for a few sessions so the right shared-combobox UX can be informed by real usage |
-| ⏳ | 🟡 | **"Expand all" / "Collapse all" gesture on left pane** | Companion polish for the new collapsible sections (Phase 4j). When a user wants to scan parameter choices across multiple sections (e.g. for a screenshot or to copy parameters from one panel to another) they currently have to click each header individually. Options: a small "▼ All / ▶ All" icon button at the top of the left pane (above the Processing label), or a right-click context menu on any section header with "Expand all" / "Collapse all" entries. Either is a small change — adds a method on `UVVisTab` that walks the five `_{name}_section` attributes and calls `expand()` / `collapse()` on each |
+| ✅ | 🔴 | **Unify subject combobox across left-pane sections (architectural)** | USER-FLAGGED at end of Phase 4j. Replaced the five per-panel `_subject_cb` widgets with one shared `_shared_subject_cb` at the top of the left pane (always visible, above every CollapsibleSection). Each operation panel exposes `set_subject(node_id)` + `ACCEPTED_PARENT_TYPES`; the host's StringVar trace fans the selection out to all four panels + the inline baseline section. Apply buttons disable when the shared selection isn't a valid parent for the panel's op (e.g. peak_picking accepts UVVIS/BASELINE/NORMALISED/SMOOTHED but not PEAK_LIST or SECOND_DERIVATIVE; baseline accepts UVVIS/BASELINE only). Resolved Phase 4j friction #5 (Phase 4k; CS-22) |
+| ⏳ | 🔴 | **Commit / discard reachable from the left pane after Apply (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4k. Today the only "accept this provisional node" path is the right-click context menu on the right-side ScanTreeWidget row. After hitting Apply on the left, the user has no nearby accept gesture — they must traverse to the right sidebar and find the new row. Important when sequential operations need to be logged: each Apply makes a provisional node, and the user wants to confirm-as-they-go. Likely shape: a small "Accept last / Discard last" button-pair in the left-pane status area, or an "Accept" gesture inline below each operation panel's Apply button that targets the most recently-applied output of that op. The right-sidebar gesture stays as the canonical control surface; the left-pane gesture is a convenience layer |
+| ⏳ | 🔴 | **Per-variant gestures on sweep-group rows (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4k. Phase 2 carry-forward "Sweep group inline expansion" (already in the backlog as 🟡) is now actively biting: when two or more provisional siblings share a parent, the right-side ScanTreeWidget collapses them into a single sweep-group leader row with `✕all`. The leader row exposes only the bulk-discard gesture; the user can expand to SEE the variants but cannot commit / discard / style any single one. Elevated from 🟡 to 🔴 and re-flagged as USER-FLAGGED. Plan: per-variant inline rows under the leader with the same row chrome (state indicator · ⚙ · ✕ · label), gated by the Phase 4c friction #1 row-selection model decision |
+| ⏳ | 🟡 | **Expand all / Collapse all gesture on left pane** | Companion polish for the new collapsible sections (Phase 4j). When a user wants to scan parameter choices across multiple sections (e.g. for a screenshot or to copy parameters from one panel to another) they currently have to click each header individually. Options: a small "▼ All / ▶ All" icon button at the top of the left pane (above the Processing label), or a right-click context menu on any section header with "Expand all" / "Collapse all" entries. Either is a small change — adds a method on `UVVisTab` that walks the five `_{name}_section` attributes and calls `expand()` / `collapse()` on each |
 | ⏳ | 🟡 | **Unit-aware wavelength / energy picker for operation panels** | USER-FLAGGED at end of Phase 4j. The five operation panels collect wavelength/energy windows via free-form Entry widgets in nm only. The plot itself supports x in nm / cm⁻¹ / eV (top-bar combobox); the panels should follow whatever unit the plot is currently displaying so a user reading peak positions off the plot can type them straight into the entry without a mental unit conversion. Likely shape: a unit-aware Spinbox / Entry that watches the tab's `_x_unit` Tk var, converts the entered value to nm at Apply time (the canonical wavelength_nm storage stays nm), and re-renders the entry's display when the user flips units. Touches every panel that has a wavelength / energy parameter (baseline polynomial fit window, baseline spline anchors, normalisation window, peak-picking manual list). Plan once Phase 4j has bedded in |
 | ⏳ | 🟢 | **Keyboard accessibility for `CollapsibleSection`** | The Phase 4j `CollapsibleSection` is a single mouse-clickable strip with no Tab focus indication or keyboard binding. For accessibility (and power users who prefer keyboard navigation) Tab-to-header + Space/Enter-to-toggle would mirror standard disclosure-widget conventions. Phase 11 (app-wide polish) — defer until other accessibility passes happen at the same time |
 
@@ -1246,7 +1304,7 @@ the resolving phase + commit SHA appended to the row.
 
 ---
 
-*Document version: 1.8 — April 2026*
+*Document version: 1.9 — May 2026*
 *1.1: Known Bugs register added 2026-04-27 after Phase 4b manual testing.*
 *1.2: Phase 4c — baseline correction lands; B-001 / B-003 / B-004
 resolved; Phase 4c friction points logged.*
@@ -1296,4 +1354,21 @@ entries: 🔴 Unify subject combobox across left-pane sections
 (architectural, USER-FLAGGED), 🟡 Expand all / Collapse all
 gesture, 🟡 Unit-aware wavelength / energy picker (USER-FLAGGED),
 🟢 Keyboard accessibility for CollapsibleSection (Phase 11).*
+*1.9: Phase 4k — shared subject combobox lands (CS-22); Unify
+subject combobox register entry marked ✅; Phase 4j friction #5
+resolved. The five per-panel `_subject_cb` widgets are gone;
+each operation panel now exposes `set_subject(node_id)` +
+`ACCEPTED_PARENT_TYPES` (panel-class constant) and disables its
+Apply button when the shared selection isn't a valid parent.
+The host's StringVar trace fans the change out to all four
+panels + the inline baseline section. Phase 4k friction logged
+(six items: no left-pane accept gesture USER-FLAGGED, sweep-
+group per-variant gestures USER-FLAGGED, Plot Settings dialog
+Save & Close USER-FLAGGED, fall-back-on-deletion uses insertion
+order, no inline explanation for disabled Apply, baseline-vs-
+panel naming inconsistency). Three new register entries: 🔴
+Commit / discard reachable from the left pane after Apply
+(USER-FLAGGED), 🔴 Per-variant gestures on sweep-group rows
+(USER-FLAGGED, elevated from Phase 2 carry-forward), 🔴 Plot
+Settings dialog: Save & Close (USER-FLAGGED).*
 *Supersedes: BACKLOG.md (original)*

@@ -33,14 +33,14 @@ caller correctly-scaled physical units (A/nm² rather than A/sample²).
 from __future__ import annotations
 
 import uuid
-from typing import Callable, List, Mapping, Optional
+from typing import Callable, Mapping, Optional
 
 import numpy as np
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import messagebox
 from scipy.signal import savgol_filter
 
-from graph import GraphEvent, GraphEventType, ProjectGraph
+from graph import ProjectGraph
 from node_styles import default_spectrum_style, pick_default_color
 from nodes import (
     DataNode,
@@ -152,59 +152,54 @@ def compute(
 
 
 class SecondDerivativePanel(tk.Frame):
-    """Left-panel widget for UV/Vis second derivative (Phase 4i, CS-20).
+    """Left-panel widget for UV/Vis second derivative (Phase 4i, CS-20; Phase 4k).
 
-    Mirrors the Phase 4g ``SmoothingPanel`` shape but materialises a
-    ``SECOND_DERIVATIVE`` operation chain instead of a ``SMOOTH`` one:
+    Materialises a ``SECOND_DERIVATIVE`` operation chain on the
+    *shared subject* selected by the host tab's top-of-pane combobox
+    (Phase 4k, CS-22):
 
-    * **Subject combobox** — chooses which UVVIS / BASELINE /
-      NORMALISED / SMOOTHED node to differentiate. SECOND_DERIVATIVE
-      itself is intentionally absent from the candidate set
-      (chained second derivatives are physically meaningful only
-      rarely, and the locked _spectrum_nodes set already excludes
-      this type).
     * **Parameter rows** — single set, no mode discriminator:
       ``window_length`` spinbox (odd, default 11) + ``polyorder``
       spinbox (default 3). Defaults are wider than the smoothing
       panel's because the second derivative is more noise-sensitive
       than the spectrum itself.
-    * **Apply button** — runs ``_apply()``.
+    * **Apply button** — runs ``_apply()``. Disabled when the host's
+      shared subject is missing or its NodeType is not in
+      :attr:`ACCEPTED_PARENT_TYPES`.
 
-    The panel owns its graph wiring: pass in the ``ProjectGraph`` and a
-    callable returning the live spectrum nodes (the host's
-    ``_spectrum_nodes`` helper, which yields UVVIS / BASELINE /
-    NORMALISED / SMOOTHED — the same parent set the SmoothingPanel uses).
+    SECOND_DERIVATIVE itself is intentionally absent from
+    :attr:`ACCEPTED_PARENT_TYPES` (chained second derivatives are
+    physically meaningful only rarely, and the locked
+    ``_spectrum_nodes`` set already excludes this type so the shared
+    subject combobox cannot offer one).
     """
+
+    #: NodeTypes the panel accepts as parents for the SECOND_DERIVATIVE op.
+    ACCEPTED_PARENT_TYPES: tuple[NodeType, ...] = (
+        NodeType.UVVIS, NodeType.BASELINE,
+        NodeType.NORMALISED, NodeType.SMOOTHED,
+    )
 
     def __init__(
         self,
         parent: tk.Misc,
         graph: ProjectGraph,
-        spectrum_nodes_fn: Callable[[], List[DataNode]],
         status_cb: Optional[Callable[[str], None]] = None,
     ) -> None:
         super().__init__(parent)
         self._graph = graph
-        self._spectrum_nodes_fn = spectrum_nodes_fn
         self._status_cb = status_cb
+
+        # Shared-subject id pushed in by the host's top-of-pane
+        # combobox (Phase 4k). ``None`` means no subject — Apply is
+        # disabled.
+        self._subject_id: Optional[str] = None
 
         F9 = ("", 9)
         FC = ("Courier", 9)
 
         tk.Label(self, text="Second derivative",
                  font=("", 9, "bold")).pack(anchor="w", padx=4, pady=(4, 2))
-
-        # Subject — which spectrum to differentiate.
-        subj_frame = tk.Frame(self)
-        subj_frame.pack(fill=tk.X, padx=4, pady=2)
-        tk.Label(subj_frame, text="Spectrum:", font=F9).pack(anchor="w")
-        self._subject_var = tk.StringVar(value="")
-        self._subject_map: dict[str, str] = {}
-        self._subject_cb = ttk.Combobox(
-            subj_frame, textvariable=self._subject_var,
-            state="readonly", font=F9, width=24,
-        )
-        self._subject_cb.pack(fill=tk.X)
 
         # Parameter Tk vars (kept on the panel so values survive UI
         # rebuilds). Defaults are 11-point Savitzky-Golay window with
@@ -258,30 +253,33 @@ class SecondDerivativePanel(tk.Frame):
         )
         self._apply_btn.pack(fill=tk.X)
 
-        # Subscribe to graph events so the subject combobox tracks
-        # which spectrum nodes exist. Lifetime is the panel's:
-        # unsubscribed automatically on ``<Destroy>``.
-        self._graph.subscribe(self._on_graph_event)
-        self.bind("<Destroy>", self._on_destroy_unsubscribe, add="+")
-
-        self.refresh_subjects()
+        self._refresh_apply_state()
 
     # ------------------------------------------------------------------
-    # Public refresh API
+    # Public subject hand-off (Phase 4k, CS-22)
     # ------------------------------------------------------------------
 
-    def refresh_subjects(self) -> None:
-        """Repopulate the subject combobox from the live spectrum nodes."""
-        nodes = self._spectrum_nodes_fn()
-        self._subject_map = {}
-        items: List[str] = []
-        for n in nodes:
-            key = f"{n.label}  [{n.id[:6]}]"
-            items.append(key)
-            self._subject_map[key] = n.id
-        self._subject_cb.configure(values=items)
-        if self._subject_var.get() not in items:
-            self._subject_var.set(items[0] if items else "")
+    def set_subject(self, node_id: Optional[str]) -> None:
+        """Adopt the host tab's shared subject selection.
+
+        Re-evaluates the Apply button state: enabled iff a node id is
+        set AND the resolved node's type is in
+        :attr:`ACCEPTED_PARENT_TYPES`.
+        """
+        self._subject_id = node_id
+        self._refresh_apply_state()
+
+    def _refresh_apply_state(self) -> None:
+        """Disable Apply when the shared subject isn't a valid parent."""
+        ok = False
+        if self._subject_id is not None:
+            try:
+                node = self._graph.get_node(self._subject_id)
+            except KeyError:
+                node = None
+            if node is not None and node.type in self.ACCEPTED_PARENT_TYPES:
+                ok = True
+        self._apply_btn.configure(state=("normal" if ok else "disabled"))
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -304,24 +302,6 @@ class SecondDerivativePanel(tk.Frame):
             raise ValueError("Poly order must be an integer.")
         return {"window_length": window_length, "polyorder": polyorder}
 
-    def _on_graph_event(self, event: GraphEvent) -> None:
-        """Refresh the subject list on structural / label / active changes."""
-        if event.type in (
-            GraphEventType.NODE_ADDED,
-            GraphEventType.NODE_DISCARDED,
-            GraphEventType.NODE_ACTIVE_CHANGED,
-            GraphEventType.NODE_LABEL_CHANGED,
-            GraphEventType.GRAPH_LOADED,
-            GraphEventType.GRAPH_CLEARED,
-        ):
-            self.refresh_subjects()
-
-    def _on_destroy_unsubscribe(self, _event) -> None:
-        try:
-            self._graph.unsubscribe(self._on_graph_event)
-        except Exception:
-            pass
-
     # ------------------------------------------------------------------
     # Apply — materialise op + node
     # ------------------------------------------------------------------
@@ -334,13 +314,18 @@ class SecondDerivativePanel(tk.Frame):
         DataNode, wired ``parent → op → child``. Returns
         ``(op_id, child_id)`` on success or ``None`` if the user input
         was rejected.
+
+        The shared subject id (Phase 4k, CS-22) is the source of truth
+        — set by the host via :meth:`set_subject`. The Apply button is
+        disabled when the subject is missing or its NodeType is not in
+        :attr:`ACCEPTED_PARENT_TYPES`, but defence-in-depth checks still
+        run here in case a programmatic invocation bypasses the gate.
         """
-        key = self._subject_var.get()
-        subject_id = self._subject_map.get(key)
+        subject_id = self._subject_id
         if not subject_id:
             messagebox.showinfo(
                 "Apply Second Derivative",
-                "Select a spectrum first (load a file or pick from the list).",
+                "Select a spectrum from the top of the left pane first.",
             )
             return None
         try:
@@ -351,13 +336,10 @@ class SecondDerivativePanel(tk.Frame):
                 "Selected spectrum is no longer in the project graph.",
             )
             return None
-        if parent_node.type not in (
-            NodeType.UVVIS, NodeType.BASELINE,
-            NodeType.NORMALISED, NodeType.SMOOTHED,
-        ):
+        if parent_node.type not in self.ACCEPTED_PARENT_TYPES:
             messagebox.showerror(
                 "Apply Second Derivative",
-                "Selected node is not a UV/Vis-style spectrum.",
+                "Selected node is not a valid parent for second derivative.",
             )
             return None
 
