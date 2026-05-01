@@ -796,7 +796,17 @@ class ScanTreeWidget(tk.Frame):
         ``NODE_LABEL_CHANGED`` event.
         """
         current = label_widget.cget("text")
-        entry_var = tk.StringVar(value=current)
+        # Phase 4j friction #1: pass ``master=row_frame`` explicitly so
+        # the StringVar binds to the same Tk interpreter as the Entry.
+        # Without it, ``tk.StringVar(value=...)`` falls back to
+        # ``tkinter._default_root``, which can be a different root when
+        # multiple test modules each call ``tk.Tk()`` at module-import
+        # time. The mismatch makes the textvariable binding silently
+        # no-op so the rename Entry renders empty even though
+        # ``value=current`` was supplied. Defence-in-depth fix; users
+        # never hit it in single-Tk production paths but it would
+        # break any future plugin tab that spawns its own Tk root.
+        entry_var = tk.StringVar(master=row_frame, value=current)
         entry = tk.Entry(row_frame, textvariable=entry_var)
 
         # Replace the label inline. B-004 (Phase 4c) followup: passing

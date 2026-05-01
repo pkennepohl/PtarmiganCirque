@@ -50,16 +50,15 @@ import uvvis_smoothing
 import uvvis_peak_picking
 import uvvis_second_derivative
 import node_export
-from node_styles import default_spectrum_style
+from collapsible_section import CollapsibleSection
+from node_styles import default_spectrum_style, pick_default_color
 from version import __version__ as PTARMIGAN_VERSION
 
-# ── Colour palette (loader-side default colour assignment) ────────────────────
-# Phase 2 friction #3: the UVVIS DataNode receives ``style["color"]`` at
-# creation so the StyleDialog opens with a non-empty starting colour.
-_PALETTE = [
-    "#1f77b4", "#d62728", "#2ca02c", "#ff7f0e", "#9467bd",
-    "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf",
-]
+# Colour palette: lifted to node_styles.SPECTRUM_PALETTE in Phase 4j
+# (CS-21). Both call sites in this file (the UVVIS loader's default
+# colour assignment and _apply_baseline's BASELINE colour assignment)
+# go through node_styles.pick_default_color, which walks every
+# spectrum-shaped NodeType in one go.
 
 # ── File-type filter ──────────────────────────────────────────────────────────
 _FILE_TYPES = [
@@ -466,6 +465,14 @@ class UVVisTab(tk.Frame):
         Each Apply gesture creates one provisional OperationNode +
         DataNode pair; the user commits or discards via the
         ``ScanTreeWidget`` on the right.
+
+        Phase 4j (CS-21) wraps every section in a
+        :class:`CollapsibleSection` so users can hide the panels they
+        are not currently using and reclaim vertical space. All five
+        sections start collapsed; clicking the chevron header strip
+        toggles. Per-section state is held in each section's own
+        ``tk.BooleanVar`` and is not persisted to project files this
+        phase (Phase 8 concern).
         """
         F9 = ("", 9)
         FC = ("Courier", 9)
@@ -473,8 +480,17 @@ class UVVisTab(tk.Frame):
         tk.Label(parent, text="Processing",
                  font=("", 9, "bold")).pack(anchor="w", padx=4, pady=(4, 2))
 
+        # ── Baseline section (CS-15, Phase 4c) ───────────────────────────
+        # Inline section — no panel subwidget. The widgets pack into
+        # the CollapsibleSection's body frame; everything else
+        # (Tk vars, refresh callbacks) stays on the tab.
+        self._baseline_section = CollapsibleSection(
+            parent, title="Baseline correction", expanded=False)
+        self._baseline_section.pack(fill=tk.X, padx=0, pady=(2, 0))
+        bl_body = self._baseline_section.body
+
         # Subject — which spectrum to baseline-correct.
-        subj_frame = tk.Frame(parent)
+        subj_frame = tk.Frame(bl_body)
         subj_frame.pack(fill=tk.X, padx=4, pady=2)
         tk.Label(subj_frame, text="Spectrum:", font=F9).pack(anchor="w")
         self._baseline_subject = tk.StringVar(value="")
@@ -486,7 +502,7 @@ class UVVisTab(tk.Frame):
         self._baseline_subject_cb.pack(fill=tk.X)
 
         # Baseline mode.
-        mode_frame = tk.Frame(parent)
+        mode_frame = tk.Frame(bl_body)
         mode_frame.pack(fill=tk.X, padx=4, pady=(6, 2))
         tk.Label(mode_frame, text="Baseline mode:", font=F9).pack(anchor="w")
         self._baseline_mode = tk.StringVar(value="linear")
@@ -511,11 +527,11 @@ class UVVisTab(tk.Frame):
 
         # Conditional parameter rows. The frame is rebuilt on every
         # mode change to keep layout straightforward.
-        self._baseline_params_frame = tk.Frame(parent)
+        self._baseline_params_frame = tk.Frame(bl_body)
         self._baseline_params_frame.pack(fill=tk.X, padx=4, pady=2)
 
         # Apply button.
-        apply_frame = tk.Frame(parent)
+        apply_frame = tk.Frame(bl_body)
         apply_frame.pack(fill=tk.X, padx=4, pady=(8, 4))
         self._apply_baseline_btn = tk.Button(
             apply_frame, text="Apply Baseline", font=("", 9, "bold"),
@@ -525,13 +541,11 @@ class UVVisTab(tk.Frame):
         self._apply_baseline_btn.pack(fill=tk.X)
 
         # ── Normalisation section (CS-16, Phase 4e) ──────────────────────
-        # Visual separator between the baseline section and the
-        # normalisation section.
-        ttk.Separator(parent, orient=tk.HORIZONTAL).pack(
-            fill=tk.X, padx=4, pady=(8, 4))
-
+        self._normalisation_section = CollapsibleSection(
+            parent, title="Normalisation", expanded=False)
+        self._normalisation_section.pack(fill=tk.X, padx=0, pady=(2, 0))
         self._normalisation_panel = uvvis_normalise.NormalisationPanel(
-            parent,
+            self._normalisation_section.body,
             self._graph,
             spectrum_nodes_fn=self._spectrum_nodes,
             status_cb=self._set_status_message,
@@ -539,14 +553,11 @@ class UVVisTab(tk.Frame):
         self._normalisation_panel.pack(fill=tk.X)
 
         # ── Smoothing section (CS-18, Phase 4g) ──────────────────────────
-        # Visual separator between the normalisation section and the
-        # smoothing section (mirrors the baseline → normalisation
-        # separator above).
-        ttk.Separator(parent, orient=tk.HORIZONTAL).pack(
-            fill=tk.X, padx=4, pady=(8, 4))
-
+        self._smoothing_section = CollapsibleSection(
+            parent, title="Smoothing", expanded=False)
+        self._smoothing_section.pack(fill=tk.X, padx=0, pady=(2, 0))
         self._smoothing_panel = uvvis_smoothing.SmoothingPanel(
-            parent,
+            self._smoothing_section.body,
             self._graph,
             spectrum_nodes_fn=self._spectrum_nodes,
             status_cb=self._set_status_message,
@@ -554,17 +565,16 @@ class UVVisTab(tk.Frame):
         self._smoothing_panel.pack(fill=tk.X)
 
         # ── Peak picking section (CS-19, Phase 4h) ───────────────────────
-        # Visual separator between the smoothing section and the
-        # peak-picking section. PEAK_LIST nodes are intentionally absent
-        # from the panel's subject list (chained peak picking is
-        # undefined): _spectrum_nodes only walks UVVIS / BASELINE /
-        # NORMALISED / SMOOTHED, which is exactly the set the panel
-        # accepts as parents.
-        ttk.Separator(parent, orient=tk.HORIZONTAL).pack(
-            fill=tk.X, padx=4, pady=(8, 4))
-
+        # PEAK_LIST nodes are intentionally absent from the panel's
+        # subject list (chained peak picking is undefined):
+        # _spectrum_nodes only walks UVVIS / BASELINE / NORMALISED /
+        # SMOOTHED, which is exactly the set the panel accepts as
+        # parents.
+        self._peak_picking_section = CollapsibleSection(
+            parent, title="Peak picking", expanded=False)
+        self._peak_picking_section.pack(fill=tk.X, padx=0, pady=(2, 0))
         self._peak_picking_panel = uvvis_peak_picking.PeakPickingPanel(
-            parent,
+            self._peak_picking_section.body,
             self._graph,
             spectrum_nodes_fn=self._spectrum_nodes,
             status_cb=self._set_status_message,
@@ -572,18 +582,16 @@ class UVVisTab(tk.Frame):
         self._peak_picking_panel.pack(fill=tk.X)
 
         # ── Second derivative section (CS-20, Phase 4i) ──────────────────
-        # Visual separator between the peak-picking section and the
-        # second-derivative section. SECOND_DERIVATIVE nodes are NOT
-        # candidate parents for further derivatives this phase: the
-        # panel uses _spectrum_nodes (UVVIS / BASELINE / NORMALISED /
-        # SMOOTHED), which excludes SECOND_DERIVATIVE so chained
-        # derivatives are out of scope.
-        ttk.Separator(parent, orient=tk.HORIZONTAL).pack(
-            fill=tk.X, padx=4, pady=(8, 4))
-
+        # SECOND_DERIVATIVE nodes are NOT candidate parents for further
+        # derivatives this phase: the panel uses _spectrum_nodes
+        # (UVVIS / BASELINE / NORMALISED / SMOOTHED), which excludes
+        # SECOND_DERIVATIVE so chained derivatives are out of scope.
+        self._second_derivative_section = CollapsibleSection(
+            parent, title="Second derivative", expanded=False)
+        self._second_derivative_section.pack(fill=tk.X, padx=0, pady=(2, 0))
         self._second_derivative_panel = (
             uvvis_second_derivative.SecondDerivativePanel(
-                parent,
+                self._second_derivative_section.body,
                 self._graph,
                 spectrum_nodes_fn=self._spectrum_nodes,
                 status_cb=self._set_status_message,
@@ -777,14 +785,10 @@ class UVVisTab(tk.Frame):
 
         # Default colour for the new BASELINE node — pick a fresh
         # palette entry so the corrected curve is visually separable
-        # from its parent.
-        existing_baselines = len(
-            self._graph.nodes_of_type(NodeType.BASELINE, state=None))
-        existing_uvvis = len(
-            self._graph.nodes_of_type(NodeType.UVVIS, state=None))
-        colour = _PALETTE[
-            (existing_uvvis + existing_baselines) % len(_PALETTE)
-        ]
+        # from its parent. CS-21 (Phase 4j) replaced the inline
+        # palette-index expression with the shared pick_default_color
+        # helper.
+        colour = pick_default_color(self._graph)
 
         # Carry the parent's metadata forward, plus a baseline footer.
         new_meta: dict = {
@@ -1091,8 +1095,10 @@ class UVVisTab(tk.Frame):
         )
 
         # 3. UVVIS DataNode — parsed arrays + style with default colour.
-        existing_count = len(self._graph.nodes_of_type(NodeType.UVVIS, state=None))
-        colour = _PALETTE[existing_count % len(_PALETTE)]
+        # CS-21 (Phase 4j) routes default-colour selection through
+        # node_styles.pick_default_color so the loader walks the same
+        # six-NodeType counter as the operation panels.
+        colour = pick_default_color(self._graph)
 
         uvvis_meta = {
             "x_unit":      "nm",

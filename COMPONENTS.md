@@ -992,18 +992,41 @@ Note: "Run EXAFS" = recompute (new provisional node).
 
 ### UV/Vis left panel
 
+Each operation has its own collapsible section (Phase 4j; CS-21).
+All five sections start COLLAPSED — the user clicks the chevron
+header of the section they want to use. The headers stack as five
+short bold-font strips when everything is collapsed:
+
 ```
 Processing
-  Baseline:  [combobox: none/linear/poly/spline/rubberband]
-  Order n:   [spinbox]  (shown for poly)
-  [Apply Baseline]
-─────────────────────────────
-  Normalisation: already in top bar combobox
-─────────────────────────────
-  [Apply Smoothing…]
-  [Shift Energy…]
-  [Difference Spectra…]
+▶ Baseline correction
+▶ Normalisation
+▶ Smoothing
+▶ Peak picking
+▶ Second derivative
 ```
+
+Expanding a section reveals its body (the existing per-operation
+parameters + Apply button):
+
+```
+Processing
+▶ Baseline correction
+▼ Normalisation
+   Spectrum: [combobox]
+   Mode:     [peak | area]
+   Window lo (nm): [entry]
+   Window hi (nm): [entry]
+   [Apply Normalisation]
+▶ Smoothing
+▶ Peak picking
+▶ Second derivative
+```
+
+Header click anywhere on the strip toggles the section. State is
+held in a per-section `tk.BooleanVar` owned by the section widget;
+not persisted to project files this phase (Phase 8 concern). See
+CS-21 for the widget contract.
 
 Processing operations create provisional nodes. No "Run" button needed
 for UV/Vis because operations are applied on demand, not in batch.
@@ -2553,6 +2576,164 @@ earlier user-operation panels.
 
 ---
 
+## CS-21: Collapsible left-pane sections + shared palette helper
+
+**Files:** `collapsible_section.py`, `node_styles.py` (extended)
+**Depends on:** CS-01 (`ProjectGraph.nodes_of_type`), CS-02 (`NodeType`),
+CS-07 (UV/Vis left panel layout)
+**Depended on by:** CS-15 (`uvvis_tab._apply_baseline` + `_load_uvvis_scan`),
+CS-16 (`NormalisationPanel._apply`), CS-18 (`SmoothingPanel._apply`),
+CS-19 (`PeakPickingPanel._apply`), CS-20 (`SecondDerivativePanel._apply`)
+
+### Responsibility
+
+Two small reusable pieces extracted in Phase 4j to absorb two
+long-running duplications that the prior phases (4c, 4e, 4g, 4h, 4i)
+flagged but couldn't resolve without touching multiple locked
+modules in one phase:
+
+* **`pick_default_color(graph) -> str`** — single source of truth
+  for "next default colour" picking. Walks every spectrum-shaped
+  NodeType in one go and indexes into the shared palette.
+* **`CollapsibleSection(parent, title, *, expanded=False)`** —
+  reusable show/hide wrapper widget for an arbitrary block of
+  Tk widgets. Header is a clickable strip with `▶ Title`
+  (collapsed) / `▼ Title` (expanded); body is a `tk.Frame` exposed
+  via the `body` property.
+
+### `node_styles.SPECTRUM_PALETTE` + `pick_default_color`
+
+`SPECTRUM_PALETTE` is a 10-entry tuple of hex colour strings (the
+matplotlib default Set1-ish palette: `#1f77b4`, `#d62728`, …
+`#17becf`). Pre-4j this literal was duplicated in six modules
+(`uvvis_tab` plus the four operation modules
+`uvvis_normalise` / `uvvis_smoothing` / `uvvis_peak_picking` /
+`uvvis_second_derivative`); CS-21 lifts it into `node_styles` and
+replaces every copy with an import.
+
+`SPECTRUM_PALETTE_NODE_TYPES` is the tuple of NodeTypes whose
+existence consumes a palette slot:
+
+```
+SPECTRUM_PALETTE_NODE_TYPES = (
+    NodeType.UVVIS,
+    NodeType.BASELINE,
+    NodeType.NORMALISED,
+    NodeType.SMOOTHED,
+    NodeType.SECOND_DERIVATIVE,
+    NodeType.PEAK_LIST,
+)
+```
+
+`pick_default_color(graph)` sums `len(graph.nodes_of_type(t,
+state=None))` over every type in `SPECTRUM_PALETTE_NODE_TYPES` and
+returns `SPECTRUM_PALETTE[total % len(SPECTRUM_PALETTE)]`. State
+is intentionally `None` (count provisional + committed +
+discarded) so colours stay sticky across an undo/redo round trip
+and across project save/load.
+
+Behaviour change vs pre-4j: peak_picking and second_derivative now
+see each other's nodes in the counter (pre-4j they each rolled
+their own palette-index expression that was mutually palette-
+invisible). Locked at the Phase 4j brief as the "order-independent"
+unified rule. xas_analysis_tab and exafs_analysis_tab keep their
+own local `_PALETTE` literals — Phase 0 / pre-redesign code, out
+of scope.
+
+### `CollapsibleSection`
+
+```
+collapsible_section.py
+  CollapsibleSection(parent, title, *, expanded=False,
+                     body_padx=0, body_pady=0)
+    .body              # tk.Frame — caller's content goes here
+    .title             # str
+    .is_expanded() -> bool
+    .expand()
+    .collapse()
+    .toggle()
+```
+
+* **Header strip** is a single full-width `tk.Label` with bold
+  font, `cursor="hand2"`, and a `<Button-1>` binding that calls
+  `toggle()`. Click anywhere on the strip toggles — no double-click
+  required, no separate expand button.
+* **Chevron glyph** sits at the start of the header text:
+  `▶ Title` when collapsed, `▼ Title` when expanded.
+* **Body** is a `tk.Frame`. When collapsed the body is
+  `pack_forget()`-en off the section; when expanded it is
+  re-`pack`-ed with `after=self._header` so siblings packed after
+  the section keep their position. Children of the body stay
+  packed inside it across collapse → expand cycles, so layout is
+  preserved exactly.
+* **State storage** — internal `tk.BooleanVar`. Not persisted to
+  project files this phase (Phase 8 concern by design).
+
+### Test coverage
+
+* `test_node_styles.py` (new, 16 tests) — `SPECTRUM_PALETTE`
+  shape, `SPECTRUM_PALETTE_NODE_TYPES` order, empty graph,
+  single-type counts, palette-length wrap, six-NodeType walk,
+  PEAK_LIST + SECOND_DERIVATIVE inclusion, state independence,
+  order independence across NodeType mixes.
+* `test_collapsible_section.py` (new, 13 tests) — default-collapsed
+  state, `expanded=True` at construction, expand / collapse /
+  toggle / is_expanded, idempotent expand-while-expanded, chevron
+  glyph swap, `.body` returns a `tk.Frame`, `<Button-1>` binding
+  registered, handler-direct toggle, body children survive a
+  collapse → expand round trip.
+* `test_uvvis_tab.TestCollapsibleLeftPaneSections` (new, 11
+  integration tests) — five `tab._{name}_section` attributes
+  exist, every section starts collapsed, collapsed bodies are
+  not packed, each operation panel lives inside its host
+  section's body, baseline section's inline widgets pack into
+  the section body, expand / collapse cycle on sections, header
+  click handler reachable through the tab.
+
+### Migration sites
+
+Every spectrum-creating call site in the UV/Vis path now reads
+the helper:
+
+| Site | Pre-4j | Post-4j |
+|---|---|---|
+| `uvvis_tab._load_uvvis_scan` | `_PALETTE[n_uvvis % len(_PALETTE)]` | `pick_default_color(self._graph)` |
+| `uvvis_tab._apply_baseline` | `_PALETTE[(n_uvvis + n_baseline) % len(_PALETTE)]` | `pick_default_color(self._graph)` |
+| `NormalisationPanel._apply` | three-term sum into local `_PALETTE` | `pick_default_color(self._graph)` |
+| `SmoothingPanel._apply` | four-term sum into local `_PALETTE` | `pick_default_color(self._graph)` |
+| `PeakPickingPanel._apply` | five-term sum into local `_PALETTE` | `pick_default_color(self._graph)` |
+| `SecondDerivativePanel._apply` | five-term sum (no PEAK_LIST) into local `_PALETTE` | `pick_default_color(self._graph)` |
+
+### `_build_left_panel` integration
+
+`uvvis_tab._build_left_panel` now constructs five `CollapsibleSection`
+instances stored on the tab as
+`self._baseline_section` / `self._normalisation_section` /
+`self._smoothing_section` / `self._peak_picking_section` /
+`self._second_derivative_section`. Each is created with
+`expanded=False` (locked default state at end of Phase 4i). The
+Baseline section's inline widgets (subject combobox, mode combobox,
+parameter rows, Apply button) pack into `self._baseline_section.body`;
+the four operation panels (`NormalisationPanel`, `SmoothingPanel`,
+`PeakPickingPanel`, `SecondDerivativePanel`) are constructed with
+`section.body` as parent. The four `ttk.Separator` strips between
+sections are gone — each section's bold-font header is the
+divider.
+
+### Defence-in-depth fix (commit 6)
+
+`scan_tree_widget._begin_label_edit` previously constructed
+`tk.StringVar(value=current)` with no explicit `master`. That
+fell back to `tkinter._default_root`, which is mutable: a fifth
+`tk.Tk()`-using test module loaded before `test_scan_tree_widget`
+shifted it and silently broke the rename Entry's textvariable
+binding (Entry rendered empty). Phase 4j passes `master=row_frame`
+explicitly. Same risk would have surfaced for any future plugin
+tab / workspace window that spawns its own Tk root, so this is a
+forward-defence fix as well as a test-stability fix.
+
+---
+
 ## CS-04 implementation notes (Phase 4c)
 
 * **B-001 fix — inline history expansion.** `_render_history`
@@ -2618,7 +2799,7 @@ earlier user-operation panels.
 
 ---
 
-*Document version: 1.9 — April 2026*
+*Document version: 1.10 — April 2026*
 *1.1: CS-13 implementation notes added in Phase 4a.*
 *1.2: CS-14 Plot Settings Dialog added in Phase 4b.*
 *1.3: CS-15 UV/Vis Baseline Correction + CS-04 implementation
@@ -2657,5 +2838,14 @@ existing curve render path handles it; lives in its own
 because chained derivatives are out of scope and the locked
 operation panels' parent-type checks would refuse it. Sidebar
 filter widened to include SECOND_DERIVATIVE.*
+*1.10: CS-21 Collapsible left-pane sections + shared palette helper
+added in Phase 4j. `node_styles.pick_default_color(graph)` unifies
+the six pre-4j palette-index expressions; `node_styles.SPECTRUM_PALETTE`
+becomes the single source of truth for the ten-entry default colour
+palette. `collapsible_section.py` adds a reusable show/hide widget
+used to wrap each of the five UV/Vis operation sections. CS-07 §"UV/Vis
+left panel" updated to show the collapsed-by-default header strips.
+Defence-in-depth production fix in `scan_tree_widget._begin_label_edit`
+(StringVar bound to explicit master) shipped alongside.*
 *To be updated as Open Questions are resolved and new components
 are specified.*
