@@ -39,13 +39,13 @@ params dict always contains the resolved bounds).
 from __future__ import annotations
 
 import uuid
-from typing import Callable, List, Mapping, Optional
+from typing import Callable, Mapping, Optional
 
 import numpy as np
 import tkinter as tk
 from tkinter import ttk, messagebox
 
-from graph import GraphEvent, GraphEventType, ProjectGraph
+from graph import ProjectGraph
 from node_styles import default_spectrum_style, pick_default_color
 from nodes import (
     DataNode,
@@ -201,57 +201,56 @@ def compute(mode: str, wavelength_nm, absorbance, params: Mapping | None):
 
 
 class NormalisationPanel(tk.Frame):
-    """Left-panel widget for UV/Vis normalisation (Phase 4e, CS-16).
+    """Left-panel widget for UV/Vis normalisation (Phase 4e, CS-16; Phase 4k).
 
-    Mirrors the Phase 4c baseline panel's shape but materialises a
-    NORMALISED operation chain instead of a BASELINE one:
+    Materialises a NORMALISED operation chain on the *shared subject*
+    selected by the host tab's top-of-pane combobox (Phase 4k, CS-22).
 
-    * **Subject combobox** — chooses which UVVIS / BASELINE /
-      NORMALISED node to normalise. Normalising a normalised node is
-      allowed (the user might first normalise to peak then to area).
     * **Mode combobox** — ``peak`` / ``area``. On change the parameter
       row frame rebuilds.
     * **Window entries** — ``Window lo / hi`` in nm. Required for both
       modes; blank entries are an error so the OperationNode's params
       dict carries the resolved bounds (CS-03 params completeness).
-    * **Apply button** — runs ``_apply()``.
+    * **Apply button** — runs ``_apply()``. Disabled when the host's
+      shared subject is missing or its NodeType is not in
+      :attr:`ACCEPTED_PARENT_TYPES`.
 
-    The panel owns its graph wiring: pass in the ``ProjectGraph`` and
-    a callable returning the live spectrum nodes (the host's
-    ``_spectrum_nodes`` helper, which already returns UVVIS +
-    BASELINE; the host extends it to include NORMALISED in Phase 4e
-    Part E so the subject list covers every spectrum the tab plots).
+    The host pushes the shared subject in via :meth:`set_subject`; the
+    panel does not own a subject combobox or graph subscription
+    (Phase 4k removed those — the tab subscribes once and fans the
+    result out to every panel).
     """
+
+    #: NodeTypes the panel accepts as parents for the NORMALISE op.
+    #: Normalising a normalised node is allowed (peak-then-area
+    #: chains). SMOOTHED is intentionally excluded — normalisation
+    #: should run on raw or baseline-corrected curves, before
+    #: smoothing, so the smooth window matches the canonical
+    #: amplitude scale.
+    ACCEPTED_PARENT_TYPES: tuple[NodeType, ...] = (
+        NodeType.UVVIS, NodeType.BASELINE, NodeType.NORMALISED,
+    )
 
     def __init__(
         self,
         parent: tk.Misc,
         graph: ProjectGraph,
-        spectrum_nodes_fn: Callable[[], List[DataNode]],
         status_cb: Optional[Callable[[str], None]] = None,
     ) -> None:
         super().__init__(parent)
         self._graph = graph
-        self._spectrum_nodes_fn = spectrum_nodes_fn
         self._status_cb = status_cb
+
+        # Shared-subject id pushed in by the host's top-of-pane
+        # combobox (Phase 4k). ``None`` means no subject is selected
+        # — the Apply button is disabled in that state.
+        self._subject_id: Optional[str] = None
 
         F9 = ("", 9)
         FC = ("Courier", 9)
 
         tk.Label(self, text="Normalisation",
                  font=("", 9, "bold")).pack(anchor="w", padx=4, pady=(4, 2))
-
-        # Subject — which spectrum to normalise.
-        subj_frame = tk.Frame(self)
-        subj_frame.pack(fill=tk.X, padx=4, pady=2)
-        tk.Label(subj_frame, text="Spectrum:", font=F9).pack(anchor="w")
-        self._subject_var = tk.StringVar(value="")
-        self._subject_map: dict[str, str] = {}
-        self._subject_cb = ttk.Combobox(
-            subj_frame, textvariable=self._subject_var,
-            state="readonly", font=F9, width=24,
-        )
-        self._subject_cb.pack(fill=tk.X)
 
         # Mode.
         mode_frame = tk.Frame(self)
@@ -288,36 +287,36 @@ class NormalisationPanel(tk.Frame):
         )
         self._apply_btn.pack(fill=tk.X)
 
-        # Subscribe to graph events so the subject combobox tracks
-        # which UVVIS / BASELINE / NORMALISED nodes exist. Lifetime is
-        # the panel's: unsubscribed automatically on ``<Destroy>``.
-        self._graph.subscribe(self._on_graph_event)
-        self.bind("<Destroy>", self._on_destroy_unsubscribe, add="+")
-
         self._refresh_param_rows()
-        self.refresh_subjects()
+        self._refresh_apply_state()
 
     # ------------------------------------------------------------------
-    # Public refresh API
+    # Public subject hand-off (Phase 4k, CS-22)
     # ------------------------------------------------------------------
 
-    def refresh_subjects(self) -> None:
-        """Repopulate the subject combobox from the live spectrum nodes.
+    def set_subject(self, node_id: Optional[str]) -> None:
+        """Adopt the host tab's shared subject selection.
 
-        The host's ``_spectrum_nodes`` callable is the source of
-        truth; this method only translates the list into combobox
-        items and preserves the user's selection if it still exists.
+        Called by ``UVVisTab`` whenever the top-of-pane shared
+        combobox changes or graph events change the spectrum list.
+        Re-evaluates the Apply button state: enabled iff a node id is
+        set AND the resolved node's type is in
+        :attr:`ACCEPTED_PARENT_TYPES`.
         """
-        nodes = self._spectrum_nodes_fn()
-        self._subject_map = {}
-        items: List[str] = []
-        for n in nodes:
-            key = f"{n.label}  [{n.id[:6]}]"
-            items.append(key)
-            self._subject_map[key] = n.id
-        self._subject_cb.configure(values=items)
-        if self._subject_var.get() not in items:
-            self._subject_var.set(items[0] if items else "")
+        self._subject_id = node_id
+        self._refresh_apply_state()
+
+    def _refresh_apply_state(self) -> None:
+        """Disable the Apply button when the shared subject isn't valid."""
+        ok = False
+        if self._subject_id is not None:
+            try:
+                node = self._graph.get_node(self._subject_id)
+            except KeyError:
+                node = None
+            if node is not None and node.type in self.ACCEPTED_PARENT_TYPES:
+                ok = True
+        self._apply_btn.configure(state=("normal" if ok else "disabled"))
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -375,24 +374,6 @@ class NormalisationPanel(tk.Frame):
             return {"area_lo_nm": lo, "area_hi_nm": hi}
         raise ValueError(f"Unknown normalisation mode: {mode!r}")
 
-    def _on_graph_event(self, event: GraphEvent) -> None:
-        """Refresh the subject list on structural / label / active changes."""
-        if event.type in (
-            GraphEventType.NODE_ADDED,
-            GraphEventType.NODE_DISCARDED,
-            GraphEventType.NODE_ACTIVE_CHANGED,
-            GraphEventType.NODE_LABEL_CHANGED,
-            GraphEventType.GRAPH_LOADED,
-            GraphEventType.GRAPH_CLEARED,
-        ):
-            self.refresh_subjects()
-
-    def _on_destroy_unsubscribe(self, _event) -> None:
-        try:
-            self._graph.unsubscribe(self._on_graph_event)
-        except Exception:
-            pass
-
     # ------------------------------------------------------------------
     # Apply — materialise op + node
     # ------------------------------------------------------------------
@@ -404,13 +385,18 @@ class NormalisationPanel(tk.Frame):
         OperationNode + one new provisional ``NORMALISED`` DataNode,
         wired ``parent → op → child``. Returns ``(op_id, child_id)``
         on success or ``None`` if the user input was rejected.
+
+        The shared subject id (Phase 4k, CS-22) is the source of truth
+        — set by the host via :meth:`set_subject`. The Apply button is
+        disabled when the subject is missing or its NodeType is not in
+        :attr:`ACCEPTED_PARENT_TYPES`, but defence-in-depth checks still
+        run here in case a programmatic invocation bypasses the gate.
         """
-        key = self._subject_var.get()
-        subject_id = self._subject_map.get(key)
+        subject_id = self._subject_id
         if not subject_id:
             messagebox.showinfo(
                 "Apply Normalisation",
-                "Select a spectrum first (load a file or pick from the list).",
+                "Select a spectrum from the top of the left pane first.",
             )
             return None
         try:
@@ -421,12 +407,10 @@ class NormalisationPanel(tk.Frame):
                 "Selected spectrum is no longer in the project graph.",
             )
             return None
-        if parent_node.type not in (
-            NodeType.UVVIS, NodeType.BASELINE, NodeType.NORMALISED,
-        ):
+        if parent_node.type not in self.ACCEPTED_PARENT_TYPES:
             messagebox.showerror(
                 "Apply Normalisation",
-                "Selected node is not a UV/Vis-style spectrum.",
+                "Selected node is not a valid parent for normalisation.",
             )
             return None
 
