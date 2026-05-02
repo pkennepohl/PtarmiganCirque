@@ -249,8 +249,9 @@ class NormalisationPanel(tk.Frame):
         F9 = ("", 9)
         FC = ("Courier", 9)
 
-        tk.Label(self, text="Normalisation",
-                 font=("", 9, "bold")).pack(anchor="w", padx=4, pady=(4, 2))
+        # No inline title label — the CollapsibleSection wrapper (CS-21,
+        # Phase 4j) owns the panel header, so a second "Normalisation"
+        # label inside the body would duplicate it (Phase 4n, CS-25).
 
         # Mode.
         mode_frame = tk.Frame(self)

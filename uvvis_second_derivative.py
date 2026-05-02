@@ -198,8 +198,9 @@ class SecondDerivativePanel(tk.Frame):
         F9 = ("", 9)
         FC = ("Courier", 9)
 
-        tk.Label(self, text="Second derivative",
-                 font=("", 9, "bold")).pack(anchor="w", padx=4, pady=(4, 2))
+        # No inline title label — the CollapsibleSection wrapper (CS-21,
+        # Phase 4j) owns the panel header, so a second "Second derivative"
+        # label inside the body would duplicate it (Phase 4n, CS-25).
 
         # Parameter Tk vars (kept on the panel so values survive UI
         # rebuilds). Defaults are 11-point Savitzky-Golay window with
