@@ -417,15 +417,14 @@ feature.
    below the baseline section (Part C 1e7afee, Part E ba17ef4;
    CS-16). The legacy top-bar `Norm:` combobox + `_y_with_norm`
    draw-time transform retired in Part E.
-3. **Send-to-Compare needs the Compare tab to exist.** ScanTreeWidget
-   is constructed with `send_to_compare_cb=None`
-   ([uvvis_tab.py:333](uvvis_tab.py#L333)), so the right-click "Send
-   to Compare" menu entry renders disabled (CS-04 implementation
-   notes). The toolbar's "+ Add to TDDFT Overlay" button is still
-   wired to the legacy `_add_scan_fn` callback. Phase 7 builds the
-   Compare tab and wires `send_to_compare_cb` to a
-   `compare_tab.add_node(node_id)` style hand-off; the toolbar
-   button retires at the same time.
+3. ~~**Send-to-Compare needs the Compare tab to exist.**~~
+   ✅ **Partially resolved in Phase 4n (CS-27).** UVVisTab now wires
+   `send_to_compare_cb=self._send_node_to_compare` so the right-click
+   menu entry is enabled on committed UV/Vis rows AND the new per-row
+   → icon (CS-27) routes to the same handler. The toolbar's
+   "+ Add to TDDFT Overlay" button is gone. The actual Compare tab
+   itself is still Phase 7; CS-27 routes through the existing
+   `_add_scan_fn` (TDDFT overlay) hook for now.
 4. **No graph subscription for the toolbar/limit-bar UI state.** The
    unit radio buttons and limit entry fields call `self._redraw()`
    directly rather than going through the graph. That is correct —
@@ -437,8 +436,9 @@ feature.
    graph-side `view_state` payload on each node. Out of scope for
    Phase 4 baseline/normalisation but flagged here so the
    Plot-Settings session has a starting point.
-5. **`_add_selected_to_overlay` still constructs `ExperimentalScan`
-   from graph nodes.** [uvvis_tab.py:613](uvvis_tab.py#L613) reads
+5. **`_send_node_to_compare` still constructs `ExperimentalScan`
+   from graph nodes.** (Renamed from `_add_selected_to_overlay` in
+   Phase 4n CS-27 — single-node refactor of the bulk method.) Reads
    `node.arrays` and `node.metadata` and synthesises an
    `ExperimentalScan` for the legacy TDDFT-overlay shim. This works
    but means UV/Vis values cross the graph boundary twice (out, then
@@ -600,12 +600,13 @@ fix until the relevant subsequent Phase 4 session.**
    today. The shim retires with Phase 7 (Send-to-Compare); the
    load-path use is intentionally type-narrow. No further
    convergence work needed.
-7. **Legacy "+ Add to TDDFT Overlay" button still synthesises
-   from UVVIS only.** `_add_selected_to_overlay` reads
-   `self._uvvis_nodes()` and silently skips BASELINE nodes —
-   correct today (overlay has no BASELINE knowledge) but the
-   shim retires when Phase 7 wires Send-to-Compare. No action
-   for Phase 4d/4e.
+7. ~~**Legacy "+ Add to TDDFT Overlay" button still synthesises
+   from UVVIS only.**~~ ✅ **Partially resolved in Phase 4n
+   (CS-27).** The button itself is gone (replaced by the per-row
+   → icon). The single-node helper `_send_node_to_compare`
+   continues to skip non-UVVIS rows silently — correct today (the
+   TDDFT overlay still has no BASELINE knowledge). The shim
+   retires when Phase 7 wires the actual Compare tab.
 
 ### Friction points carried forward from Phase 4d
 
@@ -1102,44 +1103,29 @@ until the relevant subsequent Phase 4 session.**
    register entry "Plot config + plot defaults persistence to
    project.json (CS-13 follow-up) (USER-FLAGGED)" below; canonical
    chain entries are 4b #1 (USER_DEFAULTS) + 4b #5 (_plot_config).
-6. **Duplicate section title in Processing left sidebar.**
+6. ~~**Duplicate section title in Processing left sidebar.**
    USER-FLAGGED at end of Phase 4l. All four operation
    `CollapsibleSection` panels except "Baseline Correction" render a
    second title label inside the section body (below the clickable
-   header). Likely a stale `tk.Label` left over from before
-   `CollapsibleSection` (CS-21) wrapped each panel's body — the
-   header now carries the title, so the inline label is duplicated.
-   Touches the four operation modules (`uvvis_normalise.py`,
-   `uvvis_smoothing.py`, `uvvis_peak_picking.py`,
-   `uvvis_second_derivative.py`); baseline is correct because it
-   was the original reference and never had an inline label of its
-   own. See the new register entry "Remove duplicate section title
-   from operation panels (USER-FLAGGED)".
-7. **+Add to TDDFT Overlay top-bar button is ambiguous + the
-   gesture should be per-row.** USER-FLAGGED at end of Phase 4l.
-   The existing top-bar button gives no signal about *what* it
-   adds (everything in the right sidebar? everything currently
-   visible on the plot?). Already an open register item ("Send to
-   Compare" — replaces "Add to TDDFT Overlay"); user is now
-   pinning the gesture shape: a per-row icon on each
-   ScanTreeWidget row, not a top-bar button. The right-sidebar
-   responsive-layout work in #8 below is the natural carrier
-   (the icon is one of the new always-visible cells). See the
-   updated register entry "Send to Compare action".
-8. **Right-sidebar responsive layout — minimum visible set is too
+   header).~~ ✅ **Resolved in Phase 4n (CS-25).** Stale `tk.Label`
+   deleted from each of the four operation modules; regression test
+   added per panel.
+7. ~~**+Add to TDDFT Overlay top-bar button is ambiguous + the
+   gesture should be per-row.** USER-FLAGGED at end of Phase 4l.~~
+   ✅ **Resolved in Phase 4n (CS-27).** The top-bar button is gone;
+   each ScanTreeWidget row carries a per-row → icon between ⚙ and ✕,
+   wired to `UVVisTab._send_node_to_compare(node_id)` (single-node
+   refactor of the old `_add_selected_to_overlay`).
+8. ~~**Right-sidebar responsive layout — minimum visible set is too
    narrow.** USER-FLAGGED at end of Phase 4l. Phase 4d's B-002
    landed the minimum always-visible set as
-   `state · [☑] · label · [⚙] · [✕]` collapsing below 280 px.
-   User now wants the minimum extended to include the provenance
-   icon (where the data came from) + the new per-row "Send to
-   Compare" icon (#7 above) — six cells:
-   `name · [☑] · provenance · [⚙] · [→Compare] · [✕]`. Wider
-   widths should restore the optional cells in a fixed priority
-   order: (1) colour swatch, (2) legend inclusion `[≡]`, (3)
-   linestyle canvas, (4) line width entry. Touches
-   `scan_tree_widget.py` (CS-04 §6.1, B-002 closed) plus
-   `_apply_responsive_layout` thresholds. See the new register
-   entry "Right-sidebar responsive layout extension".
+   `state · [☑] · label · [⚙] · [✕]` collapsing below 280 px.~~
+   ✅ **Resolved in Phase 4n (CS-26).** Always-visible minimum
+   grew to seven cells `state · [☑] · label · ⌥n · [⚙] · [→] ·
+   [✕]`; ⌥n promoted from optional. Single 280 px threshold replaced
+   by three priority-ordered thresholds (swatch @ 240, leg @ 280,
+   ls\_canvas @ 320). Fourth-priority "line width" cell deferred (no
+   per-row line-width control today).
 9. ~~**Scattering-functional baseline subtraction.** USER-FLAGGED at
    end of Phase 4l. Existing baseline modes (linear, polynomial,
    spline, rubberband) are general-purpose; UV/Vis spectra of
@@ -1214,6 +1200,72 @@ relevant subsequent Phase 4 session.**
    `state` would pin the contract before someone refactors the
    rebuild order.
 
+### Friction points carried forward from Phase 4n
+
+These are concrete obstacles the next Phase 4 session will hit.
+Identified during Phase 4n while removing duplicate panel titles
+(CS-25), extending the right-sidebar responsive layout (CS-26),
+and adding the per-row → Send-to-Compare icon (CS-27). Items 1, 4,
+5 plus the four register-elevated feature requests are
+USER-FLAGGED. **Do not fix until the relevant subsequent Phase 4
+session.**
+
+1. 🔴 **`_redraw` raises `KeyError: 'absorbance'` for non-UVVIS
+   DataNodes.** USER-FLAGGED at end of Phase 4n. `uvvis_tab._redraw`
+   walks every NodeType the sidebar filter accepts and reads
+   `node.arrays["absorbance"]` unconditionally, but BASELINE's array
+   schema is `wavelength_nm` + `baseline`. When a BASELINE node
+   enters the graph (via tests today; via the user's normal Apply
+   flow tomorrow once review tooling improves) the trace escapes to
+   stderr from inside the Tk graph-event handler. Defensive
+   per-NodeType branching in `_redraw` is the cheap fix. See the new
+   register entry "Defensive guard in `_redraw` for non-UVVIS
+   DataNodes". Pairs with the diagnostic-console entry (which would
+   route the trace somewhere visible).
+2. **Test convention not documented: full `_root.update()` is
+   required for geometry-sensitive assertions on a withdrawn
+   root.** `update_idletasks()` flushes idle handlers but does not
+   trigger Tk's geometry pass on a withdrawn root; `winfo_ismapped`
+   lags reality until the next event cycle. Pre-CS-26 responsive
+   tests got away with `update_idletasks` because the helper packed
+   less aggressively. The convention should live in
+   `test_scan_tree_widget`'s module docstring (and the equivalent
+   doc for any future widget tests). One-paragraph doc edit. See
+   the new register entry "Test convention: `_root.update()` over
+   `update_idletasks()` for geometry".
+3. **Responsive test setUp didn't pin host frame size, leading to
+   intermittent overflow auto-unmap.** Phase 4n CS-26 added
+   `tk.Frame(_root, width=800, height=400)` + `pack_propagate(False)`
+   + `widget.pack(fill="both", expand=True)` to the responsive class
+   setUp. Without these, the host's natural size is 1 px, Tk
+   auto-unmaps overflowed widgets, and `winfo_ismapped()` reports
+   False even for widgets that ARE in the pack list. Capture this
+   as a setUp pattern worth replicating in any future widget test
+   class that exercises responsive / overflow behaviour. (The
+   pattern is now in place for `TestScanTreeWidgetResponsiveRow`
+   and `TestScanTreeWidgetSendToCompareButton`; future widget
+   classes can copy.) Documentation-style; no register entry.
+4. 🔴 **Responsive helper does redundant pack/forget work on every
+   Configure event.** USER-FLAGGED at end of Phase 4n. CS-26's
+   `_apply_responsive_layout` unconditionally pack_forget+repacks
+   every optional cell on every call, because Tk's auto-unmap under
+   overflow makes `winfo_ismapped()` an unsound oracle for "is this
+   widget currently in our intended layout?". Correct but redundant
+   on rapid Configure events at the same width. Strategy: cache
+   the last applied "threshold band" per row and short-circuit when
+   the new width falls in the same band. See the new register entry
+   "Threshold-band caching for responsive helper (technical debt)".
+5. 🔴 **`⌥{n}` always-visible cell grows with digit count for long
+   provenance chains.** USER-FLAGGED at end of Phase 4n. The cell
+   renders `text=f"⌥{chain_len}"` literally; for `n > 9` the cell's
+   natural width grows by ~9 px per digit, which re-triggers the
+   responsive overflow pattern at widths today's tests verify safe.
+   User has confirmed `n > 9` is realistic for complex workflows.
+   See the new register entry "Long-provenance hist button display
+   options (USER-FLAGGED)" — four shape options to weigh. Pairs
+   with #4 above (any caching pass should account for cells whose
+   natural width changes after the row was first measured).
+
 | Status | Priority | Item | Notes |
 |---|---|---|---|
 | ✅ | 🔴 | **Migrate UV/Vis to node model** | UVVisScan → DataNode(type=UVVIS). File load → RAW\_FILE + LOAD + UVVIS triple, all COMMITTED (Phase 4a Part A; CS-13 implementation notes) |
@@ -1222,13 +1274,13 @@ relevant subsequent Phase 4 session.**
 | ✅ | 🔴 | **Baseline correction** | Linear (two-point), polynomial (order n), spline, rubberband/convex hull. Each application creates a provisional BASELINE node (Phase 4c; CS-15) |
 | ✅ | 🔴 | **Export processed data** | Single-node `.csv` / `.txt` export with `# `-prefixed provenance header. Row Export… gesture on committed nodes; provisional rows render the entry disabled. Pure header builder + pure file writer + widget gesture + dialog flow (Phase 4f; CS-17) |
 | ✅ | 🔴 | **Normalisation as explicit operation** | Normalisation creates a provisional NORMALISED node rather than modifying data in place. Two modes (peak / area), each with a window in nm; mirrors the Phase 4c BASELINE shape (Phase 4e; CS-16) |
-| ⏳ | 🔴 | **"Send to Compare" action** | Replaces "Add to TDDFT Overlay". Available on committed nodes. **Phase 4l USER-FLAGGED constraint**: the gesture must be a per-row icon on each ScanTreeWidget row, not the existing top-bar `+ Add to TDDFT Overlay` button — the top-bar button gives no signal about *what* it adds (everything in the right sidebar? everything visible on the plot?). Per-row icon disambiguates and feeds naturally into the right-sidebar responsive minimum (see "Right-sidebar responsive layout extension" entry below). Right-click context-menu entry remains the canonical fallback |
+| ✅ | 🔴 | **"Send to Compare" action** | Replaces "Add to TDDFT Overlay". Available on committed nodes. Resolved Phase 4n (CS-27): per-row → icon between ⚙ and ✕, disabled on provisional rows and when no `send_to_compare_cb` is wired (deferred-tab convention shared with Export…). UVVisTab wires `_send_node_to_compare(node_id)` (single-node refactor of the old `_add_selected_to_overlay` bulk method). Top-bar `+ Add to TDDFT Overlay` button removed — the per-row icon is the only gesture. Right-click context-menu "Send to Compare" entry retained as the fallback |
 | ✅ | 🔴 | **Plot Settings dialog** | Fonts, grid, background colour, legend position, tick direction, title/label customisation. Accessed via ⚙ in top bar (Phase 4b; CS-14). Button row matches CS-05 StyleDialog vocabulary `Apply · Save · Cancel` (Phase 4l; CS-23) |
 | ✅ | 🔴 | **Plot Settings dialog: Save & Close (consistent dialog button shape) (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4k. Resolved Phase 4l (CS-23): added a Save button between Apply and Cancel, equivalent to `_do_apply()` + `destroy()`. Mirrors StyleDialog's `Apply · Save · Cancel` shape (the `∀ Apply to All` slot is dropped — Plot Settings has no node-bulk concept; a future cross-tab-bulk feature would re-introduce it, see Phase 4l friction #1). Cancel + window-close [X] revert path unchanged (deep-copy snapshot was already in place). 458 tests, all green |
 | ✅ | 🟡 | **Peak picking** | Two modes: prominence (`scipy.signal.find_peaks`) and manual (comma-separated wavelengths snapped to the parent grid). Single OperationType.PEAK_PICK with `params["mode"]` ∈ {"prominence", "manual"} (mirrors CS-15 / CS-16 / CS-18). Output is a provisional `PEAK_LIST` DataNode rendered as scatter on top of the parent curve. `PeakPickingPanel` co-located in `uvvis_peak_picking.py` (Phase 4h; CS-19). λ/E annotation labels + optional peak-table export deferred to a future polish session |
 | ⏳ | 🟡 | **OLIS integrating sphere correction** | Three-input operation node (sample + reference + blank → corrected). See OQ-004 for multi-input UI design |
 | ⏳ | 🟡 | **Interactive normalisation** | Normalise to user-specified wavelength or integration region |
-| ⏳ | 🟡 | **Difference spectra** | Two-input operation node. See OQ-004 |
+| ⏳ | 🟡 | **Difference spectra (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4n. Two-input operation node — produces `A_ref - A_sample` (or vice versa) as a provisional DIFFERENCE node. See OQ-004 for multi-input UI design. Likely shape mirrors CS-15 / CS-16 but with two parents instead of one; the shared subject combobox (CS-22) needs a sibling "reference" combobox or a two-pane subject picker. Touches `uvvis_tab.py`, a new `uvvis_difference.py` panel, possibly `nodes.py` (new `NodeType.DIFFERENCE`), and `scan_tree_widget.py` filter |
 | ✅ | 🟡 | **Smoothing** | Savitzky-Golay or moving average; creates provisional SMOOTHED node. Single OperationType.SMOOTH with `params["mode"]` ∈ {"savgol", "moving_avg"} (mirrors CS-15 / CS-16). `SmoothingPanel` co-located in `uvvis_smoothing.py` (Phase 4g; CS-18). `node_styles.default_spectrum_style` extracted as the four-caller threshold sibling commit |
 | ✅ | 🟢 | **Second derivative** | Single-algorithm Savitzky-Golay derivative (`scipy.signal.savgol_filter` with `deriv=2`); no mode discriminator (the savgol routine smooths and differentiates in one pass — naive `np.gradient` would be a footgun mode rather than a useful alternative). Output is a provisional `SECOND_DERIVATIVE` `DataNode` rendered as a curve overlay on the same plot (reuses the `wavelength_nm` / `absorbance` schema; the latter holds d²A/dλ² values). `SecondDerivativePanel` co-located in `uvvis_second_derivative.py` (Phase 4i; CS-20). Chained derivatives intentionally out of scope: `SECOND_DERIVATIVE` is excluded from `_spectrum_nodes` so the locked baseline / normalise / smoothing / peak-picking panels do not surface it as a candidate parent (their parent type checks would silently refuse it) |
 | ⏳ | 🟢 | **Beer-Lambert / concentration** | Use known ε to extract concentration, or fit ε from known concentration |
@@ -1241,9 +1293,17 @@ relevant subsequent Phase 4 session.**
 | ⏳ | 🟢 | **Keyboard accessibility for `CollapsibleSection`** | The Phase 4j `CollapsibleSection` is a single mouse-clickable strip with no Tab focus indication or keyboard binding. For accessibility (and power users who prefer keyboard navigation) Tab-to-header + Space/Enter-to-toggle would mirror standard disclosure-widget conventions. Phase 11 (app-wide polish) — defer until other accessibility passes happen at the same time |
 | ⏳ | 🔴 | **Audit dialog button-row vocabulary across app + write convention into ARCHITECTURE.md (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4l. Phase 4l (CS-23) brought Plot Settings into parity with StyleDialog (`Apply · Save · Cancel`), but other modals in the app (file pickers, future Beer-Lambert preview, future scattering-baseline preview, future Send-to-Compare confirmation) haven't been audited. Without a written convention, future modals re-derive button vocabulary ad-hoc and the user's Cancel-vs-Save mental model erodes. Plan: walk every `tk.Toplevel` / dialog construction site, document the canonical four-button shape (`Apply · ∀ Apply to All · Save · Cancel`) in `ARCHITECTURE.md` as a UI convention with explicit rules for when each slot may be dropped (e.g. `∀ Apply to All` collapses when there is no node-bulk concept; CS-14 demonstrates), and refactor the outliers. Touches every dialog module + ARCHITECTURE.md. Pairs naturally with Phase 4l friction #1 (Plot Settings 3-button special case) |
 | ⏳ | 🔴 | **Plot config + plot defaults persistence to project.json (CS-13 follow-up) (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4l. Two persistence gaps elevated from Phase 4b friction #1 (`_USER_DEFAULTS` evaporates on app restart) + Phase 4b #5 (per-tab `_plot_config` rebuilt from scratch on every tab construction). Both should write through to `project.json` so reopening a project restores both the user's saved-default fonts/colours/etc. AND the per-tab plot configuration that was last in effect. Likely shape: `project.json` grows a top-level `plot_defaults` key (mirrors `plot_settings_dialog._USER_DEFAULTS`) plus a per-tab `tabs[<name>].plot_config = {...}` payload. `project_io.py` handles serialisation; `binah.py` wires load-time read into the dialog module + each tab's `_plot_config`. Dialog API is unchanged. Important so a user who customises font sizes (e.g. for accessibility) doesn't have to redo the work each session |
-| ⏳ | 🔴 | **Remove duplicate section title from operation panels (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4l from testing redesign/main. All four `CollapsibleSection`-wrapped operation panels (Normalisation, Smoothing, Peak picking, Second derivative) render a duplicate title label inside the section body — directly below the clickable header. Baseline Correction is correct (no inline title). Likely a stale `tk.Label` left over from before CS-21 wrapped each panel's body in a `CollapsibleSection` whose chevron-header now carries the title; the inline label was redundant and missed in the polish pass. Touches `uvvis_normalise.py`, `uvvis_smoothing.py`, `uvvis_peak_picking.py`, `uvvis_second_derivative.py`. Pure deletion — no test churn expected, though smoke-checking each panel still constructs is worth one round-trip |
-| ⏳ | 🔴 | **Right-sidebar responsive layout extension (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4l. Phase 4d's B-002 closed the responsive collapse below 280 px with the minimum visible set `state · [☑] · label · [⚙] · [✕]`. User now wants the minimum extended to include two more cells: the provenance icon (where the data came from — likely the existing 🛈/ℹ symbol or a new dedicated glyph) AND the per-row "Send to Compare" icon (see updated "Send to Compare" entry — gesture moves from the top bar to a per-row icon). Final minimum: `name · [☑] · provenance · [⚙] · [→Compare] · [✕]` (six cells). At wider widths the optional cells should restore in a fixed priority order: (1) colour swatch, (2) legend inclusion `[≡]`, (3) linestyle canvas, (4) line width entry. Touches `scan_tree_widget.py`'s `_apply_responsive_layout` (CS-04 §6.1) and the per-row builders. May need new collapse thresholds — six minimum cells need a wider floor than today's five. Cross-refs Phase 4l friction #7 + #8 |
+| ✅ | 🔴 | **Remove duplicate section title from operation panels (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4l. Resolved Phase 4n (CS-25): stale `tk.Label` deleted from `uvvis_normalise.py`, `uvvis_smoothing.py`, `uvvis_peak_picking.py`, `uvvis_second_derivative.py`. Baseline Correction was already correct. Each panel's test file gained a `test_no_inline_title_label_inside_panel_body` regression assertion that walks the widget tree and fails if a stale title `tk.Label` returns |
+| ✅ | 🔴 | **Right-sidebar responsive layout extension (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4l. Resolved Phase 4n (CS-26): the always-visible minimum grew from five to seven cells (`state · [☑] · label · ⌥n · [⚙] · [→] · [✕]`); ⌥n provenance count was promoted out of the optional set. Single 280 px threshold replaced by three priority-ordered thresholds — swatch @ 240, leg @ 280, ls\_canvas @ 320 — so optional cells reveal in priority order as the row widens. The fourth-priority "line width entry" cell deferred (no per-row line-width control today; reachable via the StyleDialog universal section). `_apply_responsive_layout` reflows `leg` + `ls_canvas` together to preserve the canonical visual order under Tk's overflow auto-unmap |
+| ✅ | 🔴 | **Send to Compare per-row icon (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4l (originally Phase 4l friction #7). Folded into CS-27 alongside the "Send to Compare" register row above — the per-row icon replaces the legacy top-bar `+ Add to TDDFT Overlay` bulk button. See the "Send to Compare" register row above and CS-27 in COMPONENTS.md |
 | ✅ | 🟡 | **Scattering-functional baseline mode** | USER-FLAGGED at end of Phase 4l. Resolved Phase 4m (CS-24): new `params["mode"] == "scattering"` discriminator on `OperationType.BASELINE`. Helper `compute_scattering(wavelength_nm, absorbance, params)` fits `B(λ) = c · λ^(-n)` over a user-defined peak-free window and subtracts the result across the full input range. `params["n"]` is either a numeric exponent (closed-form least-squares for `c` only) or the string `"fit"` (log–log linear regression for both `c` and `n`; requires absorbance > 0 throughout the fit window). UI parameter row: `n:` Entry (default `"4"` ≈ Rayleigh) + `Fit n` Checkbutton (disables the n entry when checked) + `Fit lo (nm):` / `Fit hi (nm):` entries. `BASELINE_MODES` grew from 4 to 5; combobox auto-pulled the new entry; `_DISPATCH` and `_collect_baseline_params` gained the new branch. Reuses provisional BASELINE node shape from CS-15 — renderer and ScanTreeWidget needed no changes. 472 tests, all green (12 pure-module + 2 integration new) |
+| ⏳ | 🔴 | **Show baseline function on the plot (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4n. After applying a baseline (any mode in CS-15 / CS-24), the resulting BASELINE node shows the *corrected* spectrum on the plot but the *fitted baseline curve* itself is invisible. The user wants to see the baseline overlaid on the original spectrum so they can judge the fit quality before committing — currently the only way is to flip back and forth between the parent UVVIS row and the BASELINE child. Likely shape: a new tab toggle "Show baseline curves" that, when on, walks the BASELINE provisional / committed nodes and plots `parent_absorbance - corrected_absorbance` (i.e. the baseline function itself) as a dashed overlay. Touches `uvvis_tab._redraw` and the plot legend. Pairs naturally with the CS-15 / CS-24 review workflow |
+| ⏳ | 🔴 | **Scattering baseline floor-zero shift (CS-24 follow-up) (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4n. The current `compute_scattering` returns `A - c·λ^(-n)`. For colloidal samples the corrected spectrum's minimum is often slightly negative (the fitted scattering tail can over- or under-shoot in the peak-free window). The user wants the corrected spectrum's minimum guaranteed ≥ 0 across the whole range — a sibling fitted offset `a` such that `B(λ) = a + c·λ^(-n)` and the post-subtraction floor is explicitly clamped (or fitted) to zero. Two paths: (a) extend `compute_scattering` to fit a constant offset alongside `c` (and `n`, if not pinned) — overlaps with Phase 4m friction #3 (composite `scattering+offset` mode); (b) post-subtraction shift to make `min(corrected) == 0` (preserves the fit but adds a fixed offset to every point). User's intent reads more like (a). Pin the params naming so the fitted offset is exportable (Phase 4m friction #2 / `n_fitted` analog: `params["a_fitted"]`) |
+| ⏳ | 🔴 | **Diagnostic console / fitted-parameter panel (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4n. Several places in the app produce numeric diagnostics that currently live only in `OperationNode.params` and never surface to the user: scattering log fit's resolved n (Phase 4m friction #2), upcoming scattering+offset's `a_fitted`, polynomial baseline fit residuals, peak-picking match list, rubberband convex-hull point count, etc. The user is asking whether a small read-only "console" or "log" pane (a scrolling text widget at the bottom of the app or a per-tab footer) would carry these. Two shapes worth weighing: (a) **per-tab inline diagnostic strip** — small read-only panel at the bottom of each tab's left pane that names the most recently applied op and lists its key fitted values; refreshed on every Apply; (b) **app-wide log console** — a collapsible bottom drawer (like an IDE's output pane) that streams every op's "results" line plus warnings / errors / debug; survives tab switches. (b) doubles as a place for the `_redraw` KeyError trace (Phase 4n friction #1) and the messagebox messages currently shown via popups (e.g. "no Compare host connected"). Both shapes are non-trivial; pick before any Phase 4 follow-up that needs to surface a fitted value |
+| ⏳ | 🔴 | **Defensive guard in `_redraw` for non-UVVIS DataNodes** | Surfaced by Phase 4n while writing the Send-to-Compare integration test. `uvvis_tab._redraw` reads `node.arrays["absorbance"]` for every NodeType the sidebar filter accepts (UVVIS, BASELINE, NORMALISED, SMOOTHED, PEAK_LIST, SECOND_DERIVATIVE), but BASELINE's array schema is `wavelength_nm` + `baseline` (no `absorbance` key). When a BASELINE DataNode enters the graph, `_redraw` raises `KeyError: 'absorbance'` from inside the Tk graph-event handler — the trace escapes to stderr but the handler swallows nothing. Today this only fires when a BASELINE node is created via test scaffolding (the live operation panels always create a UVVIS-shaped sibling node), but a defensive guard is cheap: skip nodes whose schema doesn't match the renderer's read pattern, or branch on `node.type` and pick the right array key. Touches `uvvis_tab.py:1369`. Pairs with the diagnostic console entry above (the trace would route there instead of escaping silently) |
+| ⏳ | 🟡 | **Long-provenance hist button display options (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4n. The `⌥{n}` always-visible cell (CS-26 promotion) renders the provenance chain length as a literal integer. For complex workflows `n > 9` is realistic — the row's natural width grows with the digit count, which can re-trigger the responsive overflow pattern at the same widths today's tests verify. Options to weigh in the implementing session: (a) cap display at `⌥9+` once n > 9 with the exact count surfaced via tooltip / history sub-frame; (b) two-digit fixed width (`⌥01`...`⌥99`) so the row's natural width is bounded but the count remains readable; (c) hide digits entirely (just `⌥`) and surface the count only via the expanded history sub-frame; (d) SI-suffix style (`⌥9`, `⌥1k` for >999). Touches `scan_tree_widget._populate_node_row` (the `text=f"⌥{chain_len}"` line) and the existing `test_provenance_op_count` style assertions. User has confirmed `n > 9` is "easily seen for complex workflows" so this is not edge-case |
+| ⏳ | 🟢 | **Threshold-band caching for responsive helper (technical debt)** | Phase 4n CS-26's `_apply_responsive_layout` unconditionally pack_forget+repacks every optional cell on every call (rather than tracking last-applied state) because Tk auto-unmap under overflow makes `winfo_ismapped()` an unsound "have" oracle. The fix is correct but does redundant work on every `<Configure>` event at the same width. Cache the last applied "threshold band" per row (e.g. one of `(none, swatch, swatch+leg, all)`) and short-circuit the reflow when the new width falls in the same band. Care needed: the cache must be invalidated on `_populate_node_row` (a row rebuild starts fresh). Cheap polish; defer until flicker is observed in real use |
+| ⏳ | 🟢 | **Test convention: `_root.update()` over `update_idletasks()` for geometry** | Surfaced during Phase 4n CS-26 test work. `update_idletasks()` flushes idle handlers but does NOT trigger Tk's geometry pass on a withdrawn root; `winfo_ismapped()` lags reality until the next event cycle. Pre-CS-26 responsive tests got away with `update_idletasks` because the helper packed less aggressively; CS-26's unconditional reflow exposed the gap. Document the convention in `test_scan_tree_widget`'s module docstring (and the equivalent docstrings in any future widget tests that read mapped state): "after a layout-changing call on a withdrawn `_root`, use `_root.update()`, not `update_idletasks()`, before reading `winfo_ismapped`". One-paragraph doc edit; no code change |
 
 ---
 
@@ -1459,7 +1519,7 @@ the resolving phase + commit SHA appended to the row.
 
 ---
 
-*Document version: 1.12 — May 2026*
+*Document version: 1.13 — May 2026*
 *1.1: Known Bugs register added 2026-04-27 after Phase 4b manual testing.*
 *1.2: Phase 4c — baseline correction lands; B-001 / B-003 / B-004
 resolved; Phase 4c friction points logged.*

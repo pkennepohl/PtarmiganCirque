@@ -23,7 +23,7 @@ Layout (per row, left to right; matches CS-04 §6.1)
 
 ::
 
-    [state] [swatch] [☑] [label] [✓/–] [~~~~] [⌥n] [⚙] [✕]
+    [state] [swatch] [☑] [label] [✓/–] [~~~~] [⌥n] [⚙] [→] [✕]
 
 * ``state``  — ``🔒`` committed, ``⋯`` provisional.
 * ``swatch`` — colour button; click opens ``tk.colorchooser``.
@@ -37,8 +37,18 @@ Layout (per row, left to right; matches CS-04 §6.1)
   expansion below the row.
 * ``⚙``      — invokes ``style_dialog_cb(node_id)``; the widget
   never imports the dialog module (Phase 3).
+* ``→``      — invokes ``send_to_compare_cb(node_id)``; disabled
+  when no callback is wired (the deferred-tab convention) or the
+  row is provisional. Per-row Phase 4n CS-27 replacement for the
+  legacy "+ Add to TDDFT Overlay" top-bar bulk button.
 * ``✕``      — provisional → ``discard_node``; committed →
   ``set_active(False)`` (soft-hide, not delete; CS-04 §6.1).
+
+Phase 4n CS-26 promoted ``⌥n`` from the optional set into the
+always-visible minimum (so the provenance affordance survives a
+narrow sidebar) and replaced the single 280 px collapse threshold
+with three priority-ordered thresholds — see
+``_RESPONSIVE_THRESHOLDS_PX``.
 
 A "Show hidden" checkbutton at the bottom (off by default) reveals
 committed nodes that have been soft-hidden (``active=False``).
@@ -112,14 +122,32 @@ _DEFAULT_STYLE: dict[str, Any] = {
 }
 
 
-# Responsive row collapse threshold (B-002, Phase 4d). Below this row
-# pixel width the optional controls (swatch, legend toggle, linestyle
-# canvas, history button) are pack_forget-ed; the always-visible
-# minimum (state, ☑ visibility, label, ⚙ gear, ✕) keeps the row usable
-# at any width. The full set of collapsed controls remains reachable
-# through the unified StyleDialog (CS-05) — see CS-05 universal
-# section for ``visible`` / ``in_legend`` parity.
-_RESPONSIVE_COLLAPSE_PX: int = 280
+# Responsive row collapse — Phase 4d B-002 (single 280 px threshold)
+# extended in Phase 4n CS-26 to three priority-ordered thresholds.
+#
+# The always-visible minimum is now ``state · ☑ · label · ⌥n · ⚙ ·
+# → · ✕`` (seven cells). Optional cells reveal in priority order as
+# the row widens past each threshold:
+#
+#   1. ``swatch``    — ``style.color`` colour button (priority 1)
+#   2. ``leg``       — ``✓/–`` legend toggle      (priority 2)
+#   3. ``ls_canvas`` — linestyle preview canvas   (priority 3)
+#
+# Below the smallest threshold, no optional cells are shown; the
+# always-visible minimum keeps the row usable. The full set of
+# hidden controls remains reachable through the unified StyleDialog
+# (CS-05).
+#
+# ``_RESPONSIVE_COLLAPSE_PX`` is the smallest threshold (i.e. the
+# width at or above which any optional cell is shown). Kept as a
+# module-level alias so callers / tests have a single "is the row
+# narrow?" sentinel.
+_RESPONSIVE_THRESHOLDS_PX: tuple[tuple[str, int], ...] = (
+    ("swatch",    240),
+    ("leg",       280),
+    ("ls_canvas", 320),
+)
+_RESPONSIVE_COLLAPSE_PX: int = _RESPONSIVE_THRESHOLDS_PX[0][1]
 
 
 def _style_get(node: DataNode, key: str) -> Any:
@@ -230,11 +258,10 @@ class ScanTreeWidget(tk.Frame):
         # group (to avoid creating a separate row for the same node).
         self._sweep_leaders: set[str] = set()
         # Per-row optional controls indexed by node id, used by the
-        # responsive collapse logic (B-002). Each entry maps a name
-        # ("swatch", "leg", "ls_canvas", "hist") to the widget that
-        # should hide when the row narrows below ``_RESPONSIVE_COLLAPSE_PX``
-        # — and to the anchor widget (``vis_cb``) the swatch needs for
-        # correct re-insertion via ``pack(before=...)``.
+        # responsive layout helper (B-002 + Phase 4n CS-26). Each
+        # entry maps a name ("swatch", "leg", "ls_canvas") to the
+        # optional widget plus ``vis_cb`` (the swatch's re-pack
+        # anchor for ``pack(before=...)``).
         self._optional_row_widgets: dict[str, dict[str, tk.Widget]] = {}
 
         self._build_chrome()
@@ -442,13 +469,15 @@ class ScanTreeWidget(tk.Frame):
     def _populate_node_row(self, row: tk.Frame, node: DataNode) -> None:
         """Fill a row frame with the per-node controls.
 
-        The row layout follows CS-04 §6.1. The minimum always-visible
-        set (state, ☑ visibility, label, ⚙ gear, ✕) is packed
-        unconditionally; the optional set (swatch, legend toggle,
-        linestyle canvas, history button) is tracked in
+        The row layout follows CS-04 §6.1 as extended by Phase 4n.
+        Always-visible minimum: ``state``, ``☑`` visibility, ``label``,
+        ``⌥n`` provenance count (Phase 4n CS-26 promotion),
+        ``⚙`` gear, ``→`` Send-to-Compare (Phase 4n CS-27), ``✕``.
+        Optional set: ``swatch``, ``leg``, ``ls_canvas``, tracked in
         ``self._optional_row_widgets[node.id]`` so the responsive
-        collapse logic can hide them when the row narrows below
-        ``_RESPONSIVE_COLLAPSE_PX`` (B-002, Phase 4d).
+        layout helper can show / hide each one independently as the
+        row crosses its threshold (CS-26 graduated reveal — see
+        ``_RESPONSIVE_THRESHOLDS_PX``).
         """
         for child in row.winfo_children():
             child.destroy()
@@ -497,6 +526,23 @@ class ScanTreeWidget(tk.Frame):
         )
         x_btn.pack(side="right", padx=(2, 0))
 
+        # → — Send-to-Compare (Phase 4n CS-27). Disabled when no
+        # callback is wired (deferred-tab convention shared with
+        # Export…) or when the row is provisional (commit-or-discard
+        # discipline before a spectrum can leak into a downstream
+        # tab). Sits between ⚙ and ✕ so the right cluster reads
+        # ``[⌥n] [⚙] [→] [✕]`` left-to-right.
+        compare_state = ("normal" if (
+            self._send_to_compare_cb is not None
+            and node.state == NodeState.COMMITTED
+        ) else "disabled")
+        compare_btn = tk.Button(
+            row, text="→", relief=tk.FLAT, cursor="hand2",
+            state=compare_state,
+            command=lambda nid=node.id: self._on_send_to_compare_clicked(nid),
+        )
+        compare_btn.pack(side="right", padx=(2, 0))
+
         # ⚙ — style dialog hand-off.
         gear_btn = tk.Button(
             row, text="⚙", relief=tk.FLAT, cursor="hand2",
@@ -504,7 +550,9 @@ class ScanTreeWidget(tk.Frame):
         )
         gear_btn.pack(side="right", padx=(2, 0))
 
-        # ⌥n — history expand toggle.
+        # ⌥n — history expand toggle. Always visible after CS-26 so
+        # the provenance affordance doesn't disappear on a narrow
+        # sidebar; no longer in the responsive optional set.
         chain_len = self._provenance_op_count(node.id)
         hist_btn = tk.Button(
             row, text=f"⌥{chain_len}", relief=tk.FLAT, cursor="hand2",
@@ -543,15 +591,17 @@ class ScanTreeWidget(tk.Frame):
             )
 
         # Track optional controls so the responsive collapse logic can
-        # find them by name (B-002, Phase 4d). The ``vis_cb`` reference
-        # is stored as the swatch's re-pack anchor — without
-        # ``before=vis_cb`` a re-packed swatch lands on the wrong side
-        # of the label, which has ``fill="x", expand=True``.
+        # find them by name (B-002, Phase 4d; thresholds extended in
+        # Phase 4n CS-26). ``hist`` is no longer optional — it sits in
+        # the always-visible minimum after CS-26 — so it is omitted
+        # from this dict. The ``vis_cb`` reference is stored as the
+        # swatch's re-pack anchor: without ``before=vis_cb`` a
+        # re-packed swatch lands on the wrong side of the label, which
+        # has ``fill="x", expand=True``.
         self._optional_row_widgets[node.id] = {
             "swatch":     swatch,
             "leg":        leg_btn,
             "ls_canvas":  ls_canvas,
-            "hist":       hist_btn,
             "vis_cb":     vis_cb,
         }
 
@@ -579,21 +629,32 @@ class ScanTreeWidget(tk.Frame):
     ) -> None:
         """Hide / re-pack optional controls based on row width.
 
-        Below ``_RESPONSIVE_COLLAPSE_PX`` the optional row controls
-        (swatch, legend toggle, linestyle canvas, history button) are
-        ``pack_forget``-ed so the always-visible minimum (state, ☑
-        visibility, label, ⚙ gear, ✕) keeps the row usable on a
-        narrow sidebar. At or above the threshold the optional
-        controls are re-packed in the original layout order.
+        Phase 4n CS-26 graduated reveal: each cell in
+        ``_RESPONSIVE_THRESHOLDS_PX`` is mapped iff the row is at
+        least its threshold wide. Below the smallest threshold no
+        optional cells are shown; the always-visible minimum
+        (state, ☑, label, ⌥n, ⚙, →, ✕) keeps the row usable.
 
-        The right-side optional widgets are re-packed in the same
-        order as the initial build (``hist`` → ``ls_canvas`` → ``leg``)
-        so each subsequent ``side="right"`` pack lands to the left of
-        the previously packed right-side controls — matching the
-        original visual order ``leg ls_canvas hist gear x``. The
-        swatch is re-inserted with ``before=vis_cb`` because a plain
-        ``side="left"`` would place it after ``label`` (which has
-        ``fill="x", expand=True`` and consumes the remaining left
+        The helper unconditionally rewrites the optional cells'
+        pack state on every call rather than tracking "current"
+        state, because:
+
+        * Tk auto-unmaps a packed widget that doesn't fit in a
+          narrow parent, so ``winfo_ismapped()`` cannot be trusted
+          as the "is this widget in our intended layout?" oracle —
+          it disagrees with the pack list under overflow.
+        * The right-side optional widgets share a delicate ordering
+          invariant: when both ``leg`` and ``ls_canvas`` are mapped
+          the canonical visual order is ``leg ls_canvas`` (leg
+          leftmost). Re-packing both together preserves that
+          regardless of which threshold was just crossed.
+        * Repeated <Configure> events with the same width pay only
+          a few pack-list updates per row — Tk's pack manager is
+          a tcl-level operation, no perceptible flicker.
+
+        ``swatch`` is re-inserted with ``before=vis_cb`` because a
+        plain ``side="left"`` would place it after ``label`` (which
+        has ``fill="x", expand=True`` and consumes remaining left
         space).
         """
         widgets = self._optional_row_widgets.get(node_id)
@@ -609,37 +670,52 @@ class ScanTreeWidget(tk.Frame):
         if width <= 1:
             return
 
-        if width < _RESPONSIVE_COLLAPSE_PX:
-            for name in ("swatch", "leg", "ls_canvas", "hist"):
-                w = widgets.get(name)
-                if w is None:
-                    continue
-                try:
-                    if w.winfo_ismapped():
-                        w.pack_forget()
-                except tk.TclError:
-                    pass
-            return
+        thresholds = dict(_RESPONSIVE_THRESHOLDS_PX)
+        swatch    = widgets.get("swatch")
+        vis_cb    = widgets.get("vis_cb")
+        leg       = widgets.get("leg")
+        ls_canvas = widgets.get("ls_canvas")
 
-        # Wide enough — restore optional controls if any are hidden.
-        swatch = widgets.get("swatch")
-        vis_cb = widgets.get("vis_cb")
-        if (swatch is not None
-                and vis_cb is not None
-                and not swatch.winfo_ismapped()):
+        want_swatch = width >= thresholds["swatch"]
+        want_leg    = width >= thresholds["leg"]
+        want_ls     = width >= thresholds["ls_canvas"]
+
+        # Left side — swatch is independent of right-side ordering.
+        # Always pack_forget first so the subsequent pack call (if
+        # any) inserts at the correct position via ``before=vis_cb``.
+        if swatch is not None:
             try:
-                swatch.pack(side="left", padx=2, before=vis_cb)
+                swatch.pack_forget()
             except tk.TclError:
                 pass
+            if want_swatch and vis_cb is not None:
+                try:
+                    swatch.pack(side="left", padx=2, before=vis_cb)
+                except tk.TclError:
+                    pass
 
-        for name in ("hist", "ls_canvas", "leg"):
-            w = widgets.get(name)
+        # Right side — reflow ``leg`` and ``ls_canvas`` together so
+        # the canonical visual order ``leg · ls_canvas · ⌥n · ⚙ ·
+        # → · ✕`` is preserved no matter which threshold was just
+        # crossed.
+        for w in (leg, ls_canvas):
             if w is None:
                 continue
-            if w.winfo_ismapped():
-                continue
             try:
-                w.pack(side="right", padx=(2, 0))
+                w.pack_forget()
+            except tk.TclError:
+                pass
+        # Pack in the order ``ls_canvas`` then ``leg`` so each
+        # ``side="right"`` call lands to the left of the previously
+        # packed widget.
+        if want_ls and ls_canvas is not None:
+            try:
+                ls_canvas.pack(side="right", padx=(2, 0))
+            except tk.TclError:
+                pass
+        if want_leg and leg is not None:
+            try:
+                leg.pack(side="right", padx=(2, 0))
             except tk.TclError:
                 pass
 
@@ -780,6 +856,26 @@ class ScanTreeWidget(tk.Frame):
             )
             return
         self._style_dialog_cb(node_id)
+
+    def _on_send_to_compare_clicked(self, node_id: str) -> None:
+        """Handle a click on the per-row → Send-to-Compare button.
+
+        Phase 4n CS-27. Disabled-button protection means a callback
+        is wired and the row is COMMITTED — but we re-check anyway
+        because the row state could change between row build and
+        click without a rebuild firing (defensive).
+        """
+        if self._send_to_compare_cb is None:
+            return
+        try:
+            node = self._graph.get_node(node_id)
+        except KeyError:
+            return
+        if not isinstance(node, DataNode):
+            return
+        if node.state != NodeState.COMMITTED:
+            return
+        self._send_to_compare_cb(node_id)
 
     # ------------------------------------------------------------
     # In-place label editing

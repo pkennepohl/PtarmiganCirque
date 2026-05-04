@@ -284,6 +284,31 @@ class TestNormalisationPanel(unittest.TestCase):
             (NodeType.UVVIS, NodeType.BASELINE, NodeType.NORMALISED),
         )
 
+    def test_no_inline_title_label_inside_panel_body(self):
+        # Phase 4n (CS-25): the panel body must not render its own
+        # "Normalisation" label — the CollapsibleSection wrapper (CS-21)
+        # owns the section header. A second inline title would
+        # duplicate it on screen, which was the user-flagged bug
+        # (Phase 4l friction #6) this phase fixes. Recursive walk so a
+        # future refactor that nests the label inside a sub-frame is
+        # also caught.
+        def _walk_labels(widget):
+            out = []
+            for child in widget.winfo_children():
+                if isinstance(child, tk.Label):
+                    out.append(child)
+                out.extend(_walk_labels(child))
+            return out
+        offending = [
+            lbl for lbl in _walk_labels(self.panel)
+            if lbl.cget("text") == "Normalisation"
+        ]
+        self.assertEqual(
+            offending, [],
+            "panel body must not carry an inline 'Normalisation' label "
+            "— the CollapsibleSection header owns the title (CS-21).",
+        )
+
     def test_param_rows_rebuild_on_mode_change(self):
         self._add_uvvis()
         self.panel._mode_var.set("peak")

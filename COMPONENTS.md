@@ -3079,11 +3079,171 @@ Five Phase 4k friction items above are not addressed by CS-22:
   they do not depend on the host's real geometry. Tests also call
   `update_idletasks()` between layout calls because
   `winfo_ismapped()` reflects the result of Tk's geometry pass,
-  not the most recent `pack` / `pack_forget`.
+  not the most recent `pack` / `pack_forget`. Phase 4n note: this
+  guidance is incomplete — see CS-04 implementation notes (Phase
+  4n, CS-26) for the `_root.update()` requirement on a withdrawn
+  root.
+
+## CS-25 — Duplicate panel-title deletion (Phase 4n, task C)
+
+**Files:** `uvvis_normalise.py`, `uvvis_smoothing.py`,
+`uvvis_peak_picking.py`, `uvvis_second_derivative.py`
+**Depends on:** CS-21 (`CollapsibleSection`)
+
+The four `CollapsibleSection`-wrapped operation panels each
+rendered a stale `tk.Label(self, text="<Title>", …)` directly
+below the chevron header — a visual duplicate of the title that
+the chevron-header (CS-21) already shows. The label was a
+leftover from before CS-21 wrapped each panel's body; the
+chevron-header's title made it redundant.
+
+CS-25 is a pure deletion: the inline `tk.Label` line is removed
+from each of the four panel modules. Baseline Correction was
+unaffected (the inline section in `uvvis_tab.py` never had its
+own title label). Each panel test file gains a
+`test_no_inline_title_label_inside_panel_body` regression
+assertion that walks the panel's widget tree recursively and
+fails if any `tk.Label` carries the section title text — future
+refactors that re-introduce the duplicate (or move it inside a
+sub-frame) will trip the guard.
+
+## CS-04 implementation notes (Phase 4n, CS-26 — graduated reveal)
+
+Phase 4d's B-002 closed the responsive collapse with a single
+280 px threshold over four optional cells (swatch, legend
+toggle, linestyle canvas, history button). Phase 4n CS-26 makes
+two coupled changes:
+
+* **`hist` (⌥n provenance count) is promoted out of the optional
+  set into the always-visible minimum.** The new minimum is
+  seven cells: `state · [☑] · label · ⌥n · [⚙] · [→] · [✕]`.
+  (`[→]` is added by CS-27 in the same phase.) The old optional
+  set shrinks to three cells: swatch, leg, ls\_canvas. `hist`
+  is no longer present in `_optional_row_widgets[node_id]` —
+  the dict is the responsive-helper's working set, not a
+  generic "all widgets in the row" registry.
+
+* **Single 280 px threshold replaced by three priority-ordered
+  thresholds** in `_RESPONSIVE_THRESHOLDS_PX`:
+
+  | Priority | Cell        | Threshold |
+  |----------|-------------|-----------|
+  | 1        | `swatch`    | 240 px    |
+  | 2        | `leg`       | 280 px    |
+  | 3        | `ls_canvas` | 320 px    |
+
+  Below 240 px no optional cells are shown; the always-visible
+  minimum keeps the row usable. As the row widens past each
+  threshold, the corresponding cell maps. The smallest threshold
+  (240 px) is exposed as `_RESPONSIVE_COLLAPSE_PX` for callers /
+  tests that want a single "is the row narrow?" sentinel.
+
+The fourth-priority "line width entry" cell from the Phase 4l
+USER-FLAGGED brief is deferred (no per-row line-width control
+exists today; the universal section of `StyleDialog` (CS-05)
+is the canonical reach point).
+
+**Helper invariants under Tk overflow.** `_apply_responsive_layout`
+unconditionally `pack_forget`s + repacks every optional cell on
+every call rather than tracking last-applied state. The reason
+is subtle: Tk auto-unmaps a packed widget that doesn't fit in a
+narrow parent — leaving it in the pack list at its old position
+even though `winfo_ismapped()` returns False. A `winfo_ismapped`-
+based "have" check would intermittently disagree with the pack
+list (visible in tests where the host frame is at its default
+1 px size before geometry runs), and a guarded `pack_forget`
+would skip the call. The subsequent `pack(side="right")` would
+be a no-op (widget already in the list at its old position),
+breaking the canonical visual order `leg ls_canvas hist gear →
+x`. The unconditional reflow pays a few pack-list updates per
+Configure event but is correct under every overflow regime.
+
+The right-side optional cells are reflowed **together**: when
+the desired set of `(want_leg, want_ls)` differs from the
+actual set, both widgets are `pack_forget`ed and then re-packed
+in the order `ls_canvas → leg`. Each `side="right"` pack lands
+to the left of the previously packed widget, so this order
+yields the visual `leg | ls_canvas | hist | …`. Re-packing only
+one (when the other is already mapped) would break the order
+because `pack` on a widget that is already in the pack list
+just updates options at its existing position rather than
+moving it.
+
+The threshold-band caching optimisation (skip the reflow when
+the new width falls in the same band as the previous call) is
+deferred — see Phase 4n friction #4 / "Threshold-band caching
+for responsive helper".
+
+**Test convention update.** `update_idletasks()` flushes idle
+handlers but does NOT trigger Tk's geometry pass on a withdrawn
+root; `winfo_ismapped()` lags reality until the next event
+cycle. The pre-CS-26 helper packed less aggressively and the
+tests got away with `update_idletasks` alone. CS-26 tests use
+`_root.update()` after layout-changing operations, plus a host
+frame pinned to 800 × 400 with `pack_propagate(False)` and the
+widget packed `fill="both", expand=True`. Otherwise the host's
+natural width is 1 px, Tk auto-unmaps overflowed widgets, and
+`winfo_ismapped` reports False even for widgets that ARE in the
+pack list — masquerading as a helper bug. The convention is
+captured as Phase 4n friction #2 (test convention) for any
+future widget tests that read mapped state.
+
+## CS-04 implementation notes (Phase 4n, CS-27 — per-row → Send-to-Compare)
+
+The legacy "+ Add to TDDFT Overlay" top-bar bulk button is
+retired. Each `ScanTreeWidget` row now carries a `→` button
+between `[⚙]` and `[✕]`, in the always-visible minimum (CS-26).
+
+* **Disabled-state convention** mirrors Export… (CS-17): the
+  button is rendered in `state="disabled"` when no
+  `send_to_compare_cb` is wired (deferred-tab convention) OR
+  when the row's node is not `COMMITTED`. The button is always
+  *present* (the affordance is visible) so users can see the
+  available gesture and learn the commit-or-discard discipline.
+
+* **Defensive re-check on click.** The button's disabled state
+  is set at row build time. A row's state can change between
+  build and click without a row rebuild firing (rare today but
+  possible if a future feature mutates state without invalidating
+  the rendered row). The handler `_on_send_to_compare_clicked`
+  re-validates `node.state == NodeState.COMMITTED` and the
+  callback's existence before invoking the callback. Stale ids
+  (row destroyed between build and click) are swallowed via the
+  `KeyError` branch.
+
+* **UVVisTab integration.** The tab wires
+  `send_to_compare_cb=self._send_node_to_compare` in
+  `_build_sidebar`. `_send_node_to_compare(node_id)` is a
+  single-node refactor of the old `_add_selected_to_overlay`
+  bulk method — same energy-conversion path
+  (`wavelength_nm` → eV via `_HC_NM_EV / wl`) and same
+  `ExperimentalScan` shape, but reads one node by id instead of
+  walking `_uvvis_nodes()` and filtering by `style.visible`.
+  The "no Compare host connected" messagebox is preserved; it
+  fires when `_add_scan_fn is None`, matching the legacy
+  button's gate.
+
+* **Status-bar message** changes from the legacy
+  `"Added N spectra to TDDFT overlay."` to
+  `"Sent <label> to TDDFT overlay."` — single-node semantics
+  surface in the user-visible feedback.
+
+* **Right-click context-menu "Send to Compare"** entry remains
+  in place as the canonical fallback. It hands off to the same
+  `send_to_compare_cb` so per-row icon and menu entry agree on
+  the destination.
+
+CS-27 keeps the routing layer unchanged: the widget never
+imports the Compare tab and never knows about
+`ExperimentalScan` — `send_to_compare_cb` is a host-supplied
+function that takes a `node_id` and converts it however the
+destination tab needs. When Phase 7 lands the actual Compare
+tab, only `UVVisTab._send_node_to_compare` and the host glue
+(`binah.py`) change; the widget side stays put.
 
 ---
 
-*Document version: 1.13 — May 2026*
+*Document version: 1.14 — May 2026*
 *1.1: CS-13 implementation notes added in Phase 4a.*
 *1.2: CS-14 Plot Settings Dialog added in Phase 4b.*
 *1.3: CS-15 UV/Vis Baseline Correction + CS-04 implementation
@@ -3169,5 +3329,27 @@ end-to-end. Resolves Phase 4l friction #9 (USER-FLAGGED). Phase
 n-fit diagnostic loss, scattering+offset composite mode, fit
 window error message gap, missing checkbox-disables-entry
 integration test.*
+*1.14: CS-25 + CS-26 + CS-27 added in Phase 4n. CS-25 deletes
+the duplicate `tk.Label` from each of the four
+`CollapsibleSection`-wrapped operation panels (USER-FLAGGED
+Phase 4l #6). CS-26 extends CS-04 §6.1: ⌥n provenance count
+promoted into the always-visible minimum, single 280 px
+threshold replaced by three priority-ordered thresholds
+(swatch @ 240, leg @ 280, ls\_canvas @ 320); helper now reflows
+right-side optional cells together to preserve canonical
+visual order under Tk's overflow auto-unmap (USER-FLAGGED
+Phase 4l #8). CS-27 retires the top-bar `+ Add to TDDFT
+Overlay` button in favour of a per-row → icon between `[⚙]`
+and `[✕]`; UVVisTab refactors the bulk overlay handler to a
+single-node `_send_node_to_compare(node_id)` (USER-FLAGGED
+Phase 4l #7). Phase 4n logged five new friction items, three
+USER-FLAGGED: `_redraw` KeyError on non-UVVIS DataNodes
+(observed-during-session), responsive helper does redundant
+work on every Configure (technical debt), `⌥n` digit overflow
+for long provenance chains. Plus four register-elevated
+USER-FLAGGED feature requests: Show baseline function on the
+plot, Scattering floor-zero shift (CS-24 follow-up),
+Diagnostic console / fitted-parameter panel, Difference
+spectra elevation.*
 *To be updated as Open Questions are resolved and new components
 are specified.*

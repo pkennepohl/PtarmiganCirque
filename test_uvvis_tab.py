@@ -652,8 +652,10 @@ class TestUVVisTabPlotSettingsIntegration(unittest.TestCase):
     # ----------- ⚙ button is in the toolbar -----------
 
     def test_plot_settings_button_exists_in_toolbar(self):
-        # The button is placed between the legacy "+ Add to TDDFT
-        # Overlay" slot (which stands in for the deferred Send-to-Compare)
+        # Phase 4n CS-27 retired the top-bar "+ Add to TDDFT Overlay"
+        # button (replaced by the per-row → icon on each
+        # ScanTreeWidget row), so the Plot Settings button now sits
+        # in the slot freed by that removal — between the separator
         # and the status label.
         self.assertTrue(hasattr(self.tab, "_plot_settings_btn"))
         btn = self.tab._plot_settings_btn
@@ -2214,6 +2216,176 @@ class TestUVVisTabSharedSubject(unittest.TestCase):
             hasattr(self.tab._peak_picking_panel, "_subject_cb"))
         self.assertFalse(
             hasattr(self.tab._second_derivative_panel, "_subject_cb"))
+
+
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestUVVisTabSendToCompareIntegration(unittest.TestCase):
+    """Phase 4n CS-27 — per-row → Send-to-Compare wiring.
+
+    The legacy top-bar "+ Add to TDDFT Overlay" button is gone;
+    each ScanTreeWidget row carries a → icon that calls
+    ``UVVisTab._send_node_to_compare(node_id)``. Tests cover both
+    halves: (a) the tab no longer builds the bulk button, (b) the
+    single-node helper does the right energy conversion and pushes
+    a single ExperimentalScan into the host's add_scan_fn.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from uvvis_tab import UVVisTab
+        cls.UVVisTab = UVVisTab
+
+    def setUp(self):
+        self.host = tk.Frame(_root)
+        self.graph = ProjectGraph()
+        self.tab = self.UVVisTab(self.host, graph=self.graph)
+        # Capture every ExperimentalScan the tab tries to push.
+        self.pushed: list = []
+        self.tab._add_scan_fn = self.pushed.append
+
+    def tearDown(self):
+        try:
+            self.tab.destroy()
+        except Exception:
+            pass
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    def _add_uvvis(self, nid: str, label: str | None = None) -> DataNode:
+        wl = np.linspace(300, 600, 10)
+        absorb = np.linspace(0.1, 0.9, 10)
+        node = DataNode(
+            id=nid,
+            type=NodeType.UVVIS,
+            arrays={"wavelength_nm": wl, "absorbance": absorb},
+            metadata={"source_file": "synthetic"},
+            label=label or nid,
+            state=NodeState.COMMITTED,
+            style={"color": "#1f77b4", "linestyle": "solid",
+                   "linewidth": 1.5, "alpha": 0.9, "visible": True,
+                   "in_legend": True},
+        )
+        self.graph.add_node(node)
+        return node
+
+    # ----------- top-bar button is gone -----------
+
+    def test_top_bar_no_longer_has_overlay_button(self):
+        # Walk every Button in the top toolbar and confirm none
+        # carries the legacy "+ Add to TDDFT Overlay" text — the
+        # affordance moved to the per-row → icon (CS-27).
+        bar = self.tab._plot_settings_btn.master  # the toolbar frame
+        for child in bar.winfo_children():
+            if isinstance(child, tk.Button):
+                self.assertNotIn(
+                    "TDDFT Overlay", child.cget("text"),
+                    "top bar must not carry a bulk overlay button "
+                    "after CS-27",
+                )
+
+    def test_legacy_bulk_method_is_gone(self):
+        # ``_add_selected_to_overlay`` is replaced by
+        # ``_send_node_to_compare(node_id)`` — pin the rename so
+        # external callers (binah host glue) catch the API change.
+        self.assertFalse(hasattr(self.tab, "_add_selected_to_overlay"))
+        self.assertTrue(hasattr(self.tab, "_send_node_to_compare"))
+
+    # ----------- ScanTreeWidget receives the callback -----------
+
+    def test_scan_tree_widget_has_send_to_compare_callback_wired(self):
+        # The widget's ``_send_to_compare_cb`` must route through the
+        # tab's single-node helper after CS-27 — confirms the
+        # _build_sidebar wiring rather than asserting a None default.
+        # Bound methods compare unequal across accesses, so verify by
+        # behaviour: invoking the wired callback for a UVVIS node
+        # produces an ExperimentalScan in the tab's add_scan_fn sink.
+        self._add_uvvis("u1", label="wired-check")
+        self.assertIsNotNone(self.tab._scan_tree._send_to_compare_cb)
+        self.tab._scan_tree._send_to_compare_cb("u1")
+        self.assertEqual(len(self.pushed), 1)
+        self.assertEqual(self.pushed[0].label, "wired-check")
+
+    # ----------- single-node helper pushes one ExperimentalScan ------
+
+    def test_send_node_to_compare_pushes_one_scan(self):
+        # A committed node, an ``_add_scan_fn`` host wired —
+        # invoking the helper produces one ExperimentalScan with the
+        # right label and uvvis_source metadata.
+        self._add_uvvis("u1", label="my-spectrum")
+        self.tab._send_node_to_compare("u1")
+
+        self.assertEqual(len(self.pushed), 1)
+        scan = self.pushed[0]
+        self.assertEqual(scan.label, "my-spectrum")
+        self.assertEqual(scan.scan_type, "UV/Vis absorbance")
+        self.assertEqual(
+            scan.metadata.get("uvvis_source"), "synthetic",
+        )
+        # Energy axis populated and strictly increasing.
+        self.assertGreater(len(scan.energy_ev), 0)
+        self.assertTrue(np.all(np.diff(scan.energy_ev) > 0))
+
+    def test_send_node_to_compare_status_message_names_node(self):
+        # Status bar message changes from the legacy "Added N
+        # spectra to TDDFT overlay." (bulk) to "Sent <label> to
+        # TDDFT overlay." (single).
+        self._add_uvvis("u1", label="alpha")
+        self.tab._send_node_to_compare("u1")
+        self.tab.update_idletasks()
+        status_text = self.tab._status_lbl.cget("text")
+        self.assertIn("alpha", status_text)
+        self.assertIn("TDDFT", status_text)
+
+    def test_send_node_to_compare_no_host_shows_messagebox(self):
+        # No ``_add_scan_fn`` wired ⇒ helper bails with a messagebox
+        # before any push. Stub the messagebox so the test is silent.
+        self._add_uvvis("u1")
+        self.tab._add_scan_fn = None
+        from unittest import mock
+        with mock.patch("uvvis_tab.messagebox.showinfo") as mb:
+            self.tab._send_node_to_compare("u1")
+        self.assertEqual(self.pushed, [])
+        self.assertEqual(mb.call_count, 1)
+
+    def test_send_node_to_compare_unknown_id_is_silent(self):
+        # Stale ids (row destroyed between click and dispatch)
+        # must not raise out of the click path.
+        self.tab._send_node_to_compare("ghost")
+        self.assertEqual(self.pushed, [])
+
+    def test_send_node_to_compare_skips_non_uvvis_nodes(self):
+        # The helper guards on ``node.type == NodeType.UVVIS`` —
+        # downstream NodeTypes (BASELINE, NORMALISED, etc.) are
+        # routed through the same ScanTreeWidget filter, but
+        # ExperimentalScan.energy_ev expects UVVIS-shaped
+        # ``wavelength_nm`` / ``absorbance`` arrays. Out-of-shape
+        # nodes are dropped silently.
+        #
+        # Stub ``graph.get_node`` rather than adding the node to the
+        # graph: a BASELINE-typed node entering the graph fires
+        # ``_redraw`` (unrelated to CS-27) which has its own UVVIS
+        # array assumption. Stubbing the lookup keeps the test
+        # focused on the helper's type guard.
+        fake_node = DataNode(
+            id="b1",
+            type=NodeType.BASELINE,
+            arrays={"wavelength_nm": np.linspace(300, 600, 5),
+                    "baseline":      np.zeros(5)},
+            metadata={"source_file": "synthetic"},
+            label="b1",
+            state=NodeState.COMMITTED,
+        )
+        original = self.graph.get_node
+        self.graph.get_node = lambda nid: (
+            fake_node if nid == "b1" else original(nid)
+        )
+        try:
+            self.tab._send_node_to_compare("b1")
+        finally:
+            self.graph.get_node = original
+        self.assertEqual(self.pushed, [])
 
 
 if __name__ == "__main__":
