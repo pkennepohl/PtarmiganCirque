@@ -339,17 +339,14 @@ class UVVisTab(tk.Frame):
                                      command=self._redraw, font=F9)
         self._nm_cb.pack(side=tk.LEFT, padx=2)
 
+        # Phase 4n CS-27 retired the top-bar "+ Add to TDDFT Overlay"
+        # bulk button. Each ScanTreeWidget row now carries a per-row
+        # → icon that calls ``_send_node_to_compare(node_id)`` —
+        # disabled on provisional rows and when no Compare host is
+        # connected (mirrors the old button's gate).
         _sep()
-        tk.Button(bar, text="+ Add to TDDFT Overlay",
-                  font=("", 9, "bold"), bg="#4a0070", fg="white",
-                  activebackground="#6a0090",
-                  command=self._add_selected_to_overlay,
-                  ).pack(side=tk.LEFT, padx=2)
-
-        # ⚙ Plot Settings (CS-06): opens the unified Plot Settings dialog
-        # for this tab. Placed between the deferred Send-to-Compare slot
-        # (currently the legacy "+ Add to TDDFT Overlay" button) and the
-        # status label.
+        # ⚙ Plot Settings (CS-06): opens the unified Plot Settings
+        # dialog for this tab.
         self._plot_settings_btn = tk.Button(
             bar, text="⚙ Plot Settings", font=F9,
             command=self._open_plot_settings,
@@ -400,10 +397,12 @@ class UVVisTab(tk.Frame):
         The widget filters to ``NodeType.UVVIS``; its row controls
         write through ``graph.set_style`` (CS-04), and the gear button
         delegates to the unified style dialog (CS-05) via
-        ``style_dialog_cb``. Send-to-Compare is deferred to Phase 7,
-        so ``send_to_compare_cb=None`` — the right-click menu will
-        render it disabled. ``export_cb`` is wired to ``_on_export_node``
-        for the row Export… gesture (CS-17, Phase 4f).
+        ``style_dialog_cb``. Phase 4n CS-27 wires
+        ``send_to_compare_cb`` to ``_send_node_to_compare`` so the
+        per-row → icon pushes a single spectrum into the TDDFT
+        overlay (replacing the legacy bulk top-bar button).
+        ``export_cb`` is wired to ``_on_export_node`` for the row
+        Export… gesture (CS-17, Phase 4f).
         """
         tk.Label(parent, text="Loaded Spectra",
                  font=("", 9, "bold")).pack(anchor="w", padx=4, pady=(4, 2))
@@ -415,7 +414,7 @@ class UVVisTab(tk.Frame):
              NodeType.NORMALISED, NodeType.SMOOTHED,
              NodeType.PEAK_LIST, NodeType.SECOND_DERIVATIVE],
             redraw_cb=self._redraw,
-            send_to_compare_cb=None,
+            send_to_compare_cb=self._send_node_to_compare,
             style_dialog_cb=self._open_style_dialog_for_node,
             export_cb=self._on_export_node,
         )
@@ -1522,43 +1521,51 @@ class UVVisTab(tk.Frame):
     #  Push to TDDFT overlay
     # ══════════════════════════════════════════════════════════════════════════
 
-    def _add_selected_to_overlay(self):
+    def _send_node_to_compare(self, node_id: str) -> None:
+        """Push a single node's spectrum into the TDDFT overlay.
+
+        Phase 4n CS-27. Wired as ``send_to_compare_cb`` on the
+        ScanTreeWidget so the per-row → icon dispatches to this
+        method. The widget's disabled-state already gates on
+        ``state == COMMITTED`` and on the callback being wired; this
+        handler additionally surfaces the "no Compare host connected"
+        case to the user via a messagebox so the affordance still
+        feels live when the integration isn't available.
+        """
         if self._add_scan_fn is None:
             messagebox.showinfo("Not available",
                                 "No TDDFT plot connected to this panel.")
             return
-
-        live = [n for n in self._uvvis_nodes()
-                if bool(n.style.get("visible", True))]
-        if not live:
-            messagebox.showinfo("Nothing selected",
-                                "Check at least one spectrum in the list first.")
+        try:
+            node = self._graph.get_node(node_id)
+        except KeyError:
+            return
+        if not isinstance(node, DataNode) or node.type != NodeType.UVVIS:
             return
 
-        for node in live:
-            wl     = np.asarray(node.arrays["wavelength_nm"], dtype=float)
-            absorb = np.asarray(node.arrays["absorbance"], dtype=float)
-            with np.errstate(divide="ignore", invalid="ignore"):
-                energy_ev = np.where(wl > 0, _HC_NM_EV / wl, 0.0)
-            order     = np.argsort(energy_ev)
-            energy_ev = energy_ev[order]
-            absorb    = absorb[order]
-            mask      = energy_ev > 0
-            parser_md = node.metadata.get("parser_metadata", {})
-            exp_scan  = ExperimentalScan(
-                label=node.label,
-                source_file=node.metadata.get("source_file", ""),
-                energy_ev=energy_ev[mask],
-                mu=absorb[mask],
-                is_normalized=True,
-                scan_type="UV/Vis absorbance",
-                metadata=dict(
-                    parser_md,
-                    uvvis_source=node.metadata.get("source_file", ""),
-                ),
-            )
-            self._add_scan_fn(exp_scan)
+        wl     = np.asarray(node.arrays["wavelength_nm"], dtype=float)
+        absorb = np.asarray(node.arrays["absorbance"], dtype=float)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            energy_ev = np.where(wl > 0, _HC_NM_EV / wl, 0.0)
+        order     = np.argsort(energy_ev)
+        energy_ev = energy_ev[order]
+        absorb    = absorb[order]
+        mask      = energy_ev > 0
+        parser_md = node.metadata.get("parser_metadata", {})
+        exp_scan  = ExperimentalScan(
+            label=node.label,
+            source_file=node.metadata.get("source_file", ""),
+            energy_ev=energy_ev[mask],
+            mu=absorb[mask],
+            is_normalized=True,
+            scan_type="UV/Vis absorbance",
+            metadata=dict(
+                parser_md,
+                uvvis_source=node.metadata.get("source_file", ""),
+            ),
+        )
+        self._add_scan_fn(exp_scan)
 
         self._status_lbl.config(
-            text=f"Added {len(live)} spectrum/spectra to TDDFT overlay.",
+            text=f"Sent {node.label!r} to TDDFT overlay.",
             fg="#003d7a")
