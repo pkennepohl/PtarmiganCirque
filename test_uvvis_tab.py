@@ -2389,6 +2389,172 @@ class TestUVVisTabSendToCompareIntegration(unittest.TestCase):
 
 
 @unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestUVVisTabBaselineCurveOverlay(unittest.TestCase):
+    """Phase 4o (CS-29) — dashed baseline-curve overlay in _redraw.
+
+    Toggle off (default): only the corrected spectrum lines are
+    drawn. Toggle on: each visible BASELINE node gets a dashed
+    overlay of its fitted baseline (recovered via
+    ``uvvis_baseline.compute_baseline_curve``).
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from uvvis_tab import UVVisTab
+        cls.UVVisTab = UVVisTab
+
+    def setUp(self):
+        from nodes import OperationNode, OperationType
+        self.OperationNode = OperationNode
+        self.OperationType = OperationType
+        self.host = tk.Frame(_root)
+        self.graph = ProjectGraph()
+        self.tab = self.UVVisTab(self.host, graph=self.graph)
+
+    def tearDown(self):
+        try:
+            self.tab.destroy()
+        except Exception:
+            pass
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    def _build_parent_and_baseline(self):
+        wl = np.linspace(300.0, 600.0, 6)
+        parent_abs = np.array([1.0, 1.5, 2.0, 1.8, 1.4, 0.9])
+        baseline_function = np.array([0.4, 0.5, 0.6, 0.55, 0.45, 0.3])
+        child_abs = parent_abs - baseline_function
+        parent = DataNode(
+            id="p1", type=NodeType.UVVIS,
+            arrays={"wavelength_nm": wl, "absorbance": parent_abs},
+            metadata={"source_file": "synthetic"}, label="parent-spec",
+            state=NodeState.COMMITTED,
+            style={"color": "#1f77b4", "linestyle": "solid",
+                   "linewidth": 1.5, "alpha": 0.9, "visible": True,
+                   "in_legend": True},
+        )
+        op = self.OperationNode(
+            id="op1", type=self.OperationType.BASELINE,
+            engine="internal", engine_version="test",
+            params={"mode": "linear"},
+            input_ids=["p1"], output_ids=["c1"],
+            status="SUCCESS", state=NodeState.COMMITTED,
+        )
+        child = DataNode(
+            id="c1", type=NodeType.BASELINE,
+            arrays={"wavelength_nm": wl, "absorbance": child_abs},
+            metadata={}, label="parent · baseline (linear)",
+            state=NodeState.COMMITTED,
+            style={"color": "#ff7f0e", "linestyle": "solid",
+                   "linewidth": 1.5, "alpha": 0.9, "visible": True,
+                   "in_legend": True},
+        )
+        self.graph.add_node(parent)
+        self.graph.add_node(op)
+        self.graph.add_node(child)
+        self.graph.add_edge("p1", "op1")
+        self.graph.add_edge("op1", "c1")
+        return wl, parent_abs, baseline_function
+
+    def test_default_toggle_is_off(self):
+        # Opt-in feature — make sure the default doesn't change
+        # silently and surprise existing users / tests.
+        self.assertFalse(self.tab._show_baseline_curves.get())
+
+    def test_toggle_off_renders_no_overlay(self):
+        self._build_parent_and_baseline()
+        self.tab._show_baseline_curves.set(False)
+        self.tab._redraw()
+        labels = [ln.get_label() for ln in self.tab._ax.get_lines()]
+        # Two solid spectrum lines (parent + corrected child),
+        # no "(baseline)" overlay.
+        self.assertNotIn("parent · baseline (linear) (baseline)", labels)
+        # Confirm no dashed line is on the axis.
+        for ln in self.tab._ax.get_lines():
+            self.assertNotEqual(ln.get_linestyle(), "--",
+                                "no dashed overlay should appear "
+                                "when toggle is off")
+
+    def test_toggle_on_adds_dashed_baseline_curve(self):
+        wl, parent_abs, baseline_function = (
+            self._build_parent_and_baseline()
+        )
+        self.tab._show_baseline_curves.set(True)
+        # Stay in nm so x-axis ordering matches input ordering.
+        self.tab._x_unit.set("nm")
+        self.tab._redraw()
+
+        labels = [ln.get_label() for ln in self.tab._ax.get_lines()]
+        self.assertIn("parent · baseline (linear) (baseline)", labels,
+                      "overlay must appear in legend when toggle on")
+        # Find the dashed line and verify y-data matches the baseline
+        # function (sorted by x).
+        dashed = [ln for ln in self.tab._ax.get_lines()
+                  if ln.get_linestyle() == "--"]
+        self.assertEqual(len(dashed), 1,
+                         "exactly one dashed overlay expected")
+        # y-data is in display order (sorted by x). In nm units the
+        # x is just wl, so display order matches input order.
+        y_drawn = np.asarray(dashed[0].get_ydata(), dtype=float)
+        np.testing.assert_array_almost_equal(y_drawn, baseline_function)
+
+    def test_invisible_baseline_node_has_no_overlay(self):
+        # Hiding the BASELINE node hides its baseline-curve overlay
+        # too — the overlay follows the node's visibility.
+        self._build_parent_and_baseline()
+        # Hide the BASELINE node via style.
+        self.graph.set_style("c1", {"visible": False})
+        self.tab._show_baseline_curves.set(True)
+        self.tab._redraw()
+        for ln in self.tab._ax.get_lines():
+            self.assertNotEqual(
+                ln.get_linestyle(), "--",
+                "dashed overlay must not render for an invisible node",
+            )
+
+    def test_overlay_uses_baseline_node_color(self):
+        # The dashed overlay inherits the BASELINE node's colour so
+        # the user can match the dashed line to the corrected curve
+        # at a glance.
+        self._build_parent_and_baseline()
+        self.tab._show_baseline_curves.set(True)
+        self.tab._redraw()
+        dashed = [ln for ln in self.tab._ax.get_lines()
+                  if ln.get_linestyle() == "--"]
+        self.assertEqual(len(dashed), 1)
+        # Compare matplotlib's normalised RGBA against the BASELINE
+        # node's hex colour.
+        from matplotlib.colors import to_rgba
+        self.assertEqual(
+            to_rgba(dashed[0].get_color()),
+            to_rgba("#ff7f0e"),
+        )
+
+    def test_orphan_baseline_node_skipped_without_crash(self):
+        # A BASELINE node added to the graph without an upstream
+        # operation: the helper returns None, the loop skips, no
+        # crash. (Pairs with CS-28 guard but exercises the overlay
+        # branch specifically.)
+        bad = DataNode(
+            id="b1", type=NodeType.BASELINE,
+            arrays={"wavelength_nm": np.linspace(300, 600, 4),
+                    "absorbance":    np.zeros(4)},
+            metadata={}, label="orphan",
+            state=NodeState.COMMITTED,
+            style={"color": "#000", "linestyle": "solid",
+                   "linewidth": 1.5, "alpha": 0.9, "visible": True,
+                   "in_legend": True},
+        )
+        self.graph.add_node(bad)
+        self.tab._show_baseline_curves.set(True)
+        self.tab._redraw()  # must not raise
+        for ln in self.tab._ax.get_lines():
+            self.assertNotEqual(ln.get_linestyle(), "--")
+
+
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
 class TestUVVisTabRedrawGuard(unittest.TestCase):
     """Phase 4o (CS-28) — _redraw silently skips malformed DataNodes.
 
