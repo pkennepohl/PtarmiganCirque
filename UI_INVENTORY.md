@@ -612,7 +612,7 @@
 | Radiobutton | Abs / %T | `_y_unit` → `_redraw()` | Y-axis quantity | plot | Retain |
 | Combobox | none / peak / area | `_norm_mode` → `_redraw()` | Normalization mode | plot | Retain — normalisation now creates a provisional NORMALISED node |
 | Checkbutton | λ(nm) axis | `_show_nm_axis` → `_redraw()` | Secondary nm axis in cm⁻¹ mode | plot | Retain |
-| Button | + Add to TDDFT Overlay | `_add_selected_to_overlay()` | Push visible scans to TDDFT | all | Rename → "Send to Compare"; committed nodes only |
+| ~~Button~~ | ~~+ Add to TDDFT Overlay~~ | — | — | — | ✅ Removed Phase 4n (CS-27): replaced by per-row → icon on each ScanTreeWidget row, wired to `_send_node_to_compare(node_id)` |
 | Label | (status) | `_status_lbl` | Status message | — | Retain |
 
 ### Axis Limits Bar
