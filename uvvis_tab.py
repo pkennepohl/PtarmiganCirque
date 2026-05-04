@@ -1363,6 +1363,17 @@ class UVVisTab(tk.Frame):
         ax.set_facecolor(cfg.get("background_color", "#ffffff"))
 
         for node in live:
+            # Phase 4o defensive guard: every NodeType in
+            # _spectrum_nodes() / _second_derivative_nodes() is *meant*
+            # to carry the wavelength_nm + absorbance pair, but a
+            # malformed DataNode (test scaffolding, half-loaded
+            # project file, future NodeType added to the filter list
+            # without renderer support) would otherwise raise
+            # KeyError from inside the Tk graph-event handler. Skip
+            # silently and let the rest of the live list render.
+            if ("wavelength_nm" not in node.arrays
+                    or "absorbance" not in node.arrays):
+                continue
             style  = node.style
             colour = style.get("color", "#333333")
             wl     = node.arrays["wavelength_nm"]
@@ -1474,9 +1485,15 @@ class UVVisTab(tk.Frame):
 
         # ── Invert nm axis ────────────────────────────────────────────────────
         if unit == "nm":
-            lo_nm = min(float(np.min(n.arrays["wavelength_nm"])) for n in live)
-            hi_nm = max(float(np.max(n.arrays["wavelength_nm"])) for n in live)
-            ax.set_xlim(hi_nm, lo_nm)
+            # Mirror the per-node guard above: a malformed live entry
+            # without wavelength_nm would crash the min/max computation.
+            wl_nodes = [n for n in live if "wavelength_nm" in n.arrays]
+            if wl_nodes:
+                lo_nm = min(float(np.min(n.arrays["wavelength_nm"]))
+                            for n in wl_nodes)
+                hi_nm = max(float(np.max(n.arrays["wavelength_nm"]))
+                            for n in wl_nodes)
+                ax.set_xlim(hi_nm, lo_nm)
 
         # ── Apply stored x-limits ─────────────────────────────────────────────
         lo_x = self._parse_lim(self._xlim_lo)
