@@ -385,5 +385,160 @@ class TestInputValidation(unittest.TestCase):
             )
 
 
+class TestComputeBaselineCurve(unittest.TestCase):
+    """Phase 4o (CS-29) — recover the fitted baseline from a BASELINE node.
+
+    The helper walks one hop in the graph
+    (baseline_node → BASELINE OperationNode → parent DataNode) and
+    returns ``(wavelength_nm, parent_absorbance - baseline_absorbance)``.
+    Every failure path returns ``None`` (the helper is silent so the
+    caller's render loop can simply skip the entry).
+    """
+
+    def setUp(self):
+        from graph import ProjectGraph
+        from nodes import (DataNode, NodeState, NodeType,
+                           OperationNode, OperationType)
+        self.ProjectGraph = ProjectGraph
+        self.DataNode = DataNode
+        self.NodeState = NodeState
+        self.NodeType = NodeType
+        self.OperationNode = OperationNode
+        self.OperationType = OperationType
+        self.graph = ProjectGraph()
+
+    def _wire(self, parent_absorb, child_absorb,
+              wl=None, parent_type=None):
+        """Build parent UVVIS → BASELINE op → BASELINE child + return ids."""
+        if wl is None:
+            wl = np.linspace(300.0, 600.0, len(parent_absorb))
+        parent = self.DataNode(
+            id="p1",
+            type=parent_type or self.NodeType.UVVIS,
+            arrays={"wavelength_nm": np.asarray(wl, dtype=float),
+                    "absorbance":    np.asarray(parent_absorb, dtype=float)},
+            metadata={}, label="parent",
+            state=self.NodeState.COMMITTED,
+        )
+        op = self.OperationNode(
+            id="op1", type=self.OperationType.BASELINE,
+            engine="internal", engine_version="test",
+            params={"mode": "linear"},
+            input_ids=["p1"], output_ids=["c1"],
+            status="SUCCESS", state=self.NodeState.PROVISIONAL,
+        )
+        child = self.DataNode(
+            id="c1", type=self.NodeType.BASELINE,
+            arrays={"wavelength_nm": np.asarray(wl, dtype=float),
+                    "absorbance":    np.asarray(child_absorb, dtype=float)},
+            metadata={}, label="parent · baseline (linear)",
+            state=self.NodeState.PROVISIONAL,
+        )
+        self.graph.add_node(parent)
+        self.graph.add_node(op)
+        self.graph.add_node(child)
+        self.graph.add_edge("p1", "op1")
+        self.graph.add_edge("op1", "c1")
+        return parent, child
+
+    def test_success_returns_parent_minus_child(self):
+        # Parent: a sloped line; child: parent with the slope removed.
+        # Recovered baseline must equal the slope itself.
+        wl = np.linspace(300.0, 600.0, 5)
+        parent_abs = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
+        baseline = np.array([1.0, 1.5, 2.0, 2.5, 3.0])
+        child_abs = parent_abs - baseline
+        _, child = self._wire(parent_abs, child_abs, wl=wl)
+
+        result = ub.compute_baseline_curve(self.graph, child)
+        self.assertIsNotNone(result)
+        wl_out, curve = result
+        np.testing.assert_array_almost_equal(wl_out, wl)
+        np.testing.assert_array_almost_equal(curve, baseline)
+
+    def test_chained_baseline_parent_works(self):
+        # Parent itself is a BASELINE node — chained corrections.
+        # Helper still returns parent_abs - child_abs without caring
+        # about the parent's NodeType.
+        wl = np.linspace(300.0, 600.0, 4)
+        parent_abs = np.array([2.0, 1.5, 1.0, 0.5])
+        child_abs = np.array([1.5, 1.0, 0.6, 0.1])
+        _, child = self._wire(parent_abs, child_abs, wl=wl,
+                              parent_type=self.NodeType.BASELINE)
+        result = ub.compute_baseline_curve(self.graph, child)
+        self.assertIsNotNone(result)
+        _, curve = result
+        np.testing.assert_array_almost_equal(curve, parent_abs - child_abs)
+
+    def test_non_baseline_input_returns_none(self):
+        # A UVVIS node passed in by mistake — helper silently rejects.
+        node = self.DataNode(
+            id="u", type=self.NodeType.UVVIS,
+            arrays={"wavelength_nm": np.linspace(300, 600, 3),
+                    "absorbance":    np.zeros(3)},
+            metadata={}, label="u",
+            state=self.NodeState.COMMITTED,
+        )
+        self.graph.add_node(node)
+        self.assertIsNone(ub.compute_baseline_curve(self.graph, node))
+
+    def test_missing_arrays_returns_none(self):
+        # BASELINE-typed but missing the canonical absorbance key.
+        node = self.DataNode(
+            id="b", type=self.NodeType.BASELINE,
+            arrays={"wavelength_nm": np.linspace(300, 600, 3)},
+            metadata={}, label="b",
+            state=self.NodeState.COMMITTED,
+        )
+        self.graph.add_node(node)
+        self.assertIsNone(ub.compute_baseline_curve(self.graph, node))
+
+    def test_no_parent_returns_none(self):
+        # A BASELINE node with no graph edges — helper returns None
+        # rather than walking past the orphan.
+        node = self.DataNode(
+            id="b", type=self.NodeType.BASELINE,
+            arrays={"wavelength_nm": np.linspace(300, 600, 3),
+                    "absorbance":    np.zeros(3)},
+            metadata={}, label="b",
+            state=self.NodeState.COMMITTED,
+        )
+        self.graph.add_node(node)
+        self.assertIsNone(ub.compute_baseline_curve(self.graph, node))
+
+    def test_shape_mismatch_returns_none(self):
+        # Parent and child wavelength_nm shapes diverge — helper
+        # returns None rather than broadcasting.
+        wl_parent = np.linspace(300.0, 600.0, 5)
+        wl_child = np.linspace(300.0, 600.0, 4)
+        parent = self.DataNode(
+            id="p1", type=self.NodeType.UVVIS,
+            arrays={"wavelength_nm": wl_parent,
+                    "absorbance":    np.ones(5)},
+            metadata={}, label="parent",
+            state=self.NodeState.COMMITTED,
+        )
+        op = self.OperationNode(
+            id="op1", type=self.OperationType.BASELINE,
+            engine="internal", engine_version="test",
+            params={"mode": "linear"},
+            input_ids=["p1"], output_ids=["c1"],
+            status="SUCCESS", state=self.NodeState.PROVISIONAL,
+        )
+        child = self.DataNode(
+            id="c1", type=self.NodeType.BASELINE,
+            arrays={"wavelength_nm": wl_child,
+                    "absorbance":    np.zeros(4)},
+            metadata={}, label="c",
+            state=self.NodeState.PROVISIONAL,
+        )
+        self.graph.add_node(parent)
+        self.graph.add_node(op)
+        self.graph.add_node(child)
+        self.graph.add_edge("p1", "op1")
+        self.graph.add_edge("op1", "c1")
+        self.assertIsNone(ub.compute_baseline_curve(self.graph, child))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
