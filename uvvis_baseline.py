@@ -49,6 +49,7 @@ __all__ = [
     "compute_rubberband",
     "compute_scattering",
     "compute",
+    "compute_baseline_curve",
     "BASELINE_MODES",
 ]
 
@@ -346,3 +347,67 @@ def compute(mode: str, wavelength_nm, absorbance, params: Mapping | None):
         )
     fn = _DISPATCH[mode]
     return fn(wavelength_nm, absorbance, params or {})
+
+
+# ---------------------------------------------------------------------------
+# Display helper — recover the baseline function from a BASELINE node
+# ---------------------------------------------------------------------------
+
+
+def compute_baseline_curve(graph, baseline_node):
+    """Recover the baseline curve that was subtracted to produce ``baseline_node``.
+
+    A BASELINE ``DataNode`` stores the *corrected* spectrum
+    (``arrays["absorbance"]`` = parent absorbance minus the fitted
+    baseline). Plotting the fitted baseline itself for review (Phase
+    4o intent A) requires recovering it as
+    ``parent.absorbance - baseline_node.absorbance``.
+
+    Parameters
+    ----------
+    graph : ProjectGraph
+        The graph the node lives in. Used to walk
+        ``baseline_node`` → BASELINE OperationNode → parent DataNode.
+    baseline_node : DataNode
+        Must be a ``NodeType.BASELINE`` DataNode with the canonical
+        ``wavelength_nm`` + ``absorbance`` array pair.
+
+    Returns
+    -------
+    tuple[numpy.ndarray, numpy.ndarray] | None
+        ``(wavelength_nm, baseline_curve)`` on success, where
+        ``baseline_curve`` has the same shape as ``wavelength_nm``.
+        Returns ``None`` (does not raise) on every failure mode:
+        wrong node type, missing arrays, no graph parent, parent is
+        not a DataNode with matching arrays, shape mismatch. Callers
+        (the UV/Vis tab's _redraw loop) treat ``None`` as "skip".
+    """
+    # Imported lazily to keep this module Tk-free + import-cycle-free.
+    from nodes import DataNode, NodeType, OperationNode
+
+    if (not isinstance(baseline_node, DataNode)
+            or baseline_node.type != NodeType.BASELINE):
+        return None
+    arrays = baseline_node.arrays
+    if "wavelength_nm" not in arrays or "absorbance" not in arrays:
+        return None
+
+    parents = graph.parents_of(baseline_node.id)
+    if len(parents) != 1:
+        return None
+    op = graph.nodes.get(parents[0])
+    if not isinstance(op, OperationNode) or not op.input_ids:
+        return None
+    parent_data = graph.nodes.get(op.input_ids[0])
+    if (not isinstance(parent_data, DataNode)
+            or "absorbance" not in parent_data.arrays):
+        return None
+
+    parent_abs = np.asarray(parent_data.arrays["absorbance"], dtype=float)
+    child_abs = np.asarray(arrays["absorbance"], dtype=float)
+    if parent_abs.shape != child_abs.shape:
+        return None
+    wl = np.asarray(arrays["wavelength_nm"], dtype=float)
+    if wl.shape != child_abs.shape:
+        return None
+    return wl, parent_abs - child_abs

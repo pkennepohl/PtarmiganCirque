@@ -2363,12 +2363,12 @@ class TestUVVisTabSendToCompareIntegration(unittest.TestCase):
         # ``wavelength_nm`` / ``absorbance`` arrays. Out-of-shape
         # nodes are dropped silently.
         #
-        # Stub ``graph.get_node`` rather than adding the node to the
-        # graph: a BASELINE-typed node entering the graph fires
-        # ``_redraw`` (unrelated to CS-27) which has its own UVVIS
-        # array assumption. Stubbing the lookup keeps the test
-        # focused on the helper's type guard.
-        fake_node = DataNode(
+        # Phase 4o (CS-28): the previous get_node stub workaround
+        # is no longer needed — _redraw's defensive guard skips
+        # malformed DataNodes silently, so a BASELINE node with a
+        # non-canonical array key can live in the graph without
+        # crashing the renderer.
+        bad_baseline = DataNode(
             id="b1",
             type=NodeType.BASELINE,
             arrays={"wavelength_nm": np.linspace(300, 600, 5),
@@ -2377,15 +2377,279 @@ class TestUVVisTabSendToCompareIntegration(unittest.TestCase):
             label="b1",
             state=NodeState.COMMITTED,
         )
-        original = self.graph.get_node
-        self.graph.get_node = lambda nid: (
-            fake_node if nid == "b1" else original(nid)
-        )
-        try:
-            self.tab._send_node_to_compare("b1")
-        finally:
-            self.graph.get_node = original
+        self.graph.add_node(bad_baseline)
+        self.tab._send_node_to_compare("b1")
         self.assertEqual(self.pushed, [])
+
+
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestUVVisTabBaselineCurveOverlay(unittest.TestCase):
+    """Phase 4o (CS-29) — dashed baseline-curve overlay in _redraw.
+
+    Toggle off (default): only the corrected spectrum lines are
+    drawn. Toggle on: each visible BASELINE node gets a dashed
+    overlay of its fitted baseline (recovered via
+    ``uvvis_baseline.compute_baseline_curve``).
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from uvvis_tab import UVVisTab
+        cls.UVVisTab = UVVisTab
+
+    def setUp(self):
+        from nodes import OperationNode, OperationType
+        self.OperationNode = OperationNode
+        self.OperationType = OperationType
+        self.host = tk.Frame(_root)
+        self.graph = ProjectGraph()
+        self.tab = self.UVVisTab(self.host, graph=self.graph)
+
+    def tearDown(self):
+        try:
+            self.tab.destroy()
+        except Exception:
+            pass
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    def _build_parent_and_baseline(self):
+        wl = np.linspace(300.0, 600.0, 6)
+        parent_abs = np.array([1.0, 1.5, 2.0, 1.8, 1.4, 0.9])
+        baseline_function = np.array([0.4, 0.5, 0.6, 0.55, 0.45, 0.3])
+        child_abs = parent_abs - baseline_function
+        parent = DataNode(
+            id="p1", type=NodeType.UVVIS,
+            arrays={"wavelength_nm": wl, "absorbance": parent_abs},
+            metadata={"source_file": "synthetic"}, label="parent-spec",
+            state=NodeState.COMMITTED,
+            style={"color": "#1f77b4", "linestyle": "solid",
+                   "linewidth": 1.5, "alpha": 0.9, "visible": True,
+                   "in_legend": True},
+        )
+        op = self.OperationNode(
+            id="op1", type=self.OperationType.BASELINE,
+            engine="internal", engine_version="test",
+            params={"mode": "linear"},
+            input_ids=["p1"], output_ids=["c1"],
+            status="SUCCESS", state=NodeState.COMMITTED,
+        )
+        child = DataNode(
+            id="c1", type=NodeType.BASELINE,
+            arrays={"wavelength_nm": wl, "absorbance": child_abs},
+            metadata={}, label="parent · baseline (linear)",
+            state=NodeState.COMMITTED,
+            style={"color": "#ff7f0e", "linestyle": "solid",
+                   "linewidth": 1.5, "alpha": 0.9, "visible": True,
+                   "in_legend": True},
+        )
+        self.graph.add_node(parent)
+        self.graph.add_node(op)
+        self.graph.add_node(child)
+        self.graph.add_edge("p1", "op1")
+        self.graph.add_edge("op1", "c1")
+        return wl, parent_abs, baseline_function
+
+    def test_default_toggle_is_off(self):
+        # Opt-in feature — make sure the default doesn't change
+        # silently and surprise existing users / tests.
+        self.assertFalse(self.tab._show_baseline_curves.get())
+
+    def test_toggle_off_renders_no_overlay(self):
+        self._build_parent_and_baseline()
+        self.tab._show_baseline_curves.set(False)
+        self.tab._redraw()
+        labels = [ln.get_label() for ln in self.tab._ax.get_lines()]
+        # Two solid spectrum lines (parent + corrected child),
+        # no "(baseline)" overlay.
+        self.assertNotIn("parent · baseline (linear) (baseline)", labels)
+        # Confirm no dashed line is on the axis.
+        for ln in self.tab._ax.get_lines():
+            self.assertNotEqual(ln.get_linestyle(), "--",
+                                "no dashed overlay should appear "
+                                "when toggle is off")
+
+    def test_toggle_on_adds_dashed_baseline_curve(self):
+        wl, parent_abs, baseline_function = (
+            self._build_parent_and_baseline()
+        )
+        self.tab._show_baseline_curves.set(True)
+        # Stay in nm so x-axis ordering matches input ordering.
+        self.tab._x_unit.set("nm")
+        self.tab._redraw()
+
+        labels = [ln.get_label() for ln in self.tab._ax.get_lines()]
+        self.assertIn("parent · baseline (linear) (baseline)", labels,
+                      "overlay must appear in legend when toggle on")
+        # Find the dashed line and verify y-data matches the baseline
+        # function (sorted by x).
+        dashed = [ln for ln in self.tab._ax.get_lines()
+                  if ln.get_linestyle() == "--"]
+        self.assertEqual(len(dashed), 1,
+                         "exactly one dashed overlay expected")
+        # y-data is in display order (sorted by x). In nm units the
+        # x is just wl, so display order matches input order.
+        y_drawn = np.asarray(dashed[0].get_ydata(), dtype=float)
+        np.testing.assert_array_almost_equal(y_drawn, baseline_function)
+
+    def test_invisible_baseline_node_has_no_overlay(self):
+        # Hiding the BASELINE node hides its baseline-curve overlay
+        # too — the overlay follows the node's visibility.
+        self._build_parent_and_baseline()
+        # Hide the BASELINE node via style.
+        self.graph.set_style("c1", {"visible": False})
+        self.tab._show_baseline_curves.set(True)
+        self.tab._redraw()
+        for ln in self.tab._ax.get_lines():
+            self.assertNotEqual(
+                ln.get_linestyle(), "--",
+                "dashed overlay must not render for an invisible node",
+            )
+
+    def test_overlay_uses_baseline_node_color(self):
+        # The dashed overlay inherits the BASELINE node's colour so
+        # the user can match the dashed line to the corrected curve
+        # at a glance.
+        self._build_parent_and_baseline()
+        self.tab._show_baseline_curves.set(True)
+        self.tab._redraw()
+        dashed = [ln for ln in self.tab._ax.get_lines()
+                  if ln.get_linestyle() == "--"]
+        self.assertEqual(len(dashed), 1)
+        # Compare matplotlib's normalised RGBA against the BASELINE
+        # node's hex colour.
+        from matplotlib.colors import to_rgba
+        self.assertEqual(
+            to_rgba(dashed[0].get_color()),
+            to_rgba("#ff7f0e"),
+        )
+
+    def test_orphan_baseline_node_skipped_without_crash(self):
+        # A BASELINE node added to the graph without an upstream
+        # operation: the helper returns None, the loop skips, no
+        # crash. (Pairs with CS-28 guard but exercises the overlay
+        # branch specifically.)
+        bad = DataNode(
+            id="b1", type=NodeType.BASELINE,
+            arrays={"wavelength_nm": np.linspace(300, 600, 4),
+                    "absorbance":    np.zeros(4)},
+            metadata={}, label="orphan",
+            state=NodeState.COMMITTED,
+            style={"color": "#000", "linestyle": "solid",
+                   "linewidth": 1.5, "alpha": 0.9, "visible": True,
+                   "in_legend": True},
+        )
+        self.graph.add_node(bad)
+        self.tab._show_baseline_curves.set(True)
+        self.tab._redraw()  # must not raise
+        for ln in self.tab._ax.get_lines():
+            self.assertNotEqual(ln.get_linestyle(), "--")
+
+
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestUVVisTabRedrawGuard(unittest.TestCase):
+    """Phase 4o (CS-28) — _redraw silently skips malformed DataNodes.
+
+    Every NodeType in ``_spectrum_nodes()`` / ``_second_derivative_nodes()``
+    is *meant* to carry a ``wavelength_nm`` + ``absorbance`` array
+    pair, but a half-formed DataNode (test scaffolding, partial
+    project file, future NodeType added to the filter list without
+    renderer support) used to raise KeyError from inside the Tk
+    graph-event handler. The guard skips the bad node and lets the
+    rest of the live list render.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from uvvis_tab import UVVisTab
+        cls.UVVisTab = UVVisTab
+
+    def setUp(self):
+        self.host = tk.Frame(_root)
+        self.graph = ProjectGraph()
+        self.tab = self.UVVisTab(self.host, graph=self.graph)
+
+    def tearDown(self):
+        try:
+            self.tab.destroy()
+        except Exception:
+            pass
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    def _add_uvvis(self, nid: str, label: str = "u") -> DataNode:
+        node = DataNode(
+            id=nid, type=NodeType.UVVIS,
+            arrays={"wavelength_nm": np.linspace(300.0, 600.0, 5),
+                    "absorbance":    np.linspace(0.1, 0.5, 5)},
+            metadata={"source_file": "synthetic"}, label=label,
+            state=NodeState.COMMITTED,
+            style={"color": "#1f77b4", "linestyle": "solid",
+                   "linewidth": 1.5, "alpha": 0.9, "visible": True,
+                   "in_legend": True},
+        )
+        self.graph.add_node(node)
+        return node
+
+    def _add_malformed_baseline(self, nid: str = "b1") -> DataNode:
+        # Deliberately wrong array key — exercises the guard.
+        node = DataNode(
+            id=nid, type=NodeType.BASELINE,
+            arrays={"wavelength_nm": np.linspace(300.0, 600.0, 5),
+                    "baseline":      np.zeros(5)},
+            metadata={"source_file": "synthetic"}, label="malformed",
+            state=NodeState.COMMITTED,
+            style={"color": "#ff7f0e", "linestyle": "solid",
+                   "linewidth": 1.5, "alpha": 0.9, "visible": True,
+                   "in_legend": True},
+        )
+        self.graph.add_node(node)
+        return node
+
+    def test_redraw_does_not_raise_on_malformed_baseline_alone(self):
+        # Only a malformed BASELINE in the graph: pre-CS-28 this
+        # raised KeyError("absorbance") from the Tk handler.
+        self._add_malformed_baseline()
+        self.tab._redraw()  # must not raise
+        # No spectrum line was drawn from the malformed node.
+        ax_lines = self.tab._ax.get_lines() if self.tab._ax else []
+        # Either the axis went into the empty-state placeholder or
+        # it contains zero spectrum lines from the malformed node.
+        # Both outcomes are acceptable; the assertion is "no crash".
+        self.assertTrue(True, "guard kept _redraw alive")
+
+    def test_redraw_skips_malformed_node_alongside_valid_one(self):
+        # A valid UVVIS + a malformed BASELINE coexist; the valid
+        # one renders, the malformed one is silently dropped.
+        self._add_uvvis("u1", label="real")
+        self._add_malformed_baseline("b1")
+        self.tab._redraw()
+        labels = [ln.get_label() for ln in self.tab._ax.get_lines()]
+        self.assertIn("real", labels,
+                      "valid UVVIS line must still render")
+        self.assertNotIn("malformed", labels,
+                         "malformed BASELINE must be skipped")
+
+    def test_redraw_nm_axis_xlim_ignores_malformed_node(self):
+        # The unit == "nm" min/max comprehension also reads
+        # node.arrays["wavelength_nm"]; the guard mirror keeps it
+        # alive when one entry of `live` lacks the key.
+        self._add_uvvis("u1")
+        # Construct a malformed node missing wavelength_nm too.
+        bad = DataNode(
+            id="b2", type=NodeType.BASELINE,
+            arrays={"absorbance": np.zeros(3)},  # no wavelength_nm
+            metadata={}, label="missing-wl",
+            state=NodeState.COMMITTED,
+            style={"color": "#000", "visible": True, "in_legend": True},
+        )
+        self.graph.add_node(bad)
+        self.tab._x_unit.set("nm")
+        self.tab._redraw()  # must not raise
 
 
 if __name__ == "__main__":

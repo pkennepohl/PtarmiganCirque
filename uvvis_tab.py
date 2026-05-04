@@ -138,6 +138,10 @@ class UVVisTab(tk.Frame):
         self._x_unit_prev = "nm"
         self._y_unit      = tk.StringVar(value="A")
         self._show_nm_axis = tk.BooleanVar(value=True)
+        # Phase 4o (CS-29): toggle for the dashed baseline-curve
+        # overlay. Off by default — opt-in review aid; existing flows
+        # render as before until the user enables it.
+        self._show_baseline_curves = tk.BooleanVar(value=False)
 
         # ── Axis limits (empty string = auto) ────────────────────────────────
         self._xlim_lo = tk.StringVar(value="")
@@ -338,6 +342,17 @@ class UVVisTab(tk.Frame):
                                      variable=self._show_nm_axis,
                                      command=self._redraw, font=F9)
         self._nm_cb.pack(side=tk.LEFT, padx=2)
+
+        # Phase 4o (CS-29): "Baseline curves" toggle — when on, every
+        # visible BASELINE node gets a dashed overlay of its fitted
+        # baseline (parent_absorbance - corrected_absorbance) so the
+        # user can judge fit quality before committing.
+        self._baseline_curves_cb = tk.Checkbutton(
+            bar, text="Baseline curves",
+            variable=self._show_baseline_curves,
+            command=self._redraw, font=F9,
+        )
+        self._baseline_curves_cb.pack(side=tk.LEFT, padx=2)
 
         # Phase 4n CS-27 retired the top-bar "+ Add to TDDFT Overlay"
         # bulk button. Each ScanTreeWidget row now carries a per-row
@@ -1363,6 +1378,17 @@ class UVVisTab(tk.Frame):
         ax.set_facecolor(cfg.get("background_color", "#ffffff"))
 
         for node in live:
+            # Phase 4o defensive guard: every NodeType in
+            # _spectrum_nodes() / _second_derivative_nodes() is *meant*
+            # to carry the wavelength_nm + absorbance pair, but a
+            # malformed DataNode (test scaffolding, half-loaded
+            # project file, future NodeType added to the filter list
+            # without renderer support) would otherwise raise
+            # KeyError from inside the Tk graph-event handler. Skip
+            # silently and let the rest of the live list render.
+            if ("wavelength_nm" not in node.arrays
+                    or "absorbance" not in node.arrays):
+                continue
             style  = node.style
             colour = style.get("color", "#333333")
             wl     = node.arrays["wavelength_nm"]
@@ -1382,6 +1408,38 @@ class UVVisTab(tk.Frame):
                 ax.fill_between(x, 0, y,
                                 color=colour,
                                 alpha=style.get("fill_alpha", 0.08))
+
+        # ── Baseline-curve overlays (CS-29, Phase 4o) ─────────────────
+        # Opt-in dashed overlay: for every visible BASELINE node,
+        # walk one hop in the graph to recover the fitted baseline
+        # function and plot it in the BASELINE node's colour with a
+        # dashed linestyle. Drawn after the main spectrum loop so the
+        # dashed line sits visually on top of its parent. Helper is
+        # silent on every failure path (returns None) so a malformed
+        # graph cannot crash this branch.
+        if self._show_baseline_curves.get():
+            for bn in self._spectrum_nodes():
+                if bn.type != NodeType.BASELINE:
+                    continue
+                if not bool(bn.style.get("visible", True)):
+                    continue
+                pair = uvvis_baseline.compute_baseline_curve(self._graph, bn)
+                if pair is None:
+                    continue
+                bwl, bcurve = pair
+                bx = _wavelength_to_x(bwl, unit)
+                by = _absorbance_to_y(bcurve, self._y_unit.get())
+                border = np.argsort(bx)
+                bx, by = bx[border], by[border]
+                bcolour = bn.style.get("color", "#333333")
+                blabel = (f"{bn.label} (baseline)"
+                          if bn.style.get("in_legend", True) else None)
+                ax.plot(bx, by,
+                        color=bcolour,
+                        linestyle="--",
+                        linewidth=bn.style.get("linewidth", 1.5),
+                        alpha=0.7,
+                        label=blabel)
 
         # ── Peak list overlays (CS-19, Phase 4h) ──────────────────────
         # Render every visible PEAK_LIST node as a scatter on top of
@@ -1474,9 +1532,15 @@ class UVVisTab(tk.Frame):
 
         # ── Invert nm axis ────────────────────────────────────────────────────
         if unit == "nm":
-            lo_nm = min(float(np.min(n.arrays["wavelength_nm"])) for n in live)
-            hi_nm = max(float(np.max(n.arrays["wavelength_nm"])) for n in live)
-            ax.set_xlim(hi_nm, lo_nm)
+            # Mirror the per-node guard above: a malformed live entry
+            # without wavelength_nm would crash the min/max computation.
+            wl_nodes = [n for n in live if "wavelength_nm" in n.arrays]
+            if wl_nodes:
+                lo_nm = min(float(np.min(n.arrays["wavelength_nm"]))
+                            for n in wl_nodes)
+                hi_nm = max(float(np.max(n.arrays["wavelength_nm"]))
+                            for n in wl_nodes)
+                ax.set_xlim(hi_nm, lo_nm)
 
         # ── Apply stored x-limits ─────────────────────────────────────────────
         lo_x = self._parse_lim(self._xlim_lo)
