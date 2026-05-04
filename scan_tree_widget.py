@@ -258,11 +258,10 @@ class ScanTreeWidget(tk.Frame):
         # group (to avoid creating a separate row for the same node).
         self._sweep_leaders: set[str] = set()
         # Per-row optional controls indexed by node id, used by the
-        # responsive collapse logic (B-002). Each entry maps a name
-        # ("swatch", "leg", "ls_canvas", "hist") to the widget that
-        # should hide when the row narrows below ``_RESPONSIVE_COLLAPSE_PX``
-        # — and to the anchor widget (``vis_cb``) the swatch needs for
-        # correct re-insertion via ``pack(before=...)``.
+        # responsive layout helper (B-002 + Phase 4n CS-26). Each
+        # entry maps a name ("swatch", "leg", "ls_canvas") to the
+        # optional widget plus ``vis_cb`` (the swatch's re-pack
+        # anchor for ``pack(before=...)``).
         self._optional_row_widgets: dict[str, dict[str, tk.Widget]] = {}
 
         self._build_chrome()
@@ -636,15 +635,22 @@ class ScanTreeWidget(tk.Frame):
         optional cells are shown; the always-visible minimum
         (state, ☑, label, ⌥n, ⚙, →, ✕) keeps the row usable.
 
-        The right-side optional widgets share a delicate ordering
-        invariant: when both ``leg`` and ``ls_canvas`` are mapped the
-        canonical visual order is ``leg ls_canvas`` (i.e. ``leg`` is
-        leftmost). Naively packing one when the other is already
-        mapped would land the new one on the wrong side, so the
-        helper reflows BOTH right-side optional cells whenever the
-        right-side mapped set is about to change. This is idempotent
-        at steady state: when the desired mapped set already matches
-        the actual mapped set, no pack / pack_forget calls fire.
+        The helper unconditionally rewrites the optional cells'
+        pack state on every call rather than tracking "current"
+        state, because:
+
+        * Tk auto-unmaps a packed widget that doesn't fit in a
+          narrow parent, so ``winfo_ismapped()`` cannot be trusted
+          as the "is this widget in our intended layout?" oracle —
+          it disagrees with the pack list under overflow.
+        * The right-side optional widgets share a delicate ordering
+          invariant: when both ``leg`` and ``ls_canvas`` are mapped
+          the canonical visual order is ``leg ls_canvas`` (leg
+          leftmost). Re-packing both together preserves that
+          regardless of which threshold was just crossed.
+        * Repeated <Configure> events with the same width pay only
+          a few pack-list updates per row — Tk's pack manager is
+          a tcl-level operation, no perceptible flicker.
 
         ``swatch`` is re-inserted with ``before=vis_cb`` because a
         plain ``side="left"`` would place it after ``label`` (which
@@ -670,62 +676,48 @@ class ScanTreeWidget(tk.Frame):
         leg       = widgets.get("leg")
         ls_canvas = widgets.get("ls_canvas")
 
-        def _is_mapped(w: tk.Widget | None) -> bool:
-            if w is None:
-                return False
-            try:
-                return bool(w.winfo_ismapped())
-            except tk.TclError:
-                return False
-
         want_swatch = width >= thresholds["swatch"]
         want_leg    = width >= thresholds["leg"]
         want_ls     = width >= thresholds["ls_canvas"]
 
-        have_swatch = _is_mapped(swatch)
-        have_leg    = _is_mapped(leg)
-        have_ls     = _is_mapped(ls_canvas)
-
         # Left side — swatch is independent of right-side ordering.
-        if have_swatch and not want_swatch and swatch is not None:
+        # Always pack_forget first so the subsequent pack call (if
+        # any) inserts at the correct position via ``before=vis_cb``.
+        if swatch is not None:
             try:
                 swatch.pack_forget()
             except tk.TclError:
                 pass
-        elif (want_swatch and not have_swatch
-                and swatch is not None and vis_cb is not None):
+            if want_swatch and vis_cb is not None:
+                try:
+                    swatch.pack(side="left", padx=2, before=vis_cb)
+                except tk.TclError:
+                    pass
+
+        # Right side — reflow ``leg`` and ``ls_canvas`` together so
+        # the canonical visual order ``leg · ls_canvas · ⌥n · ⚙ ·
+        # → · ✕`` is preserved no matter which threshold was just
+        # crossed.
+        for w in (leg, ls_canvas):
+            if w is None:
+                continue
             try:
-                swatch.pack(side="left", padx=2, before=vis_cb)
+                w.pack_forget()
             except tk.TclError:
                 pass
-
-        # Right side — reflow ``leg`` and ``ls_canvas`` together when
-        # the desired set differs from the actual set, otherwise skip
-        # entirely (idempotent at steady state).
-        right_changed = (want_leg, want_ls) != (have_leg, have_ls)
-        if right_changed:
-            for w in (leg, ls_canvas):
-                if w is None:
-                    continue
-                try:
-                    if w.winfo_ismapped():
-                        w.pack_forget()
-                except tk.TclError:
-                    pass
-            # Pack in the order ``ls_canvas`` then ``leg`` so each
-            # ``side="right"`` call lands to the left of the
-            # previously packed widget — matching the canonical
-            # visual order ``leg · ls_canvas · ⌥n · ⚙ · → · ✕``.
-            if want_ls and ls_canvas is not None:
-                try:
-                    ls_canvas.pack(side="right", padx=(2, 0))
-                except tk.TclError:
-                    pass
-            if want_leg and leg is not None:
-                try:
-                    leg.pack(side="right", padx=(2, 0))
-                except tk.TclError:
-                    pass
+        # Pack in the order ``ls_canvas`` then ``leg`` so each
+        # ``side="right"`` call lands to the left of the previously
+        # packed widget.
+        if want_ls and ls_canvas is not None:
+            try:
+                ls_canvas.pack(side="right", padx=(2, 0))
+            except tk.TclError:
+                pass
+        if want_leg and leg is not None:
+            try:
+                leg.pack(side="right", padx=(2, 0))
+            except tk.TclError:
+                pass
 
     # ------------------------------------------------------------
     # Sweep group row
