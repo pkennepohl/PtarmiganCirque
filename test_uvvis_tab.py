@@ -2363,12 +2363,12 @@ class TestUVVisTabSendToCompareIntegration(unittest.TestCase):
         # ``wavelength_nm`` / ``absorbance`` arrays. Out-of-shape
         # nodes are dropped silently.
         #
-        # Stub ``graph.get_node`` rather than adding the node to the
-        # graph: a BASELINE-typed node entering the graph fires
-        # ``_redraw`` (unrelated to CS-27) which has its own UVVIS
-        # array assumption. Stubbing the lookup keeps the test
-        # focused on the helper's type guard.
-        fake_node = DataNode(
+        # Phase 4o (CS-28): the previous get_node stub workaround
+        # is no longer needed — _redraw's defensive guard skips
+        # malformed DataNodes silently, so a BASELINE node with a
+        # non-canonical array key can live in the graph without
+        # crashing the renderer.
+        bad_baseline = DataNode(
             id="b1",
             type=NodeType.BASELINE,
             arrays={"wavelength_nm": np.linspace(300, 600, 5),
@@ -2377,14 +2377,8 @@ class TestUVVisTabSendToCompareIntegration(unittest.TestCase):
             label="b1",
             state=NodeState.COMMITTED,
         )
-        original = self.graph.get_node
-        self.graph.get_node = lambda nid: (
-            fake_node if nid == "b1" else original(nid)
-        )
-        try:
-            self.tab._send_node_to_compare("b1")
-        finally:
-            self.graph.get_node = original
+        self.graph.add_node(bad_baseline)
+        self.tab._send_node_to_compare("b1")
         self.assertEqual(self.pushed, [])
 
 
