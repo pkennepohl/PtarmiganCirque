@@ -1210,7 +1210,7 @@ and adding the per-row → Send-to-Compare icon (CS-27). Items 1, 4,
 USER-FLAGGED. **Do not fix until the relevant subsequent Phase 4
 session.**
 
-1. 🔴 **`_redraw` raises `KeyError: 'absorbance'` for non-UVVIS
+1. ~~🔴 **`_redraw` raises `KeyError: 'absorbance'` for non-UVVIS
    DataNodes.** USER-FLAGGED at end of Phase 4n. `uvvis_tab._redraw`
    walks every NodeType the sidebar filter accepts and reads
    `node.arrays["absorbance"]` unconditionally, but BASELINE's array
@@ -1221,7 +1221,14 @@ session.**
    per-NodeType branching in `_redraw` is the cheap fix. See the new
    register entry "Defensive guard in `_redraw` for non-UVVIS
    DataNodes". Pairs with the diagnostic-console entry (which would
-   route the trace somewhere visible).
+   route the trace somewhere visible).~~ ✅ Resolved in Phase 4o
+   (CS-28). The friction note's claim about BASELINE's schema was
+   inaccurate — live BASELINE nodes carry `wavelength_nm + absorbance`
+   (line 937 of `uvvis_tab.py`); the only `baseline`-keyed BASELINE in
+   the codebase was the deliberately-malformed stub in
+   `test_send_node_to_compare_skips_non_uvvis_nodes`. The CS-28 guard
+   protects `_redraw` against any future malformed entry regardless
+   of which key is missing.
 2. **Test convention not documented: full `_root.update()` is
    required for geometry-sensitive assertions on a withdrawn
    root.** `update_idletasks()` flushes idle handlers but does not
@@ -1266,6 +1273,47 @@ session.**
    with #4 above (any caching pass should account for cells whose
    natural width changes after the row was first measured).
 
+### Friction points carried forward from Phase 4o
+
+These are concrete obstacles the next Phase 4 session will hit.
+Identified during Phase 4o while landing the defensive `_redraw`
+guard (CS-28) and the dashed baseline-curve overlay (CS-29). Items
+1 and 2 are USER-FLAGGED; item 3 is a process-improvement note.
+**Do not fix until the relevant subsequent Phase 4 session.**
+
+1. 🔴 **No per-node baseline-curve gate (USER-FLAGGED).** The new
+   "Baseline curves" toggle is a single tab-level boolean; turning
+   it on enables the dashed overlay for *every* visible BASELINE
+   node at once. With more than two or three baselines visible the
+   plot crowds quickly. Likely shape: a per-row toggle on the
+   ScanTreeWidget BASELINE rows (sibling to the existing visibility
+   `[☑]`), or a dedicated style-dict key (`style["show_baseline_curve"]`)
+   exposed in the StyleDialog universal section so the per-node
+   choice is also persistable. Pairs with #2 below (per-node gate
+   would naturally limit legend density too). See the new register
+   entry "Per-node baseline-curve toggle (USER-FLAGGED)".
+2. **Baseline-curve overlay legend density.** With N visible
+   BASELINE nodes and the global toggle on, the legend grows by N
+   "<label> (baseline)" rows. At today's overlay defaults the legend
+   stays readable up to ~3 baselines but starts to dominate the
+   plot frame at 5+. Cheapest mitigation: gate the legend label on
+   a separate condition (e.g. `style["in_legend"]` AND a new
+   "show baseline in legend" preference); deeper fix is the per-node
+   gate from #1. See the new register entry "Baseline-curve overlay
+   legend density".
+3. **Friction notes occasionally describe schema that doesn't match
+   live code.** Phase 4n friction #1 said BASELINE's array schema
+   was `wavelength_nm + baseline`; the live code at
+   `uvvis_tab.py:937` uses `wavelength_nm + absorbance`. The friction
+   note's claim only matched a deliberately-malformed test stub
+   (`test_send_node_to_compare_skips_non_uvvis_nodes`), not any
+   live construction site. Process improvement: when writing a
+   friction entry that names array keys / dataclass fields / Tk
+   var names, grep the codebase for one live construction site and
+   quote the actual key names rather than reasoning from memory.
+   No register entry — documentation-style note for the session
+   structure.
+
 | Status | Priority | Item | Notes |
 |---|---|---|---|
 | ✅ | 🔴 | **Migrate UV/Vis to node model** | UVVisScan → DataNode(type=UVVIS). File load → RAW\_FILE + LOAD + UVVIS triple, all COMMITTED (Phase 4a Part A; CS-13 implementation notes) |
@@ -1297,10 +1345,12 @@ session.**
 | ✅ | 🔴 | **Right-sidebar responsive layout extension (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4l. Resolved Phase 4n (CS-26): the always-visible minimum grew from five to seven cells (`state · [☑] · label · ⌥n · [⚙] · [→] · [✕]`); ⌥n provenance count was promoted out of the optional set. Single 280 px threshold replaced by three priority-ordered thresholds — swatch @ 240, leg @ 280, ls\_canvas @ 320 — so optional cells reveal in priority order as the row widens. The fourth-priority "line width entry" cell deferred (no per-row line-width control today; reachable via the StyleDialog universal section). `_apply_responsive_layout` reflows `leg` + `ls_canvas` together to preserve the canonical visual order under Tk's overflow auto-unmap |
 | ✅ | 🔴 | **Send to Compare per-row icon (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4l (originally Phase 4l friction #7). Folded into CS-27 alongside the "Send to Compare" register row above — the per-row icon replaces the legacy top-bar `+ Add to TDDFT Overlay` bulk button. See the "Send to Compare" register row above and CS-27 in COMPONENTS.md |
 | ✅ | 🟡 | **Scattering-functional baseline mode** | USER-FLAGGED at end of Phase 4l. Resolved Phase 4m (CS-24): new `params["mode"] == "scattering"` discriminator on `OperationType.BASELINE`. Helper `compute_scattering(wavelength_nm, absorbance, params)` fits `B(λ) = c · λ^(-n)` over a user-defined peak-free window and subtracts the result across the full input range. `params["n"]` is either a numeric exponent (closed-form least-squares for `c` only) or the string `"fit"` (log–log linear regression for both `c` and `n`; requires absorbance > 0 throughout the fit window). UI parameter row: `n:` Entry (default `"4"` ≈ Rayleigh) + `Fit n` Checkbutton (disables the n entry when checked) + `Fit lo (nm):` / `Fit hi (nm):` entries. `BASELINE_MODES` grew from 4 to 5; combobox auto-pulled the new entry; `_DISPATCH` and `_collect_baseline_params` gained the new branch. Reuses provisional BASELINE node shape from CS-15 — renderer and ScanTreeWidget needed no changes. 472 tests, all green (12 pure-module + 2 integration new) |
-| ⏳ | 🔴 | **Show baseline function on the plot (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4n. After applying a baseline (any mode in CS-15 / CS-24), the resulting BASELINE node shows the *corrected* spectrum on the plot but the *fitted baseline curve* itself is invisible. The user wants to see the baseline overlaid on the original spectrum so they can judge the fit quality before committing — currently the only way is to flip back and forth between the parent UVVIS row and the BASELINE child. Likely shape: a new tab toggle "Show baseline curves" that, when on, walks the BASELINE provisional / committed nodes and plots `parent_absorbance - corrected_absorbance` (i.e. the baseline function itself) as a dashed overlay. Touches `uvvis_tab._redraw` and the plot legend. Pairs naturally with the CS-15 / CS-24 review workflow |
+| ⏳ | 🔴 | **Per-node baseline-curve toggle (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4o. The Phase 4o "Baseline curves" toggle (CS-29) is global — turning it on enables the dashed overlay for *every* visible BASELINE node at once, which crowds the plot when more than two or three baselines are visible. Likely shape: a per-row gesture on the ScanTreeWidget BASELINE rows (sibling to the existing visibility `[☑]`), or a `style["show_baseline_curve"]` key surfaced in the StyleDialog universal section so the per-node choice is also persistable per node and survives a project reload. Touches `scan_tree_widget._populate_node_row` (or `style_dialog.py` if going the style-key route) and `uvvis_tab._redraw`'s baseline-curve overlay loop (gate on the per-node key in addition to the global toggle). Pairs with the legend-density entry below |
+| ⏳ | 🟡 | **Baseline-curve overlay legend density** | Surfaced in Phase 4o while landing CS-29. With N visible BASELINE nodes and the global "Baseline curves" toggle on, the plot legend grows by N "<label> (baseline)" rows. Stays readable up to ~3 baselines but starts to dominate the frame at 5+. Cheapest mitigation: add a separate "show baseline in legend" preference (style key or top-bar toggle) so the dashed overlay can render without the legend doubling in size. Deeper fix is the per-node baseline-curve gate above (gate the legend at the same time as the overlay). Touches `uvvis_tab._redraw`'s overlay branch and possibly the StyleDialog universal section |
+| ✅ | 🔴 | **Show baseline function on the plot (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4n. Resolved Phase 4o (CS-29): new top-bar `tk.Checkbutton` "Baseline curves" wired to `self._show_baseline_curves` Tk BooleanVar (default off — opt-in review aid; no behaviour change for existing flows). When on, `_redraw` walks every visible BASELINE node, calls the new pure helper `uvvis_baseline.compute_baseline_curve(graph, baseline_node)` to recover the fitted baseline as `parent.absorbance - baseline.absorbance`, and plots it dashed (linestyle `"--"`, alpha 0.7) in the BASELINE node's colour. Legend entry is `"<node label> (baseline)"` when `style["in_legend"]` is on. Helper returns `None` on every failure (wrong type, missing arrays, no parent, shape mismatch); the loop simply skips so a malformed graph never crashes the renderer. Per-node toggle elevated as a separate USER-FLAGGED carry-forward (the global toggle clutters when many BASELINE nodes are visible) |
 | ⏳ | 🔴 | **Scattering baseline floor-zero shift (CS-24 follow-up) (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4n. The current `compute_scattering` returns `A - c·λ^(-n)`. For colloidal samples the corrected spectrum's minimum is often slightly negative (the fitted scattering tail can over- or under-shoot in the peak-free window). The user wants the corrected spectrum's minimum guaranteed ≥ 0 across the whole range — a sibling fitted offset `a` such that `B(λ) = a + c·λ^(-n)` and the post-subtraction floor is explicitly clamped (or fitted) to zero. Two paths: (a) extend `compute_scattering` to fit a constant offset alongside `c` (and `n`, if not pinned) — overlaps with Phase 4m friction #3 (composite `scattering+offset` mode); (b) post-subtraction shift to make `min(corrected) == 0` (preserves the fit but adds a fixed offset to every point). User's intent reads more like (a). Pin the params naming so the fitted offset is exportable (Phase 4m friction #2 / `n_fitted` analog: `params["a_fitted"]`) |
 | ⏳ | 🔴 | **Diagnostic console / fitted-parameter panel (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4n. Several places in the app produce numeric diagnostics that currently live only in `OperationNode.params` and never surface to the user: scattering log fit's resolved n (Phase 4m friction #2), upcoming scattering+offset's `a_fitted`, polynomial baseline fit residuals, peak-picking match list, rubberband convex-hull point count, etc. The user is asking whether a small read-only "console" or "log" pane (a scrolling text widget at the bottom of the app or a per-tab footer) would carry these. Two shapes worth weighing: (a) **per-tab inline diagnostic strip** — small read-only panel at the bottom of each tab's left pane that names the most recently applied op and lists its key fitted values; refreshed on every Apply; (b) **app-wide log console** — a collapsible bottom drawer (like an IDE's output pane) that streams every op's "results" line plus warnings / errors / debug; survives tab switches. (b) doubles as a place for the `_redraw` KeyError trace (Phase 4n friction #1) and the messagebox messages currently shown via popups (e.g. "no Compare host connected"). Both shapes are non-trivial; pick before any Phase 4 follow-up that needs to surface a fitted value |
-| ⏳ | 🔴 | **Defensive guard in `_redraw` for non-UVVIS DataNodes** | Surfaced by Phase 4n while writing the Send-to-Compare integration test. `uvvis_tab._redraw` reads `node.arrays["absorbance"]` for every NodeType the sidebar filter accepts (UVVIS, BASELINE, NORMALISED, SMOOTHED, PEAK_LIST, SECOND_DERIVATIVE), but BASELINE's array schema is `wavelength_nm` + `baseline` (no `absorbance` key). When a BASELINE DataNode enters the graph, `_redraw` raises `KeyError: 'absorbance'` from inside the Tk graph-event handler — the trace escapes to stderr but the handler swallows nothing. Today this only fires when a BASELINE node is created via test scaffolding (the live operation panels always create a UVVIS-shaped sibling node), but a defensive guard is cheap: skip nodes whose schema doesn't match the renderer's read pattern, or branch on `node.type` and pick the right array key. Touches `uvvis_tab.py:1369`. Pairs with the diagnostic console entry above (the trace would route there instead of escaping silently) |
+| ✅ | 🔴 | **Defensive guard in `_redraw` for non-UVVIS DataNodes** | Surfaced by Phase 4n while writing the Send-to-Compare integration test. Resolved Phase 4o (CS-28): positive guard at the top of the per-node loop body (`if "wavelength_nm" not in node.arrays or "absorbance" not in node.arrays: continue`) and a mirror guard wrapped around the unit==`"nm"` xlim min/max comprehension. Silent skip — the diagnostic-console entry (still ⏳) will eventually surface skipped nodes. The Phase 4n note that BASELINE's schema was `wavelength_nm + baseline` was inaccurate — live BASELINE nodes carry `wavelength_nm + absorbance` (line 937 of `uvvis_tab.py`); the only `baseline`-keyed BASELINE in the codebase was the deliberately-malformed stub in `test_send_node_to_compare_skips_non_uvvis_nodes`, which the Phase 4o follow-up commit simplified to use the new guard rather than stub `graph.get_node` |
 | ⏳ | 🟡 | **Long-provenance hist button display options (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4n. The `⌥{n}` always-visible cell (CS-26 promotion) renders the provenance chain length as a literal integer. For complex workflows `n > 9` is realistic — the row's natural width grows with the digit count, which can re-trigger the responsive overflow pattern at the same widths today's tests verify. Options to weigh in the implementing session: (a) cap display at `⌥9+` once n > 9 with the exact count surfaced via tooltip / history sub-frame; (b) two-digit fixed width (`⌥01`...`⌥99`) so the row's natural width is bounded but the count remains readable; (c) hide digits entirely (just `⌥`) and surface the count only via the expanded history sub-frame; (d) SI-suffix style (`⌥9`, `⌥1k` for >999). Touches `scan_tree_widget._populate_node_row` (the `text=f"⌥{chain_len}"` line) and the existing `test_provenance_op_count` style assertions. User has confirmed `n > 9` is "easily seen for complex workflows" so this is not edge-case |
 | ⏳ | 🟢 | **Threshold-band caching for responsive helper (technical debt)** | Phase 4n CS-26's `_apply_responsive_layout` unconditionally pack_forget+repacks every optional cell on every call (rather than tracking last-applied state) because Tk auto-unmap under overflow makes `winfo_ismapped()` an unsound "have" oracle. The fix is correct but does redundant work on every `<Configure>` event at the same width. Cache the last applied "threshold band" per row (e.g. one of `(none, swatch, swatch+leg, all)`) and short-circuit the reflow when the new width falls in the same band. Care needed: the cache must be invalidated on `_populate_node_row` (a row rebuild starts fresh). Cheap polish; defer until flicker is observed in real use |
 | ⏳ | 🟢 | **Test convention: `_root.update()` over `update_idletasks()` for geometry** | Surfaced during Phase 4n CS-26 test work. `update_idletasks()` flushes idle handlers but does NOT trigger Tk's geometry pass on a withdrawn root; `winfo_ismapped()` lags reality until the next event cycle. Pre-CS-26 responsive tests got away with `update_idletasks` because the helper packed less aggressively; CS-26's unconditional reflow exposed the gap. Document the convention in `test_scan_tree_widget`'s module docstring (and the equivalent docstrings in any future widget tests that read mapped state): "after a layout-changing call on a withdrawn `_root`, use `_root.update()`, not `update_idletasks()`, before reading `winfo_ismapped`". One-paragraph doc edit; no code change |
@@ -1519,7 +1569,7 @@ the resolving phase + commit SHA appended to the row.
 
 ---
 
-*Document version: 1.13 — May 2026*
+*Document version: 1.14 — May 2026*
 *1.1: Known Bugs register added 2026-04-27 after Phase 4b manual testing.*
 *1.2: Phase 4c — baseline correction lands; B-001 / B-003 / B-004
 resolved; Phase 4c friction points logged.*
@@ -1622,4 +1672,20 @@ extended with the Phase 4l USER-FLAGGED constraint that the
 gesture be a per-row icon, not a top-bar button. Phase 4b
 friction #1 + #5 cross-ref the new persistence register
 entry as the canonical chain.*
+*1.14: Phase 4o — defensive `_redraw` guard (CS-28) + dashed
+baseline-curve overlay (CS-29). Phase 4n register entries "Show
+baseline function on the plot" and "Defensive guard in `_redraw`
+for non-UVVIS DataNodes" both marked ✅. Phase 4n friction #1
+(`KeyError 'absorbance'`) struck through with a clarification
+that the friction note's BASELINE schema description was
+inaccurate (live nodes carry `wavelength_nm + absorbance`; the
+only `baseline`-keyed BASELINE was a deliberately-malformed test
+stub). Phase 4o friction logged (three items: per-node baseline-
+curve gate USER-FLAGGED, overlay legend density, friction-note
+schema accuracy as a process improvement). Two new register
+entries: 🔴 Per-node baseline-curve toggle (USER-FLAGGED), 🟡
+Baseline-curve overlay legend density. The
+`test_send_node_to_compare_skips_non_uvvis_nodes` get_node stub
+workaround was simplified to use the new guard instead of the
+lambda override.*
 *Supersedes: BACKLOG.md (original)*

@@ -3243,7 +3243,144 @@ tab, only `UVVisTab._send_node_to_compare` and the host glue
 
 ---
 
-*Document version: 1.14 — May 2026*
+## CS-28 — `_redraw` defensive guard for malformed DataNodes (Phase 4o)
+
+`uvvis_tab._redraw` walks every `DataNode` returned by
+`_spectrum_nodes()` and `_second_derivative_nodes()` and reads
+the canonical `arrays["wavelength_nm"]` / `["absorbance"]`
+pair for each one. Every NodeType in those filter lists
+(`UVVIS`, `BASELINE`, `NORMALISED`, `SMOOTHED`, `SECOND_DERIVATIVE`)
+is *meant* to carry that pair, but a malformed entry (test
+scaffolding, partial project file, future NodeType added to the
+filter without renderer support) used to raise
+`KeyError` from inside the Tk graph-event handler — the trace
+escaped to stderr but the user saw nothing.
+
+CS-28 adds a positive guard at the top of the per-node loop body:
+
+```python
+for node in live:
+    if ("wavelength_nm" not in node.arrays
+            or "absorbance" not in node.arrays):
+        continue
+    ...
+```
+
+The same guard is mirrored on the `unit == "nm"` axis-limit
+comprehension so a half-formed `live` list cannot blow up the
+`min(...)` / `max(...)` either:
+
+```python
+if unit == "nm":
+    wl_nodes = [n for n in live if "wavelength_nm" in n.arrays]
+    if wl_nodes:
+        lo_nm = min(float(np.min(n.arrays["wavelength_nm"]))
+                    for n in wl_nodes)
+        ...
+```
+
+The skip is silent — there is no log line, no messagebox, no
+status-bar entry. The diagnostic-console register entry (still
+⏳ as of Phase 4o) is the natural surface for "renderer skipped
+node X because of Y"; until that lands, `_redraw` simply ignores
+the malformed entry and keeps drawing the rest of the live list.
+
+Test class `TestUVVisTabRedrawGuard` in `test_uvvis_tab.py`
+covers three cases: malformed BASELINE alone (was the original
+crash path), malformed BASELINE alongside a valid UVVIS (the
+valid spectrum still renders), and malformed BASELINE missing
+`wavelength_nm` entirely (the xlim mirror keeps the axis-limit
+computation alive). CS-28 also enabled simplifying
+`test_send_node_to_compare_skips_non_uvvis_nodes`, which used to
+stub `graph.get_node` with a one-off lambda specifically to keep
+the malformed BASELINE out of `_redraw`'s path.
+
+---
+
+## CS-29 — Baseline-curve overlay (Phase 4o)
+
+After the user applies a baseline (any mode in CS-15 / CS-24)
+the resulting `BASELINE` `DataNode` shows the *corrected*
+spectrum but the *fitted baseline curve itself* is not drawn.
+Reviewing the fit quality before committing required toggling
+the parent's visibility on/off and eyeballing the difference.
+
+CS-29 adds an opt-in dashed overlay. New top-bar
+`tk.Checkbutton` "Baseline curves" (immediately after the
+existing `λ(nm) axis` button), wired to a new
+`self._show_baseline_curves` Tk `BooleanVar` (default `False` —
+opt-in so existing flows render unchanged). When on, `_redraw`
+walks every visible `BASELINE` node and overlays its fitted
+baseline as a dashed line in the BASELINE node's colour.
+
+The pure helper that recovers the baseline lives in
+`uvvis_baseline.py` next to the `compute_*` family:
+
+```python
+def compute_baseline_curve(graph, baseline_node):
+    """Recover parent_absorbance - baseline_node.absorbance.
+
+    Returns (wavelength_nm, baseline_curve) on success or None
+    on every failure path (wrong type, missing arrays, no
+    parent, shape mismatch). Never raises.
+    """
+```
+
+Implementation walks one hop in the graph:
+
+* `parents_of(baseline_node.id)` → expects exactly one
+  `OperationNode` (the `BASELINE` op that produced this node)
+* `op.input_ids[0]` → the parent `DataNode` (typically `UVVIS`,
+  but `BASELINE` works too — chained corrections are a valid
+  shape)
+* baseline curve = `parent.arrays["absorbance"] - baseline_node.arrays["absorbance"]`
+
+Every failure mode returns `None` rather than raising, so the
+caller's render loop simply skips and continues — a malformed
+graph cannot crash the renderer through this branch.
+
+In `_redraw`, the overlay loop is placed after the main spectrum
+loop and before the PEAK_LIST scatter loop, so the dashed line
+sits visually on top of its parent curve while peaks remain
+topmost. Style attributes:
+
+| Attribute  | Value                              |
+|---|---|
+| `linestyle` | `"--"` (always dashed)            |
+| `color`     | inherited from BASELINE node      |
+| `linewidth` | inherited from BASELINE node      |
+| `alpha`     | hard-coded 0.7 (deliberate; a faded BASELINE shouldn't make the overlay invisible) |
+| `label`     | `f"{node.label} (baseline)"` if `style["in_legend"]` is true, else `None` |
+
+The overlay respects the BASELINE node's own visibility — a
+hidden BASELINE node has no overlay.
+
+Test classes:
+
+* `TestComputeBaselineCurve` (in `test_uvvis_baseline.py`,
+  six cases): success path; chained baseline parent;
+  non-BASELINE input; missing arrays; orphan node (no graph
+  parent); parent / child shape mismatch
+* `TestUVVisTabBaselineCurveOverlay` (in `test_uvvis_tab.py`,
+  six cases): default-off; toggle off renders no dashed line;
+  toggle on adds exactly one dashed line whose y-data matches
+  the fitted baseline; invisible BASELINE node has no overlay;
+  overlay inherits the BASELINE node's colour; orphan BASELINE
+  is skipped without crashing
+
+CS-29's deliberate scope limit: the toggle is global. Per-node
+gating, legend density mitigation, and a per-node
+`style["show_baseline_curve"]` style key were all considered
+during decision lock and deferred — the global toggle is the
+minimum viable review aid; per-node control is registered as a
+USER-FLAGGED Phase 4o follow-up. The CS-24 lock is preserved:
+`compute_baseline_curve` is an additive helper alongside
+`compute_*` and `_DISPATCH`; no existing mode signatures were
+touched.
+
+---
+
+*Document version: 1.15 — May 2026*
 *1.1: CS-13 implementation notes added in Phase 4a.*
 *1.2: CS-14 Plot Settings Dialog added in Phase 4b.*
 *1.3: CS-15 UV/Vis Baseline Correction + CS-04 implementation
@@ -3351,5 +3488,26 @@ USER-FLAGGED feature requests: Show baseline function on the
 plot, Scattering floor-zero shift (CS-24 follow-up),
 Diagnostic console / fitted-parameter panel, Difference
 spectra elevation.*
+*1.15: CS-28 + CS-29 added in Phase 4o. CS-28 wraps the
+`uvvis_tab._redraw` per-node loop in a positive guard
+(`"wavelength_nm" in arrays and "absorbance" in arrays`) and
+mirrors the guard on the `unit == "nm"` xlim min/max
+comprehension; resolves Phase 4n friction #1 (USER-FLAGGED).
+CS-29 lands the dashed baseline-curve overlay: new top-bar
+"Baseline curves" toggle + new pure helper
+`uvvis_baseline.compute_baseline_curve(graph, baseline_node)`
+that walks one hop in the graph to recover
+`parent.absorbance - baseline_node.absorbance` and returns
+`None` on every failure path; renderer plots it dashed in the
+BASELINE node's colour after the main spectrum loop. Resolves
+Phase 4n register entry "Show baseline function on the plot"
+(USER-FLAGGED). Phase 4o logged three new friction items
+(per-node baseline-curve gate USER-FLAGGED, overlay legend
+density, friction-note schema accuracy as a process note); two
+new register entries: 🔴 Per-node baseline-curve toggle
+(USER-FLAGGED), 🟡 Baseline-curve overlay legend density. The
+`test_send_node_to_compare_skips_non_uvvis_nodes` get_node
+stub workaround was simplified to use the new CS-28 guard
+rather than the lambda override.*
 *To be updated as Open Questions are resolved and new components
 are specified.*
