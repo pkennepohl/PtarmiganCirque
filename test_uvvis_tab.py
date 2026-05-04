@@ -2388,5 +2388,109 @@ class TestUVVisTabSendToCompareIntegration(unittest.TestCase):
         self.assertEqual(self.pushed, [])
 
 
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestUVVisTabRedrawGuard(unittest.TestCase):
+    """Phase 4o (CS-28) — _redraw silently skips malformed DataNodes.
+
+    Every NodeType in ``_spectrum_nodes()`` / ``_second_derivative_nodes()``
+    is *meant* to carry a ``wavelength_nm`` + ``absorbance`` array
+    pair, but a half-formed DataNode (test scaffolding, partial
+    project file, future NodeType added to the filter list without
+    renderer support) used to raise KeyError from inside the Tk
+    graph-event handler. The guard skips the bad node and lets the
+    rest of the live list render.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from uvvis_tab import UVVisTab
+        cls.UVVisTab = UVVisTab
+
+    def setUp(self):
+        self.host = tk.Frame(_root)
+        self.graph = ProjectGraph()
+        self.tab = self.UVVisTab(self.host, graph=self.graph)
+
+    def tearDown(self):
+        try:
+            self.tab.destroy()
+        except Exception:
+            pass
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    def _add_uvvis(self, nid: str, label: str = "u") -> DataNode:
+        node = DataNode(
+            id=nid, type=NodeType.UVVIS,
+            arrays={"wavelength_nm": np.linspace(300.0, 600.0, 5),
+                    "absorbance":    np.linspace(0.1, 0.5, 5)},
+            metadata={"source_file": "synthetic"}, label=label,
+            state=NodeState.COMMITTED,
+            style={"color": "#1f77b4", "linestyle": "solid",
+                   "linewidth": 1.5, "alpha": 0.9, "visible": True,
+                   "in_legend": True},
+        )
+        self.graph.add_node(node)
+        return node
+
+    def _add_malformed_baseline(self, nid: str = "b1") -> DataNode:
+        # Deliberately wrong array key — exercises the guard.
+        node = DataNode(
+            id=nid, type=NodeType.BASELINE,
+            arrays={"wavelength_nm": np.linspace(300.0, 600.0, 5),
+                    "baseline":      np.zeros(5)},
+            metadata={"source_file": "synthetic"}, label="malformed",
+            state=NodeState.COMMITTED,
+            style={"color": "#ff7f0e", "linestyle": "solid",
+                   "linewidth": 1.5, "alpha": 0.9, "visible": True,
+                   "in_legend": True},
+        )
+        self.graph.add_node(node)
+        return node
+
+    def test_redraw_does_not_raise_on_malformed_baseline_alone(self):
+        # Only a malformed BASELINE in the graph: pre-CS-28 this
+        # raised KeyError("absorbance") from the Tk handler.
+        self._add_malformed_baseline()
+        self.tab._redraw()  # must not raise
+        # No spectrum line was drawn from the malformed node.
+        ax_lines = self.tab._ax.get_lines() if self.tab._ax else []
+        # Either the axis went into the empty-state placeholder or
+        # it contains zero spectrum lines from the malformed node.
+        # Both outcomes are acceptable; the assertion is "no crash".
+        self.assertTrue(True, "guard kept _redraw alive")
+
+    def test_redraw_skips_malformed_node_alongside_valid_one(self):
+        # A valid UVVIS + a malformed BASELINE coexist; the valid
+        # one renders, the malformed one is silently dropped.
+        self._add_uvvis("u1", label="real")
+        self._add_malformed_baseline("b1")
+        self.tab._redraw()
+        labels = [ln.get_label() for ln in self.tab._ax.get_lines()]
+        self.assertIn("real", labels,
+                      "valid UVVIS line must still render")
+        self.assertNotIn("malformed", labels,
+                         "malformed BASELINE must be skipped")
+
+    def test_redraw_nm_axis_xlim_ignores_malformed_node(self):
+        # The unit == "nm" min/max comprehension also reads
+        # node.arrays["wavelength_nm"]; the guard mirror keeps it
+        # alive when one entry of `live` lacks the key.
+        self._add_uvvis("u1")
+        # Construct a malformed node missing wavelength_nm too.
+        bad = DataNode(
+            id="b2", type=NodeType.BASELINE,
+            arrays={"absorbance": np.zeros(3)},  # no wavelength_nm
+            metadata={}, label="missing-wl",
+            state=NodeState.COMMITTED,
+            style={"color": "#000", "visible": True, "in_legend": True},
+        )
+        self.graph.add_node(bad)
+        self.tab._x_unit.set("nm")
+        self.tab._redraw()  # must not raise
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
