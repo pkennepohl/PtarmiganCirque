@@ -3871,7 +3871,213 @@ unchanged; `_safely` is unchanged.
 
 ---
 
-*Document version: 1.17 — May 2026*
+## CS-35 — Sweep group member visual nesting (Phase 4r)
+
+CS-32 (Phase 4q) gave sweep groups inline expansion: clicking the
+chevron on the leader row turns each member into a full-chrome
+row rendered below. The members and the leader were packed at the
+same left padding (`padx=2`), so visually the relationship between
+the leader and its members read as "siblings" rather than "parent
+and indented children". CS-35 adds one indent step on the member
+rows so the grouping is visible at a glance.
+
+Mechanic
+--------
+
+Module-level constant:
+
+::
+
+    _SWEEP_MEMBER_INDENT_PX: int = 16
+
+`_build_node_row` grows an `indent_px: int = 0` keyword. Default 0
+preserves every existing call site (every standalone-row caller
+threads the default). The sweep-expansion branch in `_rebuild`
+calls:
+
+::
+
+    self._build_node_row(member_node, indent_px=_SWEEP_MEMBER_INDENT_PX)
+
+The row frame is packed via:
+
+::
+
+    row.pack(side="top", fill="x", padx=(2 + indent_px, 2), pady=1)
+
+Tk normalises an equal-sided `padx=(2, 2)` to the scalar `2` when
+read back via `pack_info()`, so the standalone case round-trips
+identically; only indented rows show as a tuple.
+
+Why a pack-arg pass-through (and not a wrapper frame)
+-----------------------------------------------------
+
+Considered alternative: wrap each expanded member row in an outer
+`tk.Frame` packed with extra left padding, leaving the member row
+itself unchanged. Rejected because:
+
+* The member row's own internal layout (state · swatch · ☑ · ~ ·
+  label · …) already has its own `padx` budget. Wrapping in a
+  parent frame would have to manage the wrapper's lifecycle on
+  collapse, doubling the dictionary tracking that
+  `_row_frames[member_id]` does today.
+* The pack-arg path is one literal change at one call site. The
+  wrapper-frame path adds a `_member_frames` dict + collapse
+  cleanup + tests for the cleanup. Wasted complexity for a 16 px
+  visual hint.
+
+CS-32 contract preserved
+------------------------
+
+CS-35 does not touch:
+
+* `_expanded_sweep_groups: set[str]` field shape or initial-empty
+  contract.
+* `_toggle_sweep_group(parent_id)` flip-and-rebuild model.
+* `_compute_sweep_groups`'s ≥2-member dissolution rule.
+* The deterministic `sorted(...)` member iteration order.
+
+CS-35's lock surface is `_SWEEP_MEMBER_INDENT_PX` itself, the
+`indent_px` kwarg signature, and the call-site delivery of that
+kwarg from `_rebuild`. Everything else is downstream.
+
+Tests
+-----
+
+`TestSweepMemberIndentConstant` (pure, no Tk) — constant is a
+positive int and its exact value is pinned to 16 so a future
+restyle is a deliberate change.
+
+`TestSweepGroupNestedIndent` (5 integration tests, Tk-required)
+— standalone row uses `padx=2` (Tk's scalar-collapse form),
+expanded member uses `padx=(2 + _SWEEP_MEMBER_INDENT_PX, 2)`,
+left padding derives from the constant (not a literal), collapse
+removes the indented member row, re-expand re-applies the indent.
+
+---
+
+## CS-36 — Per-node baseline-curve toggle (Phase 4r)
+
+CS-29 (Phase 4o) added a global "Baseline curves" checkbox on the
+top bar that, when on, rendered the dashed baseline overlay for
+every visible BASELINE node. The user reported that with three or
+more BASELINE nodes the plot crowded; the canonical fix was a
+per-node opt-out so individual baselines can be hidden while the
+global toggle stays on. CS-36 lands that as a per-row gesture on
+ScanTreeWidget rows.
+
+Mechanic
+--------
+
+New style key with a default-on convention: `style["show_baseline_curve"]`,
+default `True`. The default-on convention parallels `visible` and
+`in_legend` and means:
+
+* Existing graphs (no key in the saved style) round-trip
+  unchanged — every BASELINE node remains visible under the
+  global toggle.
+* New BASELINE nodes start visible; user opts out per node.
+
+`uvvis_tab._redraw`'s CS-29 overlay loop adds one filter line:
+
+::
+
+    if self._show_baseline_curves.get():
+        for bn in self._spectrum_nodes():
+            if bn.type != NodeType.BASELINE:
+                continue
+            if not bool(bn.style.get("visible", True)):
+                continue
+            if not bool(bn.style.get("show_baseline_curve", True)):  # NEW
+                continue
+            pair = uvvis_baseline.compute_baseline_curve(...)
+            ...
+
+The global toggle stays as the master switch (CS-29 lock holds);
+the per-node key is a downstream filter. Both must be on for an
+overlay to render.
+
+Per-row gesture
+---------------
+
+`_populate_node_row` adds a `tk.Button` between `[☑]` and the
+label, packed `side="left", padx=(2, 0)`, **only when**
+`node.type == NodeType.BASELINE`. Glyph vocabulary parallels the
+legend toggle:
+
+* `~` (foreground `#444444`) when on.
+* `–` (foreground `#999999`) when off.
+
+Click flips the style key via `self._graph.set_style(nid,
+{"show_baseline_curve": new})`, which fires
+`GraphEvent.NODE_STYLE_CHANGED` → uvvis_tab subscribes →
+`_redraw` re-evaluates the per-node gate. Same wiring path the
+visibility checkbox and legend toggle use.
+
+Why BASELINE-only and not a placeholder on every row
+----------------------------------------------------
+
+Considered alternative: pack a disabled placeholder on UVVIS /
+NORMALISED / SMOOTHED / PEAK_LIST rows so every row has the same
+column structure. Rejected:
+
+* No utility — these node types have no baseline curve to
+  toggle. A disabled button is a noise pixel on every non-
+  baseline row.
+* The CS-26 lock specifies a seven-cell always-visible minimum.
+  CS-36 conditionally adds an 8th cell on BASELINE rows; the
+  seven-cell floor for non-baseline rows is preserved.
+
+The per-row toggle is also NOT in the responsive-optional set
+(`_optional_row_widgets`). It is always-visible on BASELINE rows
+regardless of canvas width — the same convention that applies to
+the chevron on sweep-group leader rows and the 🔒 commit button
+on provisional rows.
+
+Why the StyleDialog universal section is NOT touched
+----------------------------------------------------
+
+Phase 4r's decision lock weighed a parallel CS-36 path: surface
+`style["show_baseline_curve"]` as a row in the StyleDialog
+universal section. Deferred. Reasons:
+
+* The universal section is a Phase 4d / 4f deliberate-lock
+  surface (see "Do not touch ... StyleDialog universal section"
+  in the lock list). Relaxation requires explicit user
+  authorisation; the right-sidebar gesture covers the workflow
+  the user described without needing it.
+* The new per-row gesture is more discoverable: the user is
+  already looking at the BASELINE row when deciding whether to
+  hide its overlay; opening a modal for a single-checkbox toggle
+  is friction.
+* The style key remains accessible programmatically and via
+  `set_style`, so a future dialog row is purely additive.
+
+CS-29 contract preserved
+------------------------
+
+CS-29's two locked surfaces — `uvvis_tab._redraw`'s defensive guard
+and `uvvis_baseline.compute_baseline_curve` — are untouched. The
+global `_show_baseline_curves` Tk `BooleanVar` is unchanged. CS-36
+is exclusively additive.
+
+Tests
+-----
+
+`TestShowBaselineCurveStyleKeyDefault` (pure, no Tk) — locks the
+default-True convention and `set_style`'s key-merge semantics so
+sibling keys (visible / in_legend) are not silently clobbered when
+the new key is toggled.
+
+`TestPerNodeBaselineCurveToggle` (7 integration tests) — button
+present on BASELINE rows, absent on UVVIS + NORMALISED rows,
+default-on glyph (`~`), off glyph (`–`) when the key is
+pre-populated False, click flips both the style key and the glyph
+through the graph-event rebuild path, round-trip back to on.
+
+---
+
+*Document version: 1.18 — May 2026*
 *1.1: CS-13 implementation notes added in Phase 4a.*
 *1.2: CS-14 Plot Settings Dialog added in Phase 4b.*
 *1.3: CS-15 UV/Vis Baseline Correction + CS-04 implementation
@@ -4055,5 +4261,47 @@ width-and-font-metrics follow-up to CS-33, promote
 `_Tooltip` to shared utility module on first cross-module
 re-use, indent expanded sub-frames inside sweep groups
 (visual nesting). 561 tests, all green (540 + 21 new).*
+*1.18: CS-35 + CS-36 added in Phase 4r. CS-35 adds visual
+nesting for sweep-group expanded members: module-level
+constant `_SWEEP_MEMBER_INDENT_PX = 16`, `_build_node_row`
+grows an `indent_px: int = 0` kwarg threaded into
+`row.pack(padx=(2 + indent_px, 2), pady=1)`, the sweep-
+expansion branch in `_rebuild` passes the constant. Pack-
+arg pass-through chosen over wrapper-frame to avoid a
+parallel `_member_frames` dict + collapse cleanup. CS-32
+contracts (`_expanded_sweep_groups` set type, `_toggle_
+sweep_group` flip-and-rebuild, `_compute_sweep_groups` ≥2-
+member dissolution) preserved verbatim. CS-36 adds a per-
+node baseline-curve toggle: new `style["show_baseline_
+curve"]` key with default-True convention parallels
+`visible`/`in_legend`; per-row `tk.Button("~"/"–")` packed
+between `[☑]` and the label on BASELINE rows ONLY (no
+placeholder on non-baseline rows); click routes through
+`set_style` so `NODE_STYLE_CHANGED` triggers the existing
+`uvvis_tab._redraw` path. `_redraw`'s CS-29 overlay loop
+adds one filter line: `if not bool(bn.style.get("show_
+baseline_curve", True)): continue`. Master-switch contract
+of CS-29 unchanged. StyleDialog universal-section path
+deferred (Phase 4d / 4f lock held). Two Phase 4 register
+entries marked ✅ (existing "Per-node baseline-curve toggle
+(USER-FLAGGED)" → CS-36; existing "Indent expanded sub-
+frames inside sweep groups (visual nesting)" → CS-35).
+Phase 4r logged five new friction items: tooltip on the
+new `[~]` toggle (defer until CS-33's `_Tooltip` is
+promoted, Phase 4q friction #3), `~` glyph choice (test
+pins literal so future restyle is deliberate), persistence
+coverage of the new style key (cross-ref the new persistence
+umbrella), legend toggle and baseline toggle both use `–`
+when off (disambiguated by row position), tested-by-
+integration smoke pattern (process note). Two new 🔴
+USER-FLAGGED register entries logged: Project + per-node
+persistence with manifest+sidecar+optional-blockchain-anchor
+architecture (subsumes the existing Plot config persistence
+entry as one phase of a four-phase ladder), Floor-zero
+baseline as fit-time constraint per mode (supersedes the
+post-shift framing in the existing Scattering baseline
+floor-zero shift entry — that entry stays open as the
+scattering-specific fitted-offset variant). 579 tests, all
+green (561 + 18 new: 6 pure-module + 12 integration).*
 *To be updated as Open Questions are resolved and new components
 are specified.*

@@ -1317,7 +1317,7 @@ guard (CS-28) and the dashed baseline-curve overlay (CS-29). Items
 1 and 2 are USER-FLAGGED; item 3 is a process-improvement note.
 **Do not fix until the relevant subsequent Phase 4 session.**
 
-1. 🔴 **No per-node baseline-curve gate (USER-FLAGGED).** The new
+1. ~~🔴 **No per-node baseline-curve gate (USER-FLAGGED).** The new
    "Baseline curves" toggle is a single tab-level boolean; turning
    it on enables the dashed overlay for *every* visible BASELINE
    node at once. With more than two or three baselines visible the
@@ -1327,7 +1327,17 @@ guard (CS-28) and the dashed baseline-curve overlay (CS-29). Items
    exposed in the StyleDialog universal section so the per-node
    choice is also persistable. Pairs with #2 below (per-node gate
    would naturally limit legend density too). See the new register
-   entry "Per-node baseline-curve toggle (USER-FLAGGED)".
+   entry "Per-node baseline-curve toggle (USER-FLAGGED)".~~ ✅
+   Resolved in Phase 4r (CS-36) — went the per-row gesture route on
+   the ScanTreeWidget (not the StyleDialog universal section, which
+   stayed locked); `[~]/[–]` button on BASELINE rows only flips
+   `style["show_baseline_curve"]` via `set_style`; the CS-29 overlay
+   loop adds one filter line consulting the new key. Default-True
+   convention parallels `visible`/`in_legend`; backwards compat for
+   existing graphs. Pairs with #2 below — per-node hide does drop
+   both overlay and legend entry simultaneously, which partially
+   mitigates legend density; the standalone "show baseline in
+   legend" preference remains open.
 2. **Baseline-curve overlay legend density.** With N visible
    BASELINE nodes and the global toggle on, the legend grows by N
    "<label> (baseline)" rows. At today's overlay defaults the legend
@@ -1511,7 +1521,7 @@ subsequent Phase 4 session.**
    ever changes — re-test by hovering over a long-label row
    in the running app. Documentation-style; no register entry.
 
-5. 🟢 **Sweep-group expanded members lack visual nesting.**
+5. ~~🟢 **Sweep-group expanded members lack visual nesting.**
    After CS-32 lands, a sweep-group member row can also have
    its provenance history expanded via `⌥n`. The existing
    `_render_history` packs the history sub-frame below the
@@ -1519,7 +1529,16 @@ subsequent Phase 4 session.**
    sits between sweep members rather than indented beneath
    the one it belongs to. Cosmetic; a user could be momentarily
    confused. See the new register entry "Indent expanded sub-
-   frames inside sweep groups (visual nesting)".
+   frames inside sweep groups (visual nesting)".~~ ✅ Resolved
+   in Phase 4r (CS-35) — `_SWEEP_MEMBER_INDENT_PX = 16`
+   constant + `indent_px` kwarg threaded through
+   `_build_node_row`'s `padx=(2 + indent_px, 2)` pack call;
+   sweep-expansion branch in `_rebuild` passes the constant.
+   The history sub-frame inside an expanded member row
+   inherits the parent row's indent (since `_render_history`
+   packs into the row's children frame), so visual nesting
+   for `⌥n` history under a sweep-member row is also correct
+   without separate threading.
 
 | Status | Priority | Item | Notes |
 |---|---|---|---|
@@ -1547,15 +1566,17 @@ subsequent Phase 4 session.**
 | ⏳ | 🟡 | **Unit-aware wavelength / energy picker for operation panels** | USER-FLAGGED at end of Phase 4j. The five operation panels collect wavelength/energy windows via free-form Entry widgets in nm only. The plot itself supports x in nm / cm⁻¹ / eV (top-bar combobox); the panels should follow whatever unit the plot is currently displaying so a user reading peak positions off the plot can type them straight into the entry without a mental unit conversion. Likely shape: a unit-aware Spinbox / Entry that watches the tab's `_x_unit` Tk var, converts the entered value to nm at Apply time (the canonical wavelength_nm storage stays nm), and re-renders the entry's display when the user flips units. Touches every panel that has a wavelength / energy parameter (baseline polynomial fit window, baseline spline anchors, normalisation window, peak-picking manual list). Plan once Phase 4j has bedded in |
 | ⏳ | 🟢 | **Keyboard accessibility for `CollapsibleSection`** | The Phase 4j `CollapsibleSection` is a single mouse-clickable strip with no Tab focus indication or keyboard binding. For accessibility (and power users who prefer keyboard navigation) Tab-to-header + Space/Enter-to-toggle would mirror standard disclosure-widget conventions. Phase 11 (app-wide polish) — defer until other accessibility passes happen at the same time |
 | ⏳ | 🔴 | **Audit dialog button-row vocabulary across app + write convention into ARCHITECTURE.md (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4l. Phase 4l (CS-23) brought Plot Settings into parity with StyleDialog (`Apply · Save · Cancel`), but other modals in the app (file pickers, future Beer-Lambert preview, future scattering-baseline preview, future Send-to-Compare confirmation) haven't been audited. Without a written convention, future modals re-derive button vocabulary ad-hoc and the user's Cancel-vs-Save mental model erodes. Plan: walk every `tk.Toplevel` / dialog construction site, document the canonical four-button shape (`Apply · ∀ Apply to All · Save · Cancel`) in `ARCHITECTURE.md` as a UI convention with explicit rules for when each slot may be dropped (e.g. `∀ Apply to All` collapses when there is no node-bulk concept; CS-14 demonstrates), and refactor the outliers. Touches every dialog module + ARCHITECTURE.md. Pairs naturally with Phase 4l friction #1 (Plot Settings 3-button special case) |
-| ⏳ | 🔴 | **Plot config + plot defaults persistence to project.json (CS-13 follow-up) (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4l. Two persistence gaps elevated from Phase 4b friction #1 (`_USER_DEFAULTS` evaporates on app restart) + Phase 4b #5 (per-tab `_plot_config` rebuilt from scratch on every tab construction). Both should write through to `project.json` so reopening a project restores both the user's saved-default fonts/colours/etc. AND the per-tab plot configuration that was last in effect. Likely shape: `project.json` grows a top-level `plot_defaults` key (mirrors `plot_settings_dialog._USER_DEFAULTS`) plus a per-tab `tabs[<name>].plot_config = {...}` payload. `project_io.py` handles serialisation; `binah.py` wires load-time read into the dialog module + each tab's `_plot_config`. Dialog API is unchanged. Important so a user who customises font sizes (e.g. for accessibility) doesn't have to redo the work each session |
+| ⏳ | 🔴 | **Plot config + plot defaults persistence to project.json (CS-13 follow-up) (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4l. **Subsumed Phase 4r** by the broader "Project + per-node persistence with manifest+sidecar+optional-blockchain-anchor architecture" entry below — that entry is the four-phase ladder this row is one rung of. **Phase A** of the ladder absorbs everything originally scoped here: top-level `plot_defaults` key (mirrors `plot_settings_dialog._USER_DEFAULTS`) + per-tab `tabs[<name>].plot_config = {...}` payload, both written through to the manifest JSON. The session that lands Phase A of the umbrella ticket should mark this row ✅ at the same time. Original framing kept for traceability: `_USER_DEFAULTS` evaporates on app restart (Phase 4b friction #1) + per-tab `_plot_config` rebuilt from scratch on every tab construction (Phase 4b friction #5); both should round-trip the manifest |
+| ⏳ | 🔴 | **Project + per-node persistence with manifest+sidecar+optional-blockchain-anchor architecture (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4r. Umbrella ticket for project-save and per-node-save with eventual tamper-evidence. Existing "Plot config + plot defaults persistence to project.json" entry above is **Phase A** of the ladder. **Architecture (locked Phase 4r):** content-addressed manifest JSON + sidecar HDF5 files referenced by SHA-256 hash. Sidecars carry every raw array (DataNode arrays + the original instrument file as a first-class sidecar). Single `protected: bool` header flag gates the verification path on load. The same on-disk shape supports unprotected and protected; the difference is whether an `integrity` block is present and signed/anchored. **Four-phase ladder (each phase ships independently):** **Phase A** — unprotected manifest + sidecar round-trip; replaces the existing `project_io.py` save/load shape; absorbs the Plot config persistence row above. **Phase B** — per-node subgraph export; same schema with `subgraph_root: <node_id>` + `scope: "ancestors" \| "ancestors_plus_branches" \| "selected"` field; walks `input_ids` upward and (for selected scopes) downward from the root; one `.ptmg` archive contains the full processing history of a single node. **Phase C** — tamper-evident manifest: per-node SHA-256 over canonical-form serialisation, Merkle tree leaves, Ed25519-signed root; `protected: true` makes verification mandatory on load. No external dependencies, no real blockchain. **Phase D** — OpenTimestamps anchoring: submit the Merkle root to the OpenTimestamps aggregator (free, batched into Bitcoin via Merkle proof), store the timestamp proof alongside the manifest. This is the "blockchain protected" piece — third-party verifiable, anchored to Bitcoin. **Schema decisions locked:** sidecar HDF5 always (never inline base64 — bigger files break "single file" UX anyway); `OperationNode` carries a `deterministic: bool` field so deterministic-output DataNodes can skip storing arrays (re-derived on load) while Monte Carlo / non-deterministic outputs always persist; UX bundles the manifest + sidecars into a single `.ptmg` archive (zip-with-extension) for transport, unpacks into a directory for editing — open either form, save to either form. **Affected modules:** `project_io.py` (full rewrite — schema versioning + manifest + sidecar walk), `binah.py` (load-time wiring), every tab's `_plot_config` (Phase A), node export currently scoped to single-node CSV in `node_export.py` (Phase B grows the equivalent with full history + sidecar). `nodes.py` may need a `deterministic: bool` on `OperationNode`. Compatibility with existing project files is NOT a goal (per user). **Phase A is the natural next-up Phase 4 session**; Phases B–D are subsequent. Pairs with: existing "Difference spectra" entry (multi-input op format needs Phase A), every Phase 4l friction #1 dialog-button-vocabulary entry (file dialogs follow the same convention), the upcoming floor-zero feature entry below (per-mode `floor_zero: bool` in params must round-trip Phase A) |
 | ✅ | 🔴 | **Remove duplicate section title from operation panels (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4l. Resolved Phase 4n (CS-25): stale `tk.Label` deleted from `uvvis_normalise.py`, `uvvis_smoothing.py`, `uvvis_peak_picking.py`, `uvvis_second_derivative.py`. Baseline Correction was already correct. Each panel's test file gained a `test_no_inline_title_label_inside_panel_body` regression assertion that walks the widget tree and fails if a stale title `tk.Label` returns |
 | ✅ | 🔴 | **Right-sidebar responsive layout extension (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4l. Resolved Phase 4n (CS-26): the always-visible minimum grew from five to seven cells (`state · [☑] · label · ⌥n · [⚙] · [→] · [✕]`); ⌥n provenance count was promoted out of the optional set. Single 280 px threshold replaced by three priority-ordered thresholds — swatch @ 240, leg @ 280, ls\_canvas @ 320 — so optional cells reveal in priority order as the row widens. The fourth-priority "line width entry" cell deferred (no per-row line-width control today; reachable via the StyleDialog universal section). `_apply_responsive_layout` reflows `leg` + `ls_canvas` together to preserve the canonical visual order under Tk's overflow auto-unmap |
 | ✅ | 🔴 | **Send to Compare per-row icon (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4l (originally Phase 4l friction #7). Folded into CS-27 alongside the "Send to Compare" register row above — the per-row icon replaces the legacy top-bar `+ Add to TDDFT Overlay` bulk button. See the "Send to Compare" register row above and CS-27 in COMPONENTS.md |
 | ✅ | 🟡 | **Scattering-functional baseline mode** | USER-FLAGGED at end of Phase 4l. Resolved Phase 4m (CS-24): new `params["mode"] == "scattering"` discriminator on `OperationType.BASELINE`. Helper `compute_scattering(wavelength_nm, absorbance, params)` fits `B(λ) = c · λ^(-n)` over a user-defined peak-free window and subtracts the result across the full input range. `params["n"]` is either a numeric exponent (closed-form least-squares for `c` only) or the string `"fit"` (log–log linear regression for both `c` and `n`; requires absorbance > 0 throughout the fit window). UI parameter row: `n:` Entry (default `"4"` ≈ Rayleigh) + `Fit n` Checkbutton (disables the n entry when checked) + `Fit lo (nm):` / `Fit hi (nm):` entries. `BASELINE_MODES` grew from 4 to 5; combobox auto-pulled the new entry; `_DISPATCH` and `_collect_baseline_params` gained the new branch. Reuses provisional BASELINE node shape from CS-15 — renderer and ScanTreeWidget needed no changes. 472 tests, all green (12 pure-module + 2 integration new) |
-| ⏳ | 🔴 | **Per-node baseline-curve toggle (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4o. The Phase 4o "Baseline curves" toggle (CS-29) is global — turning it on enables the dashed overlay for *every* visible BASELINE node at once, which crowds the plot when more than two or three baselines are visible. Likely shape: a per-row gesture on the ScanTreeWidget BASELINE rows (sibling to the existing visibility `[☑]`), or a `style["show_baseline_curve"]` key surfaced in the StyleDialog universal section so the per-node choice is also persistable per node and survives a project reload. Touches `scan_tree_widget._populate_node_row` (or `style_dialog.py` if going the style-key route) and `uvvis_tab._redraw`'s baseline-curve overlay loop (gate on the per-node key in addition to the global toggle). Pairs with the legend-density entry below |
+| ✅ | 🔴 | **Per-node baseline-curve toggle (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4o. Resolved Phase 4r (CS-36): new `style["show_baseline_curve"]` style key with default-True convention (parallels `visible` / `in_legend`); per-row `tk.Button("~"/"–")` packed between `[☑]` and the label on BASELINE rows ONLY in `_populate_node_row`; click routes through `self._graph.set_style` so `NODE_STYLE_CHANGED` triggers `uvvis_tab._redraw`. The CS-29 overlay loop adds one filter line consulting the new key; global toggle stays as the master switch (CS-29 contract preserved). StyleDialog universal-section path deferred (Phase 4d / 4f lock held; new per-row gesture is more discoverable). Pairs with the legend-density entry below — that one is partially mitigated (per-node hide drops both overlay AND legend entry simultaneously) but the standalone "show baseline in legend" preference is still open. 9 new tests (2 pure-module style-key, 7 integration row-button) |
 | ⏳ | 🟡 | **Baseline-curve overlay legend density** | Surfaced in Phase 4o while landing CS-29. With N visible BASELINE nodes and the global "Baseline curves" toggle on, the plot legend grows by N "<label> (baseline)" rows. Stays readable up to ~3 baselines but starts to dominate the frame at 5+. Cheapest mitigation: add a separate "show baseline in legend" preference (style key or top-bar toggle) so the dashed overlay can render without the legend doubling in size. Deeper fix is the per-node baseline-curve gate above (gate the legend at the same time as the overlay). Touches `uvvis_tab._redraw`'s overlay branch and possibly the StyleDialog universal section |
 | ✅ | 🔴 | **Show baseline function on the plot (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4n. Resolved Phase 4o (CS-29): new top-bar `tk.Checkbutton` "Baseline curves" wired to `self._show_baseline_curves` Tk BooleanVar (default off — opt-in review aid; no behaviour change for existing flows). When on, `_redraw` walks every visible BASELINE node, calls the new pure helper `uvvis_baseline.compute_baseline_curve(graph, baseline_node)` to recover the fitted baseline as `parent.absorbance - baseline.absorbance`, and plots it dashed (linestyle `"--"`, alpha 0.7) in the BASELINE node's colour. Legend entry is `"<node label> (baseline)"` when `style["in_legend"]` is on. Helper returns `None` on every failure (wrong type, missing arrays, no parent, shape mismatch); the loop simply skips so a malformed graph never crashes the renderer. Per-node toggle elevated as a separate USER-FLAGGED carry-forward (the global toggle clutters when many BASELINE nodes are visible) |
-| ⏳ | 🔴 | **Scattering baseline floor-zero shift (CS-24 follow-up) (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4n. The current `compute_scattering` returns `A - c·λ^(-n)`. For colloidal samples the corrected spectrum's minimum is often slightly negative (the fitted scattering tail can over- or under-shoot in the peak-free window). The user wants the corrected spectrum's minimum guaranteed ≥ 0 across the whole range — a sibling fitted offset `a` such that `B(λ) = a + c·λ^(-n)` and the post-subtraction floor is explicitly clamped (or fitted) to zero. Two paths: (a) extend `compute_scattering` to fit a constant offset alongside `c` (and `n`, if not pinned) — overlaps with Phase 4m friction #3 (composite `scattering+offset` mode); (b) post-subtraction shift to make `min(corrected) == 0` (preserves the fit but adds a fixed offset to every point). User's intent reads more like (a). Pin the params naming so the fitted offset is exportable (Phase 4m friction #2 / `n_fitted` analog: `params["a_fitted"]`) |
+| ⏳ | 🟡 | **Scattering baseline fitted-offset (CS-24 follow-up) (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4n. **Reframed Phase 4r**: superseded as the canonical floor-zero approach by the "Floor-zero baseline as fit-time constraint, per mode" entry below — that entry implements the floor-zero invariant via constrained fits across all 5 modes, which is the right abstraction (the user clarified that post-shift gives a wrong baseline shape for scattering at high energies; fit must be constrained, not corrected post-hoc). What remains here is the *narrower* feature it originally tried to be: extending `compute_scattering` to fit a sibling constant offset `a` such that `B(λ) = a + c·λ^(-n)` with all three parameters floating. This stays open as a separate ⏳ because the universal fit-time constraint and an additive fitted offset are orthogonal — both can ship; the user can mode-stack (scattering + fitted offset + floor_zero=True) for hard cases. Pair the params naming with Phase 4m friction #2 (`n_fitted`): `params["a_fitted"]`. Priority dropped from 🔴 to 🟡 because the universal floor-zero entry below addresses the user's primary concern (negative absorbance values at high energies); the fitted-offset variant is a refinement that should ship when scattering quality demands it |
+| ⏳ | 🔴 | **Floor-zero baseline as fit-time constraint, per mode (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4r. Universal "Floor at zero" toggle in the baseline panel that, when on, guarantees the corrected absorbance (`parent - B`) is ≥ 0 across the entire range, regardless of which baseline mode is active. **Architecture (locked Phase 4r):** the constraint is enforced at *fit time* by passing `floor_zero=True` into the per-mode `compute_*` functions, not by a post-fit shift. User-confirmed reasoning: post-shift only translates the baseline globally, but the *shape* is still optimised for unconstrained residual minimisation — for scattering at high energies the baseline rises too steeply and shifting it doesn't fix the shape mismatch. **CS-24 lock relaxes specifically for this addition** — adding a constrained-fit code path inside each `compute_*` is a real feature, not a refactor. **Per-mode work items, shippable independently:** **(a) scattering** — `scipy.optimize.minimize` with `NonlinearConstraint(parent_y - B >= 0)` over `c` (and `n` if `n_fitted=True`); ship first since this is where the user has observed the bug. **(b) linear / polynomial** — convex problem; `scipy.optimize.lsq_linear` with linear inequality constraints, or formulate as a small LP via `scipy.optimize.linprog`. **(c) spline** — constrained spline coefficients with inequality constraints at each sample. **(d) rubberband** — no-op (already ≤ data by construction); add an assert to lock the invariant. **UI:** single panel-level "Floor at zero" `tk.Checkbutton` in the baseline section header (sibling to the mode combobox), bound to `self._baseline_floor_zero: tk.BooleanVar(value=False)` (default OFF — backwards compat). **Params round-trip:** new `params["floor_zero"]: bool` recorded on every BASELINE OperationNode at apply time, so the choice persists through project save (round-trips the manifest in Phase A of the persistence umbrella) and re-derive reproduces the same curve. **Failure mode:** if the constrained optimiser doesn't converge for the chosen mode + parameters, surface a panel-level error message ("Floor-zero constraint infeasible — try widening the fit window or reducing polynomial order"); do NOT silently fall back to unconstrained. **Composition with the scattering fitted-offset row above:** orthogonal — both can ship and stack. **Affected modules:** `uvvis_baseline.py` (per-mode constrained-fit branches in each `compute_*`), `uvvis_tab.py` (panel checkbox + `_collect_baseline_params` reads new BooleanVar), test_uvvis_baseline (per-mode floor-zero passes), test_uvvis_tab (UI wiring). Implementation order: scattering → linear/poly → spline → rubberband (trivial) |
 | ⏳ | 🔴 | **Diagnostic console / fitted-parameter panel (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4n. Several places in the app produce numeric diagnostics that currently live only in `OperationNode.params` and never surface to the user: scattering log fit's resolved n (Phase 4m friction #2), upcoming scattering+offset's `a_fitted`, polynomial baseline fit residuals, peak-picking match list, rubberband convex-hull point count, etc. The user is asking whether a small read-only "console" or "log" pane (a scrolling text widget at the bottom of the app or a per-tab footer) would carry these. Two shapes worth weighing: (a) **per-tab inline diagnostic strip** — small read-only panel at the bottom of each tab's left pane that names the most recently applied op and lists its key fitted values; refreshed on every Apply; (b) **app-wide log console** — a collapsible bottom drawer (like an IDE's output pane) that streams every op's "results" line plus warnings / errors / debug; survives tab switches. (b) doubles as a place for the `_redraw` KeyError trace (Phase 4n friction #1) and the messagebox messages currently shown via popups (e.g. "no Compare host connected"). Both shapes are non-trivial; pick before any Phase 4 follow-up that needs to surface a fitted value |
 | ✅ | 🔴 | **Defensive guard in `_redraw` for non-UVVIS DataNodes** | Surfaced by Phase 4n while writing the Send-to-Compare integration test. Resolved Phase 4o (CS-28): positive guard at the top of the per-node loop body (`if "wavelength_nm" not in node.arrays or "absorbance" not in node.arrays: continue`) and a mirror guard wrapped around the unit==`"nm"` xlim min/max comprehension. Silent skip — the diagnostic-console entry (still ⏳) will eventually surface skipped nodes. The Phase 4n note that BASELINE's schema was `wavelength_nm + baseline` was inaccurate — live BASELINE nodes carry `wavelength_nm + absorbance` (line 937 of `uvvis_tab.py`); the only `baseline`-keyed BASELINE in the codebase was the deliberately-malformed stub in `test_send_node_to_compare_skips_non_uvvis_nodes`, which the Phase 4o follow-up commit simplified to use the new guard rather than stub `graph.get_node` |
 | ⏳ | 🟡 | **Long-provenance hist button display options (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4n. The `⌥{n}` always-visible cell (CS-26 promotion) renders the provenance chain length as a literal integer. For complex workflows `n > 9` is realistic — the row's natural width grows with the digit count, which can re-trigger the responsive overflow pattern at the same widths today's tests verify. Options to weigh in the implementing session: (a) cap display at `⌥9+` once n > 9 with the exact count surfaced via tooltip / history sub-frame; (b) two-digit fixed width (`⌥01`...`⌥99`) so the row's natural width is bounded but the count remains readable; (c) hide digits entirely (just `⌥`) and surface the count only via the expanded history sub-frame; (d) SI-suffix style (`⌥9`, `⌥1k` for >999). Touches `scan_tree_widget._populate_node_row` (the `text=f"⌥{chain_len}"` line) and the existing `test_provenance_op_count` style assertions. User has confirmed `n > 9` is "easily seen for complex workflows" so this is not edge-case |
@@ -1568,7 +1589,119 @@ subsequent Phase 4 session.**
 | ✅ | 🔴 | **🔒 commit gesture on provisional ScanTreeWidget rows** | Resolved Phase 4q (CS-34). Every PROVISIONAL row carries a `tk.Button(text="🔒")` between → and ✕ that invokes `self._safely(self._graph.commit_node, nid)` — same path the right-click context menu's Commit entry uses. Committed rows OMIT the button entirely (the leftmost-cell 🔒 state indicator already signals committed state; double-glyph would be confusing). Right cluster reads `[⌥n] [⚙] [→] [🔒] [✕]` provisional, `[⌥n] [⚙] [→] [✕]` committed. NOT in the responsive-optional set: 🔒 is always-visible (commit twin of ✕). Three integration tests in `TestProvisionalRowCommitButton`. Together with the still-open "Commit / discard reachable from the left pane after Apply" register entry, this covers the right-sidebar half of the original USER-FLAG; the left-pane Accept-last button-pair remains 🟡 |
 | ⏳ | 🟢 | **Compute label-truncation cap from canvas width / font metrics (CS-33 follow-up)** | Phase 4q friction #2. CS-33 fixed `_LABEL_MAX_CHARS = 32` works for typical UV/Vis chains and the default Tk font, but a high-DPI font on a narrow sidebar could fit fewer chars and a small monospace font on a wide sidebar could fit more. Likely shape: at row build time, measure the available label-cell pixel width (canvas width minus the always-visible cell footprint) and divide by an average glyph width fetched from `tkfont.Font(...).measure("0")` — the cell's int-char cap is then derived rather than hardcoded. Touches `_populate_node_row` only; the pure `_truncate_label` helper stays unchanged. Defer until a user reports either over- or under-truncation against their actual setup |
 | ⏳ | 🟢 | **Promote `_Tooltip` to a shared utility module on first cross-module re-use** | Phase 4q friction #3. CS-33's `_Tooltip` is a small Toplevel-based hover tooltip co-located in `scan_tree_widget.py`. Other surfaces will eventually need similar tooltips (Plot Settings dialog parameter hints, StyleDialog "what does this control" hints, panel-status messages that only fit on hover). On first re-use, extract into `tooltip.py` (pure utility module, no scan-tree-specific imports) so the second consumer doesn't either re-implement or import a private name. Until then, the private name is fine — premature promotion would add an import surface without a second consumer |
-| ⏳ | 🟢 | **Indent expanded sub-frames inside sweep groups (visual nesting)** | Phase 4q friction #5. After CS-32 lands, a sweep-group member row can also have its history expanded via `⌥n`. The existing `_render_history` packs the history sub-frame below the row at the same indent level as siblings — visually it sits between sweep members rather than indented beneath the one it belongs to. Cosmetic; a user could be momentarily confused. Likely shape: pass an `indent_px` argument to `_render_history` (and to `_build_node_row` when invoked from the sweep-expansion path) and add left padding on the sub-frame's outer pack. Touches `_render_history` + the member-row branch of `_rebuild` |
+| ✅ | 🟢 | **Indent expanded sub-frames inside sweep groups (visual nesting)** | Phase 4q friction #5. Resolved Phase 4r (CS-35): new module-level `_SWEEP_MEMBER_INDENT_PX = 16` constant; `_build_node_row` grew an `indent_px: int = 0` keyword that is threaded into `row.pack(padx=(2 + indent_px, 2), pady=1)`. The sweep-expansion branch in `_rebuild` calls `_build_node_row(member_node, indent_px=_SWEEP_MEMBER_INDENT_PX)`. Pack-arg pass-through chosen over a wrapper-frame to avoid a parallel `_member_frames` dict + collapse cleanup. CS-32's flip-and-rebuild contract preserved verbatim. The history sub-frame inside an expanded member row carries the parent row's indent (since `_render_history` packs into the row's children frame), so visual nesting is correct without separate indent threading there. 7 new tests (2 pure-module constant, 5 integration nesting) |
+
+### Friction points carried forward from Phase 4r
+
+These are concrete obstacles the next Phase 4 session will hit.
+Identified during Phase 4r while landing the per-node baseline-
+curve toggle (CS-36) and sweep-group member visual nesting
+(CS-35). Items 1–4 were surfaced by Claude at end-of-session and
+confirmed by the user verbatim. Items 5 + 6 are USER-FLAGGED
+ground-up additions captured during step 5's elicitation; both
+are recorded here AND as new register entries (the persistence
+umbrella above; the floor-zero-as-fit-time-constraint entry above).
+Item 7 is a process note. **Do not fix until the relevant
+subsequent Phase 4 session.**
+
+1. 🟡 **Per-row `[~]` toggle has no tooltip.** CS-36's BASELINE-row
+   toggle has no hover hint, so a new user has to infer "tilde =
+   show baseline curve" from context. The natural attachment point
+   is `_Tooltip` (CS-33), but that helper is private to
+   `scan_tree_widget.py` until Phase 4q friction #3 promotes it to
+   a shared utility module on first cross-module re-use. **Cross-
+   ref:** see Phase 4q friction #3 above (canonical entry — still
+   open) — promoting `_Tooltip` lets us add a "Show / hide baseline
+   curve overlay" tooltip in the same session as the helper move,
+   which keeps the tooltip pattern in exactly one place. Until
+   then, the gesture is discoverable only via experimentation. No
+   new register entry — folds into the `_Tooltip` promotion entry.
+
+2. 🟢 **`~` glyph is a tilde, not the dashed-line glyph it's
+   meant to evoke.** CS-36's button reads `~` (when on) / `–`
+   (when off) — the legend's `✓/–` vocabulary mapped onto a
+   baseline-curve gesture. The dashed overlay it controls is
+   visually `--`, not `~`, so a future restyle could pick a more
+   evocative glyph (e.g. `╌` or `┄` from box-drawing extras). The
+   integration test pins the literal `"~"` so any restyle is
+   forced through a deliberate test update. Cosmetic; defer until
+   a user reports the glyph is misleading. No register entry —
+   noted here as a documentation-style review item; if it
+   actually needs changing, a 🟢 register entry can be created.
+
+3. 🟢 **`style["show_baseline_curve"]` has no project-save
+   round-trip yet.** The new key is read/written at runtime via
+   `set_style`, but the project-save layer doesn't exist in any
+   form today. **Cross-ref:** the new register entry "Project +
+   per-node persistence with manifest+sidecar+optional-blockchain-
+   anchor architecture (USER-FLAGGED)" (Phase 4r) — Phase A of
+   that ladder must serialise every style key, including this
+   one, to round-trip the user's per-node hide choices. Process
+   item: when Phase A lands, the test suite gains a new round-
+   trip assertion that walks every node-style key (including
+   `show_baseline_curve`) and confirms it survives a save+load
+   cycle. No new register entry — folds into the persistence
+   umbrella.
+
+4. 🟢 **Legend toggle and baseline-curve toggle both render `–`
+   when off.** Disambiguated by row position (legend on
+   `side="right"`, baseline-curve on `side="left"`). The
+   integration test `_bc_button_in` filters by side + text. If
+   a third "off" toggle ever lands on either side, the
+   disambiguation breaks. Mitigation when that happens: pick a
+   distinct glyph for the new toggle, or attach a Tk widget
+   `name=` so `winfo_children()` is searchable by name rather
+   than by visual position. Documentation-style; no register
+   entry.
+
+5. 🔴 **Project + per-node persistence with manifest+sidecar+
+   optional-blockchain-anchor architecture (USER-FLAGGED).** Ground-up
+   USER-FLAGGED feature elicited during step 5. Subsumes the
+   existing "Plot config + plot defaults persistence to
+   project.json" register entry as Phase A of a four-phase
+   ladder. **See the new register entry above** (in the Phase 4
+   register table) for the full architecture decision lock —
+   content-addressed manifest JSON + sidecar HDF5, single
+   `protected: bool` header flag, OpenTimestamps anchoring for
+   real blockchain protection without running a private chain,
+   per-`OperationNode` `deterministic: bool` so non-MC outputs
+   skip array storage and re-derive on load. Phase A is the
+   natural next-up Phase 4 session.
+
+6. 🔴 **Floor-zero baseline as fit-time constraint, per mode
+   (USER-FLAGGED).** Ground-up USER-FLAGGED feature elicited
+   during step 5. **See the new register entry above** for the
+   full architecture decision lock — universal "Floor at zero"
+   panel checkbox + per-mode `compute_*` constrained-fit branch
+   + `params["floor_zero"]: bool` for round-trip. **CS-24 lock
+   relaxes specifically for adding the constrained-fit code path
+   inside each `compute_*` function** — the user clarified that
+   post-shift gives the wrong baseline shape for scattering at
+   high energies, so the constraint must be enforced at fit
+   time. Per-mode work items are independently shippable;
+   suggested order is scattering → linear/poly → spline →
+   rubberband. Supersedes the old "Scattering baseline floor-
+   zero shift (CS-24 follow-up)" framing — that entry is
+   reframed (priority dropped 🔴 → 🟡) as the scattering-specific
+   fitted-offset variant `B(λ) = a + c·λ^(-n)`, which composes
+   orthogonally with the universal floor-zero constraint.
+
+7. **Step 5 surfaces large architectural items, not just polish
+   (process note).** Phase 4r's step 5 elicitation produced two
+   ground-up USER-FLAGGED feature register entries (items 5 + 6
+   above) that are larger than the implementation work of the
+   phase that elicited them. The phase template handled this
+   gracefully — the new register entries are written into
+   BACKLOG and the work is deferred — but the ratio is worth
+   noting: friction items 1–4 here are 4q-style "small things
+   the implementing session noticed", and items 5 + 6 are
+   "things the user flagged that have nothing to do with the
+   phase that's closing". Both belong in the same friction
+   list (the user-flagged additions are confirmation that
+   step 5 surfaces strategic intent, not just clean-up); a
+   future session structure rev could split them, but the
+   single list reads fine in practice. Documentation-style;
+   no register entry.
 
 ---
 
@@ -1784,7 +1917,7 @@ the resolving phase + commit SHA appended to the row.
 
 ---
 
-*Document version: 1.16 — May 2026*
+*Document version: 1.17 — May 2026*
 *1.1: Known Bugs register added 2026-04-27 after Phase 4b manual testing.*
 *1.2: Phase 4c — baseline correction lands; B-001 / B-003 / B-004
 resolved; Phase 4c friction points logged.*

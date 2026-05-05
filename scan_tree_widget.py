@@ -161,6 +161,19 @@ _RESPONSIVE_COLLAPSE_PX: int = _RESPONSIVE_THRESHOLDS_PX[0][1]
 # the graph rather than the widget's truncated text).
 _LABEL_MAX_CHARS: int = 32
 
+# Phase 4r (CS-35): visual nesting indent for sweep-group members
+# rendered inline below an expanded leader (CS-32). The leader row
+# is packed flush at ``padx=2``; member rows are packed at
+# ``padx=(2 + _SWEEP_MEMBER_INDENT_PX, 2)`` so the user sees that
+# the variants belong to the group above. One indent step is enough
+# to distinguish the relationship without crowding the row content
+# (each member is itself a full-chrome row with its own ``[~]``
+# / ``☑`` / label / right-side button cluster). The indent is a
+# pack-arg pass-through and does not change ``_expanded_sweep_groups``
+# or ``_toggle_sweep_group`` — CS-32's flip-and-rebuild contract is
+# preserved.
+_SWEEP_MEMBER_INDENT_PX: int = 16
+
 
 def _truncate_label(text: str, max_chars: int = _LABEL_MAX_CHARS) -> str:
     """Cap a label at ``max_chars`` characters, suffixing ``…`` if cut.
@@ -593,7 +606,14 @@ class ScanTreeWidget(tk.Frame):
                         except KeyError:
                             continue
                         if isinstance(member_node, DataNode):
-                            self._build_node_row(member_node)
+                            # Phase 4r (CS-35): visual nesting under the
+                            # leader. Each member is still a full-chrome
+                            # row; only the row frame's left padding
+                            # shifts.
+                            self._build_node_row(
+                                member_node,
+                                indent_px=_SWEEP_MEMBER_INDENT_PX,
+                            )
             else:
                 self._build_node_row(node)
 
@@ -609,10 +629,20 @@ class ScanTreeWidget(tk.Frame):
     # Per-row construction
     # ------------------------------------------------------------
 
-    def _build_node_row(self, node: DataNode) -> None:
-        """Construct the persistent row for a single (non-grouped) node."""
+    def _build_node_row(
+        self, node: DataNode, *, indent_px: int = 0,
+    ) -> None:
+        """Construct the persistent row for a single (non-grouped) node.
+
+        Phase 4r (CS-35): ``indent_px`` shifts the left padding so
+        sweep-group members rendered inline below an expanded leader
+        (CS-32) sit visually nested under their group. Default ``0``
+        keeps every existing call site at the original ``padx=2``;
+        only ``_rebuild``'s sweep-expansion branch passes
+        ``_SWEEP_MEMBER_INDENT_PX``.
+        """
         row = tk.Frame(self._rows_frame)
-        row.pack(side="top", fill="x", padx=2, pady=1)
+        row.pack(side="top", fill="x", padx=(2 + indent_px, 2), pady=1)
         self._row_frames[node.id] = row
         self._populate_node_row(row, node)
 
@@ -659,6 +689,42 @@ class ScanTreeWidget(tk.Frame):
             ),
         )
         vis_cb.pack(side="left")
+
+        # Phase 4r (CS-36): per-node baseline-curve overlay toggle.
+        # Only added on BASELINE rows. ``[~]`` when on (default),
+        # ``[–]`` when off — parallel to the legend ``✓/–`` glyph
+        # vocabulary. The CS-29 global ``Baseline curves`` checkbox
+        # is the master switch; this per-row toggle is the
+        # downstream filter that lets a user hide individual
+        # overlays (e.g. while comparing two of five competing
+        # baselines on the same parent). Mutation routes through
+        # ``set_style`` so ``GraphEvent.NODE_STYLE_CHANGED`` triggers
+        # ``uvvis_tab._redraw`` — same path as the visibility and
+        # legend toggles. Absent on non-BASELINE rows: a disabled
+        # placeholder would waste pixels on every UVVIS / NORMALISED
+        # / SMOOTHED / PEAK_LIST row.
+        if node.type == NodeType.BASELINE:
+            bc_var = tk.BooleanVar(
+                value=bool(node.style.get("show_baseline_curve", True))
+            )
+            bc_btn = tk.Button(row, width=2, relief=tk.FLAT)
+
+            def _refresh_bc(_b=bc_btn, _v=bc_var):
+                _b.config(
+                    text="~" if _v.get() else "–",
+                    fg="#444444" if _v.get() else "#999999",
+                )
+
+            def _toggle_bc(nid=node.id, _b=bc_btn, _v=bc_var):
+                new = not _v.get()
+                _v.set(new)
+                _refresh_bc()
+                self._graph.set_style(
+                    nid, {"show_baseline_curve": bool(new)},
+                )
+            bc_btn.config(command=_toggle_bc)
+            _refresh_bc()
+            bc_btn.pack(side="left", padx=(2, 0))
 
         # Label (double-click to edit in-place). Phase 4q (CS-33):
         # the displayed text is truncated at ``_LABEL_MAX_CHARS`` to
