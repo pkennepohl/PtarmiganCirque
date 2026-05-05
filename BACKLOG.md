@@ -184,7 +184,7 @@ log-and-continue subscriber dispatch. See COMPONENTS.md CS-01 and CS-04
 | ✅ | 🔵 | **Commit / discard gestures** | Right-click context menu (Commit / Discard); ✕ on row (discard if provisional, soft-hide if committed). Keyboard shortcuts deferred to tab integration |
 | ✅ | 🔵 | **Send to Compare action** | Right-click menu invokes send\_to\_compare\_cb(node\_id) when committed. Widget knows nothing about the Compare tab |
 | ✅ | 🔵 | **Reactive updates** | Subscribes on construction, unsubscribes on `<Destroy>`. NODE\_ADDED / DISCARDED / EDGE\_ADDED rebuild; LABEL\_CHANGED / STYLE\_CHANGED refresh one row; ACTIVE\_CHANGED rebuilds (respects "Show hidden") |
-| ⏳ | 🟡 | **Sweep group inline expansion** | Per-variant editing (commit/discard one variant at a time) deferred. `_sweep_groups` exposes the grouping, ready for a future session |
+| ✅ | 🟡 | **Sweep group inline expansion** | Per-variant editing (commit/discard/restyle one variant at a time). Resolved Phase 4q (CS-32): chevron `▸/▾` on the leader row toggles inline rendering of every member as a full-chrome row (state · swatch · ☑ · label · ⌥n · ⚙ · → · 🔒 · ✕) reusing `_populate_node_row`. Expansion state lives in `self._expanded_sweep_groups: set[str]` keyed by parent_id, mirroring `_expanded_history`; survives every rebuild. Group dissolves naturally when a member commits / discards down to <2 — `_compute_sweep_groups` returns no entry, leader row + chevron disappear. Same phase delivered the 🔒 (CS-34) on every provisional row, so committing a single variant is one click. See COMPONENTS.md "CS-32 — Sweep group inline expansion (Phase 4q)" |
 | ⏳ | 🟡 | **Keyboard shortcuts** | Ctrl+Return / Escape / Ctrl+Shift+C deferred to first tab integration; the widget's gestures are mouse-driven for now |
 
 ---
@@ -1013,7 +1013,15 @@ Phase 4 session.**
    user wants confirm-as-they-go, not "remember which row was just
    added and traverse to it". See the new register entry
    "Commit / discard reachable from the left pane after Apply".
-2. **Sweep-group rows hide per-variant gestures.**
+   *Frequency reduced* in Phase 4q (CS-34): every PROVISIONAL
+   row in the right-sidebar now carries a per-row 🔒 commit
+   button between → and ✕, so single-click commit no longer
+   requires the right-click context menu. The left-pane gesture
+   (Accept-last / Discard-last button-pair) remains the open
+   convenience-layer follow-up; the register entry stays ⏳ at
+   🟡 (dropped from 🔴) because CS-34 satisfies the spirit of
+   the original USER-FLAG.
+2. ~~**Sweep-group rows hide per-variant gestures.**
    USER-FLAGGED at end of Phase 4k. When a parent has 2+
    provisional children, the right-side ScanTreeWidget collapses
    them into a sweep-group leader row with `✕all`; the user can
@@ -1026,7 +1034,10 @@ Phase 4 session.**
    hit this friction only on real parameter sweeps. **Per-variant
    gestures still pending** — see the Phase 4p register entry
    "Inline expansion + per-variant gestures on sweep-group rows
-   (CS-04 §6.3 follow-through)" deferred to Phase 4q (CS-32).
+   (CS-04 §6.3 follow-through)" deferred to Phase 4q (CS-32).~~
+   ✅ Resolved in Phase 4q (CS-32). Chevron `▸/▾` on the leader
+   row toggles inline rendering of every member as a full-chrome
+   row, with CS-34's 🔒 making single-variant commits one click.
 3. ~~**Plot Settings dialog has no Save & Close button.**
    USER-FLAGGED at end of Phase 4k. The dialog applies changes
    live but offers only Cancel; closing via [X] takes the Cancel
@@ -1351,7 +1362,7 @@ follow-on for the responsive-row work; #4 is a process
 improvement note. **Do not fix until the relevant subsequent
 Phase 4 session.**
 
-1. 🔴 **CS-32 (inline expansion + per-variant gestures on
+1. ~~🔴 **CS-32 (inline expansion + per-variant gestures on
    sweep-group rows) deferred to Phase 4q.** Originally
    bundled with CS-30 + CS-31 in Phase 4p decision lock, but
    CS-30 expanded scope (the responsive layout fix needed a
@@ -1367,7 +1378,9 @@ Phase 4 session.**
    commit button next to `✕` on member rows). No new register
    entry — see the existing "Inline expansion + per-variant
    gestures on sweep-group rows (CS-04 §6.3 follow-through)"
-   entry.
+   entry.~~ ✅ Resolved in Phase 4q (CS-32). The 4p decision-
+   lock notes were inherited verbatim and the register entry
+   landed without scope drift.
 
 2. 🔴 **CS-31's "no new node created" status message has weak
    discoverability (USER-FLAGGED).** The duplicate-apply
@@ -1388,7 +1401,7 @@ Phase 4 session.**
    new register entry — folds into the Diagnostic console
    intent.
 
-3. 🔴 **Long node names can push the row's natural width past
+3. ~~🔴 **Long node names can push the row's natural width past
    the canvas width (USER-FLAGGED).** Surfaced by the user at
    end of Phase 4p in response to the CS-30 architecture
    note. UV/Vis processing accumulates suffixes onto labels
@@ -1413,7 +1426,14 @@ Phase 4 session.**
    minimum widths per cell and shrink the label first. (a) is
    the cheapest and matches typical desktop conventions. See
    the new register entry "Truncate long node-name labels in
-   ScanTreeWidget rows (USER-FLAGGED)".
+   ScanTreeWidget rows (USER-FLAGGED)".~~ ✅ Resolved in
+   Phase 4q (CS-33), shape (a) — module-level
+   `_LABEL_MAX_CHARS = 32` cap with `…` truncation, hover
+   tooltip via `_Tooltip` (Toplevel) only when truncation
+   actually cut text, in-place rename reads the canonical
+   full label from the graph rather than the painted text.
+   The cap-from-canvas-width-and-font-metrics follow-up is
+   tracked as a new 🟢 register entry.
 
 4. **Test fragility around `_root` state contamination
    (process note).** Surfaced during CS-30 work. The canvas's
@@ -1437,6 +1457,70 @@ Phase 4 session.**
    sensitive to accumulated state). Documentation-style; no
    register entry.
 
+### Friction points carried forward from Phase 4q
+
+These are concrete obstacles the next Phase 4 session will hit.
+Identified during Phase 4q while landing the sweep-group inline
+expansion (CS-32), label truncation with hover tooltip (CS-33),
+and per-row 🔒 commit gesture on provisional rows (CS-34). All
+five items below were surfaced by Claude at end-of-session and
+confirmed by the user verbatim. **Do not fix until the relevant
+subsequent Phase 4 session.**
+
+1. 🟡 **Left-pane Accept-last button-pair still open after CS-34
+   (USER-FLAGGED, partially-resolved).** CS-34 lands a per-row
+   🔒 commit button on the right-side ScanTreeWidget, which
+   replaces the right-click context menu requirement and
+   satisfies the spirit of the original Phase 4k friction #1
+   ("commit / discard reachable from the left pane after Apply").
+   The literal "Accept last / Discard last" button-pair inside
+   the left-pane status area (or under each operation panel's
+   Apply) remains unbuilt. See the still-open register entry
+   "Commit / discard reachable from the left pane after Apply
+   (USER-FLAGGED)" — priority dropped from 🔴 to 🟡 because the
+   single-click-no-traversal half is now in place.
+
+2. 🟢 **`_LABEL_MAX_CHARS` is hardcoded.** CS-33 caps label
+   text at 32 characters regardless of canvas width or font
+   metrics. Works for typical UV/Vis chains and the default Tk
+   font, but a high-DPI font on a narrow sidebar could fit
+   fewer chars and a small monospace font on a wide sidebar
+   could fit more. See the new register entry "Compute label-
+   truncation cap from canvas width / font metrics (CS-33
+   follow-up)". Defer until a user reports either over- or
+   under-truncation on their actual setup.
+
+3. 🟢 **`_Tooltip` lives inside `scan_tree_widget.py`.** CS-33
+   added a small Toplevel-based hover tooltip co-located in
+   the widget module. Other surfaces will eventually need the
+   same shape (Plot Settings dialog parameter hints, StyleDialog
+   "what does this control" hints, panel-status messages on
+   hover). On first cross-module re-use, extract into a
+   `tooltip.py` utility module so the second consumer doesn't
+   either re-implement or import a private name. See the new
+   register entry "Promote `_Tooltip` to a shared utility
+   module on first cross-module re-use".
+
+4. **Tooltip rendering is timing-dependent (process note).**
+   The `_Tooltip` Toplevel pops after a 600 ms `widget.after`
+   delay; the test suite doesn't drive the Tk event loop, so
+   `TestTooltip` covers construction, ``update_text``
+   rotation, and idempotent `_hide` only. Verifying the
+   rendered Toplevel itself is left to manual smoke. Worth
+   noting if the delay constant or the rendered widget shape
+   ever changes — re-test by hovering over a long-label row
+   in the running app. Documentation-style; no register entry.
+
+5. 🟢 **Sweep-group expanded members lack visual nesting.**
+   After CS-32 lands, a sweep-group member row can also have
+   its provenance history expanded via `⌥n`. The existing
+   `_render_history` packs the history sub-frame below the
+   row at the same indent level as siblings, so visually it
+   sits between sweep members rather than indented beneath
+   the one it belongs to. Cosmetic; a user could be momentarily
+   confused. See the new register entry "Indent expanded sub-
+   frames inside sweep groups (visual nesting)".
+
 | Status | Priority | Item | Notes |
 |---|---|---|---|
 | ✅ | 🔴 | **Migrate UV/Vis to node model** | UVVisScan → DataNode(type=UVVIS). File load → RAW\_FILE + LOAD + UVVIS triple, all COMMITTED (Phase 4a Part A; CS-13 implementation notes) |
@@ -1457,8 +1541,8 @@ Phase 4 session.**
 | ⏳ | 🟢 | **Beer-Lambert / concentration** | Use known ε to extract concentration, or fit ε from known concentration |
 | ✅ | 🔴 | **Collapsible left-pane sections (polish session)** | Each of the five operation sections (Baseline / Normalisation / Smoothing / Peak picking / Second derivative) is now wrapped in a clickable `CollapsibleSection` header with a chevron (▶ collapsed, ▼ expanded). **All five sections start collapsed.** State is per-tab Tk `BooleanVar` owned by each section widget; not persisted to project (Phase 8 concern). Paired with the `pick_default_color(graph)` extraction in the same phase — both touched every operation module at once and a single phase unlocked all four (Phase 4c / 4e / 4g / 4h). Resolved Phase 4i friction #1 + #2 + Phase 4g #5 / 4h #5 carry-forwards (Phase 4j; CS-21) |
 | ✅ | 🔴 | **Unify subject combobox across left-pane sections (architectural)** | USER-FLAGGED at end of Phase 4j. Replaced the five per-panel `_subject_cb` widgets with one shared `_shared_subject_cb` at the top of the left pane (always visible, above every CollapsibleSection). Each operation panel exposes `set_subject(node_id)` + `ACCEPTED_PARENT_TYPES`; the host's StringVar trace fans the selection out to all four panels + the inline baseline section. Apply buttons disable when the shared selection isn't a valid parent for the panel's op (e.g. peak_picking accepts UVVIS/BASELINE/NORMALISED/SMOOTHED but not PEAK_LIST or SECOND_DERIVATIVE; baseline accepts UVVIS/BASELINE only). Resolved Phase 4j friction #5 (Phase 4k; CS-22) |
-| ⏳ | 🔴 | **Commit / discard reachable from the left pane after Apply (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4k. Today the only "accept this provisional node" path is the right-click context menu on the right-side ScanTreeWidget row. After hitting Apply on the left, the user has no nearby accept gesture — they must traverse to the right sidebar and find the new row. Important when sequential operations need to be logged: each Apply makes a provisional node, and the user wants to confirm-as-they-go. Likely shape: a small "Accept last / Discard last" button-pair in the left-pane status area, or an "Accept" gesture inline below each operation panel's Apply button that targets the most recently-applied output of that op. The right-sidebar gesture stays as the canonical control surface; the left-pane gesture is a convenience layer |
-| ⏳ | 🔴 | **Per-variant gestures on sweep-group rows (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4k. Phase 2 carry-forward "Sweep group inline expansion" (already in the backlog as 🟡) is now actively biting: when two or more provisional siblings share a parent, the right-side ScanTreeWidget collapses them into a single sweep-group leader row with `✕all`. The leader row exposes only the bulk-discard gesture; the user can expand to SEE the variants but cannot commit / discard / style any single one. Elevated from 🟡 to 🔴 and re-flagged as USER-FLAGGED. Plan: per-variant inline rows under the leader with the same row chrome (state indicator · ⚙ · ✕ · label), gated by the Phase 4c friction #1 row-selection model decision |
+| ⏳ | 🟡 | **Commit / discard reachable from the left pane after Apply (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4k. **Partially resolved Phase 4q (CS-34)**: every PROVISIONAL ScanTreeWidget row now carries a per-row 🔒 (commit) button between → and ✕, omitted entirely on committed rows (the leftmost-cell 🔒 state indicator already signals committed state). Right-click context menu retained as the fallback gesture. **Still open**: the literal "Accept last / Discard last" button-pair inside the left-pane status area (or under each operation panel's Apply). The single-click commit gesture now lives on the right sidebar with no traversal cost; the left-pane gesture is a convenience layer that targets the most-recently-applied output of each op. Priority dropped from 🔴 to 🟡 because CS-34 satisfies the spirit of the original USER-FLAG (one click to commit after Apply, no right-click) |
+| ✅ | 🔴 | ~~**Per-variant gestures on sweep-group rows (USER-FLAGGED)**~~ | ✅ Resolved in Phase 4q (CS-32). See the canonical entry "Inline expansion + per-variant gestures on sweep-group rows (CS-04 §6.3 follow-through) (USER-FLAGGED)" below — both share the same root and chevron-driven implementation |
 | ⏳ | 🟡 | **Expand all / Collapse all gesture on left pane** | Companion polish for the new collapsible sections (Phase 4j). When a user wants to scan parameter choices across multiple sections (e.g. for a screenshot or to copy parameters from one panel to another) they currently have to click each header individually. Options: a small "▼ All / ▶ All" icon button at the top of the left pane (above the Processing label), or a right-click context menu on any section header with "Expand all" / "Collapse all" entries. Either is a small change — adds a method on `UVVisTab` that walks the five `_{name}_section` attributes and calls `expand()` / `collapse()` on each |
 | ⏳ | 🟡 | **Unit-aware wavelength / energy picker for operation panels** | USER-FLAGGED at end of Phase 4j. The five operation panels collect wavelength/energy windows via free-form Entry widgets in nm only. The plot itself supports x in nm / cm⁻¹ / eV (top-bar combobox); the panels should follow whatever unit the plot is currently displaying so a user reading peak positions off the plot can type them straight into the entry without a mental unit conversion. Likely shape: a unit-aware Spinbox / Entry that watches the tab's `_x_unit` Tk var, converts the entered value to nm at Apply time (the canonical wavelength_nm storage stays nm), and re-renders the entry's display when the user flips units. Touches every panel that has a wavelength / energy parameter (baseline polynomial fit window, baseline spline anchors, normalisation window, peak-picking manual list). Plan once Phase 4j has bedded in |
 | ⏳ | 🟢 | **Keyboard accessibility for `CollapsibleSection`** | The Phase 4j `CollapsibleSection` is a single mouse-clickable strip with no Tab focus indication or keyboard binding. For accessibility (and power users who prefer keyboard navigation) Tab-to-header + Space/Enter-to-toggle would mirror standard disclosure-widget conventions. Phase 11 (app-wide polish) — defer until other accessibility passes happen at the same time |
@@ -1479,8 +1563,12 @@ Phase 4 session.**
 | ⏳ | 🟢 | **Test convention: `_root.update()` over `update_idletasks()` for geometry** | Surfaced during Phase 4n CS-26 test work. `update_idletasks()` flushes idle handlers but does NOT trigger Tk's geometry pass on a withdrawn root; `winfo_ismapped()` lags reality until the next event cycle. Pre-CS-26 responsive tests got away with `update_idletasks` because the helper packed less aggressively; CS-26's unconditional reflow exposed the gap. Document the convention in `test_scan_tree_widget`'s module docstring (and the equivalent docstrings in any future widget tests that read mapped state): "after a layout-changing call on a withdrawn `_root`, use `_root.update()`, not `update_idletasks()`, before reading `winfo_ismapped`". One-paragraph doc edit; no code change |
 | ✅ | 🔴 | **Right-sidebar canvas-width binding + responsive helper canvas-Configure rerun (USER-FLAGGED)** | USER-FLAGGED at start of Phase 4p. Resolved Phase 4p (CS-30): the helper now reads `_scroll_canvas.winfo_width()` rather than `row.winfo_width()` (with a `width: int \| None = None` kwarg for explicit overrides). The per-row `<Configure>` binding is removed (it raced with explicit calls and read the wrong width); replaced by a canvas `<Configure>` binding that walks every row in `_optional_row_widgets` on resize. Initial calibration of newly-built rows happens at the end of `_populate_node_row` via a single helper call. Inner `_rows_frame` width is intentionally NOT bound to canvas width (Tk's auto-unmap on overflow would silently drop overflow widgets). Touches `scan_tree_widget._build_chrome` + `_populate_node_row` + the helper signature, plus six new regression tests in `TestScanTreeWidgetCanvasDrivenLayout`. The pre-existing `test_each_row_collapses_independently` test was rewritten to use the explicit `width=` kwarg — under the new contract rows share a canvas, so the per-row independence invariant only survives when callers drive it directly. 540 tests, all green |
 | ✅ | 🔴 | **Suppress identical re-applies (param-equality gate on Apply) (USER-FLAGGED)** | USER-FLAGGED at start of Phase 4p. Resolved Phase 4p (CS-31): new graph method `ProjectGraph.find_provisional_op_with_params(parent_id, op_type, params) -> str \| None` (full dict equality on params; returns first match in graph insertion order). Threaded through every UV/Vis apply site (`uvvis_tab._apply_baseline` + `uvvis_normalise.NormalisationPanel._apply` + `uvvis_smoothing.SmoothingPanel._apply` + `uvvis_peak_picking.PeakPickingPanel._apply` + `uvvis_second_derivative.SecondDerivativePanel._apply`). Check fires after params are validated and BEFORE `compute()` runs (so the dedup decision never depends on the deterministic numerical output). On hit: no graph mutation, status message "<op> (<mode>) with these parameters already applied to <parent label> — no new node created.", `_apply` returns `None`. 10 helper tests in `TestFindProvisionalOpWithParams` + 5 panel-side integration test pairs (suppress + different-params, one per apply site). Real parameter sweeps (different params on each click) still flow into the sweep-grouping detector unchanged. 540 tests, all green |
-| ⏳ | 🔴 | **Inline expansion + per-variant gestures on sweep-group rows (CS-04 §6.3 follow-through) (USER-FLAGGED)** | USER-FLAGGED at start of Phase 4p; promotes the existing Phase 2 carry-forward "Sweep group inline expansion" + the existing Phase 4k entry "Per-variant gestures on sweep-group rows" (both above). **Deferred to Phase 4q.** Originally bundled with CS-30 + CS-31 in Phase 4p but split out after CS-30 took longer than expected. CS-31 (just-landed) makes Phase 4q's CS-32 work actually useful — sweeps now only fire on real param differences, so the inline-expansion design is no longer fighting bogus duplicates. The architecture sketch (ARCHITECTURE.md §6.3) describes "Expanding shows all variants ranked by fit metric", but the Phase 2 sweep-group leader row currently exposes only `✕all` and the user cannot commit / discard / restyle individual variants. Likely shape (Phase 4q, CS-32): the leader row gets a chevron `▸ <parent label> · sweep (N variants) [✕all]`. Click → `▾` and the variants render inline beneath as full-chrome rows (state · swatch · ☑ · label · ⌥n · ⚙ · → · ✕) by reusing `_populate_node_row`. Expansion state persists across rebuilds via `self._expanded_sweep_groups: set[str]` keyed by parent_id, mirroring the existing `_expanded_history` pattern. A `🔒` (commit) button is added next to `✕` on member rows so committing one variant doesn't require dropping into the right-click menu. Tests: chevron toggles `▸/▾`; inline members render with full controls; committing one member promotes it out of the group (drops below the 2-member threshold → group dissolves); styling one member doesn't bleed onto siblings. Promotes BACKLOG row 187 from ⏳ to ✅ at landing |
-| ⏳ | 🔴 | **Truncate long node-name labels in ScanTreeWidget rows (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4p. UV/Vis processing accumulates suffixes onto labels (`NiAqua · baseline (linear) · norm (peak)` is ~40 chars after two ops; three or four chained ops reach 60-80 chars). With CS-30 the responsive helper makes correct pack/unpack decisions because it keys on canvas width, not row natural width — so all rows share column structure (the user-flagged invariant is preserved). But the row's *natural* width can still exceed the canvas width when label + all packed widgets together don't fit, causing horizontal overflow. User insists all rows must share column widths uniformly; per-row truncation strategies are out (would surface different visual widths per row). Likely shape options: (a) **truncate with tooltip** — fixed-width label cell with ellipsis, full label visible in a hover tooltip + retained via the existing in-place rename gesture (double-click); (b) wrap to two lines (changes row height, interacts with sweep-group expansion height); (c) move label to a dedicated cell with a fade-out gradient on overflow; (d) reserve minimum widths per cell + shrink the label cell first under contention. (a) is the cheapest and matches typical desktop conventions. Touches `scan_tree_widget._populate_node_row` (the `tk.Label` for node label) + a tooltip widget (none exist in the codebase today; would be a small addition). Pairs with the existing Phase 4n "Long-provenance hist button display options" register entry — both are about cells whose natural width grows with content |
+| ✅ | 🔴 | **Inline expansion + per-variant gestures on sweep-group rows (CS-04 §6.3 follow-through) (USER-FLAGGED)** | USER-FLAGGED at start of Phase 4p. Resolved Phase 4q (CS-32): chevron `▸/▾` on the leader row toggles `parent_id` membership in `self._expanded_sweep_groups: set[str]` (parallels `_expanded_history`), routes through `_rebuild`, which after `_build_sweep_row(group_key)` iterates `self._sweep_groups[group_key]` in deterministic sorted order and calls `_build_node_row` per member. Members render with full chrome — state · swatch · ☑ · label · ⌥n · ⚙ · → · 🔒 · ✕ — picking up the new CS-34 commit gesture along with everything else. Group dissolution is automatic: `_compute_sweep_groups` only returns groups with ≥2 members, so committing/discarding one variant down to 1 makes the parent_id absent from `_sweep_groups` on the next rebuild and the chevron + leader row + remaining inline members all dissolve naturally. Six new integration tests in `TestSweepGroupInlineExpansion` (chevron read, toggle, second toggle, persistence across rebuild, member full-chrome, group dissolution); promotes BACKLOG row 187 from ⏳ to ✅ |
+| ✅ | 🔴 | **Truncate long node-name labels in ScanTreeWidget rows (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4p. Resolved Phase 4q (CS-33): module-level `_LABEL_MAX_CHARS = 32` cap + pure helper `_truncate_label(text, max_chars)` truncates with `…` suffix at exactly the cap; `_populate_node_row` paints the truncated text and attaches a `_Tooltip` (Toplevel, 600 ms hover) ONLY when truncation actually cut text. `_build_sweep_row` applies the same treatment to the parent label inside the leader text. `_begin_label_edit` reads the canonical full label from the graph rather than the painted (potentially truncated) widget text, so rename starts with the untruncated text. Five pure-helper tests in `TestTruncateLabel`, three Tooltip construction/binding tests in `TestTooltip`, three widget-side tests in `TestLabelTruncationInRow`. Pairs with the still-open Phase 4n "Long-provenance hist button display options" register entry — same root (cells whose natural width grows with content), same canvas-width invariant. Sibling Phase 4q friction #2 captures the cap-from-canvas-width-and-font-metrics follow-up |
+| ✅ | 🔴 | **🔒 commit gesture on provisional ScanTreeWidget rows** | Resolved Phase 4q (CS-34). Every PROVISIONAL row carries a `tk.Button(text="🔒")` between → and ✕ that invokes `self._safely(self._graph.commit_node, nid)` — same path the right-click context menu's Commit entry uses. Committed rows OMIT the button entirely (the leftmost-cell 🔒 state indicator already signals committed state; double-glyph would be confusing). Right cluster reads `[⌥n] [⚙] [→] [🔒] [✕]` provisional, `[⌥n] [⚙] [→] [✕]` committed. NOT in the responsive-optional set: 🔒 is always-visible (commit twin of ✕). Three integration tests in `TestProvisionalRowCommitButton`. Together with the still-open "Commit / discard reachable from the left pane after Apply" register entry, this covers the right-sidebar half of the original USER-FLAG; the left-pane Accept-last button-pair remains 🟡 |
+| ⏳ | 🟢 | **Compute label-truncation cap from canvas width / font metrics (CS-33 follow-up)** | Phase 4q friction #2. CS-33 fixed `_LABEL_MAX_CHARS = 32` works for typical UV/Vis chains and the default Tk font, but a high-DPI font on a narrow sidebar could fit fewer chars and a small monospace font on a wide sidebar could fit more. Likely shape: at row build time, measure the available label-cell pixel width (canvas width minus the always-visible cell footprint) and divide by an average glyph width fetched from `tkfont.Font(...).measure("0")` — the cell's int-char cap is then derived rather than hardcoded. Touches `_populate_node_row` only; the pure `_truncate_label` helper stays unchanged. Defer until a user reports either over- or under-truncation against their actual setup |
+| ⏳ | 🟢 | **Promote `_Tooltip` to a shared utility module on first cross-module re-use** | Phase 4q friction #3. CS-33's `_Tooltip` is a small Toplevel-based hover tooltip co-located in `scan_tree_widget.py`. Other surfaces will eventually need similar tooltips (Plot Settings dialog parameter hints, StyleDialog "what does this control" hints, panel-status messages that only fit on hover). On first re-use, extract into `tooltip.py` (pure utility module, no scan-tree-specific imports) so the second consumer doesn't either re-implement or import a private name. Until then, the private name is fine — premature promotion would add an import surface without a second consumer |
+| ⏳ | 🟢 | **Indent expanded sub-frames inside sweep groups (visual nesting)** | Phase 4q friction #5. After CS-32 lands, a sweep-group member row can also have its history expanded via `⌥n`. The existing `_render_history` packs the history sub-frame below the row at the same indent level as siblings — visually it sits between sweep members rather than indented beneath the one it belongs to. Cosmetic; a user could be momentarily confused. Likely shape: pass an `indent_px` argument to `_render_history` (and to `_build_node_row` when invoked from the sweep-expansion path) and add left padding on the sub-frame's outer pack. Touches `_render_history` + the member-row branch of `_rebuild` |
 
 ---
 
@@ -1696,7 +1784,7 @@ the resolving phase + commit SHA appended to the row.
 
 ---
 
-*Document version: 1.15 — May 2026*
+*Document version: 1.16 — May 2026*
 *1.1: Known Bugs register added 2026-04-27 after Phase 4b manual testing.*
 *1.2: Phase 4c — baseline correction lands; B-001 / B-003 / B-004
 resolved; Phase 4c friction points logged.*
@@ -1838,4 +1926,30 @@ canvas width (USER-FLAGGED, new register entry), test-fragility
 process note. One new register entry: 🔴 Truncate long node-
 name labels in ScanTreeWidget rows (USER-FLAGGED). 540 tests,
 all green.*
+*1.16: Phase 4q — sweep-group inline expansion (CS-32),
+label truncation with hover tooltip (CS-33), and per-row 🔒
+commit gesture on provisional ScanTreeWidget rows (CS-34).
+Three register entries marked ✅ (CS-32 promotes BACKLOG row
+187 from ⏳ as well; the merged Phase 4k/4p sweep-group entry
+collapses to a cross-ref to its canonical successor). Phase
+4k friction #2 (sweep-group rows hide per-variant gestures)
+struck through — fully resolved by CS-32. Phase 4p friction #1
+(CS-32 deferred to 4q) struck through. Phase 4p friction #3
+(long node-name labels overflowing canvas width) struck
+through — resolved by CS-33 with shape (a) truncate-with-
+tooltip. Phase 4k friction #1 (no left-pane accept gesture)
+annotated with "frequency reduced by CS-34" and dropped from
+🔴 to 🟡 — the right-sidebar half is in place; the left-pane
+button-pair remains the open follow-up. Three new register
+entries (all 🟢, none USER-FLAGGED): cap-from-canvas-width
+follow-up to CS-33, promote `_Tooltip` on first cross-module
+re-use, indent expanded sub-frames inside sweep groups. Phase
+4q friction logged (five items): 🟡 left-pane Accept-last
+still open, 🟢 hardcoded `_LABEL_MAX_CHARS`, 🟢 `_Tooltip`
+co-location, tooltip-rendering process note (no register),
+🟢 sweep-group nesting visual indent. 561 tests, all green
+(540 + 21 new: 5 in TestTruncateLabel, 3 in TestTooltip, 1 in
+TestExpandedSweepGroupsField, 6 in TestSweepGroupInlineExpansion,
+3 in TestProvisionalRowCommitButton, 3 in
+TestLabelTruncationInRow).*
 *Supersedes: BACKLOG.md (original)*
