@@ -1443,6 +1443,15 @@ class UVVisTab(tk.Frame):
                     continue
                 if not bool(bn.style.get("visible", True)):
                     continue
+                # Phase 4r (CS-36): per-node baseline-curve gate. The
+                # global ``_show_baseline_curves`` toggle is the
+                # master switch (already checked above); this is the
+                # downstream filter so the user can hide individual
+                # overlays without dimming all of them. Default True
+                # — backwards compat for existing graphs that
+                # predate the key.
+                if not bool(bn.style.get("show_baseline_curve", True)):
+                    continue
                 pair = uvvis_baseline.compute_baseline_curve(self._graph, bn)
                 if pair is None:
                     continue

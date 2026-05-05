@@ -606,7 +606,14 @@ class ScanTreeWidget(tk.Frame):
                         except KeyError:
                             continue
                         if isinstance(member_node, DataNode):
-                            self._build_node_row(member_node)
+                            # Phase 4r (CS-35): visual nesting under the
+                            # leader. Each member is still a full-chrome
+                            # row; only the row frame's left padding
+                            # shifts.
+                            self._build_node_row(
+                                member_node,
+                                indent_px=_SWEEP_MEMBER_INDENT_PX,
+                            )
             else:
                 self._build_node_row(node)
 
@@ -682,6 +689,42 @@ class ScanTreeWidget(tk.Frame):
             ),
         )
         vis_cb.pack(side="left")
+
+        # Phase 4r (CS-36): per-node baseline-curve overlay toggle.
+        # Only added on BASELINE rows. ``[~]`` when on (default),
+        # ``[–]`` when off — parallel to the legend ``✓/–`` glyph
+        # vocabulary. The CS-29 global ``Baseline curves`` checkbox
+        # is the master switch; this per-row toggle is the
+        # downstream filter that lets a user hide individual
+        # overlays (e.g. while comparing two of five competing
+        # baselines on the same parent). Mutation routes through
+        # ``set_style`` so ``GraphEvent.NODE_STYLE_CHANGED`` triggers
+        # ``uvvis_tab._redraw`` — same path as the visibility and
+        # legend toggles. Absent on non-BASELINE rows: a disabled
+        # placeholder would waste pixels on every UVVIS / NORMALISED
+        # / SMOOTHED / PEAK_LIST row.
+        if node.type == NodeType.BASELINE:
+            bc_var = tk.BooleanVar(
+                value=bool(node.style.get("show_baseline_curve", True))
+            )
+            bc_btn = tk.Button(row, width=2, relief=tk.FLAT)
+
+            def _refresh_bc(_b=bc_btn, _v=bc_var):
+                _b.config(
+                    text="~" if _v.get() else "–",
+                    fg="#444444" if _v.get() else "#999999",
+                )
+
+            def _toggle_bc(nid=node.id, _b=bc_btn, _v=bc_var):
+                new = not _v.get()
+                _v.set(new)
+                _refresh_bc()
+                self._graph.set_style(
+                    nid, {"show_baseline_curve": bool(new)},
+                )
+            bc_btn.config(command=_toggle_bc)
+            _refresh_bc()
+            bc_btn.pack(side="left", padx=(2, 0))
 
         # Label (double-click to edit in-place). Phase 4q (CS-33):
         # the displayed text is truncated at ``_LABEL_MAX_CHARS`` to
