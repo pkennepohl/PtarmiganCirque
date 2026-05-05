@@ -1083,6 +1083,55 @@ class TestUVVisTabBaseline(unittest.TestCase):
         self.assertEqual(len(items_after), 2,
                          "subject list should now include the BASELINE node")
 
+    # ---- Phase 4p (CS-31): suppress identical re-applies ------------
+
+    def test_apply_baseline_suppresses_identical_re_apply(self):
+        # Two clicks with identical params produce one BASELINE node,
+        # not two. The right-side ScanTreeWidget would otherwise group
+        # them into a bogus "sweep (2 variants)" leader row even though
+        # nothing actually swept.
+        self._add_uvvis("u1")
+        items = self.tab._shared_subject_cb.cget("values")
+        if isinstance(items, str):
+            items = tuple(items.split())
+        self.tab._shared_subject.set(items[0])
+        self.tab._baseline_mode.set("linear")
+        self.tab._baseline_anchor_lo.set("200")
+        self.tab._baseline_anchor_hi.set("800")
+
+        first = self.tab._apply_baseline()
+        self.assertIsNotNone(first)
+        n_after_first = len(self.graph.nodes)
+
+        second = self.tab._apply_baseline()
+        self.assertIsNone(second, "identical re-apply must return None")
+        self.assertEqual(
+            len(self.graph.nodes), n_after_first,
+            "identical re-apply must NOT add any nodes",
+        )
+        # Status label gets the duplicate-apply message.
+        self.assertIn(
+            "already", str(self.tab._status_lbl.cget("text")),
+        )
+
+    def test_apply_baseline_with_different_params_creates_new_node(self):
+        self._add_uvvis("u1")
+        items = self.tab._shared_subject_cb.cget("values")
+        if isinstance(items, str):
+            items = tuple(items.split())
+        self.tab._shared_subject.set(items[0])
+        self.tab._baseline_mode.set("linear")
+        self.tab._baseline_anchor_lo.set("200")
+        self.tab._baseline_anchor_hi.set("800")
+        self.assertIsNotNone(self.tab._apply_baseline())
+        n_after_first = len(self.graph.nodes)
+
+        # Tweak anchor_lo and re-apply — different params, so a real
+        # second BASELINE node IS created.
+        self.tab._baseline_anchor_lo.set("220")
+        self.assertIsNotNone(self.tab._apply_baseline())
+        self.assertEqual(len(self.graph.nodes), n_after_first + 2)
+
 
 @unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
 class TestUVVisTabNormalisationIntegration(unittest.TestCase):

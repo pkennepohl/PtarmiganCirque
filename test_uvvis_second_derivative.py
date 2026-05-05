@@ -480,6 +480,43 @@ class TestSecondDerivativePanel(unittest.TestCase):
         self.panel.set_subject(out_id)
         self.assertEqual(self._apply_btn_state(), "disabled")
 
+    # ---- Phase 4p (CS-31): suppress identical re-applies ------------
+
+    def test_apply_suppresses_identical_re_apply(self):
+        messages: list[str] = []
+        self.panel.destroy()
+        self.panel = usd.SecondDerivativePanel(
+            self.host, self.graph, status_cb=messages.append,
+        )
+        self.panel.pack()
+        self._add_uvvis("u1")
+        self._select_first_subject()
+        self.panel._window_length.set(11)
+        self.panel._polyorder.set(3)
+
+        first = self.panel._apply()
+        self.assertIsNotNone(first)
+        n_after_first = len(self.graph.nodes)
+        messages.clear()
+
+        second = self.panel._apply()
+        self.assertIsNone(second)
+        self.assertEqual(len(self.graph.nodes), n_after_first)
+        self.assertEqual(len(messages), 1)
+        self.assertIn("already applied", messages[0])
+
+    def test_apply_with_different_params_creates_new_node(self):
+        self._add_uvvis("u1")
+        self._select_first_subject()
+        self.panel._window_length.set(11)
+        self.panel._polyorder.set(3)
+        self.assertIsNotNone(self.panel._apply())
+        n_after_first = len(self.graph.nodes)
+
+        self.panel._window_length.set(13)
+        self.assertIsNotNone(self.panel._apply())
+        self.assertEqual(len(self.graph.nodes), n_after_first + 2)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

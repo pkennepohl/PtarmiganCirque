@@ -1021,7 +1021,12 @@ Phase 4 session.**
    any single one. Phase 2 carry-forward "Sweep group inline
    expansion" (🟡) is now actively biting; elevated to 🔴 and
    re-flagged. See the new register entry "Per-variant gestures on
-   sweep-group rows".
+   sweep-group rows". *Frequency reduced* in Phase 4p (CS-31):
+   sweep groups no longer fire on identical re-applies, so users
+   hit this friction only on real parameter sweeps. **Per-variant
+   gestures still pending** — see the Phase 4p register entry
+   "Inline expansion + per-variant gestures on sweep-group rows
+   (CS-04 §6.3 follow-through)" deferred to Phase 4q (CS-32).
 3. ~~**Plot Settings dialog has no Save & Close button.**
    USER-FLAGGED at end of Phase 4k. The dialog applies changes
    live but offers only Cancel; closing via [X] takes the Cancel
@@ -1252,7 +1257,7 @@ session.**
    pattern is now in place for `TestScanTreeWidgetResponsiveRow`
    and `TestScanTreeWidgetSendToCompareButton`; future widget
    classes can copy.) Documentation-style; no register entry.
-4. 🔴 **Responsive helper does redundant pack/forget work on every
+4. ~~🔴 **Responsive helper does redundant pack/forget work on every
    Configure event.** USER-FLAGGED at end of Phase 4n. CS-26's
    `_apply_responsive_layout` unconditionally pack_forget+repacks
    every optional cell on every call, because Tk's auto-unmap under
@@ -1261,17 +1266,37 @@ session.**
    on rapid Configure events at the same width. Strategy: cache
    the last applied "threshold band" per row and short-circuit when
    the new width falls in the same band. See the new register entry
-   "Threshold-band caching for responsive helper (technical debt)".
-5. 🔴 **`⌥{n}` always-visible cell grows with digit count for long
+   "Threshold-band caching for responsive helper (technical debt)".~~
+   ✅ Substantially mitigated in Phase 4p (CS-30): the per-row
+   `<Configure>` binding was removed, so the rapid-Configure storm
+   that motivated the caching pass no longer fires. The canvas-
+   `<Configure>` binding fires once per real sidebar resize, which
+   is human-paced and never rapid enough to flicker. The unconditional
+   pack_forget+repack pattern remains at the helper level (still the
+   correct response to Tk's auto-unmap rule), but the redundant-work
+   concern is now empirically inert. The "Threshold-band caching"
+   register entry stays ⏳ as defer-until-flicker-observed, not
+   as a known live cost.
+5. 🔴 ~~**`⌥{n}` always-visible cell grows with digit count for long
    provenance chains.** USER-FLAGGED at end of Phase 4n. The cell
    renders `text=f"⌥{chain_len}"` literally; for `n > 9` the cell's
    natural width grows by ~9 px per digit, which re-triggers the
-   responsive overflow pattern at widths today's tests verify safe.
+   responsive overflow pattern at widths today's tests verify safe.~~
+   ✅ Threshold-decision impact resolved in Phase 4p (CS-30): the
+   helper now keys on `_scroll_canvas.winfo_width()` (the actual
+   sidebar width), not row natural width, so the ⌥n digit-count
+   contribution to row natural width is irrelevant to whether
+   optional cells pack. The visual concern — long ⌥n + long label
+   pushing the row's natural width past the canvas width — is now
+   the same friction as #6 below (the new Phase 4p friction on
+   long node names) and is addressed there. The "Long-provenance
+   hist button display options" register entry stays ⏳ as the
+   visual-shape decision (cap at ⌥9+ vs two-digit fixed vs hide
+   digits vs SI-suffix); the responsive-overflow trigger that
+   originally motivated it is gone.
    User has confirmed `n > 9` is realistic for complex workflows.
    See the new register entry "Long-provenance hist button display
-   options (USER-FLAGGED)" — four shape options to weigh. Pairs
-   with #4 above (any caching pass should account for cells whose
-   natural width changes after the row was first measured).
+   options (USER-FLAGGED)" — four shape options to weigh.
 
 ### Friction points carried forward from Phase 4o
 
@@ -1314,6 +1339,104 @@ guard (CS-28) and the dashed baseline-curve overlay (CS-29). Items
    No register entry — documentation-style note for the session
    structure.
 
+### Friction points carried forward from Phase 4p
+
+These are concrete obstacles the next Phase 4 session will hit.
+Identified during Phase 4p while landing the canvas-driven
+responsive layout (CS-30) and the param-equality apply-time
+gate (CS-31). Item #1 is the deferred 4p → 4q split; #2 is
+USER-FLAGGED with cross-ref to the open Diagnostic console
+intent; #3 is USER-FLAGGED and is the obvious next-up
+follow-on for the responsive-row work; #4 is a process
+improvement note. **Do not fix until the relevant subsequent
+Phase 4 session.**
+
+1. 🔴 **CS-32 (inline expansion + per-variant gestures on
+   sweep-group rows) deferred to Phase 4q.** Originally
+   bundled with CS-30 + CS-31 in Phase 4p decision lock, but
+   CS-30 expanded scope (the responsive layout fix needed a
+   helper-signature change, a per-row Configure-binding
+   removal, and a test-stub refactor on top of the inner-frame
+   width fix). Splitting CS-32 into its own phase keeps the
+   commit budget honest. The register entry stays ⏳ as the
+   obvious primary intent for Phase 4q. Phase 4q's hand-off
+   inherits the decision-lock notes from this session
+   (chevron `▸/▾` toggle, full-chrome inline rows reusing
+   `_populate_node_row`, `_expanded_sweep_groups: set[str]`
+   keyed by parent_id mirroring `_expanded_history`, `🔒`
+   commit button next to `✕` on member rows). No new register
+   entry — see the existing "Inline expansion + per-variant
+   gestures on sweep-group rows (CS-04 §6.3 follow-through)"
+   entry.
+
+2. 🔴 **CS-31's "no new node created" status message has weak
+   discoverability (USER-FLAGGED).** The duplicate-apply
+   message lands on the panel's `_status_cb` (or
+   `self._status_lbl` for the baseline path on UVVisTab) — a
+   small label below the operation panels. A user clicking
+   Apply twice expecting visible action might not notice the
+   message and conclude the second click did nothing for an
+   unknown reason. This pairs naturally with the existing
+   USER-FLAGGED open intent **"Diagnostic console / fitted-
+   parameter panel"** (Phase 4n carry-forward, register row
+   above): once that landing site exists, every CS-31
+   suppression should also write a `dedup` line into the
+   console so the message survives subsequent UI actions and
+   sits in a place the user actively reads. Until then, the
+   panel-level status label is the only surface — acceptable
+   but worth elevating once the diagnostic console lands. No
+   new register entry — folds into the Diagnostic console
+   intent.
+
+3. 🔴 **Long node names can push the row's natural width past
+   the canvas width (USER-FLAGGED).** Surfaced by the user at
+   end of Phase 4p in response to the CS-30 architecture
+   note. UV/Vis processing accumulates suffixes onto labels
+   (e.g. `NiAqua · baseline (linear) · norm (peak)` is ~40
+   chars after two ops; with three or four ops in a chain
+   labels reach 60-80 chars). With CS-30, the helper still
+   makes the right pack/unpack decisions because it keys on
+   canvas width, not row natural width — so all rows uniformly
+   show the same column structure (the user-flagged invariant
+   is preserved). But the row's *natural* width can exceed the
+   canvas width when label + all packed widgets together don't
+   fit, causing horizontal overflow / scroll. User explicitly
+   said all rows must share column widths — so any mitigation
+   has to apply uniformly, not "this one row truncates because
+   it has a longer label". Likely shape options: (a) truncate
+   labels in the row with full label in tooltip + the
+   widget's existing in-place rename gesture (double-click)
+   for explicit label viewing; (b) wrap label to two lines
+   (changes row height, may interact with sweep-group
+   expansion height); (c) move the label to a fixed-width
+   column with a fade-out/ellipsis on overflow; (d) reserve
+   minimum widths per cell and shrink the label first. (a) is
+   the cheapest and matches typical desktop conventions. See
+   the new register entry "Truncate long node-name labels in
+   ScanTreeWidget rows (USER-FLAGGED)".
+
+4. **Test fragility around `_root` state contamination
+   (process note).** Surfaced during CS-30 work. The canvas's
+   actual width during full-file test runs depends on prior
+   test classes — `TestScanTreeWidgetResponsiveRow`'s setUp
+   creates `tk.Frame(_root, width=800, height=400)` with
+   `pack_propagate(False)`, but the canvas-`<Configure>`
+   event still fires at 200 px (rather than 800) when the
+   class runs after `TestScanTreeWidget` /
+   `TestScanTreeWidgetBugB001` etc. The fix in this phase was
+   to bypass `event.width` entirely in the canvas Configure
+   handler (read `winfo_width()` instead so test stubs flow
+   through) and to extend `_force_width(row, N)` to also stub
+   the owning canvas's `winfo_width`. Pattern worth
+   replicating in any future widget test class that depends
+   on geometry: stub canvas widths explicitly, do not trust
+   `event.width` as deterministic across full-file runs. Pair
+   with the Phase 4n process note "Test convention:
+   `_root.update()` over `update_idletasks()`" — same root
+   cause (Tk geometry behaviour on a withdrawn `_root` is
+   sensitive to accumulated state). Documentation-style; no
+   register entry.
+
 | Status | Priority | Item | Notes |
 |---|---|---|---|
 | ✅ | 🔴 | **Migrate UV/Vis to node model** | UVVisScan → DataNode(type=UVVIS). File load → RAW\_FILE + LOAD + UVVIS triple, all COMMITTED (Phase 4a Part A; CS-13 implementation notes) |
@@ -1354,6 +1477,10 @@ guard (CS-28) and the dashed baseline-curve overlay (CS-29). Items
 | ⏳ | 🟡 | **Long-provenance hist button display options (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4n. The `⌥{n}` always-visible cell (CS-26 promotion) renders the provenance chain length as a literal integer. For complex workflows `n > 9` is realistic — the row's natural width grows with the digit count, which can re-trigger the responsive overflow pattern at the same widths today's tests verify. Options to weigh in the implementing session: (a) cap display at `⌥9+` once n > 9 with the exact count surfaced via tooltip / history sub-frame; (b) two-digit fixed width (`⌥01`...`⌥99`) so the row's natural width is bounded but the count remains readable; (c) hide digits entirely (just `⌥`) and surface the count only via the expanded history sub-frame; (d) SI-suffix style (`⌥9`, `⌥1k` for >999). Touches `scan_tree_widget._populate_node_row` (the `text=f"⌥{chain_len}"` line) and the existing `test_provenance_op_count` style assertions. User has confirmed `n > 9` is "easily seen for complex workflows" so this is not edge-case |
 | ⏳ | 🟢 | **Threshold-band caching for responsive helper (technical debt)** | Phase 4n CS-26's `_apply_responsive_layout` unconditionally pack_forget+repacks every optional cell on every call (rather than tracking last-applied state) because Tk auto-unmap under overflow makes `winfo_ismapped()` an unsound "have" oracle. The fix is correct but does redundant work on every `<Configure>` event at the same width. Cache the last applied "threshold band" per row (e.g. one of `(none, swatch, swatch+leg, all)`) and short-circuit the reflow when the new width falls in the same band. Care needed: the cache must be invalidated on `_populate_node_row` (a row rebuild starts fresh). Cheap polish; defer until flicker is observed in real use |
 | ⏳ | 🟢 | **Test convention: `_root.update()` over `update_idletasks()` for geometry** | Surfaced during Phase 4n CS-26 test work. `update_idletasks()` flushes idle handlers but does NOT trigger Tk's geometry pass on a withdrawn root; `winfo_ismapped()` lags reality until the next event cycle. Pre-CS-26 responsive tests got away with `update_idletasks` because the helper packed less aggressively; CS-26's unconditional reflow exposed the gap. Document the convention in `test_scan_tree_widget`'s module docstring (and the equivalent docstrings in any future widget tests that read mapped state): "after a layout-changing call on a withdrawn `_root`, use `_root.update()`, not `update_idletasks()`, before reading `winfo_ismapped`". One-paragraph doc edit; no code change |
+| ✅ | 🔴 | **Right-sidebar canvas-width binding + responsive helper canvas-Configure rerun (USER-FLAGGED)** | USER-FLAGGED at start of Phase 4p. Resolved Phase 4p (CS-30): the helper now reads `_scroll_canvas.winfo_width()` rather than `row.winfo_width()` (with a `width: int \| None = None` kwarg for explicit overrides). The per-row `<Configure>` binding is removed (it raced with explicit calls and read the wrong width); replaced by a canvas `<Configure>` binding that walks every row in `_optional_row_widgets` on resize. Initial calibration of newly-built rows happens at the end of `_populate_node_row` via a single helper call. Inner `_rows_frame` width is intentionally NOT bound to canvas width (Tk's auto-unmap on overflow would silently drop overflow widgets). Touches `scan_tree_widget._build_chrome` + `_populate_node_row` + the helper signature, plus six new regression tests in `TestScanTreeWidgetCanvasDrivenLayout`. The pre-existing `test_each_row_collapses_independently` test was rewritten to use the explicit `width=` kwarg — under the new contract rows share a canvas, so the per-row independence invariant only survives when callers drive it directly. 540 tests, all green |
+| ✅ | 🔴 | **Suppress identical re-applies (param-equality gate on Apply) (USER-FLAGGED)** | USER-FLAGGED at start of Phase 4p. Resolved Phase 4p (CS-31): new graph method `ProjectGraph.find_provisional_op_with_params(parent_id, op_type, params) -> str \| None` (full dict equality on params; returns first match in graph insertion order). Threaded through every UV/Vis apply site (`uvvis_tab._apply_baseline` + `uvvis_normalise.NormalisationPanel._apply` + `uvvis_smoothing.SmoothingPanel._apply` + `uvvis_peak_picking.PeakPickingPanel._apply` + `uvvis_second_derivative.SecondDerivativePanel._apply`). Check fires after params are validated and BEFORE `compute()` runs (so the dedup decision never depends on the deterministic numerical output). On hit: no graph mutation, status message "<op> (<mode>) with these parameters already applied to <parent label> — no new node created.", `_apply` returns `None`. 10 helper tests in `TestFindProvisionalOpWithParams` + 5 panel-side integration test pairs (suppress + different-params, one per apply site). Real parameter sweeps (different params on each click) still flow into the sweep-grouping detector unchanged. 540 tests, all green |
+| ⏳ | 🔴 | **Inline expansion + per-variant gestures on sweep-group rows (CS-04 §6.3 follow-through) (USER-FLAGGED)** | USER-FLAGGED at start of Phase 4p; promotes the existing Phase 2 carry-forward "Sweep group inline expansion" + the existing Phase 4k entry "Per-variant gestures on sweep-group rows" (both above). **Deferred to Phase 4q.** Originally bundled with CS-30 + CS-31 in Phase 4p but split out after CS-30 took longer than expected. CS-31 (just-landed) makes Phase 4q's CS-32 work actually useful — sweeps now only fire on real param differences, so the inline-expansion design is no longer fighting bogus duplicates. The architecture sketch (ARCHITECTURE.md §6.3) describes "Expanding shows all variants ranked by fit metric", but the Phase 2 sweep-group leader row currently exposes only `✕all` and the user cannot commit / discard / restyle individual variants. Likely shape (Phase 4q, CS-32): the leader row gets a chevron `▸ <parent label> · sweep (N variants) [✕all]`. Click → `▾` and the variants render inline beneath as full-chrome rows (state · swatch · ☑ · label · ⌥n · ⚙ · → · ✕) by reusing `_populate_node_row`. Expansion state persists across rebuilds via `self._expanded_sweep_groups: set[str]` keyed by parent_id, mirroring the existing `_expanded_history` pattern. A `🔒` (commit) button is added next to `✕` on member rows so committing one variant doesn't require dropping into the right-click menu. Tests: chevron toggles `▸/▾`; inline members render with full controls; committing one member promotes it out of the group (drops below the 2-member threshold → group dissolves); styling one member doesn't bleed onto siblings. Promotes BACKLOG row 187 from ⏳ to ✅ at landing |
+| ⏳ | 🔴 | **Truncate long node-name labels in ScanTreeWidget rows (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4p. UV/Vis processing accumulates suffixes onto labels (`NiAqua · baseline (linear) · norm (peak)` is ~40 chars after two ops; three or four chained ops reach 60-80 chars). With CS-30 the responsive helper makes correct pack/unpack decisions because it keys on canvas width, not row natural width — so all rows share column structure (the user-flagged invariant is preserved). But the row's *natural* width can still exceed the canvas width when label + all packed widgets together don't fit, causing horizontal overflow. User insists all rows must share column widths uniformly; per-row truncation strategies are out (would surface different visual widths per row). Likely shape options: (a) **truncate with tooltip** — fixed-width label cell with ellipsis, full label visible in a hover tooltip + retained via the existing in-place rename gesture (double-click); (b) wrap to two lines (changes row height, interacts with sweep-group expansion height); (c) move label to a dedicated cell with a fade-out gradient on overflow; (d) reserve minimum widths per cell + shrink the label cell first under contention. (a) is the cheapest and matches typical desktop conventions. Touches `scan_tree_widget._populate_node_row` (the `tk.Label` for node label) + a tooltip widget (none exist in the codebase today; would be a small addition). Pairs with the existing Phase 4n "Long-provenance hist button display options" register entry — both are about cells whose natural width grows with content |
 
 ---
 
@@ -1569,7 +1696,7 @@ the resolving phase + commit SHA appended to the row.
 
 ---
 
-*Document version: 1.14 — May 2026*
+*Document version: 1.15 — May 2026*
 *1.1: Known Bugs register added 2026-04-27 after Phase 4b manual testing.*
 *1.2: Phase 4c — baseline correction lands; B-001 / B-003 / B-004
 resolved; Phase 4c friction points logged.*
@@ -1688,4 +1815,27 @@ Baseline-curve overlay legend density. The
 `test_send_node_to_compare_skips_non_uvvis_nodes` get_node stub
 workaround was simplified to use the new guard instead of the
 lambda override.*
+*1.15: Phase 4p — canvas-driven responsive layout (CS-30) +
+suppress identical re-applies (CS-31). CS-32 (inline expansion
++ per-variant gestures on sweep-group rows) was bundled at
+decision lock but deferred to Phase 4q after CS-30 took longer
+than expected. Three register entries logged up front; two
+marked ✅ at landing. Phase 4n friction #4 (responsive helper
+redundant Configure work) struck through — substantially
+mitigated because the per-row `<Configure>` storm that
+motivated it no longer fires; the threshold-band caching
+register entry stays ⏳ as defer-until-flicker-observed. Phase
+4n friction #5 (⌥n digit overflow) struck through for the
+threshold-decision impact (CS-30 keys on canvas width, not row
+natural width); the visual-shape decision register entry stays
+⏳. Phase 4k friction #2 (sweep-group rows hide per-variant
+gestures) annotated with "frequency reduced by CS-31" but
+remains open for CS-32. Phase 4p friction logged (four items):
+🔴 CS-32 deferred to 4q, 🔴 CS-31 status-message
+discoverability folded into the existing Diagnostic console
+intent (USER-FLAGGED), 🔴 Long node-name labels overflowing
+canvas width (USER-FLAGGED, new register entry), test-fragility
+process note. One new register entry: 🔴 Truncate long node-
+name labels in ScanTreeWidget rows (USER-FLAGGED). 540 tests,
+all green.*
 *Supersedes: BACKLOG.md (original)*

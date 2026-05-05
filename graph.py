@@ -387,6 +387,51 @@ class ProjectGraph:
             result.append(node)
         return result
 
+    def find_provisional_op_with_params(
+        self,
+        parent_id: str,
+        op_type: OperationType,
+        params: dict,
+    ) -> str | None:
+        """Locate an existing PROVISIONAL OperationNode with the same params.
+
+        Phase 4p (CS-31): supports the "suppress identical re-applies"
+        gate at every apply site (UV/Vis baseline, normalisation,
+        smoothing, peak picking, second derivative). Returns the id
+        of the first matching OperationNode (insertion order) so the
+        caller can surface it in a status message instead of creating
+        a duplicate sibling that the right-side ScanTreeWidget would
+        otherwise collapse into a bogus sweep group.
+
+        A match requires:
+
+        * ``OperationNode.type == op_type``
+        * ``OperationNode.state == NodeState.PROVISIONAL``
+        * ``parent_id`` appears in ``OperationNode.input_ids``
+        * ``OperationNode.params == params`` (full dict equality)
+
+        Returns ``None`` when no such operation exists.
+
+        Architecturally this is the inverse of the sweep-grouping
+        rule in ``scan_tree_widget._compute_sweep_groups``: that
+        helper groups 2+ PROVISIONAL siblings; this one detects the
+        case where the proposed second sibling would be a duplicate
+        of an existing sibling, so the apply path can refuse before
+        creating the second sibling at all.
+        """
+        for node in self.nodes.values():
+            if not isinstance(node, OperationNode):
+                continue
+            if node.type != op_type:
+                continue
+            if node.state != NodeState.PROVISIONAL:
+                continue
+            if parent_id not in node.input_ids:
+                continue
+            if node.params == params:
+                return node.id
+        return None
+
     def active_node_for(self, dataset_id: str) -> DataNode | None:
         """Return the currently "active" DataNode for a dataset lineage.
 
