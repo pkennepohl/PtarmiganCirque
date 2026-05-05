@@ -296,6 +296,33 @@ class ScanTreeWidget(tk.Frame):
             )
         self._rows_frame.bind("<Configure>", _on_inner_configure)
 
+        # Phase 4p (CS-30): the responsive helper now keys on canvas
+        # width (the actual sidebar width) rather than row width. Two
+        # production failures motivated this: (a) the row's natural
+        # width is content-driven (longest visible label wins) so a
+        # single-node sidebar stays collapsed at any width because
+        # ``row.winfo_width()`` returns a small label-shaped number;
+        # (b) narrowing the canvas does not recollapse expanded rows
+        # because ``row.winfo_width()`` reflects packed contents, not
+        # available space. The canvas-Configure binding here drives
+        # reflow on resize; ``_apply_responsive_layout`` reads canvas
+        # width as the default ``width`` source. Inner frame width is
+        # *not* bound to canvas width — that would cause Tk to auto-
+        # unmap overflow widgets in the narrow case, and would also
+        # interact badly with the test suite's per-row width stubs.
+        def _on_canvas_configure(_event):
+            # ``_event.width`` carries Tk's actual reported size, which
+            # tests cannot override. Calling the helper without an
+            # explicit ``width`` lets it read ``_scroll_canvas
+            # .winfo_width()`` — the same source the test suite stubs
+            # via ``_force_width`` — so the binding stays inert when
+            # tests override the canvas width and active when the
+            # user resizes the sidebar in production.
+            for nid, frm in list(self._row_frames.items()):
+                if nid in self._optional_row_widgets:
+                    self._apply_responsive_layout(nid, frm)
+        self._scroll_canvas.bind("<Configure>", _on_canvas_configure)
+
         # Bottom controls.
         self._footer = tk.Frame(self)
         self._footer.pack(side="bottom", fill="x")
@@ -605,16 +632,18 @@ class ScanTreeWidget(tk.Frame):
             "vis_cb":     vis_cb,
         }
 
-        # Bind row width changes to the responsive layout helper. The
-        # bind is per row frame so the helper knows which row to
-        # apply the rule to. Configure also fires on the very first
-        # geometry pass, so this doubles as the initial calibration.
-        row.bind(
-            "<Configure>",
-            lambda _e, nid=node.id, frm=row:
-                self._apply_responsive_layout(nid, frm),
-            add="+",
-        )
+        # Phase 4p (CS-30): the responsive helper is now driven by
+        # canvas-Configure events rather than per-row Configure
+        # events. The per-row Configure binding used to read the
+        # row's natural (content-driven) width, which (a) misses the
+        # available sidebar space when the row is narrower than the
+        # canvas, and (b) re-fires on every pack/unpack, racing with
+        # explicit helper calls. Initial calibration of newly-built
+        # rows happens here: if the canvas is already realised, apply
+        # thresholds straight away; otherwise the canvas-Configure
+        # event that fires when the canvas first lays out will do
+        # the initial pass for every row in one walk.
+        self._apply_responsive_layout(node.id, row)
 
         # Re-attach history sub-frame if currently expanded.
         if node.id in self._expanded_history:
@@ -626,14 +655,24 @@ class ScanTreeWidget(tk.Frame):
 
     def _apply_responsive_layout(
         self, node_id: str, row: tk.Frame,
+        width: int | None = None,
     ) -> None:
-        """Hide / re-pack optional controls based on row width.
+        """Hide / re-pack optional controls based on the available width.
 
         Phase 4n CS-26 graduated reveal: each cell in
-        ``_RESPONSIVE_THRESHOLDS_PX`` is mapped iff the row is at
-        least its threshold wide. Below the smallest threshold no
-        optional cells are shown; the always-visible minimum
+        ``_RESPONSIVE_THRESHOLDS_PX`` is mapped iff the available
+        width is at least its threshold. Below the smallest threshold
+        no optional cells are shown; the always-visible minimum
         (state, ☑, label, ⌥n, ⚙, →, ✕) keeps the row usable.
+
+        Phase 4p (CS-30): ``width`` is the available sidebar width.
+        When omitted, the helper reads it from the scrollable
+        canvas's ``winfo_width()`` rather than from the row itself —
+        the row's natural width is content-driven and does not
+        reflect available space, so a single-node sidebar at 800 px
+        would otherwise stay collapsed at every threshold. Callers
+        that need to drive a specific width (tests; the canvas
+        Configure handler) pass it explicitly.
 
         The helper unconditionally rewrites the optional cells'
         pack state on every call rather than tracking "current"
@@ -660,10 +699,11 @@ class ScanTreeWidget(tk.Frame):
         widgets = self._optional_row_widgets.get(node_id)
         if widgets is None:
             return
-        try:
-            width = row.winfo_width()
-        except tk.TclError:
-            return
+        if width is None:
+            try:
+                width = self._scroll_canvas.winfo_width()
+            except tk.TclError:
+                return
         # Tk reports width=1 before the widget is realised in
         # geometry; ignore those Configure events so we don't
         # spuriously collapse a row that hasn't been laid out yet.

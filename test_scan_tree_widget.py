@@ -669,8 +669,25 @@ class TestScanTreeWidgetResponsiveRow(unittest.TestCase):
 
     @staticmethod
     def _force_width(widget: tk.Widget, width: int) -> None:
-        """Stub ``winfo_width`` on a single widget instance."""
+        """Stub ``winfo_width`` on a row + the owning ScanTreeWidget's canvas.
+
+        Phase 4p (CS-30): the responsive helper now reads canvas width
+        as the default ``width`` source (the row's natural width is
+        content-driven and does not reflect the available sidebar
+        space). Tests that rely on ``_force_width(row, N)`` followed
+        by ``widget._apply_responsive_layout("a", row)`` (no explicit
+        width kwarg) need the canvas's reported width to match so
+        the helper's default-width path sees the test's intended
+        value. Tests that pass ``width=`` explicitly are unaffected.
+        """
         widget.winfo_width = lambda w=width: w  # type: ignore[assignment]
+        ancestor = widget
+        while ancestor is not None:
+            scroll_canvas = getattr(ancestor, "_scroll_canvas", None)
+            if scroll_canvas is not None:
+                scroll_canvas.winfo_width = lambda w=width: w  # type: ignore[assignment]
+                break
+            ancestor = getattr(ancestor, "master", None)
 
     def _always_visible(self, row: tk.Frame) -> dict[str, tk.Widget]:
         """Locate the always-visible widgets in a row.
@@ -878,20 +895,26 @@ class TestScanTreeWidgetResponsiveRow(unittest.TestCase):
     # ----------- multi-row independence -----------
 
     def test_each_row_collapses_independently(self):
-        # Rows must respond to their own <Configure> width, not a
-        # shared global value.
+        # Phase 4p (CS-30): the helper now keys on canvas width by
+        # default, so production rows reflow uniformly. The
+        # per-row-independence contract is preserved through the
+        # explicit ``width`` kwarg — when given, the helper applies
+        # exactly that width to that row and no other. Pass widths
+        # directly so each row gets its own width even though they
+        # share a canvas.
         self.graph.add_node(_data("a"))
         self.graph.add_node(_data("b"))
         widget = self._fresh_widget()
 
         row_a = widget._row_frames["a"]
         row_b = widget._row_frames["b"]
-        # Narrow only row "a".
-        self._force_width(row_a, 100)
-        self._force_width(row_b, 600)
-        widget._apply_responsive_layout("a", row_a)
-        widget._apply_responsive_layout("b", row_b)
-        _root.update()
+        widget._apply_responsive_layout("a", row_a, width=100)
+        widget._apply_responsive_layout("b", row_b, width=600)
+        # Use ``update_idletasks`` rather than ``_root.update()`` so a
+        # late canvas-Configure event (Phase 4p CS-30 binding) does
+        # not reflow both rows uniformly and erase the per-row widths
+        # we just applied.
+        widget.update_idletasks()
 
         a_swatch = widget._optional_row_widgets["a"]["swatch"]
         b_swatch = widget._optional_row_widgets["b"]["swatch"]
@@ -1039,6 +1062,198 @@ class TestScanTreeWidgetResponsiveRow(unittest.TestCase):
         self.assertIn(widgets["swatch"], slaves)
         self.assertIn(widgets["leg"], slaves)
         self.assertNotIn(widgets["ls_canvas"], slaves)
+
+
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestScanTreeWidgetCanvasDrivenLayout(unittest.TestCase):
+    """Phase 4p CS-30 — responsive helper now keys on canvas width.
+
+    Two production failures motivated the change:
+
+    - Single-node sidebar stayed collapsed at any width: the row's
+      natural width is content-driven (longest visible label), so
+      ``row.winfo_width()`` returns a small label-sized number even
+      when the actual sidebar is 800 px wide.
+    - Narrowing the sidebar did not recollapse expanded rows: the
+      row's own width didn't change because content didn't change,
+      so the per-row Configure binding never re-fired.
+
+    The fix replaced the per-row Configure binding with a canvas
+    Configure binding plus an initial helper call inside
+    ``_populate_node_row``. ``_apply_responsive_layout`` defaults to
+    reading ``_scroll_canvas.winfo_width()`` when no explicit width
+    is passed.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from scan_tree_widget import ScanTreeWidget
+        import scan_tree_widget as stw_mod
+        cls.ScanTreeWidget = ScanTreeWidget
+        cls.stw_mod = stw_mod
+
+    def setUp(self):
+        self.host = tk.Frame(_root, width=800, height=400)
+        self.host.pack_propagate(False)
+        self.host.pack()
+        self.graph = ProjectGraph()
+
+    def tearDown(self):
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    def _build(self):
+        _, cb = _redraw_calls()
+        widget = self.ScanTreeWidget(
+            self.host, self.graph, [NodeType.UVVIS], cb,
+        )
+        widget.pack(fill="both", expand=True)
+        _root.update()
+        return widget
+
+    def test_default_width_source_is_canvas(self):
+        # When no explicit width is passed, the helper reads from the
+        # canvas's winfo_width — not the row's. Stub the canvas to a
+        # value above every threshold; expect every optional cell to
+        # be in the row's pack slaves regardless of the row's actual
+        # natural width.
+        self.graph.add_node(_data("a"))
+        widget = self._build()
+        widget._scroll_canvas.winfo_width = lambda: 600  # type: ignore[assignment]
+
+        row = widget._row_frames["a"]
+        widget._apply_responsive_layout("a", row)
+        widget.update_idletasks()
+
+        slaves = set(row.pack_slaves())
+        widgets = widget._optional_row_widgets["a"]
+        for name in ("swatch", "leg", "ls_canvas"):
+            self.assertIn(
+                widgets[name], slaves,
+                f"{name!r} must be packed when canvas reports 600 px",
+            )
+
+    def test_default_width_source_collapses_when_canvas_narrow(self):
+        # Mirror image of the previous test: canvas reports a narrow
+        # value, helper drops every optional cell from the row's
+        # pack slaves.
+        self.graph.add_node(_data("a"))
+        widget = self._build()
+        widget._scroll_canvas.winfo_width = lambda: 100  # type: ignore[assignment]
+
+        row = widget._row_frames["a"]
+        widget._apply_responsive_layout("a", row)
+        widget.update_idletasks()
+
+        slaves = set(row.pack_slaves())
+        widgets = widget._optional_row_widgets["a"]
+        for name in ("swatch", "leg", "ls_canvas"):
+            self.assertNotIn(
+                widgets[name], slaves,
+                f"{name!r} must NOT be packed when canvas reports 100 px",
+            )
+
+    def test_explicit_width_overrides_canvas_default(self):
+        # When the caller passes ``width=N`` the helper must use N,
+        # not the canvas width. Stub the canvas wide and pass a
+        # narrow explicit width — expect collapse.
+        self.graph.add_node(_data("a"))
+        widget = self._build()
+        widget._scroll_canvas.winfo_width = lambda: 800  # type: ignore[assignment]
+
+        row = widget._row_frames["a"]
+        widget._apply_responsive_layout("a", row, width=100)
+        widget.update_idletasks()
+
+        slaves = set(row.pack_slaves())
+        widgets = widget._optional_row_widgets["a"]
+        for name in ("swatch", "leg", "ls_canvas"):
+            self.assertNotIn(
+                widgets[name], slaves,
+                f"{name!r} must obey explicit width=100, not canvas=800",
+            )
+
+    def test_canvas_configure_event_walks_every_row(self):
+        # Firing a Configure event on the canvas must invoke the
+        # helper for every row that has optional widgets. The handler
+        # reads ``canvas.winfo_width()`` (not ``event.width``) so
+        # tests stub the canvas width and synthesize a Configure to
+        # fire the binding.
+        self.graph.add_node(_data("a"))
+        self.graph.add_node(_data("b"))
+        widget = self._build()
+        # Start with a narrow canvas so initial calibration
+        # collapses optional cells.
+        widget._scroll_canvas.winfo_width = lambda: 100  # type: ignore[assignment]
+        widget._scroll_canvas.event_generate("<Configure>", width=100, height=400)
+        widget.update_idletasks()
+        for nid in ("a", "b"):
+            row = widget._row_frames[nid]
+            slaves = set(row.pack_slaves())
+            widgets = widget._optional_row_widgets[nid]
+            for name in ("swatch", "leg", "ls_canvas"):
+                self.assertNotIn(
+                    widgets[name], slaves,
+                    f"row {nid!r} {name!r} must NOT be packed when canvas=100",
+                )
+
+        # Re-stub canvas wide and fire Configure again — every row
+        # should re-pack.
+        widget._scroll_canvas.winfo_width = lambda: 600  # type: ignore[assignment]
+        widget._scroll_canvas.event_generate("<Configure>", width=600, height=400)
+        widget.update_idletasks()
+        for nid in ("a", "b"):
+            row = widget._row_frames[nid]
+            slaves = set(row.pack_slaves())
+            widgets = widget._optional_row_widgets[nid]
+            for name in ("swatch", "leg", "ls_canvas"):
+                self.assertIn(
+                    widgets[name], slaves,
+                    f"row {nid!r} {name!r} must be packed after "
+                    f"Configure with canvas=600",
+                )
+
+    def test_initial_calibration_runs_in_populate_node_row(self):
+        # New rows added at runtime must be calibrated immediately:
+        # _populate_node_row calls the helper itself rather than
+        # waiting for a (potentially never-fired) Configure event.
+        # Stub canvas narrow before adding the node so the initial
+        # call collapses the optional cells.
+        widget = self._build()
+        widget._scroll_canvas.winfo_width = lambda: 100  # type: ignore[assignment]
+
+        # Adding a new node triggers _rebuild → _populate_node_row.
+        self.graph.add_node(_data("a"))
+        widget.update_idletasks()
+
+        row = widget._row_frames["a"]
+        slaves = set(row.pack_slaves())
+        widgets = widget._optional_row_widgets["a"]
+        for name in ("swatch", "leg", "ls_canvas"):
+            self.assertNotIn(
+                widgets[name], slaves,
+                f"newly-added row's {name!r} must collapse on insert "
+                f"when the canvas is already narrow",
+            )
+
+    def test_no_per_row_configure_binding(self):
+        # The Phase 4p (CS-30) refactor removed the per-row Configure
+        # binding because (a) it raced with explicit helper calls
+        # under update_idletasks, and (b) the row's natural width is
+        # not the right signal for threshold logic. Verifying the
+        # binding is gone protects against an accidental restore in
+        # a future row-rendering refactor.
+        self.graph.add_node(_data("a"))
+        widget = self._build()
+
+        row = widget._row_frames["a"]
+        binds = row.bind()  # tuple of bound sequence names
+        self.assertNotIn(
+            "<Configure>", binds,
+            "row must not carry a <Configure> binding after CS-30",
+        )
 
 
 @unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
