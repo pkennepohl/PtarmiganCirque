@@ -149,6 +149,102 @@ _RESPONSIVE_THRESHOLDS_PX: tuple[tuple[str, int], ...] = (
 )
 _RESPONSIVE_COLLAPSE_PX: int = _RESPONSIVE_THRESHOLDS_PX[0][1]
 
+# Phase 4q (CS-33): label truncation cap. Long chains of UV/Vis ops
+# accumulate suffixes ("NiAqua · baseline (linear) · norm (peak)" etc.)
+# and the row's natural width can exceed the canvas, causing
+# horizontal overflow even with CS-30's canvas-driven responsive
+# helper in place. Truncating the displayed label at a uniform
+# character cap keeps every row's column structure consistent (the
+# user-flagged invariant from Phase 4p friction #3); the full label
+# remains accessible via a hover tooltip and the existing in-place
+# rename gesture (double-click, which now reads the full label from
+# the graph rather than the widget's truncated text).
+_LABEL_MAX_CHARS: int = 32
+
+
+def _truncate_label(text: str, max_chars: int = _LABEL_MAX_CHARS) -> str:
+    """Cap a label at ``max_chars`` characters, suffixing ``…`` if cut.
+
+    Pure helper so the unit tests don't need a Tk root. Returns
+    ``text`` unchanged when ``len(text) <= max_chars``; otherwise
+    returns ``text[:max_chars - 1] + "…"`` so the total displayed
+    length is exactly ``max_chars``. ``max_chars`` must be at least
+    1; the caller is trusted (this is internal).
+    """
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars - 1] + "…"
+
+
+class _Tooltip:
+    """Lightweight hover tooltip for a Tk widget.
+
+    Phase 4q (CS-33). Used by ``_populate_node_row`` to surface the
+    full node label when ``_truncate_label`` had to cut it. Attaches
+    ``<Enter>`` / ``<Leave>`` / ``<ButtonPress>`` bindings; on hover
+    after a short delay, opens a borderless ``tk.Toplevel`` with the
+    full text. The widget is destroyed on the leave / press / parent
+    teardown. Single-instance per widget; ``update_text`` rotates the
+    text in place after a label rename without rebuilding the row.
+    """
+
+    DELAY_MS: int = 600
+
+    def __init__(self, widget: tk.Widget, text: str) -> None:
+        self._widget = widget
+        self._text = text
+        self._tip: tk.Toplevel | None = None
+        self._after_id: str | None = None
+        widget.bind("<Enter>",      self._schedule, add="+")
+        widget.bind("<Leave>",      self._hide,     add="+")
+        widget.bind("<ButtonPress>", self._hide,    add="+")
+
+    def update_text(self, text: str) -> None:
+        self._text = text
+
+    def _schedule(self, _event: tk.Event | None = None) -> None:
+        self._cancel()
+        try:
+            self._after_id = self._widget.after(self.DELAY_MS, self._show)
+        except tk.TclError:
+            self._after_id = None
+
+    def _cancel(self) -> None:
+        if self._after_id is not None:
+            try:
+                self._widget.after_cancel(self._after_id)
+            except (tk.TclError, ValueError):
+                pass
+            self._after_id = None
+
+    def _show(self) -> None:
+        if self._tip is not None or not self._text:
+            return
+        try:
+            x = self._widget.winfo_rootx() + 12
+            y = (self._widget.winfo_rooty()
+                 + self._widget.winfo_height() + 4)
+            tip = tk.Toplevel(self._widget)
+            tip.wm_overrideredirect(True)
+            tip.wm_geometry(f"+{x}+{y}")
+            tk.Label(
+                tip, text=self._text,
+                bg="#FFFFE0", relief=tk.SOLID, bd=1,
+                justify="left", padx=4, pady=2,
+            ).pack()
+            self._tip = tip
+        except tk.TclError:
+            self._tip = None
+
+    def _hide(self, _event: tk.Event | None = None) -> None:
+        self._cancel()
+        if self._tip is not None:
+            try:
+                self._tip.destroy()
+            except tk.TclError:
+                pass
+            self._tip = None
+
 
 def _style_get(node: DataNode, key: str) -> Any:
     """Read a style value with the module default as a fallback."""
@@ -247,6 +343,17 @@ class ScanTreeWidget(tk.Frame):
         # View state.
         self._show_hidden = tk.BooleanVar(value=False)
         self._expanded_history: set[str] = set()
+        # Sweep groups whose members render inline below the leader row
+        # (Phase 4q CS-32). Keyed by parent DataNode id, mirroring
+        # ``_sweep_groups``. Persists across rebuilds — a graph event
+        # that triggers a full rebuild does not collapse the user's
+        # current expansion state. Entries auto-evict when the group
+        # dissolves: ``_compute_sweep_groups`` only returns groups
+        # with ≥2 members, so committing or discarding a member down
+        # to 1 makes the parent_id absent from the next rebuild's
+        # ``_sweep_groups`` dict and the chevron disappears with the
+        # leader row. Stale entries in this set become harmless no-ops.
+        self._expanded_sweep_groups: set[str] = set()
         # node_id → tk.Frame for the row (top-level, not history sub-frame).
         self._row_frames: dict[str, tk.Frame] = {}
         # node_id → tk.Frame for the history sub-frame (if expanded).
@@ -471,6 +578,22 @@ class ScanTreeWidget(tk.Frame):
                     continue
                 rendered_for_group.add(group_key)
                 self._build_sweep_row(group_key)
+                # Phase 4q (CS-32): if this group is expanded, render
+                # each member inline below the leader as a full-chrome
+                # row. The members route through ``_build_node_row``
+                # → ``_populate_node_row`` so they pick up the
+                # provisional-row 🔒 commit button (CS-34) plus every
+                # other regular row affordance. Order matches
+                # ``_compute_sweep_groups``'s ``sorted(...)`` for
+                # determinism.
+                if group_key in self._expanded_sweep_groups:
+                    for member_id in self._sweep_groups.get(group_key, []):
+                        try:
+                            member_node = self._graph.get_node(member_id)
+                        except KeyError:
+                            continue
+                        if isinstance(member_node, DataNode):
+                            self._build_node_row(member_node)
             else:
                 self._build_node_row(node)
 
@@ -537,9 +660,21 @@ class ScanTreeWidget(tk.Frame):
         )
         vis_cb.pack(side="left")
 
-        # Label (double-click to edit in-place).
-        label = tk.Label(row, text=node.label, anchor="w")
+        # Label (double-click to edit in-place). Phase 4q (CS-33):
+        # the displayed text is truncated at ``_LABEL_MAX_CHARS`` to
+        # keep the row's natural width bounded — long UV/Vis chains
+        # accumulate suffixes that would otherwise push the row past
+        # the canvas width even with the CS-30 responsive helper.
+        # When truncation happens, attach a hover tooltip so the full
+        # label remains visible without a rename. The rename Entry
+        # reads the full label from the graph (see
+        # ``_begin_label_edit``), so editing always starts with the
+        # untruncated text regardless of what's painted.
+        display_text = _truncate_label(node.label)
+        label = tk.Label(row, text=display_text, anchor="w")
         label.pack(side="left", fill="x", expand=True, padx=(2, 4))
+        if display_text != node.label:
+            _Tooltip(label, node.label)
         label.bind(
             "<Double-Button-1>",
             lambda _e, nid=node.id, lbl=label, frm=row:
@@ -552,6 +687,22 @@ class ScanTreeWidget(tk.Frame):
             command=lambda nid=node.id: self._on_x_clicked(nid),
         )
         x_btn.pack(side="right", padx=(2, 0))
+
+        # 🔒 — commit gesture on provisional rows (Phase 4q CS-34).
+        # Sits between → and ✕ as the commit twin of ✕. Omitted
+        # entirely on committed rows: the leftmost-cell 🔒 state
+        # indicator already signals the committed state, and a
+        # disabled 🔒 button next to ✕ would put two 🔒 glyphs on the
+        # same row. The right cluster reads
+        # ``[⌥n] [⚙] [→] [🔒] [✕]`` left-to-right when provisional,
+        # ``[⌥n] [⚙] [→] [✕]`` when committed.
+        if node.state == NodeState.PROVISIONAL:
+            commit_btn = tk.Button(
+                row, text="🔒", relief=tk.FLAT, cursor="hand2",
+                command=lambda nid=node.id: self._safely(
+                    self._graph.commit_node, nid),
+            )
+            commit_btn.pack(side="right", padx=(2, 0))
 
         # → — Send-to-Compare (Phase 4n CS-27). Disabled when no
         # callback is wired (deferred-tab convention shared with
@@ -766,12 +917,15 @@ class ScanTreeWidget(tk.Frame):
     def _build_sweep_row(self, parent_id: str) -> None:
         """Build a single collapsed row for a sweep group.
 
-        The row currently shows the count of variants and offers a
-        "✕all" gesture (discard all members). Expanding into individual
-        variant editing is covered by a future refinement; for now the
-        user can hold Shift+Click on the count to expand into per-row
-        rendering by toggling "Show hidden" + node selection in the
-        graph (Phase 4 will design the variant editor in full).
+        Phase 4q (CS-32) added the chevron expand toggle. The row
+        shows ``▸`` (collapsed) or ``▾`` (expanded), parent label,
+        variant count, and the bulk-discard ``✕all`` gesture. When
+        expanded, ``_rebuild`` renders each member inline below this
+        leader row as a full-chrome row (re-using
+        ``_populate_node_row``), so per-variant commit / discard /
+        style is reachable without leaving the right sidebar.
+        Expansion state lives in ``self._expanded_sweep_groups``
+        keyed by parent_id, and survives every rebuild.
         """
         members = self._sweep_groups.get(parent_id, [])
         if not members:
@@ -785,23 +939,63 @@ class ScanTreeWidget(tk.Frame):
 
         try:
             parent_node = self._graph.get_node(parent_id)
-            parent_label = (parent_node.label
-                            if isinstance(parent_node, DataNode)
-                            else parent_id)
+            parent_label_full = (parent_node.label
+                                 if isinstance(parent_node, DataNode)
+                                 else parent_id)
         except KeyError:
-            parent_label = parent_id
+            parent_label_full = parent_id
 
-        tk.Label(row, text="⋯", width=2).pack(side="left")
-        tk.Label(
-            row,
-            text=f"{parent_label} · sweep ({len(members)} variants)",
-            anchor="w",
-        ).pack(side="left", fill="x", expand=True, padx=(2, 4))
+        # Chevron toggle (replaces the previous ``⋯`` state Label).
+        # Click flips the parent_id's presence in
+        # ``_expanded_sweep_groups`` and triggers a rebuild — that's
+        # the same path every state mutation uses, and it keeps
+        # member-row construction in one place
+        # (``_rebuild``), avoiding duplicated logic between the
+        # initial render and the toggle.
+        is_expanded = parent_id in self._expanded_sweep_groups
+        chevron_text = "▾" if is_expanded else "▸"
+        chevron_btn = tk.Button(
+            row, text=chevron_text, width=2,
+            relief=tk.FLAT, cursor="hand2",
+            command=lambda pid=parent_id: self._toggle_sweep_group(pid),
+        )
+        chevron_btn.pack(side="left")
+
+        # Parent label is also subject to truncation — same long-chain
+        # problem as regular rows (Phase 4q CS-33 / Phase 4p friction
+        # #3). Tooltip carries the full text only when truncation
+        # actually cut it.
+        leader_text = (
+            f"{_truncate_label(parent_label_full)} "
+            f"· sweep ({len(members)} variants)"
+        )
+        leader_lbl = tk.Label(row, text=leader_text, anchor="w")
+        leader_lbl.pack(side="left", fill="x", expand=True, padx=(2, 4))
+        if _truncate_label(parent_label_full) != parent_label_full:
+            _Tooltip(
+                leader_lbl,
+                f"{parent_label_full} · sweep ({len(members)} variants)",
+            )
 
         tk.Button(
             row, text="✕all", relief=tk.FLAT, cursor="hand2",
             command=lambda ids=tuple(members): self._discard_many(ids),
         ).pack(side="right", padx=(2, 0))
+
+    def _toggle_sweep_group(self, parent_id: str) -> None:
+        """Flip a sweep group's expansion state and rebuild.
+
+        Phase 4q (CS-32). Membership in ``_expanded_sweep_groups``
+        determines whether ``_rebuild`` renders the group's members
+        inline. Toggling routes through ``_rebuild`` rather than
+        an in-place edit so the chevron glyph + member rows are
+        kept consistent without separate update paths.
+        """
+        if parent_id in self._expanded_sweep_groups:
+            self._expanded_sweep_groups.discard(parent_id)
+        else:
+            self._expanded_sweep_groups.add(parent_id)
+        self._rebuild()
 
     def _discard_many(self, node_ids: Iterable[str]) -> None:
         for nid in node_ids:
@@ -931,7 +1125,19 @@ class ScanTreeWidget(tk.Frame):
         special once the row rebuilds in response to the resulting
         ``NODE_LABEL_CHANGED`` event.
         """
-        current = label_widget.cget("text")
+        # Phase 4q (CS-33): read the full label from the graph rather
+        # than the widget's painted text, which may have been
+        # truncated by ``_truncate_label`` for display. Falling back
+        # to the widget text only when the graph lookup fails keeps
+        # rename functional on any row even if a teardown race
+        # discards the node mid-click.
+        try:
+            node = self._graph.get_node(node_id)
+            current = (node.label
+                       if isinstance(node, DataNode)
+                       else label_widget.cget("text"))
+        except KeyError:
+            current = label_widget.cget("text")
         # Phase 4j friction #1: pass ``master=row_frame`` explicitly so
         # the StringVar binds to the same Tk interpreter as the Entry.
         # Without it, ``tk.StringVar(value=...)`` falls back to

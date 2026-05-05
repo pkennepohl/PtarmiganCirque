@@ -3597,7 +3597,281 @@ remains ⏳ as the obvious primary intent for the next phase.
 
 ---
 
-*Document version: 1.16 — May 2026*
+## CS-32 — Sweep group inline expansion (Phase 4q)
+
+CS-04 §6.3 sketched "Expanding shows all variants ranked by
+fit metric" but the Phase 2 implementation only delivered the
+collapsed leader row with a single `✕all` gesture. Two or more
+PROVISIONAL DataNode siblings sharing one parent (a sweep
+group) hid every per-variant action — commit, discard, restyle —
+behind a "Show hidden" toggle plus right-click context menus
+on individual variants, which in practice meant the user
+could see the variants but not act on them. CS-31 (Phase 4p)
+made this register entry actually useful by ensuring sweeps
+only fire on real parameter differences; CS-32 makes them
+editable.
+
+CS-32 adds an inline-expansion model to the leader row:
+
+```python
+self._expanded_sweep_groups: set[str] = set()  # parent_id keys
+```
+
+The set parallels `_expanded_history` and persists across
+every `_rebuild`. Membership in the set is the source of truth
+for whether a group's members render inline.
+
+The leader row's leading `⋯` Label is replaced with a chevron
+`tk.Button`:
+
+* `▸` when the parent_id is NOT in `_expanded_sweep_groups`
+* `▾` when it IS
+
+Click invokes `_toggle_sweep_group(parent_id)`, which flips
+the parent_id's membership in the set and triggers a full
+`_rebuild`. Routing through `_rebuild` rather than an in-place
+edit keeps member-row construction in one place — the initial
+render and every subsequent toggle take exactly the same path:
+
+```python
+self._build_sweep_row(group_key)
+if group_key in self._expanded_sweep_groups:
+    for member_id in self._sweep_groups.get(group_key, []):
+        member_node = self._graph.get_node(member_id)
+        if isinstance(member_node, DataNode):
+            self._build_node_row(member_node)
+```
+
+Members iterate in the deterministic sorted order
+`_compute_sweep_groups` already imposes. Each member routes
+through `_build_node_row` → `_populate_node_row`, so it
+inherits the full row chrome — state · swatch · ☑ · label ·
+⌥n · ⚙ · → · 🔒 · ✕ — including CS-34's commit button. No
+member-only branch exists in `_populate_node_row`; the
+provisional-row 🔒 falls out of the `node.state ==
+PROVISIONAL` check that's already there.
+
+Group dissolution is automatic. `_compute_sweep_groups` only
+returns groups with ≥2 visible PROVISIONAL members, so
+committing or discarding a member down to 1 makes the
+parent_id absent from `_sweep_groups` on the next rebuild.
+The chevron + leader row + remaining inline members all
+disappear — the surviving member renders as a normal
+standalone row. Stale entries in `_expanded_sweep_groups` for
+dissolved groups become harmless no-ops; no explicit cleanup
+is required. The chevron only renders inside `_build_sweep_row`,
+which only runs when the group exists.
+
+Test mechanics. The chevron is found by walking
+`_rows_frame.winfo_children()` rather than indexing
+`_row_frames[leader_id]`, because expansion overwrites
+`_row_frames[leader_id]` with the member row of the same id
+(the leader id is, by definition, also a member id).
+`_row_frames[leader_id]` resolves to the leader row when
+collapsed and to the member row when expanded — the only
+caller that actually reads it (`_refresh_row`) handles both
+cases by falling back to `_rebuild` whenever the id is part
+of a sweep group.
+
+Six new tests in `TestSweepGroupInlineExpansion`
+(`test_scan_tree_widget.py`):
+
+* collapsed leader row renders `▸`; only leader id keyed in `_row_frames`
+* `chevron.invoke()` flips to `▾`, populates `_expanded_sweep_groups`, both members keyed
+* second toggle collapses cleanly
+* expansion state survives a manual `_rebuild()`
+* each expanded member row carries exactly one 🔒 commit button (CS-34)
+* committing one member dissolves the group (chevron + leader row gone)
+
+Plus `TestExpandedSweepGroupsField` (1 test) pins the field
+type and initial-empty-set contract.
+
+Locks held: the leader row's `✕all` bulk-discard gesture is
+unchanged; sweep grouping criteria (≥2 PROVISIONAL siblings
+sharing one DataNode parent) are unchanged; lex-smallest id
+remains the leader.
+
+---
+
+## CS-33 — Label truncation with hover tooltip (Phase 4q)
+
+CS-30 (Phase 4p) made the responsive helper key on canvas
+width rather than row natural width — so all rows uniformly
+show the same column structure regardless of any individual
+row's content (the user-flagged "all rows must share column
+widths" invariant). But the row's *natural* width can still
+exceed the canvas width when the label cell plus all packed
+right-cluster widgets together don't fit, causing horizontal
+overflow on long chained-op labels. UV/Vis chains accumulate
+suffixes (`NiAqua · baseline (linear) · norm (peak)` is ~40
+chars; three or four chained ops reach 60–80).
+
+CS-33 adds a uniform character cap on the painted label text:
+
+```python
+_LABEL_MAX_CHARS: int = 32
+
+def _truncate_label(text: str, max_chars: int = _LABEL_MAX_CHARS) -> str:
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars - 1] + "…"
+```
+
+The helper is pure (no Tk dependency) so its tests run in any
+environment. Returns text unchanged when short; otherwise
+returns text cut at `max_chars - 1` characters with `…`
+appended, so the displayed length is exactly `max_chars`.
+Chosen over the alternative shapes (wrap to two lines, fixed-
+width column with fade gradient, reserve minimum widths per
+cell): truncation matches typical desktop conventions and
+keeps every row at the same height.
+
+`_populate_node_row` paints the truncated text and attaches a
+`_Tooltip` only when truncation actually cut text:
+
+```python
+display_text = _truncate_label(node.label)
+label = tk.Label(row, text=display_text, anchor="w")
+if display_text != node.label:
+    _Tooltip(label, node.label)
+```
+
+`_build_sweep_row` applies the same treatment to the parent
+label inside the leader text (`{parent_label} · sweep (N
+variants)`).
+
+`_Tooltip` is a small Toplevel-based hover tooltip (600 ms
+delay):
+
+* `<Enter>` schedules `_show` via `widget.after`
+* `<Leave>` and `<ButtonPress>` cancel any pending schedule and destroy the Toplevel
+* `update_text(new_text)` rotates the text in place after a label rename without rebuilding the row
+* TclError catches keep it cheap during widget-teardown races
+
+The Toplevel uses `wm_overrideredirect(True)` for borderless
+chrome and a pale-yellow `bg="#FFFFE0"` for the conventional
+"hover hint" colour.
+
+Rename source-of-truth fix. `_begin_label_edit` now reads the
+canonical full label from the graph rather than the painted
+(potentially truncated) widget text, so editing a truncated
+row starts with the untruncated text:
+
+```python
+try:
+    node = self._graph.get_node(node_id)
+    current = (node.label
+               if isinstance(node, DataNode)
+               else label_widget.cget("text"))
+except KeyError:
+    current = label_widget.cget("text")
+```
+
+Falls back to the widget text only if the graph lookup raises
+(defensive: stale id mid-click). Every existing rename test
+continues to pass without change.
+
+Test coverage. Five pure-helper tests in `TestTruncateLabel`
+(`test_scan_tree_widget.py`): short text passthrough, exact-
+cap passthrough, long-text truncation with ellipsis at the
+exact target length, `max_chars` override, `_LABEL_MAX_CHARS`
+type/sign. Three Tooltip tests in `TestTooltip` cover
+construction, `update_text`, and idempotent `_hide` —
+construction-only because the Toplevel-rendering path is
+timing-dependent (600 ms `after`) and the test suite doesn't
+drive the event loop, so verifying the tooltip surface itself
+is left to manual smoke. Three widget-side tests in
+`TestLabelTruncationInRow` cover short-label verbatim, long-
+label truncation with the graph-side label intact, and the
+rename-from-full-label invariant.
+
+Follow-ups (BACKLOG entries 🟢): cap-from-canvas-width-and-
+font-metrics (CS-33 follow-up), promote `_Tooltip` to shared
+utility module on first cross-module re-use.
+
+Locks held: `_LABEL_MAX_CHARS = 32` is a module-level
+constant, not a parameter on the class — shared by every
+caller in the module so all rows truncate uniformly.
+
+---
+
+## CS-34 — 🔒 commit gesture on provisional rows (Phase 4q)
+
+Phase 4k friction #1 (USER-FLAGGED) flagged that the only
+"accept this provisional node" path after Apply was the
+right-click context menu on the right-side ScanTreeWidget
+row. Each Apply makes a provisional node, and the user wants
+confirm-as-they-go without traversing to the right sidebar
+and right-clicking. The original register entry called for a
+left-pane "Accept last / Discard last" button-pair. CS-34
+addresses the right-sidebar half: every PROVISIONAL row now
+carries a per-row 🔒 commit gesture as a single-click twin of
+the existing ✕.
+
+```python
+if node.state == NodeState.PROVISIONAL:
+    commit_btn = tk.Button(
+        row, text="🔒", relief=tk.FLAT, cursor="hand2",
+        command=lambda nid=node.id: self._safely(
+            self._graph.commit_node, nid),
+    )
+    commit_btn.pack(side="right", padx=(2, 0))
+```
+
+Order in the right cluster (left→right): `[⌥n] [⚙] [→] [🔒]
+[✕]` provisional, `[⌥n] [⚙] [→] [✕]` committed.
+
+Decisions worth pinning:
+
+* **Omitted entirely on committed rows**, not disabled. The
+  leftmost-cell 🔒 state indicator already signals committed
+  state; a disabled 🔒 button next to ✕ would put two 🔒
+  glyphs on the same row, which is more confusing than the
+  omission. The state column says "this row is committed";
+  the right cluster says "what can you do next" — and on a
+  committed row the answer no longer includes commit.
+
+* **NOT in the responsive-optional set.** 🔒 is the commit
+  twin of ✕ (also always-visible) and a commit gesture is
+  too important to hide on narrow widths. The optional set
+  in `_RESPONSIVE_THRESHOLDS_PX` (swatch / leg / ls_canvas)
+  is unchanged.
+
+* **`_safely` wrapper.** Routes through the same
+  `try/except (KeyError, ValueError, TypeError)` shim the
+  context-menu Commit entry uses, so the on-row gesture and
+  the menu gesture stay behaviourally identical on stale or
+  invalid ids.
+
+Same widget appears on sweep-group MEMBER rows when expanded
+via CS-32, since member rows route through
+`_populate_node_row`. So once a sweep group is expanded,
+committing a single variant is one click on its 🔒 button —
+which makes the group dissolve naturally if it drops below
+the 2-member threshold.
+
+Three integration tests in `TestProvisionalRowCommitButton`
+(`test_scan_tree_widget.py`):
+
+* provisional row has the 🔒 button
+* committed row OMITS the button (omitted, not disabled)
+* `btn.invoke()` commits the node via `commit_node`; the
+  button disappears on the post-commit re-render
+
+The original Phase 4k friction #1 register entry "Commit /
+discard reachable from the left pane after Apply (USER-
+FLAGGED)" stays ⏳ at 🟡 (dropped from 🔴 because CS-34
+satisfies the spirit of the original USER-FLAG — single-click
+commit without the right-click context menu — and the left-
+pane Accept-last button-pair becomes a convenience-layer
+follow-up rather than a hard requirement).
+
+Locks held: the right-click context menu's Commit entry is
+unchanged; `_safely` is unchanged.
+
+---
+
+*Document version: 1.17 — May 2026*
 *1.1: CS-13 implementation notes added in Phase 4a.*
 *1.2: CS-14 Plot Settings Dialog added in Phase 4b.*
 *1.3: CS-15 UV/Vis Baseline Correction + CS-04 implementation
@@ -3749,5 +4023,37 @@ friction items (test-fragility process note, status-message
 discoverability that pairs with the open Diagnostic console
 intent, long-label overflow under uniform-row-width invariant,
 CS-32 deferred). 540 tests, all green.*
+*1.17: CS-32 + CS-33 + CS-34 added in Phase 4q. CS-32
+adds inline expansion to sweep groups: chevron `▸/▾` on the
+leader row toggles `parent_id` membership in
+`self._expanded_sweep_groups: set[str]` (parallels
+`_expanded_history`); routes through `_rebuild` so member
+rendering happens in one place; members render with full
+chrome via `_populate_node_row`, picking up CS-34's 🔒
+commit button along with everything else; group dissolves
+naturally when members drop below 2 (no explicit cleanup
+needed). CS-33 caps painted label text at module-level
+`_LABEL_MAX_CHARS = 32` characters with `…` truncation;
+attaches a `_Tooltip` (Toplevel, 600 ms hover, pale yellow)
+only when truncation actually cut text; `_begin_label_edit`
+reads the canonical full label from the graph rather than
+the painted widget text so rename starts with the
+untruncated value. CS-34 packs a per-row `tk.Button("🔒")`
+between → and ✕ on every PROVISIONAL row, click invokes
+`_safely(commit_node, nid)`; committed rows OMIT the button
+entirely (the leftmost-cell state indicator already signals
+committed state); not in the responsive-optional set —
+always-visible commit twin of ✕. Three Phase 4 register
+entries marked ✅ (CS-32 + CS-33 + new CS-34 entry "🔒
+commit gesture on provisional ScanTreeWidget rows"); the
+existing Phase 4k friction #1 register entry "Commit /
+discard reachable from the left pane after Apply" drops
+from 🔴 to 🟡 (CS-34 satisfies the spirit of the USER-FLAG;
+left-pane button-pair stays as a convenience-layer follow-
+up). Three new 🟢 register entries logged: cap-from-canvas-
+width-and-font-metrics follow-up to CS-33, promote
+`_Tooltip` to shared utility module on first cross-module
+re-use, indent expanded sub-frames inside sweep groups
+(visual nesting). 561 tests, all green (540 + 21 new).*
 *To be updated as Open Questions are resolved and new components
 are specified.*
