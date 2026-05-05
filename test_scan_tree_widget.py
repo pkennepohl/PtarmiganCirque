@@ -1519,5 +1519,119 @@ class TestScanTreeWidgetExportMenu(unittest.TestCase):
         self.assertEqual(seen, ["a"])
 
 
+class TestTruncateLabel(unittest.TestCase):
+    """Phase 4q (CS-33) — pure label-truncation helper.
+
+    No Tk root required; runs in any environment.
+    """
+
+    def test_short_text_returned_unchanged(self):
+        from scan_tree_widget import _truncate_label, _LABEL_MAX_CHARS
+        text = "short"
+        self.assertLess(len(text), _LABEL_MAX_CHARS)
+        self.assertEqual(_truncate_label(text), text)
+
+    def test_text_exactly_at_cap_returned_unchanged(self):
+        from scan_tree_widget import _truncate_label, _LABEL_MAX_CHARS
+        text = "x" * _LABEL_MAX_CHARS
+        self.assertEqual(_truncate_label(text), text)
+
+    def test_long_text_truncated_with_ellipsis(self):
+        from scan_tree_widget import _truncate_label, _LABEL_MAX_CHARS
+        text = "x" * (_LABEL_MAX_CHARS + 10)
+        out = _truncate_label(text)
+        self.assertEqual(len(out), _LABEL_MAX_CHARS)
+        self.assertTrue(out.endswith("…"))
+        self.assertEqual(out[:-1], "x" * (_LABEL_MAX_CHARS - 1))
+
+    def test_explicit_max_chars_override(self):
+        from scan_tree_widget import _truncate_label
+        self.assertEqual(_truncate_label("hello world", max_chars=5), "hell…")
+        self.assertEqual(_truncate_label("hello", max_chars=5), "hello")
+        self.assertEqual(_truncate_label("abc", max_chars=10), "abc")
+
+    def test_label_max_chars_constant_is_a_positive_int(self):
+        from scan_tree_widget import _LABEL_MAX_CHARS
+        self.assertIsInstance(_LABEL_MAX_CHARS, int)
+        self.assertGreater(_LABEL_MAX_CHARS, 1)
+
+
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestTooltip(unittest.TestCase):
+    """Phase 4q (CS-33) — hover tooltip helper.
+
+    Construction-only assertions plus ``update_text``; the actual
+    Toplevel display is timing-dependent (600 ms ``after``) and we
+    don't drive the event loop in the test suite, so verifying the
+    tooltip surface itself is left to manual smoke. The class still
+    has to construct cleanly and bind to a parent without raising.
+    """
+
+    def setUp(self) -> None:
+        self.host = tk.Frame(_root)
+        self.host.pack()
+
+    def tearDown(self) -> None:
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    def test_construction_binds_without_error(self):
+        from scan_tree_widget import _Tooltip
+        lbl = tk.Label(self.host, text="hi")
+        lbl.pack()
+        tip = _Tooltip(lbl, "the full label")
+        self.assertEqual(tip._text, "the full label")
+        self.assertIsNone(tip._tip)
+
+    def test_update_text_rotates_in_place(self):
+        from scan_tree_widget import _Tooltip
+        lbl = tk.Label(self.host, text="hi")
+        lbl.pack()
+        tip = _Tooltip(lbl, "first")
+        tip.update_text("second")
+        self.assertEqual(tip._text, "second")
+
+    def test_hide_is_idempotent_when_no_tip_open(self):
+        from scan_tree_widget import _Tooltip
+        lbl = tk.Label(self.host, text="hi")
+        lbl.pack()
+        tip = _Tooltip(lbl, "x")
+        tip._hide()
+        tip._hide()
+        self.assertIsNone(tip._tip)
+
+
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestExpandedSweepGroupsField(unittest.TestCase):
+    """Phase 4q (CS-32) — sweep-group expansion state field.
+
+    Construction-only check: the field must exist as an empty set on
+    a fresh widget so callers can mutate it without a None-check.
+    Mirrors how ``_expanded_history`` is exposed.
+    """
+
+    def setUp(self) -> None:
+        self.host = tk.Frame(_root)
+        self.host.pack()
+        self.graph = ProjectGraph()
+
+    def tearDown(self) -> None:
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    def test_initial_state_is_empty_set(self):
+        from scan_tree_widget import ScanTreeWidget
+        _, cb = _redraw_calls()
+        widget = ScanTreeWidget(
+            self.host, self.graph, [NodeType.UVVIS], cb,
+        )
+        self.assertEqual(widget._expanded_sweep_groups, set())
+        self.assertIsInstance(widget._expanded_sweep_groups, set)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
