@@ -468,6 +468,65 @@ class TestNormalisationPanel(unittest.TestCase):
         self.panel.set_subject(out_id)
         self.assertEqual(self._apply_btn_state(), "normal")
 
+    # ---- Phase 4p (CS-31): suppress identical re-applies ------------
+
+    def test_apply_suppresses_identical_re_apply(self):
+        # Apply once with peak/400/600 → one op + one data node.
+        # Apply again with the SAME params → no new nodes, status
+        # callback receives the duplicate-apply message.
+        messages: list[str] = []
+        # The setUp panel does not have a status_cb; rebuild with one
+        # so the test can inspect the message shape.
+        self.panel.destroy()
+        self.panel = un.NormalisationPanel(
+            self.host, self.graph, status_cb=messages.append,
+        )
+        self.panel.pack()
+        self._add_uvvis("u1")
+        self._select_first_subject()
+        self.panel._mode_var.set("peak")
+        self.panel._window_lo.set("400")
+        self.panel._window_hi.set("600")
+
+        first = self.panel._apply()
+        self.assertIsNotNone(first, "first apply must succeed")
+        n_after_first = len(self.graph.nodes)
+        messages.clear()
+
+        second = self.panel._apply()
+        self.assertIsNone(second, "identical re-apply must return None")
+        self.assertEqual(
+            len(self.graph.nodes), n_after_first,
+            "identical re-apply must NOT add any nodes",
+        )
+        self.assertEqual(len(messages), 1)
+        self.assertIn("already applied", messages[0])
+        self.assertIn("u1", messages[0])
+
+    def test_apply_with_different_params_creates_new_node(self):
+        # The dedup gate is param-keyed: changing a single param
+        # must allow the second apply to create a new sibling
+        # OperationNode.
+        self._add_uvvis("u1")
+        self._select_first_subject()
+        self.panel._mode_var.set("peak")
+        self.panel._window_lo.set("400")
+        self.panel._window_hi.set("600")
+        first = self.panel._apply()
+        self.assertIsNotNone(first)
+        n_after_first = len(self.graph.nodes)
+
+        # Tweak the high window and re-apply — different params, so
+        # a new pair of nodes is created and the right-side
+        # ScanTreeWidget would render them as a 2-variant sweep.
+        self.panel._window_hi.set("650")
+        second = self.panel._apply()
+        self.assertIsNotNone(second, "param-tweaked re-apply must succeed")
+        self.assertEqual(
+            len(self.graph.nodes), n_after_first + 2,
+            "param-tweaked re-apply must add one op + one data node",
+        )
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
