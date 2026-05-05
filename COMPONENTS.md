@@ -3380,7 +3380,224 @@ touched.
 
 ---
 
-*Document version: 1.15 — May 2026*
+## CS-30 — Canvas-driven responsive layout (Phase 4p)
+
+The Phase 4d / 4n responsive layout (B-002 + CS-26) had correct
+threshold logic but was wired to the wrong width signal. Two
+production failures motivated the rewrite:
+
+- **Single-node sidebar stayed collapsed at any width.** With
+  one row, the inner `_rows_frame`'s natural width was the
+  label width (~150 px), well below every threshold, so
+  `row.winfo_width()` returned that small number even at 800 px
+  sidebar width. Optional cells (swatch, leg, ls_canvas) never
+  appeared.
+- **Narrowing the sidebar did not recollapse expanded rows.**
+  The row's own width never changed because content didn't
+  change, so the per-row `<Configure>` binding never re-fired.
+
+CS-30 changes the helper's contract:
+
+```python
+def _apply_responsive_layout(
+    self, node_id: str, row: tk.Frame,
+    width: int | None = None,
+) -> None:
+    ...
+```
+
+When `width` is `None` (the default), the helper reads
+`self._scroll_canvas.winfo_width()` rather than
+`row.winfo_width()`. The canvas's width is the actual sidebar
+width — independent of row content — so threshold decisions
+now reflect available space instead of label length.
+
+The reflow trigger also changes. The per-row `<Configure>`
+binding is removed (it raced with explicit helper calls under
+`update_idletasks` and read the wrong width). A new
+canvas-`<Configure>` binding fires the helper for every row in
+`_optional_row_widgets` whenever the sidebar resizes:
+
+```python
+def _on_canvas_configure(_event):
+    for nid, frm in list(self._row_frames.items()):
+        if nid in self._optional_row_widgets:
+            self._apply_responsive_layout(nid, frm)
+```
+
+The handler does **not** pass `_event.width` — it lets the
+helper read `_scroll_canvas.winfo_width()` itself. That matters
+for tests: stubbing `canvas.winfo_width()` flows through both
+the binding and direct calls, but stubbing has no effect on
+`event.width` (which is Tk's actual reported size).
+
+Initial calibration of newly-built rows happens at the end of
+`_populate_node_row` with a single `_apply_responsive_layout(
+node.id, row)` call. New rows added after the canvas is
+realised collapse straight away if the canvas is below threshold;
+new rows added before the canvas is realised get calibrated
+when the canvas's first `<Configure>` event fires.
+
+Inner `_rows_frame` width is **not** bound to canvas width.
+Binding it via `itemconfig(_rows_window, width=event.width)`
+was the first attempt and broke under Tk's auto-unmap rule —
+narrow canvases caused Tk to silently unmap overflow widgets
+in tests that had stubbed only the row's `winfo_width`. The
+canvas-driven helper sidesteps that entirely: rows stay
+content-driven for their natural width, the helper just
+controls *which* widgets are packed.
+
+A direct consequence: every row in the sidebar reflows
+uniformly on a canvas resize. They share column structure
+because they share the same width signal — confirming the user-
+flagged invariant that "all rows must have the same column
+widths."
+
+Test mechanics. Tests that stubbed `row.winfo_width` via
+`_force_width(row, N)` keep working because `_force_width`
+also stubs the owning `_scroll_canvas.winfo_width`. The
+existing helper-test patterns (force a width, call the helper,
+assert pack state) continue without rewrite. Six new tests in
+`TestScanTreeWidgetCanvasDrivenLayout` (in
+`test_scan_tree_widget.py`) pin the new contract:
+
+* default-width path reads canvas (`winfo_width` stubbed wide → all packed)
+* default-width path collapses on narrow canvas
+* explicit `width=` kwarg overrides canvas default
+* canvas-`<Configure>` event walks every row in both directions
+* initial calibration runs inside `_populate_node_row`
+* no per-row `<Configure>` binding remains (regression guard
+  against accidental restore)
+
+Plus the Phase 4n `test_each_row_collapses_independently` test
+was rewritten to drive each row's width via the explicit
+`width=` kwarg — under the new contract rows share a canvas, so
+"per-row independence" only survives when the caller drives it
+directly. The architectural invariant (all rows reflow together
+under a real resize) is the new default.
+
+Locks held: `_RESPONSIVE_THRESHOLDS_PX` priority order is
+unchanged (swatch 240 / leg 280 / ls_canvas 320); the always-
+visible seven-cell minimum (state, ☑, label, ⌥n, ⚙, →, ✕) is
+unchanged; the optional widgets dict layout in
+`_optional_row_widgets` is unchanged. CS-26 + CS-27 invariants
+are preserved.
+
+---
+
+## CS-31 — Suppress identical re-applies (Phase 4p)
+
+Architecturally, the right-side ScanTreeWidget collapses two or
+more PROVISIONAL DataNode siblings sharing one parent into a
+single sweep-group leader row (CS-04 §6.3). The
+`_compute_sweep_groups` rule keys on `(parent_id, op_type,
+state == PROVISIONAL)` — it does *not* check whether params
+differ. Result: clicking Apply twice with identical parameters
+produced two PROVISIONAL siblings, which collapsed into a
+"sweep (2 variants)" row even though no parameter actually
+swept. The user lost access to the just-created node behind a
+bulk-discard `✕all` gesture.
+
+Per `ARCHITECTURE.md` §5.4, a sweep is "an operation across a
+parameter range." Identical params should not qualify. CS-31
+adds a duplicate-apply detector and threads it through every
+UV/Vis apply site so identical re-clicks become a no-op with a
+status message.
+
+The detector lives on `ProjectGraph` so it is a pure graph
+query (no Tk dependency, easily testable in isolation):
+
+```python
+def find_provisional_op_with_params(
+    self,
+    parent_id: str,
+    op_type: OperationType,
+    params: dict,
+) -> str | None:
+    """Return the id of an existing PROVISIONAL OperationNode
+    of the given type whose input is parent_id and whose params
+    equal `params`. Returns None when no such op exists.
+    """
+```
+
+Match contract:
+
+| Attribute | Required value |
+|---|---|
+| `node.type` | `op_type` |
+| `node.state` | `NodeState.PROVISIONAL` |
+| `parent_id in node.input_ids` | `True` |
+| `node.params == params` | `True` (full dict equality) |
+
+Returns the first match in graph insertion order so callers
+surface a deterministic id in status messages. Returns `None`
+when no match — the apply path then proceeds normally.
+
+Architecturally, this is the inverse of
+`scan_tree_widget._compute_sweep_groups`: that helper *groups*
+2+ PROVISIONAL siblings; CS-31 detects the case where the
+proposed second sibling would be a *duplicate* of an existing
+one, so the apply path can refuse before creating it.
+
+Integrated at every UV/Vis apply site:
+
+* `uvvis_tab._apply_baseline` (UVVisTab, ``OperationType.BASELINE``)
+* `uvvis_normalise.NormalisationPanel._apply` (`OperationType.NORMALISE`)
+* `uvvis_smoothing.SmoothingPanel._apply` (`OperationType.SMOOTH`)
+* `uvvis_peak_picking.PeakPickingPanel._apply` (`OperationType.PEAK_PICK`)
+* `uvvis_second_derivative.SecondDerivativePanel._apply`
+  (`OperationType.SECOND_DERIVATIVE`)
+
+The check fires after parameter validation and **before**
+`compute()` runs — the dedup decision must not depend on the
+(deterministic) numerical output. On hit:
+
+* No graph mutation. The existing PROVISIONAL OperationNode
+  stays.
+* Status message: *"<op> (<mode>) with these parameters already
+  applied to <parent label> — no new node created."* The four
+  panels report via `self._status_cb`; the baseline path on
+  UVVisTab reports via `self._status_lbl.config(text=...,
+  fg="#7a4a00")`.
+* Apply returns `None`.
+
+Real parameter sweeps (different params on each click) still
+flow into the sweep-grouping detector unchanged — that path is
+exercised by the new "different params creates new node" tests
+in each panel's test file, which assert that two calls with one
+tweaked param create two distinct PROVISIONAL siblings.
+
+Test classes:
+
+* `TestFindProvisionalOpWithParams` (in `test_graph.py`, 10
+  cases): match returns id; no match → None when no op exists,
+  params differ, op is committed, op is discarded, op type
+  differs, parent differs; first-match-wins ordering;
+  dict-key-order-independent equality; list-param element-wise
+  equality (covers PEAK_PICK manual mode)
+* Five panel-side integration test pairs (suppress + different-
+  params), one per apply site — `test_uvvis_tab.py`,
+  `test_uvvis_normalise.py`, `test_uvvis_smoothing.py`,
+  `test_uvvis_peak_picking.py`, `test_uvvis_second_derivative.py`
+
+CS-31's deliberate scope limit: the gate is exact dict equality.
+Floating-point parameters (anchor windows, prominence) are
+compared with `==`, not tolerance — the panels populate params
+from string-parsed Tk Entry values, so re-typing the same
+number reproduces the same float bit-for-bit. A future
+floating-point tolerance comparison would be a separable
+extension; today's implementation matches user expectation
+because the user is hitting Apply twice without changing any
+field.
+
+CS-32 (per-variant gestures on sweep-group rows) was scoped
+into Phase 4p at decision lock but split out to Phase 4q after
+CS-30 took longer than expected. The Phase 4 register entry
+remains ⏳ as the obvious primary intent for the next phase.
+
+---
+
+*Document version: 1.16 — May 2026*
 *1.1: CS-13 implementation notes added in Phase 4a.*
 *1.2: CS-14 Plot Settings Dialog added in Phase 4b.*
 *1.3: CS-15 UV/Vis Baseline Correction + CS-04 implementation
@@ -3509,5 +3726,28 @@ new register entries: 🔴 Per-node baseline-curve toggle
 `test_send_node_to_compare_skips_non_uvvis_nodes` get_node
 stub workaround was simplified to use the new CS-28 guard
 rather than the lambda override.*
+*1.16: CS-30 + CS-31 added in Phase 4p (CS-32 split out to
+Phase 4q). CS-30 rewrites the responsive helper to read
+`_scroll_canvas.winfo_width()` instead of `row.winfo_width()`
+and replaces the per-row `<Configure>` binding with a canvas-
+`<Configure>` binding that walks every row. Single-node
+sidebars now collapse / expand correctly at any width, and
+narrowing the sidebar recollapses expanded rows. The helper
+gains a `width: int | None = None` kwarg so explicit per-call
+widths can override the canvas default — used by tests and
+preserved by `_force_width(row, N)` extending its stub to the
+owning canvas's `winfo_width`. CS-31 adds
+`ProjectGraph.find_provisional_op_with_params`, a pure graph
+query that locates an existing PROVISIONAL OperationNode of a
+given type with full dict-equality on params; threaded through
+every UV/Vis apply site so identical re-clicks return None +
+status message instead of creating bogus PROVISIONAL siblings
+that would collapse into a misleading sweep-group leader row.
+Three new register entries logged up front: CS-30 + CS-31 (now
+✅), CS-32 (⏳, deferred to 4q). Phase 4p logged four new
+friction items (test-fragility process note, status-message
+discoverability that pairs with the open Diagnostic console
+intent, long-label overflow under uniform-row-width invariant,
+CS-32 deferred). 540 tests, all green.*
 *To be updated as Open Questions are resolved and new components
 are specified.*
