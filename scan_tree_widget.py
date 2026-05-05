@@ -149,6 +149,102 @@ _RESPONSIVE_THRESHOLDS_PX: tuple[tuple[str, int], ...] = (
 )
 _RESPONSIVE_COLLAPSE_PX: int = _RESPONSIVE_THRESHOLDS_PX[0][1]
 
+# Phase 4q (CS-33): label truncation cap. Long chains of UV/Vis ops
+# accumulate suffixes ("NiAqua · baseline (linear) · norm (peak)" etc.)
+# and the row's natural width can exceed the canvas, causing
+# horizontal overflow even with CS-30's canvas-driven responsive
+# helper in place. Truncating the displayed label at a uniform
+# character cap keeps every row's column structure consistent (the
+# user-flagged invariant from Phase 4p friction #3); the full label
+# remains accessible via a hover tooltip and the existing in-place
+# rename gesture (double-click, which now reads the full label from
+# the graph rather than the widget's truncated text).
+_LABEL_MAX_CHARS: int = 32
+
+
+def _truncate_label(text: str, max_chars: int = _LABEL_MAX_CHARS) -> str:
+    """Cap a label at ``max_chars`` characters, suffixing ``…`` if cut.
+
+    Pure helper so the unit tests don't need a Tk root. Returns
+    ``text`` unchanged when ``len(text) <= max_chars``; otherwise
+    returns ``text[:max_chars - 1] + "…"`` so the total displayed
+    length is exactly ``max_chars``. ``max_chars`` must be at least
+    1; the caller is trusted (this is internal).
+    """
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars - 1] + "…"
+
+
+class _Tooltip:
+    """Lightweight hover tooltip for a Tk widget.
+
+    Phase 4q (CS-33). Used by ``_populate_node_row`` to surface the
+    full node label when ``_truncate_label`` had to cut it. Attaches
+    ``<Enter>`` / ``<Leave>`` / ``<ButtonPress>`` bindings; on hover
+    after a short delay, opens a borderless ``tk.Toplevel`` with the
+    full text. The widget is destroyed on the leave / press / parent
+    teardown. Single-instance per widget; ``update_text`` rotates the
+    text in place after a label rename without rebuilding the row.
+    """
+
+    DELAY_MS: int = 600
+
+    def __init__(self, widget: tk.Widget, text: str) -> None:
+        self._widget = widget
+        self._text = text
+        self._tip: tk.Toplevel | None = None
+        self._after_id: str | None = None
+        widget.bind("<Enter>",      self._schedule, add="+")
+        widget.bind("<Leave>",      self._hide,     add="+")
+        widget.bind("<ButtonPress>", self._hide,    add="+")
+
+    def update_text(self, text: str) -> None:
+        self._text = text
+
+    def _schedule(self, _event: tk.Event | None = None) -> None:
+        self._cancel()
+        try:
+            self._after_id = self._widget.after(self.DELAY_MS, self._show)
+        except tk.TclError:
+            self._after_id = None
+
+    def _cancel(self) -> None:
+        if self._after_id is not None:
+            try:
+                self._widget.after_cancel(self._after_id)
+            except (tk.TclError, ValueError):
+                pass
+            self._after_id = None
+
+    def _show(self) -> None:
+        if self._tip is not None or not self._text:
+            return
+        try:
+            x = self._widget.winfo_rootx() + 12
+            y = (self._widget.winfo_rooty()
+                 + self._widget.winfo_height() + 4)
+            tip = tk.Toplevel(self._widget)
+            tip.wm_overrideredirect(True)
+            tip.wm_geometry(f"+{x}+{y}")
+            tk.Label(
+                tip, text=self._text,
+                bg="#FFFFE0", relief=tk.SOLID, bd=1,
+                justify="left", padx=4, pady=2,
+            ).pack()
+            self._tip = tip
+        except tk.TclError:
+            self._tip = None
+
+    def _hide(self, _event: tk.Event | None = None) -> None:
+        self._cancel()
+        if self._tip is not None:
+            try:
+                self._tip.destroy()
+            except tk.TclError:
+                pass
+            self._tip = None
+
 
 def _style_get(node: DataNode, key: str) -> Any:
     """Read a style value with the module default as a fallback."""
@@ -247,6 +343,17 @@ class ScanTreeWidget(tk.Frame):
         # View state.
         self._show_hidden = tk.BooleanVar(value=False)
         self._expanded_history: set[str] = set()
+        # Sweep groups whose members render inline below the leader row
+        # (Phase 4q CS-32). Keyed by parent DataNode id, mirroring
+        # ``_sweep_groups``. Persists across rebuilds — a graph event
+        # that triggers a full rebuild does not collapse the user's
+        # current expansion state. Entries auto-evict when the group
+        # dissolves: ``_compute_sweep_groups`` only returns groups
+        # with ≥2 members, so committing or discarding a member down
+        # to 1 makes the parent_id absent from the next rebuild's
+        # ``_sweep_groups`` dict and the chevron disappears with the
+        # leader row. Stale entries in this set become harmless no-ops.
+        self._expanded_sweep_groups: set[str] = set()
         # node_id → tk.Frame for the row (top-level, not history sub-frame).
         self._row_frames: dict[str, tk.Frame] = {}
         # node_id → tk.Frame for the history sub-frame (if expanded).
