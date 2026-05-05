@@ -161,6 +161,19 @@ _RESPONSIVE_COLLAPSE_PX: int = _RESPONSIVE_THRESHOLDS_PX[0][1]
 # the graph rather than the widget's truncated text).
 _LABEL_MAX_CHARS: int = 32
 
+# Phase 4r (CS-35): visual nesting indent for sweep-group members
+# rendered inline below an expanded leader (CS-32). The leader row
+# is packed flush at ``padx=2``; member rows are packed at
+# ``padx=(2 + _SWEEP_MEMBER_INDENT_PX, 2)`` so the user sees that
+# the variants belong to the group above. One indent step is enough
+# to distinguish the relationship without crowding the row content
+# (each member is itself a full-chrome row with its own ``[~]``
+# / ``☑`` / label / right-side button cluster). The indent is a
+# pack-arg pass-through and does not change ``_expanded_sweep_groups``
+# or ``_toggle_sweep_group`` — CS-32's flip-and-rebuild contract is
+# preserved.
+_SWEEP_MEMBER_INDENT_PX: int = 16
+
 
 def _truncate_label(text: str, max_chars: int = _LABEL_MAX_CHARS) -> str:
     """Cap a label at ``max_chars`` characters, suffixing ``…`` if cut.
@@ -609,10 +622,20 @@ class ScanTreeWidget(tk.Frame):
     # Per-row construction
     # ------------------------------------------------------------
 
-    def _build_node_row(self, node: DataNode) -> None:
-        """Construct the persistent row for a single (non-grouped) node."""
+    def _build_node_row(
+        self, node: DataNode, *, indent_px: int = 0,
+    ) -> None:
+        """Construct the persistent row for a single (non-grouped) node.
+
+        Phase 4r (CS-35): ``indent_px`` shifts the left padding so
+        sweep-group members rendered inline below an expanded leader
+        (CS-32) sit visually nested under their group. Default ``0``
+        keeps every existing call site at the original ``padx=2``;
+        only ``_rebuild``'s sweep-expansion branch passes
+        ``_SWEEP_MEMBER_INDENT_PX``.
+        """
         row = tk.Frame(self._rows_frame)
-        row.pack(side="top", fill="x", padx=2, pady=1)
+        row.pack(side="top", fill="x", padx=(2 + indent_px, 2), pady=1)
         self._row_frames[node.id] = row
         self._populate_node_row(row, node)
 
