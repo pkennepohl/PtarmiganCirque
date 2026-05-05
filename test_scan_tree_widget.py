@@ -1519,6 +1519,328 @@ class TestScanTreeWidgetExportMenu(unittest.TestCase):
         self.assertEqual(seen, ["a"])
 
 
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestSweepGroupInlineExpansion(unittest.TestCase):
+    """Phase 4q (CS-32) — chevron toggle + per-variant inline rows.
+
+    Builds a parent committed node + an op + two provisional siblings
+    (the canonical 2-variant sweep group). Asserts the chevron toggle
+    behaviour, persistent expansion state, full-chrome member rows,
+    and group dissolution when a member commits.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from scan_tree_widget import ScanTreeWidget
+        cls.ScanTreeWidget = ScanTreeWidget
+
+    def setUp(self) -> None:
+        self.host = tk.Frame(_root)
+        self.host.pack()
+        self.graph = ProjectGraph()
+
+    def tearDown(self) -> None:
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    def _build_two_variant_group(self) -> "ScanTreeWidget":  # type: ignore[name-defined]
+        # Parent (committed) → op → variant_a (prov), variant_b (prov)
+        self.graph.add_node(
+            _data("p", NodeType.UVVIS, state=NodeState.COMMITTED),
+        )
+        self.graph.add_node(_op("op_sweep"))
+        self.graph.add_node(_data("a", NodeType.UVVIS))
+        self.graph.add_node(_data("b", NodeType.UVVIS))
+        self.graph.add_edge("p", "op_sweep")
+        self.graph.add_edge("op_sweep", "a")
+        self.graph.add_edge("op_sweep", "b")
+        _, cb = _redraw_calls()
+        widget = self.ScanTreeWidget(
+            self.host, self.graph, [NodeType.UVVIS], cb,
+        )
+        widget.update_idletasks()
+        return widget
+
+    def _leader_row_chevron(self, widget: "ScanTreeWidget"):  # type: ignore[name-defined]
+        """Return the chevron Button on the sweep leader row, or None.
+
+        Walks the entire ``_rows_frame`` tree because when a group
+        expands, ``_row_frames[leader_id]`` is overwritten by the
+        member row that shares the leader's id (the lex-smallest
+        member). The chevron is unique (no other row carries
+        ``▸``/``▾``), so the walk reliably finds the leader row.
+        """
+        for row in widget._rows_frame.winfo_children():
+            for child in row.winfo_children():
+                if isinstance(child, tk.Button):
+                    txt = child.cget("text")
+                    if txt in ("▸", "▾"):
+                        return child
+        return None
+
+    # ----------- chevron rendering on the leader row -----------
+
+    def test_collapsed_leader_row_renders_chevron_right(self):
+        # Default state is collapsed; chevron must read "▸" and there
+        # must be no member rows (only the leader is in _row_frames).
+        widget = self._build_two_variant_group()
+        chevron = self._leader_row_chevron(widget)
+        self.assertIsNotNone(chevron, "chevron Button missing on leader row")
+        self.assertEqual(chevron.cget("text"), "▸")
+        # Only the leader id ("a") is keyed in _row_frames; "b"
+        # remains absent until expansion.
+        self.assertIn("a", widget._row_frames)
+        self.assertNotIn("b", widget._row_frames)
+
+    def test_chevron_click_toggles_to_expanded(self):
+        widget = self._build_two_variant_group()
+        chevron = self._leader_row_chevron(widget)
+        self.assertIsNotNone(chevron)
+
+        chevron.invoke()
+        widget.update_idletasks()
+
+        # Expansion set populated, chevron flipped, both members
+        # have rows in _row_frames.
+        self.assertIn("p", widget._expanded_sweep_groups)
+        self.assertIn("a", widget._row_frames)
+        self.assertIn("b", widget._row_frames)
+        new_chevron = self._leader_row_chevron(widget)
+        self.assertIsNotNone(new_chevron)
+        self.assertEqual(new_chevron.cget("text"), "▾")
+
+    def test_second_chevron_click_collapses(self):
+        widget = self._build_two_variant_group()
+        widget._toggle_sweep_group("p")  # expand
+        widget.update_idletasks()
+        widget._toggle_sweep_group("p")  # collapse
+        widget.update_idletasks()
+
+        self.assertNotIn("p", widget._expanded_sweep_groups)
+        self.assertNotIn("b", widget._row_frames)
+
+    def test_expansion_state_survives_rebuild(self):
+        # A graph event triggers a full _rebuild; the expansion set
+        # is the source of truth and must be preserved.
+        widget = self._build_two_variant_group()
+        widget._toggle_sweep_group("p")
+        self.assertIn("p", widget._expanded_sweep_groups)
+
+        widget._rebuild()
+        widget.update_idletasks()
+
+        self.assertIn("p", widget._expanded_sweep_groups)
+        self.assertIn("b", widget._row_frames)
+
+    # ----------- member rows have full chrome -----------
+
+    def test_expanded_member_row_carries_commit_button(self):
+        # Each member is provisional, so each member row must carry
+        # the new 🔒 commit Button (CS-34 — provisional rows only).
+        widget = self._build_two_variant_group()
+        widget._toggle_sweep_group("p")
+        widget.update_idletasks()
+
+        member_row = widget._row_frames["b"]
+        commit_btns = [
+            w for w in member_row.winfo_children()
+            if isinstance(w, tk.Button) and w.cget("text") == "🔒"
+        ]
+        self.assertEqual(
+            len(commit_btns), 1,
+            "expanded member row must show exactly one 🔒 commit button",
+        )
+
+    # ----------- group dissolves when a member commits -----------
+
+    def test_committing_one_member_dissolves_group(self):
+        # With only two members, committing one drops the group below
+        # the 2-member threshold. The chevron + leader row disappear;
+        # the surviving provisional member renders as a normal row.
+        widget = self._build_two_variant_group()
+        widget._toggle_sweep_group("p")
+        widget.update_idletasks()
+
+        self.graph.commit_node("a")
+        widget.update_idletasks()
+
+        # Group is gone from _sweep_groups.
+        self.assertNotIn("p", widget._sweep_groups)
+        # Both nodes are now standalone rows (committed "a" + the
+        # surviving provisional "b"). The chevron is gone — search
+        # the entire rows_frame and confirm.
+        all_chevrons = [
+            w for row in widget._rows_frame.winfo_children()
+            for w in row.winfo_children()
+            if isinstance(w, tk.Button) and w.cget("text") in ("▸", "▾")
+        ]
+        self.assertEqual(all_chevrons, [])
+
+
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestProvisionalRowCommitButton(unittest.TestCase):
+    """Phase 4q (CS-34) — 🔒 commit gesture on provisional rows.
+
+    Verifies presence on provisional rows, absence on committed
+    rows, and that a click commits the node via the same path the
+    right-click context menu uses.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from scan_tree_widget import ScanTreeWidget
+        cls.ScanTreeWidget = ScanTreeWidget
+
+    def setUp(self) -> None:
+        self.host = tk.Frame(_root)
+        self.host.pack()
+        self.graph = ProjectGraph()
+
+    def tearDown(self) -> None:
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    def _commit_btn(self, widget, node_id: str):
+        row = widget._row_frames[node_id]
+        for w in row.winfo_children():
+            if isinstance(w, tk.Button) and w.cget("text") == "🔒":
+                return w
+        return None
+
+    def test_provisional_row_has_commit_button(self):
+        self.graph.add_node(_data("a", state=NodeState.PROVISIONAL))
+        _, cb = _redraw_calls()
+        widget = self.ScanTreeWidget(
+            self.host, self.graph, [NodeType.UVVIS], cb,
+        )
+        widget.update_idletasks()
+        self.assertIsNotNone(self._commit_btn(widget, "a"))
+
+    def test_committed_row_omits_commit_button(self):
+        # Committed rows must NOT show the 🔒 button — the leftmost
+        # state column already shows 🔒, and double-glyph would
+        # be confusing. Omitted entirely (not just disabled).
+        self.graph.add_node(_data("a", state=NodeState.COMMITTED))
+        _, cb = _redraw_calls()
+        widget = self.ScanTreeWidget(
+            self.host, self.graph, [NodeType.UVVIS], cb,
+        )
+        widget.update_idletasks()
+        self.assertIsNone(self._commit_btn(widget, "a"))
+
+    def test_clicking_commit_button_commits_node(self):
+        from nodes import NodeState as _NS
+        self.graph.add_node(_data("a", state=NodeState.PROVISIONAL))
+        _, cb = _redraw_calls()
+        widget = self.ScanTreeWidget(
+            self.host, self.graph, [NodeType.UVVIS], cb,
+        )
+        widget.update_idletasks()
+
+        btn = self._commit_btn(widget, "a")
+        self.assertIsNotNone(btn)
+        btn.invoke()
+        widget.update_idletasks()
+
+        # Node is now committed; row was rebuilt without the button.
+        self.assertEqual(self.graph.get_node("a").state, _NS.COMMITTED)
+        self.assertIsNone(self._commit_btn(widget, "a"))
+
+
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestLabelTruncationInRow(unittest.TestCase):
+    """Phase 4q (CS-33) — row label truncation + tooltip on overflow.
+
+    Verifies that long node labels render truncated, short labels
+    render verbatim, that rename starts from the full text rather
+    than the truncated paint, and that a tooltip is attached only
+    when truncation actually cut text.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from scan_tree_widget import ScanTreeWidget
+        cls.ScanTreeWidget = ScanTreeWidget
+
+    def setUp(self) -> None:
+        self.host = tk.Frame(_root)
+        self.host.pack()
+        self.graph = ProjectGraph()
+
+    def tearDown(self) -> None:
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    def _label_widget(self, widget, node_id: str):
+        # The node label is the only Label whose text is neither
+        # the state glyph nor a chevron / single-char marker.
+        row = widget._row_frames[node_id]
+        for w in row.winfo_children():
+            if isinstance(w, tk.Label) and w.cget("text") not in ("🔒", "⋯"):
+                return w
+        return None
+
+    def test_short_label_painted_verbatim(self):
+        from scan_tree_widget import _LABEL_MAX_CHARS
+        short = "n" * (_LABEL_MAX_CHARS - 5)
+        self.graph.add_node(_data("a", label=short))
+        _, cb = _redraw_calls()
+        widget = self.ScanTreeWidget(
+            self.host, self.graph, [NodeType.UVVIS], cb,
+        )
+        widget.update_idletasks()
+
+        lbl = self._label_widget(widget, "a")
+        self.assertIsNotNone(lbl)
+        self.assertEqual(lbl.cget("text"), short)
+
+    def test_long_label_painted_truncated(self):
+        from scan_tree_widget import _LABEL_MAX_CHARS
+        long = "L" * (_LABEL_MAX_CHARS + 25)
+        self.graph.add_node(_data("a", label=long))
+        _, cb = _redraw_calls()
+        widget = self.ScanTreeWidget(
+            self.host, self.graph, [NodeType.UVVIS], cb,
+        )
+        widget.update_idletasks()
+
+        lbl = self._label_widget(widget, "a")
+        self.assertIsNotNone(lbl)
+        painted = lbl.cget("text")
+        self.assertEqual(len(painted), _LABEL_MAX_CHARS)
+        self.assertTrue(painted.endswith("…"))
+        # The graph-side label is unchanged — only the paint is cut.
+        self.assertEqual(self.graph.get_node("a").label, long)
+
+    def test_rename_starts_from_full_label_not_truncated(self):
+        # _begin_label_edit must source the initial Entry value from
+        # the graph, so editing a truncated row doesn't lose text.
+        from scan_tree_widget import _LABEL_MAX_CHARS
+        long = "Z" * (_LABEL_MAX_CHARS + 12)
+        self.graph.add_node(_data("a", label=long))
+        _, cb = _redraw_calls()
+        widget = self.ScanTreeWidget(
+            self.host, self.graph, [NodeType.UVVIS], cb,
+        )
+        widget.update_idletasks()
+
+        row = widget._row_frames["a"]
+        lbl = self._label_widget(widget, "a")
+        widget._begin_label_edit("a", lbl, row)
+
+        entries = [
+            w for w in row.winfo_children() if isinstance(w, tk.Entry)
+        ]
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0].get(), long)
+
+
 class TestTruncateLabel(unittest.TestCase):
     """Phase 4q (CS-33) — pure label-truncation helper.
 
