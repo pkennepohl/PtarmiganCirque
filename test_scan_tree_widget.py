@@ -1955,6 +1955,264 @@ class TestExpandedSweepGroupsField(unittest.TestCase):
         self.assertIsInstance(widget._expanded_sweep_groups, set)
 
 
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestPerNodeBaselineCurveToggle(unittest.TestCase):
+    """Phase 4r (CS-36) — per-node baseline-curve toggle on BASELINE rows.
+
+    Verifies the row-level wiring for the new ``[~]``/``[–]`` button:
+    presence on BASELINE rows only, glyph reflecting the current
+    style flag, click flips ``style["show_baseline_curve"]`` via
+    ``set_style``, and rebuild after the resulting graph event
+    re-reads the flag from the graph.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from scan_tree_widget import ScanTreeWidget
+        cls.ScanTreeWidget = ScanTreeWidget
+
+    def setUp(self) -> None:
+        self.host = tk.Frame(_root)
+        self.host.pack()
+        self.graph = ProjectGraph()
+
+    def tearDown(self) -> None:
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    def _bc_button_in(self, row: tk.Frame) -> tk.Button | None:
+        """Return the per-row baseline-curve toggle button, or None.
+
+        Filters by side="left" + text in {"~", "–"} so the legend
+        button (which lives on side="right" and can also display
+        "–") is not confused with this one.
+        """
+        for child in row.winfo_children():
+            if not isinstance(child, tk.Button):
+                continue
+            try:
+                info = child.pack_info()
+            except tk.TclError:
+                continue
+            if info.get("side") != "left":
+                continue
+            if child.cget("text") in ("~", "–"):
+                return child
+        return None
+
+    def _build_widget(self, filter_types):
+        _, cb = _redraw_calls()
+        widget = self.ScanTreeWidget(
+            self.host, self.graph, filter_types, cb,
+        )
+        widget.update_idletasks()
+        return widget
+
+    def test_baseline_row_has_toggle_button(self):
+        self.graph.add_node(
+            _data("bl", NodeType.BASELINE, state=NodeState.COMMITTED),
+        )
+        widget = self._build_widget([NodeType.BASELINE])
+        btn = self._bc_button_in(widget._row_frames["bl"])
+        self.assertIsNotNone(btn,
+                             "BASELINE row must carry the [~]/[–] toggle")
+
+    def test_uvvis_row_does_not_have_toggle_button(self):
+        # UVVIS rows must not carry a placeholder — the optional cell
+        # would waste pixels on every parent / normalised / smoothed
+        # row that has no baseline curve to toggle.
+        self.graph.add_node(
+            _data("u", NodeType.UVVIS, state=NodeState.COMMITTED),
+        )
+        widget = self._build_widget([NodeType.UVVIS])
+        btn = self._bc_button_in(widget._row_frames["u"])
+        self.assertIsNone(btn, "UVVIS row must not carry the toggle")
+
+    def test_normalised_row_does_not_have_toggle_button(self):
+        # Sanity check: only BASELINE, no other spectrum type.
+        self.graph.add_node(
+            _data("n", NodeType.NORMALISED, state=NodeState.COMMITTED),
+        )
+        widget = self._build_widget([NodeType.NORMALISED])
+        btn = self._bc_button_in(widget._row_frames["n"])
+        self.assertIsNone(btn)
+
+    def test_default_state_is_on(self):
+        self.graph.add_node(
+            _data("bl", NodeType.BASELINE, state=NodeState.COMMITTED),
+        )
+        widget = self._build_widget([NodeType.BASELINE])
+        btn = self._bc_button_in(widget._row_frames["bl"])
+        self.assertEqual(btn.cget("text"), "~")
+
+    def test_renders_off_when_style_key_false(self):
+        # Pre-populate the key as False before constructing the
+        # widget. The button must render with the off glyph.
+        node = _data("bl", NodeType.BASELINE, state=NodeState.COMMITTED)
+        node.style["show_baseline_curve"] = False
+        self.graph.add_node(node)
+        widget = self._build_widget([NodeType.BASELINE])
+        btn = self._bc_button_in(widget._row_frames["bl"])
+        self.assertEqual(btn.cget("text"), "–")
+
+    def test_click_flips_style_key_and_glyph(self):
+        self.graph.add_node(
+            _data("bl", NodeType.BASELINE, state=NodeState.COMMITTED),
+        )
+        widget = self._build_widget([NodeType.BASELINE])
+        btn = self._bc_button_in(widget._row_frames["bl"])
+
+        btn.invoke()
+        widget.update_idletasks()
+
+        node = self.graph.get_node("bl")
+        self.assertEqual(node.style.get("show_baseline_curve"), False)
+        # The graph event triggers _rebuild; re-fetch the button
+        # because the row was rewritten.
+        btn2 = self._bc_button_in(widget._row_frames["bl"])
+        self.assertIsNotNone(btn2)
+        self.assertEqual(btn2.cget("text"), "–")
+
+    def test_click_again_flips_back_to_on(self):
+        self.graph.add_node(
+            _data("bl", NodeType.BASELINE, state=NodeState.COMMITTED),
+        )
+        widget = self._build_widget([NodeType.BASELINE])
+
+        btn = self._bc_button_in(widget._row_frames["bl"])
+        btn.invoke()  # on -> off
+        widget.update_idletasks()
+        btn = self._bc_button_in(widget._row_frames["bl"])
+        btn.invoke()  # off -> on
+        widget.update_idletasks()
+
+        node = self.graph.get_node("bl")
+        self.assertEqual(node.style.get("show_baseline_curve"), True)
+        btn2 = self._bc_button_in(widget._row_frames["bl"])
+        self.assertEqual(btn2.cget("text"), "~")
+
+
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestSweepGroupNestedIndent(unittest.TestCase):
+    """Phase 4r (CS-35) — sweep-group expanded members visual nesting.
+
+    Builds the canonical 2-variant sweep group (parent, op, two
+    provisional siblings), then asserts:
+
+    * a non-grouped row uses the original padx=2 left/right;
+    * an expanded sweep-group member row uses
+      ``padx=(2 + _SWEEP_MEMBER_INDENT_PX, 2)``;
+    * collapsing the group rebuilds with the original padding for
+      the now-leader-only path (and removes the member rows
+      entirely).
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from scan_tree_widget import (
+            ScanTreeWidget, _SWEEP_MEMBER_INDENT_PX,
+        )
+        cls.ScanTreeWidget = ScanTreeWidget
+        cls.INDENT = _SWEEP_MEMBER_INDENT_PX
+
+    def setUp(self) -> None:
+        self.host = tk.Frame(_root)
+        self.host.pack()
+        self.graph = ProjectGraph()
+
+    def tearDown(self) -> None:
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    def _build_two_variant_group(self):
+        self.graph.add_node(
+            _data("p", NodeType.UVVIS, state=NodeState.COMMITTED),
+        )
+        self.graph.add_node(_op("op_sweep"))
+        self.graph.add_node(_data("a", NodeType.UVVIS))
+        self.graph.add_node(_data("b", NodeType.UVVIS))
+        self.graph.add_edge("p", "op_sweep")
+        self.graph.add_edge("op_sweep", "a")
+        self.graph.add_edge("op_sweep", "b")
+        _, cb = _redraw_calls()
+        widget = self.ScanTreeWidget(
+            self.host, self.graph, [NodeType.UVVIS], cb,
+        )
+        widget.update_idletasks()
+        return widget
+
+    def test_standalone_row_has_no_indent(self):
+        # A regular non-grouped row keeps the original 2 px padding.
+        # Tk collapses an equal-sided tuple to a single int, so
+        # ``padx=(2, 2)`` reads back as ``2`` from pack_info — accept
+        # either form.
+        self.graph.add_node(
+            _data("solo", NodeType.UVVIS, state=NodeState.COMMITTED),
+        )
+        _, cb = _redraw_calls()
+        widget = self.ScanTreeWidget(
+            self.host, self.graph, [NodeType.UVVIS], cb,
+        )
+        widget.update_idletasks()
+        info = widget._row_frames["solo"].pack_info()
+        self.assertIn(info["padx"], (2, (2, 2)))
+
+    def test_expanded_member_row_is_indented(self):
+        widget = self._build_two_variant_group()
+        widget._toggle_sweep_group("p")
+        widget.update_idletasks()
+
+        # Both members render as nested rows. The ``a`` row's
+        # _row_frames key is the lex-smallest member's id (per
+        # CS-32) — it shares the leader row id; ``b`` is the
+        # cleaner check because it has a dedicated frame.
+        member_b = widget._row_frames["b"]
+        self.assertEqual(
+            member_b.pack_info()["padx"],
+            (2 + self.INDENT, 2),
+        )
+
+    def test_indent_uses_module_constant(self):
+        # The exact left padding must derive from
+        # _SWEEP_MEMBER_INDENT_PX so a future restyle through that
+        # constant propagates without a local override.
+        widget = self._build_two_variant_group()
+        widget._toggle_sweep_group("p")
+        widget.update_idletasks()
+
+        left, right = widget._row_frames["b"].pack_info()["padx"]
+        self.assertEqual(left - 2, self.INDENT)
+        self.assertEqual(right, 2)
+
+    def test_collapsing_removes_indented_member_rows(self):
+        widget = self._build_two_variant_group()
+        widget._toggle_sweep_group("p")
+        widget.update_idletasks()
+        widget._toggle_sweep_group("p")
+        widget.update_idletasks()
+
+        # Member ``b`` is no longer in _row_frames once collapsed.
+        self.assertNotIn("b", widget._row_frames)
+
+    def test_re_expand_re_applies_indent(self):
+        # Round-trip: expand, collapse, expand again. The indent
+        # must be re-applied on the second expansion.
+        widget = self._build_two_variant_group()
+        widget._toggle_sweep_group("p")
+        widget.update_idletasks()
+        widget._toggle_sweep_group("p")
+        widget.update_idletasks()
+        widget._toggle_sweep_group("p")
+        widget.update_idletasks()
+
+        info = widget._row_frames["b"].pack_info()
+        self.assertEqual(info["padx"], (2 + self.INDENT, 2))
+
+
 class TestSweepMemberIndentConstant(unittest.TestCase):
     """Phase 4r (CS-35) — sweep-member indent module constant.
 
