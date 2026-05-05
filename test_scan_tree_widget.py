@@ -1955,5 +1955,75 @@ class TestExpandedSweepGroupsField(unittest.TestCase):
         self.assertIsInstance(widget._expanded_sweep_groups, set)
 
 
+class TestSweepMemberIndentConstant(unittest.TestCase):
+    """Phase 4r (CS-35) — sweep-member indent module constant.
+
+    Pure-module: no Tk root required. The constant participates in
+    every sweep-group rebuild's pack-call args so it has to be a
+    positive int. The exact value (16 px) is asserted so a future
+    style change is forced through a deliberate decision rather than
+    sliding silently.
+    """
+
+    def test_constant_is_positive_int(self):
+        from scan_tree_widget import _SWEEP_MEMBER_INDENT_PX
+        self.assertIsInstance(_SWEEP_MEMBER_INDENT_PX, int)
+        self.assertGreater(_SWEEP_MEMBER_INDENT_PX, 0)
+
+    def test_constant_value_locked_to_design_decision(self):
+        from scan_tree_widget import _SWEEP_MEMBER_INDENT_PX
+        # 16 px = one CSS-style indent step, matching the Phase 4r
+        # decision lock. If a future phase wants to retune the
+        # indent, update both this assertion and the BACKLOG /
+        # COMPONENTS register entry; do not change the constant in
+        # isolation.
+        self.assertEqual(_SWEEP_MEMBER_INDENT_PX, 16)
+
+
+class TestShowBaselineCurveStyleKeyDefault(unittest.TestCase):
+    """Phase 4r (CS-36) — per-node baseline-curve style key default.
+
+    Pure-module: exercises ``ProjectGraph`` + node style dict only,
+    no Tk widgets. CS-29's per-node gate reads
+    ``node.style.get("show_baseline_curve", True)``; this class
+    locks the default-True convention so a new BASELINE node remains
+    visible under the global toggle without any per-node opt-in. The
+    convention parallels ``visible`` and ``in_legend``.
+    """
+
+    def setUp(self) -> None:
+        self.graph = ProjectGraph()
+        self.baseline = _data("bl1", ntype=NodeType.BASELINE,
+                              state=NodeState.COMMITTED)
+        self.graph.add_node(self.baseline)
+
+    def test_absent_key_treated_as_true(self):
+        node = self.graph.get_node("bl1")
+        self.assertNotIn("show_baseline_curve", node.style)
+        self.assertTrue(node.style.get("show_baseline_curve", True))
+
+    def test_set_style_persists_false(self):
+        self.graph.set_style("bl1", {"show_baseline_curve": False})
+        node = self.graph.get_node("bl1")
+        self.assertEqual(node.style.get("show_baseline_curve"), False)
+
+    def test_set_style_persists_true(self):
+        self.graph.set_style("bl1", {"show_baseline_curve": False})
+        self.graph.set_style("bl1", {"show_baseline_curve": True})
+        node = self.graph.get_node("bl1")
+        self.assertEqual(node.style.get("show_baseline_curve"), True)
+
+    def test_set_style_does_not_clobber_other_keys(self):
+        # Visibility and the new key must coexist — set_style merges
+        # rather than replaces, but we lock that behavior here so a
+        # future change to set_style cannot silently drop one or the
+        # other.
+        self.graph.set_style("bl1", {"visible": False})
+        self.graph.set_style("bl1", {"show_baseline_curve": False})
+        node = self.graph.get_node("bl1")
+        self.assertEqual(node.style.get("visible"), False)
+        self.assertEqual(node.style.get("show_baseline_curve"), False)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
