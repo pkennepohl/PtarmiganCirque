@@ -135,6 +135,73 @@ _FLOOR_ZERO_DISABLED_TOOLTIP: str = (
 )
 
 
+# ── Multi-axis plot routing (Phase 4u, CS-44) ────────────────────────────────
+# Phase 4t carry-forward friction #2: SECOND_DERIVATIVE values are
+# typically 1/100x to 1/1000x the parent absorbance, so plotting them
+# on a shared y-axis collapses the parent into a flat line or hides
+# the derivative entirely. CS-44 routes each rendered node to one of
+# three named axis roles. Today only "primary" and "secondary" are
+# populated by the per-NodeType default table; "tertiary" is wired
+# through the lazy axis-creation machinery so a future NodeType (or a
+# future per-style override) can land as a one-line table edit.
+#
+# Per-NodeType default mapping. A NodeType absent from the dict
+# defaults to "primary". The future per-node override hook will land
+# at the front of ``_resolve_y_axis_role`` reading
+# ``node.style.get("y_axis")``; per-NodeType remains the fallback.
+_AXIS_ROLES: tuple[str, ...] = ("primary", "secondary", "tertiary")
+
+_DEFAULT_Y_AXIS_BY_NODETYPE: dict[NodeType, str] = {
+    NodeType.UVVIS:             "primary",
+    NodeType.BASELINE:          "primary",
+    NodeType.NORMALISED:        "primary",
+    NodeType.SMOOTHED:          "primary",
+    NodeType.PEAK_LIST:         "primary",
+    NodeType.SECOND_DERIVATIVE: "secondary",
+}
+
+# X-unit-aware y-axis label for nodes routed to a non-primary role.
+# Keyed by ``(NodeType, x_unit)``; the first node of a given NodeType
+# placed on a non-primary role determines that role's label. Unknown
+# (NodeType, x_unit) combinations return None and the role goes
+# unlabelled.
+_NON_PRIMARY_Y_LABEL: dict[tuple[NodeType, str], str] = {
+    (NodeType.SECOND_DERIVATIVE, "nm"):   "d²A/dλ²",
+    (NodeType.SECOND_DERIVATIVE, "cm-1"): "d²A/d(cm⁻¹)²",
+    (NodeType.SECOND_DERIVATIVE, "eV"):   "d²A/dE²",
+}
+
+# Fractional x-position of the tertiary axis spine (matplotlib
+# ``axes`` coordinate). Tunable later via a Plot Settings field; for
+# now it is a module constant so a future settings row can promote
+# it without changing the helper signatures. Typical matplotlib
+# offset for a 3rd-axis stack is 1.10–1.15.
+_TERTIARY_AXIS_OFFSET_FRAC: float = 1.12
+
+
+def _resolve_y_axis_role(node_type: NodeType) -> str:
+    """Return the axis role string for a node of ``node_type``.
+
+    Phase 4u ships per-NodeType defaults only — see
+    :data:`_DEFAULT_Y_AXIS_BY_NODETYPE`. A NodeType absent from the
+    table defaults to ``"primary"``. The future per-node override
+    (``node.style.get("y_axis")``) will land at the front of this
+    function as an additive change; the per-NodeType default remains
+    the fallback.
+    """
+    return _DEFAULT_Y_AXIS_BY_NODETYPE.get(node_type, "primary")
+
+
+def _resolve_non_primary_y_label(node_type: NodeType, x_unit: str) -> Optional[str]:
+    """Return the y-axis label for a non-primary role, or ``None``.
+
+    Looks up :data:`_NON_PRIMARY_Y_LABEL` by ``(node_type, x_unit)``.
+    Returns ``None`` for any pair without a registered label so the
+    caller can leave the role unlabelled rather than guessing.
+    """
+    return _NON_PRIMARY_Y_LABEL.get((node_type, x_unit))
+
+
 class UVVisTab(tk.Frame):
     """UV/Vis/NIR import, display and analysis panel."""
 
