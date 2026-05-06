@@ -100,7 +100,8 @@ def _window_mask(wl: np.ndarray, lo: float, hi: float) -> np.ndarray:
     mask = (wl >= lo) & (wl <= hi)
     if not mask.any():
         raise ValueError(
-            f"normalisation window [{lo}, {hi}] contains no samples"
+            f"normalisation window [{lo}, {hi}] contains no samples; "
+            f"data spans [{float(wl.min()):.1f}, {float(wl.max()):.1f}] nm"
         )
     return mask
 

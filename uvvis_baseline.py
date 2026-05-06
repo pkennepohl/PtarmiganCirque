@@ -1,11 +1,12 @@
-"""UV/Vis baseline correction algorithms (Phase 4c CS-15, Phase 4m CS-24).
+"""UV/Vis baseline correction algorithms (Phase 4c CS-15, Phase 4m CS-24,
+Phase 4s CS-37 / CS-38 / CS-39 / CS-40).
 
 Pure computational module — no Tk, no graph, no I/O. Each ``compute_*``
 takes ``(wavelength_nm, absorbance, params)`` and returns the
 baseline-subtracted absorbance as a numpy array of the same shape as
 the input.
 
-Five modes:
+Six modes:
 
 * **linear** — two-point baseline. Sample the absorbance at
   ``anchor_lo_nm`` and ``anchor_hi_nm`` (linearly interpolated from
@@ -28,6 +29,30 @@ Five modes:
   fit alongside the amplitude (``n="fit"``). Fit window is the
   peak-free wavelength range; baseline is subtracted across the
   full input range.
+* **scattering+offset** (CS-38) — composite ``B(λ) = a + c · λ^(-n)``
+  for samples that carry both a Rayleigh / Mie scattering tail AND
+  an instrument or solvent additive offset. Same param schema as
+  ``scattering``. The additive constant ``a`` is always fitted; ``n``
+  is either supplied numerically or fit alongside ``a`` and ``c``.
+
+CS-37 — ``params["floor_zero"]: bool`` (default False) enforces the
+fit-time invariant that the corrected absorbance ``a - B`` is ≥ 0
+everywhere. Implemented for ``scattering`` (closed-form constrained
+``c``), ``scattering+offset`` (convex QP via SLSQP), and ``rubberband``
+(no-op — the convex-hull baseline is already ≤ data by construction).
+For ``linear`` / ``polynomial`` / ``spline`` the constrained-fit path
+is not yet implemented (per the per-mode roadmap in BACKLOG); callers
+passing ``floor_zero=True`` to those modes get a clear ``ValueError``.
+
+CS-39 — ``fit_scattering`` / ``fit_scattering_offset`` return the
+resolved fit parameters as ``{"c_fitted", "n_fitted"}`` (and
+``"a_fitted"`` for ``scattering+offset``). Apply sites use these to
+record the fitted values on the OperationNode for diagnostic /
+round-trip purposes.
+
+CS-40 — fit-window error messages include the data's nm range so a
+user typing a window outside the spectrum sees the real range without
+re-reading the plot.
 
 Params completeness (CS-03): each mode lists exactly the keys it reads
 from ``params``. Missing keys raise ``KeyError`` (the calling tab is
@@ -48,13 +73,26 @@ __all__ = [
     "compute_spline",
     "compute_rubberband",
     "compute_scattering",
+    "compute_scattering_offset",
+    "fit_scattering",
+    "fit_scattering_offset",
     "compute",
     "compute_baseline_curve",
     "BASELINE_MODES",
 ]
 
 
-BASELINE_MODES = ("linear", "polynomial", "spline", "rubberband", "scattering")
+BASELINE_MODES = (
+    "linear", "polynomial", "spline", "rubberband",
+    "scattering", "scattering+offset",
+)
+
+
+def _floor_zero(params) -> bool:
+    """Read the CS-37 ``floor_zero`` flag from a (possibly None) params dict."""
+    if params is None:
+        return False
+    return bool(params.get("floor_zero", False))
 
 
 # ---------------------------------------------------------------------------
@@ -88,6 +126,11 @@ def compute_linear(
     Required ``params`` keys: ``anchor_lo_nm``, ``anchor_hi_nm`` (in nm,
     ordering enforced internally).
     """
+    if _floor_zero(params):
+        raise ValueError(
+            "floor_zero=True is not yet implemented for baseline mode "
+            "'linear'; ships in a later session per the per-mode roadmap"
+        )
     wl, a = _coerce(wavelength_nm, absorbance)
     lo = float(params["anchor_lo_nm"])
     hi = float(params["anchor_hi_nm"])
@@ -126,6 +169,11 @@ def compute_polynomial(
     ``fit_hi_nm``. The polynomial is fit to the data inside the
     wavelength window and evaluated across the full input range.
     """
+    if _floor_zero(params):
+        raise ValueError(
+            "floor_zero=True is not yet implemented for baseline mode "
+            "'polynomial'; ships in a later session per the per-mode roadmap"
+        )
     wl, a = _coerce(wavelength_nm, absorbance)
     order_n = int(params["order"])
     if order_n < 0:
@@ -140,7 +188,8 @@ def compute_polynomial(
     if n_in <= order_n:
         raise ValueError(
             f"polynomial order {order_n} requires > {order_n} points in "
-            f"the fit window [{lo}, {hi}]; found {n_in}"
+            f"the fit window [{lo}, {hi}]; found {n_in}; "
+            f"data spans [{float(wl.min()):.1f}, {float(wl.max()):.1f}] nm"
         )
 
     coeffs = np.polyfit(wl[mask], a[mask], order_n)
@@ -164,6 +213,11 @@ def compute_spline(
     through those (anchor, sampled_absorbance) points (or a polynomial
     of degree 1 or 2 when fewer than four anchors are supplied).
     """
+    if _floor_zero(params):
+        raise ValueError(
+            "floor_zero=True is not yet implemented for baseline mode "
+            "'spline'; ships in a later session per the per-mode roadmap"
+        )
     wl, a = _coerce(wavelength_nm, absorbance)
     anchors_in: Sequence = params["anchors"]
     anchors_sorted = sorted({float(x) for x in anchors_in})
@@ -199,10 +253,15 @@ def compute_rubberband(
 ) -> np.ndarray:
     """Convex-hull (rubberband) lower envelope baseline.
 
-    Parameter-free — ``params`` is accepted (and may be ``None`` or an
-    empty mapping) for API symmetry with the other modes.
+    Parameter-free for the fit itself — ``params`` is accepted (and
+    may be ``None`` or an empty mapping) for API symmetry with the
+    other modes. ``params["floor_zero"]`` is honoured (CS-37): the
+    convex-hull lower envelope is ≤ data by construction so the
+    constraint is automatically satisfied; under ``floor_zero=True``
+    we lock the invariant with a runtime check that raises if
+    numerical drift takes the corrected curve below zero.
     """
-    del params  # unused
+    floor_zero = _floor_zero(params)
     wl, a = _coerce(wavelength_nm, absorbance)
     if wl.size < 2:
         return a - a  # degenerate; baseline-subtracted is zero everywhere
@@ -231,12 +290,120 @@ def compute_rubberband(
     # Restore original input ordering.
     inv = np.argsort(order)
     baseline = base_sorted[inv]
-    return a - baseline
+    out = a - baseline
+    if floor_zero and out.size and float(out.min()) < -1e-9:
+        raise ValueError(
+            "rubberband floor-zero invariant violated (numerical drift): "
+            f"min(corrected) = {float(out.min()):.3e}"
+        )
+    return out
 
 
 # ---------------------------------------------------------------------------
 # Scattering (power-law c · λ^(-n) for colloidal / turbid samples — CS-24)
+# Plus scattering+offset (CS-38) and shared fit helpers (CS-37/CS-39).
 # ---------------------------------------------------------------------------
+
+
+def _scattering_window(wl, a, params, label="scattering"):
+    """Validate the scattering fit window and return ``(wl_w, a_w, lo, hi)``.
+
+    Shared by ``compute_scattering`` / ``compute_scattering_offset``
+    and their ``fit_*`` siblings. ``label`` selects the error-message
+    prefix so the caller-facing message names the actual mode.
+    """
+    lo = float(params["fit_lo_nm"])
+    hi = float(params["fit_hi_nm"])
+    if lo > hi:
+        lo, hi = hi, lo
+    mask = (wl >= lo) & (wl <= hi)
+    n_in = int(mask.sum())
+    if n_in < 2:
+        raise ValueError(
+            f"{label} baseline needs ≥ 2 points in fit window "
+            f"[{lo}, {hi}]; found {n_in}; "
+            f"data spans [{float(wl.min()):.1f}, {float(wl.max()):.1f}] nm"
+        )
+    wl_w = wl[mask]
+    a_w = a[mask]
+    if np.any(wl_w <= 0):
+        raise ValueError(
+            f"{label} baseline requires positive wavelengths "
+            "(λ^(-n) is undefined at λ ≤ 0)"
+        )
+    return wl_w, a_w, lo, hi
+
+
+def _scattering_fit(wl, a, wl_w, a_w, lo, hi, n_in, floor_zero,
+                    label="scattering"):
+    """Recover ``(c, n)`` for ``B(λ) = c · λ^(-n)``.
+
+    Under ``floor_zero=True`` enforces ``c · λ_i^(-n) ≤ a_i`` at every
+    full-range sample by clamping the unconstrained least-squares ``c``
+    to ``min_i(a_i · λ_i^n)``; for ``n="fit"`` the constraint is
+    enforced inside a 1-D scan over ``n``.
+
+    Without ``floor_zero`` the n="fit" branch falls back to the
+    closed-form log–log fit (which requires absorbance > 0 throughout
+    the fit window).
+    """
+    fit_n = isinstance(n_in, str) and n_in.lower() == "fit"
+
+    def _c_for_fixed_n(n):
+        x_w = wl_w ** (-n)
+        denom_w = float(np.dot(x_w, x_w))
+        if denom_w == 0.0:
+            raise ValueError(
+                f"{label} baseline fit is degenerate (λ^(-n) = 0)"
+            )
+        c_unc = float(np.dot(a_w, x_w) / denom_w)
+        if not floor_zero:
+            return c_unc
+        # Constraint: c · λ_i^(-n) ≤ a_i  ⇔  c ≤ a_i · λ_i^n at every
+        # full-range sample. ``wl > 0`` is already guarded.
+        c_max = float(np.min(a * (wl ** n)))
+        return c_unc if c_unc <= c_max else c_max
+
+    if not fit_n:
+        try:
+            n_val = float(n_in)
+        except (TypeError, ValueError):
+            raise ValueError(
+                f"{label} baseline 'n' must be a number or \"fit\"; "
+                f"got {n_in!r}"
+            )
+        if n_val < 0:
+            raise ValueError(
+                f"{label} baseline n must be ≥ 0; got {n_val}"
+            )
+        c_val = _c_for_fixed_n(n_val)
+        return c_val, n_val
+
+    if floor_zero:
+        from scipy.optimize import minimize_scalar
+        def residual(n):
+            try:
+                c = _c_for_fixed_n(n)
+                pred = c * (wl_w ** (-n))
+                return float(np.sum((a_w - pred) ** 2))
+            except (ValueError, FloatingPointError):
+                return 1e30
+        res = minimize_scalar(residual, bounds=(0.1, 8.0), method="bounded")
+        n_val = float(res.x)
+        c_val = _c_for_fixed_n(n_val)
+        return c_val, n_val
+
+    # Unconstrained log–log fit.
+    if np.any(a_w <= 0):
+        raise ValueError(
+            f"{label} baseline n='fit' requires absorbance > 0 "
+            f"throughout the fit window [{lo}, {hi}] "
+            "(log–log fit cannot accept zero or negative values)"
+        )
+    slope, intercept = np.polyfit(np.log(wl_w), np.log(a_w), 1)
+    n_val = float(-slope)
+    c_val = float(np.exp(intercept))
+    return c_val, n_val
 
 
 def compute_scattering(
@@ -253,64 +420,26 @@ def compute_scattering(
       (intended to exclude absorption peaks). The baseline is fit on
       the window and subtracted across the full input range.
 
+    Optional ``params`` keys:
+
+    * ``floor_zero`` (CS-37) — when True, enforces ``a - B ≥ 0``
+      everywhere by clamping the fitted ``c`` to ``min_i(a_i · λ_i^n)``.
+
     With ``n`` numeric, a closed-form linear least-squares fit
-    determines the amplitude ``c`` only. With ``n="fit"``, the fit
-    is performed in log–log space (``log A = log c − n · log λ``);
-    this requires absorbance > 0 throughout the fit window.
+    determines the amplitude ``c`` only. With ``n="fit"`` and
+    ``floor_zero=False``, the fit is performed in log–log space
+    (``log A = log c − n · log λ``); this requires absorbance > 0
+    throughout the fit window. With ``n="fit"`` and ``floor_zero=True``,
+    a 1-D bounded scan over ``n`` carries the closed-form constrained
+    ``c`` step inside.
     """
     wl, a = _coerce(wavelength_nm, absorbance)
     n_in = params["n"]  # KeyError if missing
-    lo = float(params["fit_lo_nm"])
-    hi = float(params["fit_hi_nm"])
-    if lo > hi:
-        lo, hi = hi, lo
-
-    mask = (wl >= lo) & (wl <= hi)
-    if int(mask.sum()) < 2:
-        raise ValueError(
-            f"scattering baseline needs ≥ 2 points in fit window "
-            f"[{lo}, {hi}]; found {int(mask.sum())}"
-        )
-    wl_w = wl[mask]
-    a_w = a[mask]
-    if np.any(wl_w <= 0):
-        raise ValueError(
-            "scattering baseline requires positive wavelengths "
-            "(λ^(-n) is undefined at λ ≤ 0)"
-        )
-
-    fit_n = isinstance(n_in, str) and n_in.lower() == "fit"
-    if fit_n:
-        if np.any(a_w <= 0):
-            raise ValueError(
-                "scattering baseline n='fit' requires absorbance > 0 "
-                f"throughout the fit window [{lo}, {hi}] "
-                "(log–log fit cannot accept zero or negative values)"
-            )
-        # log A = log c − n · log λ  →  linear fit in log space.
-        slope, intercept = np.polyfit(np.log(wl_w), np.log(a_w), 1)
-        n_val = float(-slope)
-        c_val = float(np.exp(intercept))
-    else:
-        try:
-            n_val = float(n_in)
-        except (TypeError, ValueError):
-            raise ValueError(
-                f"scattering baseline 'n' must be a number or \"fit\"; "
-                f"got {n_in!r}"
-            )
-        if n_val < 0:
-            raise ValueError(
-                f"scattering baseline n must be ≥ 0; got {n_val}"
-            )
-        # B = c · λ^(-n) → minimise Σ (A − c · x)² with x = λ^(-n).
-        x = wl_w ** (-n_val)
-        denom = float(np.dot(x, x))
-        if denom == 0.0:
-            raise ValueError(
-                "scattering baseline fit is degenerate (λ^(-n) = 0)"
-            )
-        c_val = float(np.dot(a_w, x) / denom)
+    wl_w, a_w, lo, hi = _scattering_window(wl, a, params, label="scattering")
+    floor_zero = _floor_zero(params)
+    c_val, n_val = _scattering_fit(
+        wl, a, wl_w, a_w, lo, hi, n_in, floor_zero, label="scattering",
+    )
 
     if np.any(wl <= 0):
         raise ValueError(
@@ -321,17 +450,183 @@ def compute_scattering(
     return a - baseline
 
 
+def fit_scattering(
+    wavelength_nm, absorbance, params: Mapping,
+) -> dict:
+    """Recover the resolved scattering fit parameters (CS-39).
+
+    Same ``params`` schema as :func:`compute_scattering`. Returns
+    ``{"c_fitted": float, "n_fitted": float}`` where ``c_fitted`` is
+    always the resolved amplitude and ``n_fitted`` is the resolved
+    exponent (which equals ``params["n"]`` when n is fixed numeric,
+    or the recovered value when ``params["n"] == "fit"``).
+
+    Apply sites use this to record the fitted values on the
+    OperationNode so a later diagnostic / round-trip can read them
+    without re-running ``compute``.
+    """
+    wl, a = _coerce(wavelength_nm, absorbance)
+    n_in = params["n"]
+    wl_w, a_w, lo, hi = _scattering_window(wl, a, params, label="scattering")
+    floor_zero = _floor_zero(params)
+    c_val, n_val = _scattering_fit(
+        wl, a, wl_w, a_w, lo, hi, n_in, floor_zero, label="scattering",
+    )
+    return {"c_fitted": c_val, "n_fitted": n_val}
+
+
+# ---------------------------------------------------------------------------
+# Scattering+offset (CS-38) — composite B(λ) = a + c · λ^(-n)
+# ---------------------------------------------------------------------------
+
+
+def _scattering_offset_fit(wl, a, wl_w, a_w, lo, hi, n_in, floor_zero):
+    """Recover ``(a_param, c, n)`` for ``B(λ) = a_param + c · λ^(-n)``.
+
+    Without ``floor_zero``: 2-D linear least-squares for fixed ``n``,
+    1-D bounded scan over ``n`` with closed-form ``(a, c)`` inside for
+    ``n="fit"``.
+
+    With ``floor_zero=True``: convex QP with linear inequality
+    ``a_param + c · λ_i^(-n) ≤ a_i`` at every full-range sample, solved
+    via :func:`scipy.optimize.minimize` with method ``SLSQP``.
+    """
+    fit_n = isinstance(n_in, str) and n_in.lower() == "fit"
+
+    def _ac_for_fixed_n(n):
+        x_w = wl_w ** (-n)
+        # Linear LSQ: minimise ||a_w - (a_param + c * x_w)||².
+        A_mat = np.column_stack([np.ones_like(x_w), x_w])
+        coeffs, *_ = np.linalg.lstsq(A_mat, a_w, rcond=None)
+        a_unc = float(coeffs[0])
+        c_unc = float(coeffs[1])
+        if not floor_zero:
+            return a_unc, c_unc
+        # Convex QP via SLSQP. Constraint: a_param + c · λ_i^(-n) ≤ a_i
+        # at every full-range sample.
+        from scipy.optimize import minimize, LinearConstraint
+        x_full = wl ** (-n)
+        A_constraint = np.column_stack([np.ones_like(x_full), x_full])
+        cons = LinearConstraint(A_constraint, lb=-np.inf, ub=a)
+        # Initial guess: project unconstrained solution to feasibility
+        # by shifting ``a_param`` down by the worst overage.
+        residuals = a_unc + c_unc * x_full - a
+        max_overage = float(residuals.max()) if residuals.size else 0.0
+        x0 = [a_unc - max(max_overage, 0.0), c_unc]
+
+        def obj(v):
+            ap, cp = v
+            r = a_w - (ap + cp * x_w)
+            return float(np.sum(r ** 2))
+
+        result = minimize(obj, x0, method="SLSQP", constraints=[cons])
+        if not result.success:
+            raise ValueError(
+                "scattering+offset floor-zero fit did not converge: "
+                f"{result.message}; try widening the fit window or "
+                "disabling floor-zero"
+            )
+        return float(result.x[0]), float(result.x[1])
+
+    if not fit_n:
+        try:
+            n_val = float(n_in)
+        except (TypeError, ValueError):
+            raise ValueError(
+                f"scattering+offset baseline 'n' must be a number or "
+                f"\"fit\"; got {n_in!r}"
+            )
+        if n_val < 0:
+            raise ValueError(
+                f"scattering+offset baseline n must be ≥ 0; got {n_val}"
+            )
+        a_val, c_val = _ac_for_fixed_n(n_val)
+        return a_val, c_val, n_val
+
+    # n="fit": 1-D bounded scan over n with closed-form (a, c) inside.
+    from scipy.optimize import minimize_scalar
+    def residual(n):
+        try:
+            a_v, c_v = _ac_for_fixed_n(n)
+            pred = a_v + c_v * (wl_w ** (-n))
+            return float(np.sum((a_w - pred) ** 2))
+        except (ValueError, FloatingPointError):
+            return 1e30
+    res = minimize_scalar(residual, bounds=(0.1, 8.0), method="bounded")
+    n_val = float(res.x)
+    a_val, c_val = _ac_for_fixed_n(n_val)
+    return a_val, c_val, n_val
+
+
+def compute_scattering_offset(
+    wavelength_nm, absorbance, params: Mapping,
+) -> np.ndarray:
+    """Composite power-law-plus-offset baseline subtraction (CS-38).
+
+    Model: ``B(λ) = a + c · λ^(-n)``, where ``a`` is always fitted
+    (additive instrument / solvent offset) and ``c · λ^(-n)`` is the
+    Rayleigh / Mie scattering tail. Same ``params`` schema as
+    :func:`compute_scattering` — ``n`` (numeric or ``"fit"``),
+    ``fit_lo_nm``, ``fit_hi_nm``, optional ``floor_zero``.
+
+    With ``n`` numeric the fit is a 2-D linear least squares in
+    ``(a, c)``; with ``n="fit"`` a 1-D bounded scan over ``n`` carries
+    the 2-D closed-form step inside. ``floor_zero=True`` enforces
+    ``data - B ≥ 0`` everywhere via convex QP (SLSQP).
+    """
+    wl, a_arr = _coerce(wavelength_nm, absorbance)
+    n_in = params["n"]
+    wl_w, a_w, lo, hi = _scattering_window(
+        wl, a_arr, params, label="scattering+offset",
+    )
+    floor_zero = _floor_zero(params)
+    a_val, c_val, n_val = _scattering_offset_fit(
+        wl, a_arr, wl_w, a_w, lo, hi, n_in, floor_zero,
+    )
+    if np.any(wl <= 0):
+        raise ValueError(
+            "scattering+offset baseline requires positive wavelengths "
+            "(λ^(-n) is undefined at λ ≤ 0)"
+        )
+    baseline = a_val + c_val * (wl ** (-n_val))
+    return a_arr - baseline
+
+
+def fit_scattering_offset(
+    wavelength_nm, absorbance, params: Mapping,
+) -> dict:
+    """Recover the resolved scattering+offset fit parameters (CS-39).
+
+    Same ``params`` schema as :func:`compute_scattering_offset`.
+    Returns ``{"a_fitted", "c_fitted", "n_fitted"}`` — all three are
+    always populated (``a_fitted`` and ``c_fitted`` are always fitted;
+    ``n_fitted`` equals ``params["n"]`` when fixed or the recovered
+    value when ``params["n"] == "fit"``).
+    """
+    wl, a_arr = _coerce(wavelength_nm, absorbance)
+    n_in = params["n"]
+    wl_w, a_w, lo, hi = _scattering_window(
+        wl, a_arr, params, label="scattering+offset",
+    )
+    floor_zero = _floor_zero(params)
+    a_val, c_val, n_val = _scattering_offset_fit(
+        wl, a_arr, wl_w, a_w, lo, hi, n_in, floor_zero,
+    )
+    return {"a_fitted": a_val, "c_fitted": c_val, "n_fitted": n_val}
+
+
 # ---------------------------------------------------------------------------
 # Dispatcher
 # ---------------------------------------------------------------------------
 
 
 _DISPATCH = {
-    "linear":     compute_linear,
-    "polynomial": compute_polynomial,
-    "spline":     compute_spline,
-    "rubberband": compute_rubberband,
-    "scattering": compute_scattering,
+    "linear":            compute_linear,
+    "polynomial":        compute_polynomial,
+    "spline":            compute_spline,
+    "rubberband":        compute_rubberband,
+    "scattering":        compute_scattering,
+    "scattering+offset": compute_scattering_offset,
 }
 
 
