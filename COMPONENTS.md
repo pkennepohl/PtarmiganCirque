@@ -4077,7 +4077,419 @@ through the graph-event rebuild path, round-trip back to on.
 
 ---
 
-*Document version: 1.18 — May 2026*
+## CS-37 — Floor-zero baseline as fit-time constraint (Phase 4s, partial)
+
+The user's framing: corrected absorbance (`parent − B`) should be
+≥ 0 across the entire range when the user explicitly asks for it.
+Post-fit shifting only translates the baseline globally; the
+*shape* is still optimised for unconstrained residual minimisation.
+For scattering at high energies the unconstrained fit rises too
+steeply and shifting it doesn't fix the shape mismatch — the
+constraint must be enforced at *fit time*.
+
+CS-37 ships the universal "Floor at zero" toggle and the
+constrained-fit code path for **3 of 6 modes**: scattering,
+scattering+offset (CS-38), and rubberband. Linear / polynomial /
+spline raise a clear `ValueError` per the per-mode roadmap (the
+register entry stays ⏳ until those three ship in subsequent
+sessions).
+
+UI surface
+----------
+
+`UVVisTab._init_left_pane` adds a single Tk var:
+
+::
+
+    self._baseline_floor_zero = tk.BooleanVar(value=False)
+
+…and a `tk.Checkbutton` packed in `bl_body` between the mode
+combobox `mode_frame` and the per-mode parameter rows
+`_baseline_params_frame`:
+
+::
+
+    floor_frame = tk.Frame(bl_body)
+    floor_frame.pack(fill=tk.X, padx=4, pady=(2, 0))
+    self._baseline_floor_zero_cb = tk.Checkbutton(
+        floor_frame, text="Floor at zero",
+        variable=self._baseline_floor_zero, font=F9,
+    )
+    self._baseline_floor_zero_cb.pack(anchor="w")
+
+Always visible regardless of mode. The greyed-disabled state for
+unsupported modes is deferred (see the new "Floor-zero toggle
+disabled state for unsupported baseline modes" register entry —
+USER-FLAGGED at end of Phase 4s).
+
+Params round-trip
+-----------------
+
+`_collect_baseline_params(mode)` injects `"floor_zero":
+bool(self._baseline_floor_zero.get())` into **every** mode's
+returned dict (linear / polynomial / spline / rubberband /
+scattering / scattering+offset). The toggle state is therefore
+recorded on every BASELINE OperationNode, regardless of whether
+the constrained-fit code path is implemented for that mode yet —
+so when the linear / polynomial / spline branches ship in a later
+session, prior projects round-trip cleanly.
+
+Pure-module helpers
+-------------------
+
+`uvvis_baseline._floor_zero(params)` reads the flag from a
+possibly-None mapping (`compute_rubberband` accepts `params=None`
+for API symmetry).
+
+For the implemented modes:
+
+* **scattering** — closed-form: under the model `B = c · λ^(-n)`,
+  the constraint `c · λ_i^(-n) ≤ a_i` everywhere reduces to
+  `c ≤ min_i(a_i · λ_i^n)`. The unconstrained least-squares `c*`
+  is computed exactly as before; if `c* > c_max`, clamp to
+  `c_max`. With `n="fit"`, a 1-D `scipy.optimize.minimize_scalar`
+  bounded scan over `n ∈ [0.1, 8.0]` carries the closed-form
+  constrained-c step inside as the residual function.
+
+* **scattering+offset** (CS-38) — convex QP via
+  `scipy.optimize.minimize(method="SLSQP")` with linear
+  inequality `a_param + c · λ_i^(-n) ≤ a_i` at every full-range
+  sample (encoded via `LinearConstraint`). Initial guess: project
+  the unconstrained 2-D linear LSQ down by the maximum overage.
+  Failure surfaces as `ValueError("scattering+offset floor-zero
+  fit did not converge: …")`.
+
+* **rubberband** — no-op + invariant assert. The convex-hull
+  lower envelope is ≤ data by construction; the guard raises if
+  numerical drift takes the corrected curve below `-1e-9`.
+
+For the unimplemented modes (linear / polynomial / spline) the
+top of `compute_*` checks `_floor_zero(params)` and raises:
+
+::
+
+    ValueError(
+        "floor_zero=True is not yet implemented for baseline mode "
+        "'<mode>'; ships in a later session per the per-mode roadmap"
+    )
+
+The apply site catches `(ValueError, KeyError)` and shows the
+message via `messagebox.showerror`; no silent fall-through.
+
+Lock surface
+------------
+
+CS-37 is the universal toggle's surface plus the implemented
+modes' constrained-fit code paths. The disabled-toggle state for
+unsupported modes is the open follow-up. The remaining 3/6 modes
+(linear, polynomial, spline) ship independently — each grows a
+constrained-fit branch inside its existing `compute_*` and a
+matching test class.
+
+Tests
+-----
+
+`TestFloorZeroNotYetImplemented` (4 pure tests) — linear /
+polynomial / spline raise with the per-mode message when
+`floor_zero=True`; `floor_zero=False` is a no-op.
+
+`TestRubberbandFloorZero` (2 pure tests) — invariant guard
+passes through; output matches unconstrained within fp tolerance.
+
+`TestScatteringFloorZero` (3 pure tests) — pure power-law
+unchanged when constraint doesn't bind; constrained `c` clamps
+to `min_i(a_i · λ_i^n)` when it does; n="fit" + floor_zero
+returns non-negative corrected output.
+
+`test_baseline_floor_zero_toggle_exists_and_defaults_off`,
+`test_apply_baseline_writes_floor_zero_into_params`,
+`test_apply_baseline_linear_with_floor_zero_surfaces_error`
+(3 integration tests) — Tk var + Checkbutton present and
+default-off; params round-trip; messagebox path on unsupported
+mode.
+
+---
+
+## CS-38 — Composite scattering+offset baseline mode (Phase 4s)
+
+`B(λ) = a + c · λ^(-n)` for samples that carry both a Rayleigh /
+Mie scattering tail AND an instrument or solvent offset. Same
+parameter schema as the existing scattering mode — `n` (numeric
+or "fit"), `fit_lo_nm`, `fit_hi_nm`, optional `floor_zero`. The
+additive constant `a` is always fitted.
+
+Mode registration
+-----------------
+
+`BASELINE_MODES` grows from 5 to 6:
+
+::
+
+    BASELINE_MODES = (
+        "linear", "polynomial", "spline", "rubberband",
+        "scattering", "scattering+offset",
+    )
+
+`_DISPATCH` adds the new entry:
+
+::
+
+    "scattering+offset": compute_scattering_offset,
+
+The combobox auto-pulls the new entry via
+`values=list(uvvis_baseline.BASELINE_MODES)`.
+
+Pure-module helpers
+-------------------
+
+`compute_scattering_offset(wl, a, params)` mirrors
+`compute_scattering` but with the additional fitted constant.
+Internally:
+
+* `_scattering_window(wl, a, params, label="scattering+offset")`
+  shared with `compute_scattering` — single source of truth for
+  fit-window validation + nm-range error widening (CS-40).
+* `_scattering_offset_fit(wl, a, wl_w, a_w, lo, hi, n_in,
+  floor_zero)` does the actual fit. For fixed `n`: 2-D linear
+  LSQ via `np.linalg.lstsq` on design columns
+  `[1, λ^(-n)]`. For `n="fit"`: 1-D bounded scan over `n ∈
+  [0.1, 8.0]` with `scipy.optimize.minimize_scalar`, calling the
+  2-D solve inside as the residual. Under `floor_zero=True`, the
+  2-D solve becomes a convex QP (see CS-37).
+
+UI sharing with scattering
+--------------------------
+
+The user's mental model is "scattering with an offset", so CS-38
+shares the existing scattering Tk vars:
+
+* `_baseline_scattering_n: tk.StringVar(value="4")`
+* `_baseline_scattering_fit_n: tk.BooleanVar(value=False)`
+* `_baseline_scattering_fit_lo: tk.StringVar(value="")`
+* `_baseline_scattering_fit_hi: tk.StringVar(value="")`
+
+`_refresh_baseline_param_rows` extends the scattering branch:
+
+::
+
+    elif mode in ("scattering", "scattering+offset"):
+        # Same row layout — n entry + Fit n checkbox + fit lo/hi.
+        ...
+
+`_collect_baseline_params` extends the same way — the only
+difference is the `mode` field on the OperationNode's params
+dict, which the dispatcher uses to pick the right `compute_*`.
+
+The tight coupling is deliberate: a follow-up register entry
+(USER-FLAGGED Phase 4s) will collapse the two modes into a
+single `scattering` mode with an "Add offset" Checkbutton. The
+shared Tk vars + shared parameter row layout in CS-38 are
+already the right factoring for that consolidation.
+
+Lock surface
+------------
+
+CS-38 owns the new mode's `compute_*` + the parameter row
+sharing with scattering. The composite mode shape (additive
+offset always fitted; no separate "fit a" toggle) is locked.
+
+Tests
+-----
+
+`TestScatteringOffsetMode` (7 pure tests) — recovers the unit
+peak height for fixed n / n="fit" / `floor_zero=True`; subtracts
+a pure `a + c·λ^(-n)` background to ~zero; rejects negative
+`n`, non-numeric/non-"fit" `n`, and missing param keys.
+
+`TestDispatcherWithScatteringOffset` (2 pure tests) — `compute(
+"scattering+offset", …)` routes correctly and `BASELINE_MODES`
+length grows to 6.
+
+`test_scattering_offset_mode_swaps_parameter_rows` and
+`test_apply_scattering_offset_creates_baseline_node` (2
+integration tests) — the new mode reuses scattering's 3-row
+layout and materialises a BASELINE OperationNode with mode
+discriminator `"scattering+offset"`.
+
+---
+
+## CS-39 — Fit-helper persistence on OperationNode (Phase 4s)
+
+Phase 4m friction #2 noted that scattering with `n="fit"` loses
+the resolved numeric `n` in `op.params` — the param dict carries
+the literal string `"fit"`, so a downstream consumer has to
+re-run the operation to recover the value. CS-39 closes this by
+persisting the fit's resolved parameters as sibling keys on the
+OperationNode.
+
+Public helpers
+--------------
+
+`uvvis_baseline.fit_scattering(wl, a, params) -> dict` returns
+`{"c_fitted": float, "n_fitted": float}`. Same param schema as
+`compute_scattering`. Internally calls the same
+`_scattering_fit` helper that `compute_scattering` uses, so the
+returned values are guaranteed identical to what the compute
+path produced.
+
+`uvvis_baseline.fit_scattering_offset(wl, a, params) -> dict`
+returns `{"a_fitted": float, "c_fitted": float, "n_fitted":
+float}` — three keys, all always populated (`a` and `c` are
+always fitted; `n_fitted` equals `params["n"]` when fixed or the
+recovered value when `n="fit"`).
+
+Apply-site integration
+----------------------
+
+`UVVisTab._apply_baseline` calls the matching helper after
+`compute()` returns successfully:
+
+::
+
+    if mode == "scattering":
+        try:
+            info = uvvis_baseline.fit_scattering(wl, absorb, params)
+            op_params["c_fitted"] = info["c_fitted"]
+            if str(params.get("n", "")).lower() == "fit":
+                op_params["n_fitted"] = info["n_fitted"]
+        except (ValueError, KeyError):
+            pass
+    elif mode == "scattering+offset":
+        try:
+            info = uvvis_baseline.fit_scattering_offset(wl, absorb, params)
+            op_params["a_fitted"] = info["a_fitted"]
+            op_params["c_fitted"] = info["c_fitted"]
+            if str(params.get("n", "")).lower() == "fit":
+                op_params["n_fitted"] = info["n_fitted"]
+        except (ValueError, KeyError):
+            pass
+
+Failure here is non-fatal — the corrected spectrum already
+exists; we silently skip the diagnostic keys. This guards
+against a future refactor where the fit helper diverges from
+the compute path; the apply node still lands.
+
+Why the helpers re-run the fit
+------------------------------
+
+`compute_scattering` and `compute_scattering_offset` could
+return a `(corrected, info)` tuple instead, avoiding the
+re-run. The current shape (helpers re-run the fit) was chosen
+because:
+
+* Existing 12 unit tests for scattering compute call the
+  array-only signature directly. Threading info through
+  every call site for a feature that's mostly diagnostic
+  doesn't pay back the test churn.
+* The fit cost on UV/Vis spectra (~600 points, closed-form
+  linear LSQ or 1-D `minimize_scalar`) is microseconds.
+* Future ops with genuinely expensive fits (e.g. a global
+  nonlinear solver) would prefer the tuple-return shape.
+  The CS-39 register entry's friction note flags the
+  re-run for that future case.
+
+Surface coverage
+----------------
+
+CS-39 records the values; surfacing them in the
+ScanTreeWidget tooltip / export header / a future
+diagnostic console folds into the open Diagnostic console
+register entry (USER-FLAGGED Phase 4n).
+
+Tests
+-----
+
+`TestFitScatteringHelper` (3 pure tests) — fixed n returns
+`n_fitted == n`; n="fit" recovers ~4 for a Rayleigh
+background; floor_zero shrinks `c_fitted` when the constraint
+binds.
+
+`TestFitScatteringOffsetHelper` (2 pure tests) — returns all
+three keys; recovers the additive offset and exponent for a
+synthetic spectrum.
+
+`test_scattering_n_fit_persists_n_fitted_and_c_fitted`,
+`test_scattering_fixed_n_persists_c_fitted_only`,
+`test_scattering_offset_persists_a_fitted` (3 integration
+tests) — the apply path writes the resolved keys onto
+`OperationNode.params` exactly when expected (n_fitted only
+under n="fit"; a_fitted always for the composite mode).
+
+---
+
+## CS-40 — Fit-window error messages widen to data range (Phase 4s)
+
+Phase 4m friction #4: a user typing a fit window outside the
+spectrum's range sees only the requested window in the error
+message, with no hint of where the data actually is. Trivial
+fix; CS-40 ships it across every fit-window error path in the
+UV/Vis pure modules.
+
+Touched messages
+----------------
+
+`uvvis_baseline.compute_polynomial`:
+
+::
+
+    raise ValueError(
+        f"polynomial order {order_n} requires > {order_n} points in "
+        f"the fit window [{lo}, {hi}]; found {n_in}; "
+        f"data spans [{float(wl.min()):.1f}, {float(wl.max()):.1f}] nm"
+    )
+
+`uvvis_baseline._scattering_window` (shared by scattering and
+scattering+offset):
+
+::
+
+    raise ValueError(
+        f"{label} baseline needs ≥ 2 points in fit window "
+        f"[{lo}, {hi}]; found {n_in}; "
+        f"data spans [{float(wl.min()):.1f}, {float(wl.max()):.1f}] nm"
+    )
+
+`uvvis_normalise._window_mask` (shared by peak / area):
+
+::
+
+    raise ValueError(
+        f"normalisation window [{lo}, {hi}] contains no samples; "
+        f"data spans [{float(wl.min()):.1f}, {float(wl.max()):.1f}] nm"
+    )
+
+Format choice
+-------------
+
+One-decimal precision (`:.1f`) is the right resolution for
+nm-scale spectra: the user reads the messagebox alongside the
+plot's axis ticks, which are typically marked at 50 nm or 100 nm
+intervals. Sub-nm precision adds noise; integer precision loses
+information when the spectrum starts at e.g. 199.5 nm.
+
+Lock surface
+------------
+
+CS-40 is the message-content append. The Phase 4o friction #1
+"diagnostic-console intent" register entry will eventually
+reformat these messages to also flow through a structured log
+pane; the pure-module ValueError raise stays as the
+authoritative source of truth.
+
+Tests
+-----
+
+`TestErrorMessageDataRange` (3 pure tests in test_uvvis_baseline)
+— polynomial / scattering / scattering+offset error messages
+include "data spans", and the actual nm range substring.
+
+`TestErrorMessageDataRange` (2 pure tests in test_uvvis_normalise)
+— peak and area window messages include "data spans" and the
+data range.
+
+---
+
+*Document version: 1.19 — May 2026*
 *1.1: CS-13 implementation notes added in Phase 4a.*
 *1.2: CS-14 Plot Settings Dialog added in Phase 4b.*
 *1.3: CS-15 UV/Vis Baseline Correction + CS-04 implementation
@@ -4303,5 +4715,35 @@ post-shift framing in the existing Scattering baseline
 floor-zero shift entry — that entry stays open as the
 scattering-specific fitted-offset variant). 579 tests, all
 green (561 + 18 new: 6 pure-module + 12 integration).*
+*1.19: CS-37 + CS-38 + CS-39 + CS-40 added in Phase 4s. CS-37
+ships the universal "Floor at zero" panel toggle and the
+constrained-fit code path for 3 of 6 baseline modes
+(scattering: closed-form constrained `c`; scattering+offset:
+SLSQP convex QP; rubberband: no-op + invariant assert);
+linear / polynomial / spline raise a clear ValueError per the
+per-mode roadmap. CS-38 adds the new `BASELINE_MODES` entry
+`"scattering+offset"` (`B(λ) = a + c · λ^(-n)`), sharing
+scattering's Tk vars and parameter row layout. CS-39 adds
+`fit_scattering` / `fit_scattering_offset` public helpers
+that return the resolved fit parameters; the apply site
+records `c_fitted` (always for scattering modes), `a_fitted`
+(always for scattering+offset), and `n_fitted` (only when
+`n="fit"`) on the OperationNode. CS-40 widens fit-window
+error messages in `compute_polynomial`, the shared
+`_scattering_window` helper (covers scattering and
+scattering+offset), and `uvvis_normalise._window_mask` to
+include `"; data spans [<min>, <max>] nm"`. Two register
+entries marked ✅ (Scattering baseline fitted-offset →
+CS-38; Floor-zero baseline partial 3/6 modes → CS-37).
+Phase 4m friction #2 / #3 / #4 struck through (resolved by
+CS-39 / CS-38 / CS-40). Phase 4r friction #6 partial-strike.
+Four new register entries (1 🔴, 2 🟡, 1 🟢) including
+two USER-FLAGGED elevations (Floor-zero toggle disabled
+state for unsupported modes; Consolidate scattering+offset
+into scattering with optional offset toggle) and one new
+🔴 USER-FLAGGED feature (OLIS .ols / .asc UV/Vis file
+format support). 615 tests, all green (579 + 36 new: 28
+pure-module in test_uvvis_baseline + test_uvvis_normalise;
+8 integration in TestUVVisTabBaseline).*
 *To be updated as Open Questions are resolved and new components
 are specified.*
