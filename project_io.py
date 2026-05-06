@@ -1,33 +1,49 @@
-"""On-disk persistence for Ptarmigan projects (.ptproj/ directory).
+"""Persistence Phase A: manifest+sidecar project format (Phase 4v / CS-46).
 
-This module is the only place that knows about the project file
-format. Everything in ``graph.py`` and ``nodes.py`` is in-memory.
+Locked architecture (BACKLOG persistence-umbrella entry, Phase 4r):
 
-Layout produced and consumed here (CS-13):
+* Content-addressed manifest JSON + sidecar HDF5 files.
+* Sidecars carry every raw array (DataNode arrays). Sidecars are
+  named after the SHA-256 of the canonical (sorted-by-key) byte
+  serialisation of the arrays dict, so two DataNodes with identical
+  payloads share a single sidecar.
+* Single ``protected: bool`` header flag gates the verification path
+  on load. Phase A always writes ``protected: false``.
+* Whole-app save: one manifest, one set of sidecars. Top-level
+  ``plot_defaults`` mirrors ``plot_settings_dialog._USER_DEFAULTS``;
+  per-tab ``tabs[<name>].plot_config`` carries each tab's local
+  overrides; per-tab ``tabs[<name>].graph`` carries the full
+  ProjectGraph (data nodes + op nodes + edges + active overrides).
+* Implementation hash (CS-45) is verified at load: for every
+  OperationNode whose ``metadata["implementation_hash"]`` is a real
+  hash (not the unregistered sentinel), recompute the registry hash
+  and surface a warning per mismatch. The host wraps the warnings in
+  a "implementation changed since this project was saved" dialog
+  with three actions (Keep cached / Re-run all changed / Show
+  details — wired in commit 4 of Phase 4v).
 
-    projectname.ptproj/
-    +-- project.json           # name, timestamps, version info
-    +-- graph/
-    |   +-- committed/         # immutable nodes (deferred)
-    |   +-- provisional/       # ephemeral nodes (deferred)
-    +-- raw/
-    |   +-- {id}__{filename}   # original file copies
-    |   +-- manifest.json      # {node_id: {original_path, sha256, ...}}
-    +-- sessions/              # workspace-window sessions (deferred)
-    +-- log.jsonl              # append-only committed-ops audit (deferred)
+On-disk layout::
 
-In this session we implement:
+    myproject.ptmg/
+    +-- manifest.json         # whole-app state
+    +-- sidecars/
+        +-- <hash>.h5         # one HDF5 per unique arrays bundle
+        +-- ...
 
-* the directory skeleton (``create_project``)
-* ``project.json`` read/write (``read_project_meta`` /
-  ``write_project_meta``)
-* raw file ingestion: copy + SHA-256 + manifest.json
-  (``copy_raw_file``, ``read_raw_manifest``, ``write_raw_manifest``,
-  ``hash_file``)
+Phase A explicitly defers:
 
-Full graph serialisation (committed/, provisional/), provisional
-recovery, and reproducibility report generation are deferred — see
-the NotImplementedError stubs at the bottom of the file.
+* The ``.ptmg`` zip-archive form. Directory-only this phase; archive
+  support is a small follow-up.
+* Phases B-D (subgraph export, signed Merkle manifest, OpenTimestamps
+  anchoring).
+* Migration of legacy ``.ptproj`` / ``.otproj`` files (per user lock:
+  "compatibility with existing project files is NOT a goal").
+
+The TDDFT-only ``.otproj`` save/load via ``project_manager.py`` is
+intentionally untouched in Phase A; ``binah.py`` adds new "Save
+Workflow" / "Open Workflow" menu items that route here while leaving
+the existing TDDFT project gestures alone. Unification is a future
+phase.
 """
 
 from __future__ import annotations
@@ -36,116 +52,567 @@ import hashlib
 import json
 import platform
 import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
+import h5py
+import numpy as np
+
+from graph import ProjectGraph, GraphEvent, GraphEventType
+from nodes import (
+    DataNode,
+    NodeState,
+    NodeType,
+    OperationNode,
+    OperationType,
+)
+from operation_hash import (
+    SENTINEL_PREFIX,
+    compute_implementation_hash,
+)
 from version import __version__ as PTARMIGAN_VERSION
 
-# Directory and file names within a .ptproj/ project.
-PROJECT_JSON       = "project.json"
-GRAPH_DIR          = "graph"
-COMMITTED_DIR      = "graph/committed"
-PROVISIONAL_DIR    = "graph/provisional"
-RAW_DIR            = "raw"
-RAW_MANIFEST       = "raw/manifest.json"
-SESSIONS_DIR       = "sessions"
-LOG_FILE           = "log.jsonl"
 
-# Hashing chunk size; large enough to be efficient on small files,
-# small enough that big files do not dominate memory.
-_HASH_CHUNK = 1 << 20  # 1 MiB
+# =====================================================================
+# Format constants
+# =====================================================================
+
+PTMG_FORMAT = "ptmg"
+PTMG_FORMAT_VERSION = 1
+MANIFEST_FILENAME = "manifest.json"
+SIDECARS_DIRNAME = "sidecars"
 
 
 # =====================================================================
-# Project skeleton
+# Public API
 # =====================================================================
 
-def create_project(path: Path, name: str) -> Path:
-    """Create a new empty .ptproj/ directory at ``path``.
+def save_project(
+    path: Path,
+    *,
+    name: str,
+    plot_defaults: dict[str, Any],
+    tabs: dict[str, "TabPayload"],
+) -> Path:
+    """Write a Ptarmigan workflow to ``path`` (a directory).
+
+    ``path`` is the project root (e.g. ``C:/work/myproject.ptmg``).
+    The directory may already exist; its contents are NOT cleared
+    automatically. The directory is created if missing.
 
     Parameters
     ----------
     path : Path
-        Target directory. Must not already exist (refuse to overwrite
-        an existing project — that is the caller's responsibility).
+        Project root directory. The ``.ptmg`` suffix is convention,
+        not enforced.
     name : str
-        Human-readable project name; written into ``project.json``.
+        Human-readable project name. Persisted in the manifest.
+    plot_defaults : dict
+        Snapshot of ``plot_settings_dialog._USER_DEFAULTS`` (or any
+        equivalent shape).
+    tabs : dict[str, TabPayload]
+        Per-tab state, keyed by tab name. Tabs whose graphs are empty
+        still get a manifest entry so the schema stays uniform.
 
-    Returns
-    -------
-    Path
-        The created project directory (same as ``path``).
+    Returns the project root.
     """
     path = Path(path)
-    if path.exists():
-        raise FileExistsError(f"Path already exists: {path}")
+    sidecars_dir = path / SIDECARS_DIRNAME
+    sidecars_dir.mkdir(parents=True, exist_ok=True)
 
-    # Create directory skeleton.
-    path.mkdir(parents=True)
-    (path / COMMITTED_DIR).mkdir(parents=True)
-    (path / PROVISIONAL_DIR).mkdir(parents=True)
-    (path / RAW_DIR).mkdir(parents=True)
-    (path / SESSIONS_DIR).mkdir(parents=True)
+    now_iso = _now_iso()
+    existing_meta = _read_existing_meta(path)
+    created_at = existing_meta.get("created_at", now_iso)
 
-    # Initial metadata.
-    now = _now_iso()
-    write_project_meta(path, {
-        "name":              name,
-        "created_at":        now,
-        "modified_at":       now,
-        "ptarmigan_version": PTARMIGAN_VERSION,
-        "python_version":    platform.python_version(),
-    })
+    manifest: dict[str, Any] = {
+        "ptarmigan_format":         PTMG_FORMAT,
+        "ptarmigan_format_version": PTMG_FORMAT_VERSION,
+        "ptarmigan_version":        PTARMIGAN_VERSION,
+        "python_version":           platform.python_version(),
+        "name":                     name,
+        "created_at":               created_at,
+        "modified_at":              now_iso,
+        "protected":                False,
+        "plot_defaults":            _jsonify(plot_defaults),
+        "tabs":                     {},
+    }
 
-    # Empty raw manifest and empty log.
-    write_raw_manifest(path, {})
-    (path / LOG_FILE).touch()
+    for tab_name, payload in tabs.items():
+        graph = payload.graph
+        manifest["tabs"][tab_name] = {
+            "plot_config": _jsonify(payload.plot_config),
+            "graph":       _serialise_graph(graph, sidecars_dir),
+        }
 
+    manifest_path = path / MANIFEST_FILENAME
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
     return path
 
 
-# =====================================================================
-# project.json
-# =====================================================================
+def load_project(path: Path) -> "LoadedProject":
+    """Read a Ptarmigan workflow from ``path`` (a directory).
 
-def write_project_meta(project_path: Path, meta: dict) -> None:
-    """Write ``project.json`` for the project at ``project_path``.
+    Returns a ``LoadedProject`` carrying fully reconstructed
+    ProjectGraph instances per tab (no subscribers attached), plus
+    plot defaults, manifest metadata, and ``implementation_warnings``:
+    one entry per OperationNode whose stamped implementation hash no
+    longer matches the current registry hash. The host should surface
+    the warnings via a dialog with three actions (Keep / Re-run /
+    Details).
 
-    The caller is responsible for the contents of ``meta``; this
-    function simply pretty-prints the dict as JSON. ``modified_at``
-    is *not* updated automatically here — callers that mutate a
-    project should set it explicitly so save semantics stay
-    predictable.
+    Raises
+    ------
+    FileNotFoundError
+        If ``path`` does not contain a ``manifest.json``.
+    ValueError
+        If the manifest's ``ptarmigan_format`` is not ``"ptmg"`` or
+        the format version is unsupported.
     """
-    project_path = Path(project_path)
-    target = project_path / PROJECT_JSON
-    target.write_text(
-        json.dumps(meta, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
+    path = Path(path)
+    manifest_path = path / MANIFEST_FILENAME
+    if not manifest_path.exists():
+        raise FileNotFoundError(
+            f"Not a Ptarmigan workflow directory (missing "
+            f"{MANIFEST_FILENAME!r}): {path}"
+        )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    fmt = manifest.get("ptarmigan_format")
+    if fmt != PTMG_FORMAT:
+        raise ValueError(
+            f"Unrecognised project format {fmt!r} at {path} "
+            f"(expected {PTMG_FORMAT!r})"
+        )
+    fmt_ver = manifest.get("ptarmigan_format_version")
+    if fmt_ver != PTMG_FORMAT_VERSION:
+        raise ValueError(
+            f"Unsupported manifest version {fmt_ver!r} at {path} "
+            f"(this build supports v{PTMG_FORMAT_VERSION})"
+        )
+
+    sidecars_dir = path / SIDECARS_DIRNAME
+    tabs_out: dict[str, TabPayload] = {}
+    impl_warnings: list[str] = []
+
+    for tab_name, tab_blob in (manifest.get("tabs") or {}).items():
+        graph, tab_warnings = _deserialise_graph(
+            tab_blob.get("graph", {}),
+            sidecars_dir=sidecars_dir,
+            tab_name=tab_name,
+        )
+        impl_warnings.extend(tab_warnings)
+        tabs_out[tab_name] = TabPayload(
+            plot_config=dict(tab_blob.get("plot_config", {})),
+            graph=graph,
+        )
+
+    return LoadedProject(
+        name=manifest.get("name", ""),
+        created_at=manifest.get("created_at", ""),
+        modified_at=manifest.get("modified_at", ""),
+        ptarmigan_version=manifest.get("ptarmigan_version", ""),
+        plot_defaults=dict(manifest.get("plot_defaults", {})),
+        tabs=tabs_out,
+        implementation_warnings=impl_warnings,
     )
 
 
-def read_project_meta(project_path: Path) -> dict:
-    """Read and return ``project.json`` from ``project_path``.
+def verify_project(path: Path) -> dict[str, list[str]]:
+    """Recompute every sidecar's content hash and every op's
+    implementation hash; return per-category warning lists.
 
-    Raises ``FileNotFoundError`` if the project is missing the file.
+    Returns ``{"array_warnings": [...], "implementation_warnings": [...]}``.
+    Empty lists everywhere ⇒ project is byte-identical to its
+    saved-to-disk form (sidecars have not been tampered with) and
+    every OperationNode's implementation hash still matches the
+    current registry.
     """
-    project_path = Path(project_path)
-    target = project_path / PROJECT_JSON
-    return json.loads(target.read_text(encoding="utf-8"))
+    path = Path(path)
+    manifest_path = path / MANIFEST_FILENAME
+    if not manifest_path.exists():
+        raise FileNotFoundError(
+            f"Not a Ptarmigan workflow directory: {path}"
+        )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    sidecars_dir = path / SIDECARS_DIRNAME
+
+    array_warnings: list[str] = []
+    impl_warnings: list[str] = []
+    seen_hashes: set[str] = set()
+
+    for tab_name, tab_blob in (manifest.get("tabs") or {}).items():
+        graph_blob = tab_blob.get("graph", {})
+        for dn in graph_blob.get("data_nodes", []):
+            arrays_hash = dn.get("arrays_hash")
+            if arrays_hash is None or arrays_hash in seen_hashes:
+                continue
+            seen_hashes.add(arrays_hash)
+            sidecar_path = sidecars_dir / f"{arrays_hash}.h5"
+            if not sidecar_path.exists():
+                array_warnings.append(
+                    f"sidecar missing: {arrays_hash[:16]}... "
+                    f"(referenced by node {dn.get('id', '?')!r} "
+                    f"in tab {tab_name!r})"
+                )
+                continue
+            actual = _hash_arrays(_read_arrays_sidecar(sidecar_path))
+            if actual != arrays_hash:
+                array_warnings.append(
+                    f"sidecar hash mismatch: {arrays_hash[:16]}... "
+                    f"(actual {actual[:16]}...) referenced by node "
+                    f"{dn.get('id', '?')!r} in tab {tab_name!r}"
+                )
+
+        for op in graph_blob.get("op_nodes", []):
+            stored = (op.get("metadata") or {}).get("implementation_hash")
+            if stored is None or stored.startswith(SENTINEL_PREFIX):
+                continue
+            try:
+                op_type = OperationType[op["type"]]
+            except (KeyError, ValueError):
+                continue
+            current = compute_implementation_hash(op_type)
+            if current.startswith(SENTINEL_PREFIX):
+                impl_warnings.append(
+                    f"op {op.get('id', '?')!r} ({op['type']}) was saved "
+                    f"with hash {stored[:16]}... but no implementation is "
+                    f"registered in this build"
+                )
+            elif current != stored:
+                impl_warnings.append(
+                    f"op {op.get('id', '?')!r} ({op['type']}) "
+                    f"implementation changed: saved {stored[:16]}... -> "
+                    f"now {current[:16]}..."
+                )
+
+    return {
+        "array_warnings":           array_warnings,
+        "implementation_warnings":  impl_warnings,
+    }
 
 
 # =====================================================================
-# Raw files: SHA-256, copy, manifest
+# Payload dataclasses (the public surface for callers)
 # =====================================================================
+
+@dataclass
+class TabPayload:
+    """One tab's serialisable state.
+
+    ``plot_config`` is a free-form dict mirroring the tab's existing
+    ``_plot_config`` attribute. ``graph`` is the live ProjectGraph
+    instance; project_io reads it on save and reconstructs a fresh
+    one on load.
+    """
+    plot_config: dict[str, Any]
+    graph: ProjectGraph
+
+
+@dataclass
+class LoadedProject:
+    """Result of ``load_project``.
+
+    Mirrors the manifest's top-level shape with plot_defaults and
+    per-tab payloads ready to swap into the running app, plus
+    ``implementation_warnings`` for the host's mismatch dialog.
+    """
+    name: str
+    created_at: str
+    modified_at: str
+    ptarmigan_version: str
+    plot_defaults: dict[str, Any]
+    tabs: dict[str, TabPayload]
+    implementation_warnings: list[str] = field(default_factory=list)
+
+
+# =====================================================================
+# Graph (de)serialisation
+# =====================================================================
+
+def _serialise_graph(
+    graph: ProjectGraph,
+    sidecars_dir: Path,
+) -> dict[str, Any]:
+    """Serialise a ProjectGraph into a manifest-ready dict, writing
+    every unique array bundle to ``sidecars_dir`` as ``<hash>.h5``."""
+    data_nodes: list[dict[str, Any]] = []
+    op_nodes: list[dict[str, Any]] = []
+
+    written: set[str] = set()
+
+    for node in graph.nodes.values():
+        if isinstance(node, DataNode):
+            arrays_hash = _hash_arrays(node.arrays)
+            sidecar_path = sidecars_dir / f"{arrays_hash}.h5"
+            if arrays_hash not in written and not sidecar_path.exists():
+                _write_arrays_sidecar(sidecar_path, node.arrays)
+            written.add(arrays_hash)
+            data_nodes.append(_serialise_data_node(node, arrays_hash))
+        elif isinstance(node, OperationNode):
+            op_nodes.append(_serialise_op_node(node))
+        # Defensive: future NodeType subclasses fall through here;
+        # the schema can be extended without breaking older saves.
+
+    edges = [list(edge) for edge in graph.edges]
+    active_overrides = dict(graph._active_overrides)
+
+    return {
+        "data_nodes":        data_nodes,
+        "op_nodes":          op_nodes,
+        "edges":             edges,
+        "active_overrides":  active_overrides,
+    }
+
+
+def _deserialise_graph(
+    blob: dict[str, Any],
+    *,
+    sidecars_dir: Path,
+    tab_name: str,
+) -> tuple[ProjectGraph, list[str]]:
+    """Reconstruct a ProjectGraph from a manifest blob, returning the
+    graph plus a per-op implementation-mismatch warning list."""
+    graph = ProjectGraph()
+    impl_warnings: list[str] = []
+
+    for dn_blob in blob.get("data_nodes", []):
+        arrays_hash = dn_blob.get("arrays_hash")
+        if arrays_hash is None:
+            arrays: dict[str, np.ndarray] = {}
+        else:
+            sidecar_path = sidecars_dir / f"{arrays_hash}.h5"
+            if not sidecar_path.exists():
+                arrays = {}
+            else:
+                arrays = _read_arrays_sidecar(sidecar_path)
+        graph.nodes[dn_blob["id"]] = _deserialise_data_node(dn_blob, arrays)
+
+    for op_blob in blob.get("op_nodes", []):
+        op_node = _deserialise_op_node(op_blob)
+        graph.nodes[op_node.id] = op_node
+        stored = op_node.metadata.get("implementation_hash")
+        if stored is None or stored.startswith(SENTINEL_PREFIX):
+            continue
+        current = compute_implementation_hash(op_node.type)
+        if current.startswith(SENTINEL_PREFIX):
+            impl_warnings.append(
+                f"[{tab_name}] op {op_node.id!r} ({op_node.type.name}) "
+                f"was saved with implementation hash {stored[:16]}... but "
+                f"the current build has no implementation registered"
+            )
+        elif current != stored:
+            impl_warnings.append(
+                f"[{tab_name}] op {op_node.id!r} ({op_node.type.name}) "
+                f"implementation changed since save "
+                f"({stored[:16]}... -> {current[:16]}...)"
+            )
+
+    for edge in blob.get("edges", []):
+        graph.edges.append((edge[0], edge[1]))
+
+    graph._active_overrides = dict(blob.get("active_overrides", {}))
+
+    return graph, impl_warnings
+
+
+def _serialise_data_node(node: DataNode, arrays_hash: str) -> dict[str, Any]:
+    return {
+        "id":          node.id,
+        "type":        node.type.name,
+        "label":       node.label,
+        "state":       node.state.name,
+        "created_at":  node.created_at.isoformat(),
+        "active":      node.active,
+        "style":       _jsonify(node.style),
+        "metadata":    _jsonify(node.metadata),
+        "arrays_hash": arrays_hash,
+    }
+
+
+def _deserialise_data_node(
+    blob: dict[str, Any],
+    arrays: dict[str, np.ndarray],
+) -> DataNode:
+    return DataNode(
+        id=blob["id"],
+        type=NodeType[blob["type"]],
+        arrays=arrays,
+        metadata=dict(blob.get("metadata", {})),
+        label=blob.get("label", ""),
+        state=NodeState[blob.get("state", "PROVISIONAL")],
+        created_at=_parse_iso(blob.get("created_at")),
+        active=bool(blob.get("active", True)),
+        style=dict(blob.get("style", {})),
+    )
+
+
+def _serialise_op_node(node: OperationNode) -> dict[str, Any]:
+    return {
+        "id":             node.id,
+        "type":           node.type.name,
+        "engine":         node.engine,
+        "engine_version": node.engine_version,
+        "params":         _jsonify(node.params),
+        "input_ids":      list(node.input_ids),
+        "output_ids":     list(node.output_ids),
+        "timestamp":      node.timestamp.isoformat(),
+        "duration_ms":    int(node.duration_ms),
+        "status":         node.status,
+        "log":            node.log,
+        "state":          node.state.name,
+        "metadata":       _jsonify(node.metadata),
+        "deterministic":  bool(node.deterministic),
+    }
+
+
+def _deserialise_op_node(blob: dict[str, Any]) -> OperationNode:
+    return OperationNode(
+        id=blob["id"],
+        type=OperationType[blob["type"]],
+        engine=blob.get("engine", "internal"),
+        engine_version=blob.get("engine_version", ""),
+        params=dict(blob.get("params", {})),
+        input_ids=list(blob.get("input_ids", [])),
+        output_ids=list(blob.get("output_ids", [])),
+        timestamp=_parse_iso(blob.get("timestamp")),
+        duration_ms=int(blob.get("duration_ms", 0)),
+        status=blob.get("status", "SUCCESS"),
+        log=blob.get("log", ""),
+        state=NodeState[blob.get("state", "PROVISIONAL")],
+        metadata=dict(blob.get("metadata", {})),
+        deterministic=bool(blob.get("deterministic", True)),
+    )
+
+
+# =====================================================================
+# Sidecar (arrays) HDF5 round-trip + content hashing
+# =====================================================================
+
+def _hash_arrays(arrays: dict[str, np.ndarray]) -> str:
+    """SHA-256 over a canonical, deterministic encoding of an arrays
+    dict.
+
+    Encoding (per array, in sorted-key order)::
+
+        "k:" || key_bytes || "\\n"
+        "d:" || dtype.str_bytes || "\\n"
+        "s:" || comma-joined shape || "\\n"
+        "b:" || array.tobytes() || "\\n"
+
+    Key sorting + per-section length encoding ensure that two arrays
+    dicts with the same content always hash identically regardless
+    of insertion order.
+    """
+    h = hashlib.sha256()
+    for key in sorted(arrays.keys()):
+        arr = np.asarray(arrays[key])
+        h.update(b"k:")
+        h.update(key.encode("utf-8"))
+        h.update(b"\n")
+        h.update(b"d:")
+        h.update(arr.dtype.str.encode("ascii"))
+        h.update(b"\n")
+        h.update(b"s:")
+        h.update(",".join(str(d) for d in arr.shape).encode("ascii"))
+        h.update(b"\n")
+        h.update(b"b:")
+        h.update(np.ascontiguousarray(arr).tobytes())
+        h.update(b"\n")
+    return h.hexdigest()
+
+
+def _write_arrays_sidecar(path: Path, arrays: dict[str, np.ndarray]) -> None:
+    """Write an arrays dict to an HDF5 file, one dataset per key."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with h5py.File(path, "w") as f:
+        for key, arr in arrays.items():
+            f.create_dataset(
+                key,
+                data=np.asarray(arr),
+                compression="gzip",
+                compression_opts=4,
+            )
+
+
+def _read_arrays_sidecar(path: Path) -> dict[str, np.ndarray]:
+    """Read an HDF5 sidecar back into an arrays dict."""
+    out: dict[str, np.ndarray] = {}
+    with h5py.File(path, "r") as f:
+        for key in f.keys():
+            out[key] = np.asarray(f[key][...])
+    return out
+
+
+# =====================================================================
+# Helpers
+# =====================================================================
+
+def _jsonify(value: Any) -> Any:
+    """Recursively coerce numpy scalars and tuples into JSON-friendly
+    Python natives. ``params`` and ``metadata`` round-trip through
+    JSON so any nested numpy or tuple values must be flattened."""
+    if isinstance(value, dict):
+        return {str(k): _jsonify(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonify(v) for v in value]
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    return value
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _parse_iso(s: str | None) -> datetime:
+    """Parse an ISO 8601 timestamp; fall back to current UTC if absent
+    or malformed (load is best-effort, not a verifier)."""
+    if not s:
+        return datetime.now(timezone.utc)
+    try:
+        dt = datetime.fromisoformat(s)
+    except ValueError:
+        return datetime.now(timezone.utc)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def _read_existing_meta(path: Path) -> dict[str, Any]:
+    """Read just the manifest's top-level dict for an in-place save
+    (preserves ``created_at`` across re-saves)."""
+    target = path / MANIFEST_FILENAME
+    if not target.exists():
+        return {}
+    try:
+        return json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+# =====================================================================
+# Hashing helpers retained for callers (raw file integrity etc.)
+# =====================================================================
+
+_HASH_CHUNK = 1 << 20
+
 
 def hash_file(path: Path) -> str:
     """Return the SHA-256 hex digest of the file *contents* at ``path``.
 
-    The hash covers the bytes of the file only — never the filename
-    or any filesystem metadata. Reads the file in 1 MiB chunks so
-    multi-gigabyte raw beamline files do not need to fit in memory.
+    Retained from the pre-Phase-A project_io for callers that want to
+    fingerprint instrument files for the UV/Vis tab's
+    ``_has_existing_load`` deduplication logic and for the future
+    raw-file sidecar (raw original instrument file persistence is
+    deferred to a Phase A follow-up; today only the parsed arrays
+    round-trip through the sidecar).
     """
     path = Path(path)
     h = hashlib.sha256()
@@ -158,231 +625,12 @@ def hash_file(path: Path) -> str:
     return h.hexdigest()
 
 
-@dataclass
-class RawFileRecord:
-    """One entry in ``raw/manifest.json``.
-
-    Attributes
-    ----------
-    original_path : str
-        Absolute path of the source file at the time it was loaded.
-        Stored for human reference only — Ptarmigan never reads from
-        this path again once the file has been copied into the project.
-    sha256 : str
-        Hex digest of the file contents.
-    copied_to : str
-        Path of the copy *relative to the project root* (e.g.
-        ``"raw/ds_001__scan1.dat"``).
-    copied_at : str
-        ISO 8601 UTC timestamp when the copy was made.
-    """
-
-    original_path: str
-    sha256: str
-    copied_to: str
-    copied_at: str
-
-    def to_dict(self) -> dict:
-        return {
-            "original_path": self.original_path,
-            "sha256":        self.sha256,
-            "copied_to":     self.copied_to,
-            "copied_at":     self.copied_at,
-        }
-
-    @classmethod
-    def from_dict(cls, d: dict) -> "RawFileRecord":
-        return cls(
-            original_path=d["original_path"],
-            sha256=d["sha256"],
-            copied_to=d["copied_to"],
-            copied_at=d["copied_at"],
-        )
-
-
-def copy_raw_file(
-    project_path: Path,
-    source_path: Path,
-    node_id: str,
-) -> RawFileRecord:
-    """Copy a raw input file into the project and update the manifest.
-
-    The copy is named ``raw/{node_id}__{original_filename}`` so that
-    multiple files with the same basename can coexist without clobbering
-    each other. The SHA-256 is computed from the *copy* (which is byte
-    identical to the source) and recorded in ``raw/manifest.json``
-    keyed by ``node_id``.
-
-    Returns the new ``RawFileRecord``.
-    """
-    project_path = Path(project_path)
-    source_path = Path(source_path).resolve()
-
-    raw_dir = project_path / RAW_DIR
-    raw_dir.mkdir(parents=True, exist_ok=True)
-
-    dest_name = f"{node_id}__{source_path.name}"
-    dest_path = raw_dir / dest_name
-
-    if dest_path.exists():
-        raise FileExistsError(
-            f"Raw file already exists for node {node_id!r}: {dest_path}"
-        )
-
-    shutil.copy2(source_path, dest_path)
-    digest = hash_file(dest_path)
-
-    record = RawFileRecord(
-        original_path=str(source_path),
-        sha256=digest,
-        copied_to=f"{RAW_DIR}/{dest_name}",
-        copied_at=_now_iso(),
-    )
-
-    manifest = read_raw_manifest(project_path)
-    manifest[node_id] = record
-    write_raw_manifest(project_path, manifest)
-
-    return record
-
-
-def read_raw_manifest(project_path: Path) -> dict[str, RawFileRecord]:
-    """Read ``raw/manifest.json`` and return ``{node_id: RawFileRecord}``.
-
-    Returns an empty dict if the manifest does not exist yet.
-    """
-    project_path = Path(project_path)
-    target = project_path / RAW_MANIFEST
-    if not target.exists():
-        return {}
-    raw = json.loads(target.read_text(encoding="utf-8"))
-    return {nid: RawFileRecord.from_dict(d) for nid, d in raw.items()}
-
-
-def write_raw_manifest(
-    project_path: Path,
-    manifest: dict[str, RawFileRecord],
-) -> None:
-    """Write ``raw/manifest.json``.
-
-    Ensures the parent directory exists.
-    """
-    project_path = Path(project_path)
-    target = project_path / RAW_MANIFEST
-    target.parent.mkdir(parents=True, exist_ok=True)
-    serialisable = {nid: rec.to_dict() for nid, rec in manifest.items()}
-    target.write_text(
-        json.dumps(serialisable, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
-
-
-def verify_raw_files(project_path: Path) -> list[str]:
-    """Recompute SHA-256 of every copied raw file and report mismatches.
-
-    Returns a list of human-readable warning strings, one per file that
-    is missing from disk or whose hash does not match the manifest.
-    An empty list means the project's raw/ directory is intact.
-    """
-    project_path = Path(project_path)
-    manifest = read_raw_manifest(project_path)
-    warnings: list[str] = []
-    for node_id, rec in manifest.items():
-        copy_path = project_path / rec.copied_to
-        if not copy_path.exists():
-            warnings.append(
-                f"raw file missing: {rec.copied_to} (node {node_id})"
-            )
-            continue
-        actual = hash_file(copy_path)
-        if actual != rec.sha256:
-            warnings.append(
-                f"raw file hash mismatch: {rec.copied_to} (node {node_id}): "
-                f"manifest={rec.sha256[:12]}..., actual={actual[:12]}..."
-            )
-    return warnings
-
-
-# =====================================================================
-# Deferred: full graph serialisation, recovery, reproducibility report
-# =====================================================================
-
-def save_graph(graph, project_path: Path) -> None:
-    """Persist a ProjectGraph to ``graph/committed/`` and ``graph/provisional/``.
-
-    TODO (later phase): for each DataNode write ``{id}.json`` (metadata)
-    and ``{id}.npz`` (arrays via numpy.savez_compressed); for each
-    OperationNode write ``{id}.json``. Committed nodes go to
-    graph/committed/, provisional nodes to graph/provisional/.
-    Append newly committed operations to log.jsonl. Update
-    project.json modified_at.
-    """
-    raise NotImplementedError(
-        "save_graph is implemented in a later phase — node-level "
-        "serialisation is intentionally deferred until the in-memory "
-        "graph contract is stable."
-    )
-
-
-def load_graph(project_path: Path):
-    """Reconstruct a ProjectGraph from a .ptproj/ directory.
-
-    TODO (later phase): read every ``{id}.json`` in graph/committed/,
-    rehydrate as DataNode or OperationNode (recover NodeType /
-    OperationType / NodeState by name, parse created_at/timestamp,
-    load arrays from matching .npz), reconnect edges based on
-    operation input/output ids, and emit GRAPH_LOADED. Then offer
-    provisional recovery (see recover_provisional below).
-    """
-    raise NotImplementedError(
-        "load_graph is implemented in a later phase."
-    )
-
-
-def recover_provisional(project_path: Path):
-    """Detect provisional nodes from a previous session and offer recovery.
-
-    TODO (later phase): inspect graph/provisional/. If non-empty,
-    return a summary the UI can present in a "restore or discard"
-    dialog (the same gesture as crash recovery in a word processor).
-    On restore, load the provisional nodes into the graph as
-    PROVISIONAL. On discard, delete graph/provisional/ contents.
-    """
-    raise NotImplementedError(
-        "recover_provisional is implemented in a later phase."
-    )
-
-
-def export_reproducibility_report(
-    graph,
-    compare_node_ids: list[str],
-    output_path: Path,
-    fmt: str = "text",
-) -> None:
-    """Write a human- or machine-readable reproducibility report.
-
-    TODO (later phase): for each id in compare_node_ids, walk the
-    full provenance chain via graph.provenance_chain, format every
-    OperationNode as a methods-section paragraph (engine, version,
-    parameters, inputs), and write to ``output_path`` in either
-    ``"text"`` (markdown-ish) or ``"json"`` form. Cross-reference
-    raw files by SHA-256 from raw/manifest.json.
-    """
-    raise NotImplementedError(
-        "export_reproducibility_report is implemented in a later phase."
-    )
-
-
-# =====================================================================
-# Internals
-# =====================================================================
-
-def _now_iso() -> str:
-    """Return the current UTC time as an ISO 8601 string.
-
-    Uses ``datetime.now(timezone.utc)`` rather than the deprecated
-    ``utcnow()`` so the timestamp is timezone-aware. The ``+00:00``
-    offset is included in the serialised form, which is the format
-    standard JSON loaders accept.
-    """
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+def copy_project(src: Path, dst: Path) -> Path:
+    """Recursively copy a project directory. Used by Save As when the
+    user picks a new destination - the old project stays where it was."""
+    src = Path(src)
+    dst = Path(dst)
+    if dst.exists():
+        raise FileExistsError(f"Destination already exists: {dst}")
+    shutil.copytree(src, dst)
+    return dst
