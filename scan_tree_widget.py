@@ -94,6 +94,7 @@ from typing import Any, Callable, Iterable, Sequence, Union
 
 from graph import GraphEvent, GraphEventType, ProjectGraph
 from nodes import DataNode, NodeState, NodeType, OperationNode
+from tooltip import Tooltip
 
 _log = logging.getLogger(__name__)
 
@@ -187,76 +188,6 @@ def _truncate_label(text: str, max_chars: int = _LABEL_MAX_CHARS) -> str:
     if len(text) <= max_chars:
         return text
     return text[:max_chars - 1] + "…"
-
-
-class _Tooltip:
-    """Lightweight hover tooltip for a Tk widget.
-
-    Phase 4q (CS-33). Used by ``_populate_node_row`` to surface the
-    full node label when ``_truncate_label`` had to cut it. Attaches
-    ``<Enter>`` / ``<Leave>`` / ``<ButtonPress>`` bindings; on hover
-    after a short delay, opens a borderless ``tk.Toplevel`` with the
-    full text. The widget is destroyed on the leave / press / parent
-    teardown. Single-instance per widget; ``update_text`` rotates the
-    text in place after a label rename without rebuilding the row.
-    """
-
-    DELAY_MS: int = 600
-
-    def __init__(self, widget: tk.Widget, text: str) -> None:
-        self._widget = widget
-        self._text = text
-        self._tip: tk.Toplevel | None = None
-        self._after_id: str | None = None
-        widget.bind("<Enter>",      self._schedule, add="+")
-        widget.bind("<Leave>",      self._hide,     add="+")
-        widget.bind("<ButtonPress>", self._hide,    add="+")
-
-    def update_text(self, text: str) -> None:
-        self._text = text
-
-    def _schedule(self, _event: tk.Event | None = None) -> None:
-        self._cancel()
-        try:
-            self._after_id = self._widget.after(self.DELAY_MS, self._show)
-        except tk.TclError:
-            self._after_id = None
-
-    def _cancel(self) -> None:
-        if self._after_id is not None:
-            try:
-                self._widget.after_cancel(self._after_id)
-            except (tk.TclError, ValueError):
-                pass
-            self._after_id = None
-
-    def _show(self) -> None:
-        if self._tip is not None or not self._text:
-            return
-        try:
-            x = self._widget.winfo_rootx() + 12
-            y = (self._widget.winfo_rooty()
-                 + self._widget.winfo_height() + 4)
-            tip = tk.Toplevel(self._widget)
-            tip.wm_overrideredirect(True)
-            tip.wm_geometry(f"+{x}+{y}")
-            tk.Label(
-                tip, text=self._text,
-                bg="#FFFFE0", relief=tk.SOLID, bd=1,
-                justify="left", padx=4, pady=2,
-            ).pack()
-            self._tip = tip
-        except tk.TclError:
-            self._tip = None
-
-    def _hide(self, _event: tk.Event | None = None) -> None:
-        self._cancel()
-        if self._tip is not None:
-            try:
-                self._tip.destroy()
-            except tk.TclError:
-                pass
-            self._tip = None
 
 
 def _style_get(node: DataNode, key: str) -> Any:
@@ -725,6 +656,12 @@ class ScanTreeWidget(tk.Frame):
             bc_btn.config(command=_toggle_bc)
             _refresh_bc()
             bc_btn.pack(side="left", padx=(2, 0))
+            # Phase 4t (CS-42) — promoted Tooltip's first cross-module
+            # consumer. Phase 4r friction #1 noted the gesture was
+            # discoverable only by experimentation; the hover hint
+            # paints "Show / hide baseline curve overlay" so a new
+            # user reading the row understands the toggle's effect.
+            Tooltip(bc_btn, "Show / hide baseline curve overlay")
 
         # Label (double-click to edit in-place). Phase 4q (CS-33):
         # the displayed text is truncated at ``_LABEL_MAX_CHARS`` to
@@ -740,7 +677,7 @@ class ScanTreeWidget(tk.Frame):
         label = tk.Label(row, text=display_text, anchor="w")
         label.pack(side="left", fill="x", expand=True, padx=(2, 4))
         if display_text != node.label:
-            _Tooltip(label, node.label)
+            Tooltip(label, node.label)
         label.bind(
             "<Double-Button-1>",
             lambda _e, nid=node.id, lbl=label, frm=row:
@@ -1038,7 +975,7 @@ class ScanTreeWidget(tk.Frame):
         leader_lbl = tk.Label(row, text=leader_text, anchor="w")
         leader_lbl.pack(side="left", fill="x", expand=True, padx=(2, 4))
         if _truncate_label(parent_label_full) != parent_label_full:
-            _Tooltip(
+            Tooltip(
                 leader_lbl,
                 f"{parent_label_full} · sweep ({len(members)} variants)",
             )

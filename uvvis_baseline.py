@@ -1,5 +1,6 @@
 """UV/Vis baseline correction algorithms (Phase 4c CS-15, Phase 4m CS-24,
-Phase 4s CS-37 / CS-38 / CS-39 / CS-40).
+Phase 4s CS-37 / CS-38 / CS-39 / CS-40, Phase 4t CS-41 + floor-zero
+expansion to all six modes).
 
 Pure computational module — no Tk, no graph, no I/O. Each ``compute_*``
 takes ``(wavelength_nm, absorbance, params)`` and returns the
@@ -37,12 +38,13 @@ Six modes:
 
 CS-37 — ``params["floor_zero"]: bool`` (default False) enforces the
 fit-time invariant that the corrected absorbance ``a - B`` is ≥ 0
-everywhere. Implemented for ``scattering`` (closed-form constrained
-``c``), ``scattering+offset`` (convex QP via SLSQP), and ``rubberband``
-(no-op — the convex-hull baseline is already ≤ data by construction).
-For ``linear`` / ``polynomial`` / ``spline`` the constrained-fit path
-is not yet implemented (per the per-mode roadmap in BACKLOG); callers
-passing ``floor_zero=True`` to those modes get a clear ``ValueError``.
+everywhere. Phase 4t completes the per-mode roadmap: all six modes
+ship the constrained-fit code path. Per-mode implementation:
+``scattering`` (closed-form constrained ``c``), ``scattering+offset``
+(convex QP via SLSQP), ``rubberband`` (no-op — the convex-hull
+baseline is already ≤ data by construction), ``linear`` (SLSQP on
+``(a_lo, a_hi)``), ``polynomial`` (SLSQP on the polynomial
+coefficients), ``spline`` (SLSQP on the per-anchor absorbance values).
 
 CS-39 — ``fit_scattering`` / ``fit_scattering_offset`` return the
 resolved fit parameters as ``{"c_fitted", "n_fitted"}`` (and
@@ -53,6 +55,13 @@ round-trip purposes.
 CS-40 — fit-window error messages include the data's nm range so a
 user typing a window outside the spectrum sees the real range without
 re-reading the plot.
+
+CS-41 — ``params["n_bounds"]: tuple[float, float]`` (default
+``(0.1, 8.0)``) overrides the bounded-scan range used by the
+``n="fit"`` branch in ``scattering`` and ``scattering+offset``.
+Validated to require ``0 ≤ lo < hi``. No UI exposure today; the
+hook is API-only so callers (or a future Tk row) can widen / shrink
+the scan when the default range is wrong for their data.
 
 Params completeness (CS-03): each mode lists exactly the keys it reads
 from ``params``. Missing keys raise ``KeyError`` (the calling tab is
@@ -95,6 +104,32 @@ def _floor_zero(params) -> bool:
     return bool(params.get("floor_zero", False))
 
 
+# CS-41 (Phase 4t) — default n="fit" scan bounds for the scattering and
+# scattering+offset modes. Covers Rayleigh (n=4), large-particle Mie (n≈2),
+# and dust-tail (n≈1) comfortably; sub-Rayleigh (n≈0.5) sits at the lower
+# bound. Callers can override per-fit by passing ``params["n_bounds"] =
+# (lo, hi)`` (validated; both ≥ 0; lo < hi).
+_DEFAULT_N_BOUNDS: tuple[float, float] = (0.1, 8.0)
+
+
+def _resolve_n_bounds(params) -> tuple[float, float]:
+    """Read + validate the ``n_bounds`` override (CS-41)."""
+    if params is None:
+        return _DEFAULT_N_BOUNDS
+    raw = params.get("n_bounds", _DEFAULT_N_BOUNDS)
+    try:
+        lo, hi = float(raw[0]), float(raw[1])
+    except (TypeError, ValueError, IndexError, KeyError):
+        raise ValueError(
+            f"n_bounds must be a (lo, hi) pair of numbers; got {raw!r}"
+        )
+    if lo < 0 or hi < 0:
+        raise ValueError(f"n_bounds entries must be ≥ 0; got ({lo}, {hi})")
+    if lo >= hi:
+        raise ValueError(f"n_bounds requires lo < hi; got ({lo}, {hi})")
+    return lo, hi
+
+
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
@@ -125,12 +160,14 @@ def compute_linear(
 
     Required ``params`` keys: ``anchor_lo_nm``, ``anchor_hi_nm`` (in nm,
     ordering enforced internally).
+
+    CS-37 (Phase 4t) — under ``floor_zero=True`` the two-point line is
+    fit by SLSQP with linear inequality ``baseline(wl_i) ≤ a_i`` at
+    every full-range sample. The objective minimises L2 distance from
+    the unconstrained sampled-anchor values, so when the constraint
+    isn't active the result matches the unconstrained two-point line.
     """
-    if _floor_zero(params):
-        raise ValueError(
-            "floor_zero=True is not yet implemented for baseline mode "
-            "'linear'; ships in a later session per the per-mode roadmap"
-        )
+    floor_zero = _floor_zero(params)
     wl, a = _coerce(wavelength_nm, absorbance)
     lo = float(params["anchor_lo_nm"])
     hi = float(params["anchor_hi_nm"])
@@ -141,6 +178,8 @@ def compute_linear(
         # it matches the limit of the two-anchor formula.
         order = np.argsort(wl)
         a_pt = float(np.interp(lo, wl[order], a[order]))
+        if floor_zero:
+            a_pt = min(a_pt, float(a.min()))
         return a - a_pt
     if lo > hi:
         lo, hi = hi, lo
@@ -151,8 +190,44 @@ def compute_linear(
     a_lo = float(np.interp(lo, wl_s, a_s))
     a_hi = float(np.interp(hi, wl_s, a_s))
 
+    if floor_zero:
+        a_lo, a_hi = _linear_floor_zero_fit(wl, a, lo, hi, a_lo, a_hi)
+
     baseline = a_lo + (a_hi - a_lo) * (wl - lo) / (hi - lo)
     return a - baseline
+
+
+def _linear_floor_zero_fit(wl, a, lo, hi, a_lo_unc, a_hi_unc):
+    """SLSQP-fit ``(a_lo, a_hi)`` so the line lies ≤ data everywhere.
+
+    Objective minimises ``(a_lo - a_lo_unc)² + (a_hi - a_hi_unc)²`` so
+    the result equals the unconstrained pair when the constraint slack
+    is non-binding.
+    """
+    from scipy.optimize import minimize, LinearConstraint
+    weight = (wl - lo) / (hi - lo)  # linear interp coefficient on a_hi
+    # baseline_i = (1 - weight_i) * a_lo + weight_i * a_hi   ≤ a_i
+    A_constraint = np.column_stack([1.0 - weight, weight])
+    cons = LinearConstraint(A_constraint, lb=-np.inf, ub=a)
+
+    # Initial guess: unconstrained pair shifted down by max overage so
+    # the SLSQP starting point is feasible.
+    residuals = (1.0 - weight) * a_lo_unc + weight * a_hi_unc - a
+    max_overage = float(residuals.max()) if residuals.size else 0.0
+    shift = max(max_overage, 0.0)
+    x0 = [a_lo_unc - shift, a_hi_unc - shift]
+
+    def obj(v):
+        return float((v[0] - a_lo_unc) ** 2 + (v[1] - a_hi_unc) ** 2)
+
+    result = minimize(obj, x0, method="SLSQP", constraints=[cons])
+    if not result.success:
+        raise ValueError(
+            "linear floor-zero fit did not converge: "
+            f"{result.message}; try widening the anchors or "
+            "disabling floor-zero"
+        )
+    return float(result.x[0]), float(result.x[1])
 
 
 # ---------------------------------------------------------------------------
@@ -168,12 +243,15 @@ def compute_polynomial(
     Required ``params`` keys: ``order`` (int), ``fit_lo_nm``,
     ``fit_hi_nm``. The polynomial is fit to the data inside the
     wavelength window and evaluated across the full input range.
+
+    CS-37 (Phase 4t) — under ``floor_zero=True`` the polynomial
+    coefficients are fit by SLSQP minimising the same window L2
+    residual as ``np.polyfit`` subject to the linear inequality
+    ``polyval(coeffs, wl_i) ≤ a_i`` at every full-range sample.
+    Convex problem in the coefficients; the optimum equals the
+    unconstrained ``np.polyfit`` result when no constraint binds.
     """
-    if _floor_zero(params):
-        raise ValueError(
-            "floor_zero=True is not yet implemented for baseline mode "
-            "'polynomial'; ships in a later session per the per-mode roadmap"
-        )
+    floor_zero = _floor_zero(params)
     wl, a = _coerce(wavelength_nm, absorbance)
     order_n = int(params["order"])
     if order_n < 0:
@@ -193,8 +271,67 @@ def compute_polynomial(
         )
 
     coeffs = np.polyfit(wl[mask], a[mask], order_n)
+    if floor_zero:
+        coeffs = _polynomial_floor_zero_fit(wl, a, mask, order_n, coeffs)
     baseline = np.polyval(coeffs, wl)
     return a - baseline
+
+
+def _polynomial_floor_zero_fit(wl, a, mask, order_n, coeffs_unc):
+    """SLSQP-fit polynomial coefficients with the floor-zero constraint.
+
+    Returns ``coeffs`` in ``np.polyfit`` ordering (highest power first;
+    ``coeffs[-1]`` is the constant term) so the result threads cleanly
+    into ``np.polyval``. The SLSQP solve runs in a normalized variable
+    ``z = (wl − center) / half_range`` so the design matrix stays
+    well-conditioned for arbitrary polynomial order across wide
+    wavelength windows; the fitted polynomial is then evaluated at the
+    full wavelength grid and re-fit by ``np.polyfit`` to recover the
+    wl-space coefficients exactly.
+    """
+    from scipy.optimize import minimize, LinearConstraint
+    wl_w = wl[mask]
+    a_w = a[mask]
+    wl_min, wl_max = float(wl.min()), float(wl.max())
+    wl_center = 0.5 * (wl_min + wl_max)
+    wl_half = max(0.5 * (wl_max - wl_min), 1e-12)
+    z_w = (wl_w - wl_center) / wl_half
+    z_full = (wl - wl_center) / wl_half
+
+    # Ascending-power Vandermonde in z (1, z, z^2, ...).
+    powers_asc = np.arange(0, order_n + 1)
+    V_w = z_w[:, None] ** powers_asc[None, :]
+    V_full = z_full[:, None] ** powers_asc[None, :]
+
+    # Initial guess: fit the unconstrained polynomial directly in
+    # z-space (descending, then reverse for ascending). polyfit in
+    # the well-conditioned z-axis is the natural starting point.
+    z_coef_unc_asc = np.polyfit(z_w, a_w, order_n)[::-1]
+
+    cons = LinearConstraint(V_full, lb=-np.inf, ub=a)
+    residuals_full = V_full @ z_coef_unc_asc - a
+    max_overage = float(residuals_full.max()) if residuals_full.size else 0.0
+    x0 = z_coef_unc_asc.copy()
+    if max_overage > 0:
+        x0[0] -= max_overage  # shift constant term in z-space
+
+    def obj(c):
+        r = V_w @ c - a_w
+        return float(np.dot(r, r))
+
+    result = minimize(obj, x0, method="SLSQP", constraints=[cons])
+    if not result.success:
+        raise ValueError(
+            "polynomial floor-zero fit did not converge: "
+            f"{result.message}; try widening the fit window or "
+            "disabling floor-zero"
+        )
+    # Convert z-space coefs back to wl-space descending coefs by
+    # evaluating the polynomial at every wl sample and re-fitting in
+    # wl-space — robust round-trip without manual basis conversion.
+    z_coef_fit_asc = result.x
+    baseline_full = V_full @ z_coef_fit_asc
+    return np.polyfit(wl, baseline_full, order_n)
 
 
 # ---------------------------------------------------------------------------
@@ -212,12 +349,16 @@ def compute_spline(
     data via linear interpolation; the baseline is then a cubic spline
     through those (anchor, sampled_absorbance) points (or a polynomial
     of degree 1 or 2 when fewer than four anchors are supplied).
+
+    CS-37 (Phase 4t) — under ``floor_zero=True`` the per-anchor
+    absorbance values are fit by SLSQP minimising L2 distance from the
+    sampled values subject to the spline (or fallback polynomial)
+    evaluated at every full-range sample being ≤ data. The constraint
+    is linear in ``anchor_a`` for both the cubic-spline and the
+    polynomial fallbacks; SLSQP treats it as nonlinear but the
+    underlying problem is convex.
     """
-    if _floor_zero(params):
-        raise ValueError(
-            "floor_zero=True is not yet implemented for baseline mode "
-            "'spline'; ships in a later session per the per-mode roadmap"
-        )
+    floor_zero = _floor_zero(params)
     wl, a = _coerce(wavelength_nm, absorbance)
     anchors_in: Sequence = params["anchors"]
     anchors_sorted = sorted({float(x) for x in anchors_in})
@@ -229,18 +370,59 @@ def compute_spline(
     a_s = a[order]
     anchor_a = np.interp(anchors_sorted, wl_s, a_s)
 
+    if floor_zero:
+        anchor_a = _spline_floor_zero_fit(wl, a, anchors_sorted, anchor_a)
+
+    baseline = _spline_evaluate(wl, anchors_sorted, anchor_a)
+    return a - baseline
+
+
+def _spline_evaluate(wl, anchors_sorted, anchor_a):
+    """Build the spline (or fallback polynomial) and evaluate at ``wl``.
+
+    Mirrors the branch table in :func:`compute_spline` so the
+    constrained-fit path can re-use the same evaluator.
+    """
     if len(anchors_sorted) >= 4:
         cs = CubicSpline(anchors_sorted, anchor_a, extrapolate=True)
-        baseline = cs(wl)
-    elif len(anchors_sorted) == 3:
-        # Quadratic through the three points — CubicSpline needs ≥4.
+        return cs(wl)
+    if len(anchors_sorted) == 3:
         coeffs = np.polyfit(anchors_sorted, anchor_a, 2)
-        baseline = np.polyval(coeffs, wl)
-    else:
-        coeffs = np.polyfit(anchors_sorted, anchor_a, 1)
-        baseline = np.polyval(coeffs, wl)
+        return np.polyval(coeffs, wl)
+    coeffs = np.polyfit(anchors_sorted, anchor_a, 1)
+    return np.polyval(coeffs, wl)
 
-    return a - baseline
+
+def _spline_floor_zero_fit(wl, a, anchors_sorted, anchor_a_unc):
+    """SLSQP-fit the per-anchor absorbance values under the floor-zero constraint."""
+    from scipy.optimize import minimize, NonlinearConstraint
+    anchor_a_unc = np.asarray(anchor_a_unc, dtype=float)
+
+    def constraint(v):
+        # Returns ``a_i - baseline_i`` at every sample; SLSQP requires ≥ 0.
+        return a - _spline_evaluate(wl, anchors_sorted, v)
+
+    cons = NonlinearConstraint(constraint, lb=0.0, ub=np.inf)
+
+    # Feasible initial guess: shift unconstrained anchor values down by
+    # the worst per-sample overage so SLSQP starts inside the cone.
+    baseline_unc = _spline_evaluate(wl, anchors_sorted, anchor_a_unc)
+    overages = baseline_unc - a
+    max_overage = float(overages.max()) if overages.size else 0.0
+    x0 = anchor_a_unc - max(max_overage, 0.0)
+
+    def obj(v):
+        r = v - anchor_a_unc
+        return float(np.dot(r, r))
+
+    result = minimize(obj, x0, method="SLSQP", constraints=[cons])
+    if not result.success:
+        raise ValueError(
+            "spline floor-zero fit did not converge: "
+            f"{result.message}; try moving the anchors or "
+            "disabling floor-zero"
+        )
+    return result.x
 
 
 # ---------------------------------------------------------------------------
@@ -335,7 +517,7 @@ def _scattering_window(wl, a, params, label="scattering"):
 
 
 def _scattering_fit(wl, a, wl_w, a_w, lo, hi, n_in, floor_zero,
-                    label="scattering"):
+                    label="scattering", n_bounds=_DEFAULT_N_BOUNDS):
     """Recover ``(c, n)`` for ``B(λ) = c · λ^(-n)``.
 
     Under ``floor_zero=True`` enforces ``c · λ_i^(-n) ≤ a_i`` at every
@@ -346,6 +528,10 @@ def _scattering_fit(wl, a, wl_w, a_w, lo, hi, n_in, floor_zero,
     Without ``floor_zero`` the n="fit" branch falls back to the
     closed-form log–log fit (which requires absorbance > 0 throughout
     the fit window).
+
+    CS-41 — ``n_bounds`` is the ``(lo, hi)`` pair the caller wants the
+    n="fit" bounded scan to honour; defaults to ``_DEFAULT_N_BOUNDS``
+    when the caller passes nothing.
     """
     fit_n = isinstance(n_in, str) and n_in.lower() == "fit"
 
@@ -388,7 +574,7 @@ def _scattering_fit(wl, a, wl_w, a_w, lo, hi, n_in, floor_zero,
                 return float(np.sum((a_w - pred) ** 2))
             except (ValueError, FloatingPointError):
                 return 1e30
-        res = minimize_scalar(residual, bounds=(0.1, 8.0), method="bounded")
+        res = minimize_scalar(residual, bounds=n_bounds, method="bounded")
         n_val = float(res.x)
         c_val = _c_for_fixed_n(n_val)
         return c_val, n_val
@@ -437,8 +623,10 @@ def compute_scattering(
     n_in = params["n"]  # KeyError if missing
     wl_w, a_w, lo, hi = _scattering_window(wl, a, params, label="scattering")
     floor_zero = _floor_zero(params)
+    n_bounds = _resolve_n_bounds(params)
     c_val, n_val = _scattering_fit(
         wl, a, wl_w, a_w, lo, hi, n_in, floor_zero, label="scattering",
+        n_bounds=n_bounds,
     )
 
     if np.any(wl <= 0):
@@ -469,8 +657,10 @@ def fit_scattering(
     n_in = params["n"]
     wl_w, a_w, lo, hi = _scattering_window(wl, a, params, label="scattering")
     floor_zero = _floor_zero(params)
+    n_bounds = _resolve_n_bounds(params)
     c_val, n_val = _scattering_fit(
         wl, a, wl_w, a_w, lo, hi, n_in, floor_zero, label="scattering",
+        n_bounds=n_bounds,
     )
     return {"c_fitted": c_val, "n_fitted": n_val}
 
@@ -480,7 +670,8 @@ def fit_scattering(
 # ---------------------------------------------------------------------------
 
 
-def _scattering_offset_fit(wl, a, wl_w, a_w, lo, hi, n_in, floor_zero):
+def _scattering_offset_fit(wl, a, wl_w, a_w, lo, hi, n_in, floor_zero,
+                           n_bounds=_DEFAULT_N_BOUNDS):
     """Recover ``(a_param, c, n)`` for ``B(λ) = a_param + c · λ^(-n)``.
 
     Without ``floor_zero``: 2-D linear least-squares for fixed ``n``,
@@ -490,6 +681,8 @@ def _scattering_offset_fit(wl, a, wl_w, a_w, lo, hi, n_in, floor_zero):
     With ``floor_zero=True``: convex QP with linear inequality
     ``a_param + c · λ_i^(-n) ≤ a_i`` at every full-range sample, solved
     via :func:`scipy.optimize.minimize` with method ``SLSQP``.
+
+    CS-41 — ``n_bounds`` mirrors :func:`_scattering_fit`'s kwarg.
     """
     fit_n = isinstance(n_in, str) and n_in.lower() == "fit"
 
@@ -552,7 +745,7 @@ def _scattering_offset_fit(wl, a, wl_w, a_w, lo, hi, n_in, floor_zero):
             return float(np.sum((a_w - pred) ** 2))
         except (ValueError, FloatingPointError):
             return 1e30
-    res = minimize_scalar(residual, bounds=(0.1, 8.0), method="bounded")
+    res = minimize_scalar(residual, bounds=n_bounds, method="bounded")
     n_val = float(res.x)
     a_val, c_val = _ac_for_fixed_n(n_val)
     return a_val, c_val, n_val
@@ -580,8 +773,9 @@ def compute_scattering_offset(
         wl, a_arr, params, label="scattering+offset",
     )
     floor_zero = _floor_zero(params)
+    n_bounds = _resolve_n_bounds(params)
     a_val, c_val, n_val = _scattering_offset_fit(
-        wl, a_arr, wl_w, a_w, lo, hi, n_in, floor_zero,
+        wl, a_arr, wl_w, a_w, lo, hi, n_in, floor_zero, n_bounds=n_bounds,
     )
     if np.any(wl <= 0):
         raise ValueError(
@@ -609,8 +803,9 @@ def fit_scattering_offset(
         wl, a_arr, params, label="scattering+offset",
     )
     floor_zero = _floor_zero(params)
+    n_bounds = _resolve_n_bounds(params)
     a_val, c_val, n_val = _scattering_offset_fit(
-        wl, a_arr, wl_w, a_w, lo, hi, n_in, floor_zero,
+        wl, a_arr, wl_w, a_w, lo, hi, n_in, floor_zero, n_bounds=n_bounds,
     )
     return {"a_fitted": a_val, "c_fitted": c_val, "n_fitted": n_val}
 

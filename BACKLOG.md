@@ -1521,7 +1521,7 @@ subsequent Phase 4 session.**
    follow-up)". Defer until a user reports either over- or
    under-truncation on their actual setup.
 
-3. 🟢 **`_Tooltip` lives inside `scan_tree_widget.py`.** CS-33
+3. 🟢 ~~**`_Tooltip` lives inside `scan_tree_widget.py`.** CS-33
    added a small Toplevel-based hover tooltip co-located in
    the widget module. Other surfaces will eventually need the
    same shape (Plot Settings dialog parameter hints, StyleDialog
@@ -1530,7 +1530,13 @@ subsequent Phase 4 session.**
    `tooltip.py` utility module so the second consumer doesn't
    either re-implement or import a private name. See the new
    register entry "Promote `_Tooltip` to a shared utility
-   module on first cross-module re-use".
+   module on first cross-module re-use".~~ ✅ Resolved in
+   Phase 4t (CS-42) — `tooltip.py` created with public class
+   `Tooltip`; `scan_tree_widget` imports it and renames its
+   two existing call sites; second consumer is `uvvis_tab`
+   (the floor-zero Checkbutton, CS-43); third consumer is the
+   per-row `[~]` baseline-curve toggle (resolves the paired
+   Phase 4r friction #1 entry below).
 
 4. **Tooltip rendering is timing-dependent (process note).**
    The `_Tooltip` Toplevel pops after a 600 ms `widget.after`
@@ -1597,11 +1603,14 @@ subsequent Phase 4 session.**
 | ⏳ | 🟡 | **Baseline-curve overlay legend density** | Surfaced in Phase 4o while landing CS-29. With N visible BASELINE nodes and the global "Baseline curves" toggle on, the plot legend grows by N "<label> (baseline)" rows. Stays readable up to ~3 baselines but starts to dominate the frame at 5+. Cheapest mitigation: add a separate "show baseline in legend" preference (style key or top-bar toggle) so the dashed overlay can render without the legend doubling in size. Deeper fix is the per-node baseline-curve gate above (gate the legend at the same time as the overlay). Touches `uvvis_tab._redraw`'s overlay branch and possibly the StyleDialog universal section |
 | ✅ | 🔴 | **Show baseline function on the plot (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4n. Resolved Phase 4o (CS-29): new top-bar `tk.Checkbutton` "Baseline curves" wired to `self._show_baseline_curves` Tk BooleanVar (default off — opt-in review aid; no behaviour change for existing flows). When on, `_redraw` walks every visible BASELINE node, calls the new pure helper `uvvis_baseline.compute_baseline_curve(graph, baseline_node)` to recover the fitted baseline as `parent.absorbance - baseline.absorbance`, and plots it dashed (linestyle `"--"`, alpha 0.7) in the BASELINE node's colour. Legend entry is `"<node label> (baseline)"` when `style["in_legend"]` is on. Helper returns `None` on every failure (wrong type, missing arrays, no parent, shape mismatch); the loop simply skips so a malformed graph never crashes the renderer. Per-node toggle elevated as a separate USER-FLAGGED carry-forward (the global toggle clutters when many BASELINE nodes are visible) |
 | ✅ | 🟡 | **Scattering baseline fitted-offset (CS-24 follow-up) (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4n. Reframed Phase 4r as the narrower additive-offset variant `B(λ) = a + c·λ^(-n)` (orthogonal to the universal floor-zero constraint). Resolved Phase 4s (CS-38) as a sixth `BASELINE_MODES` entry (`"scattering+offset"`) with `compute_scattering_offset` doing 2-D linear LSQ for fixed `n` and a 1-D bounded scan over `n` for `n="fit"`. UI shares scattering's Tk vars (`_baseline_scattering_n`, `_baseline_scattering_fit_n`, `_baseline_scattering_fit_lo/hi`) — same parameter row layout. Apply persists `params["a_fitted"]` (always) + `params["c_fitted"]` (always) + `params["n_fitted"]` (when `n="fit"`) per CS-39. **Pairs with the new "Consolidate scattering+offset into scattering with optional offset toggle" register entry below** — the user has flagged that the two-mode split should collapse into a single `scattering` mode with an optional offset checkbox (default off ⇒ a=0 ⇒ pure power law) for cleaner UX |
-| ⏳ | 🔴 | **Floor-zero baseline as fit-time constraint, per mode (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4r. Universal "Floor at zero" toggle in the baseline panel that, when on, guarantees the corrected absorbance (`parent - B`) is ≥ 0 across the entire range, regardless of which baseline mode is active. **Architecture (locked Phase 4r):** the constraint is enforced at *fit time* by passing `floor_zero=True` into the per-mode `compute_*` functions, not by a post-fit shift. **Phase 4s (CS-37) shipped 3/6 modes:** **(a) scattering** — closed-form constrained `c` clamped to `min_i(a_i · λ_i^n)`, with a 1-D bounded scan over `n` when `n="fit"`. ✅ **(b for the offset variant) scattering+offset** — convex QP via `scipy.optimize.minimize` (SLSQP) with linear inequality `a_param + c · λ_i^(-n) ≤ a_i` at every full-range sample. ✅ **(d) rubberband** — no-op + invariant assert (lower convex hull is ≤ data by construction). ✅ **Still ⏳ (per-mode roadmap):** **(b) linear / polynomial** — convex problem; `scipy.optimize.lsq_linear` with linear inequality constraints, or formulate as a small LP via `scipy.optimize.linprog`. **(c) spline** — constrained spline coefficients with inequality constraints at each sample. Phase 4s shipped a clear `ValueError("floor_zero=True is not yet implemented for baseline mode {mode!r}; ships in a later session per the per-mode roadmap")` for these three so users get a real signal rather than silent unconstrained fall-through. **UI:** panel-level "Floor at zero" `tk.Checkbutton` in `bl_body` between the mode combobox and the per-mode parameter rows, bound to `self._baseline_floor_zero: tk.BooleanVar(value=False)` (default OFF — backwards compat). **Params round-trip:** `params["floor_zero"]: bool` recorded on every BASELINE OperationNode at apply time (CS-37), so the choice persists through project save (round-trips the manifest in Phase A of the persistence umbrella) and re-derive reproduces the same curve. **Failure mode:** the constrained optimiser raises `ValueError` from the helper which the apply site surfaces via `messagebox.showerror`; no silent fall-back. **Composition with the scattering fitted-offset row above:** orthogonal and shipped together in Phase 4s — the user can mode-stack scattering+offset with floor_zero=True for hard cases. **Affected modules:** `uvvis_baseline.py` (per-mode constrained-fit branches in each `compute_*`), `uvvis_tab.py` (panel checkbox + `_collect_baseline_params` reads new BooleanVar), test_uvvis_baseline (per-mode floor-zero passes), test_uvvis_tab (UI wiring). **Pairs with the new "Floor-zero toggle disabled state for unsupported baseline modes" register entry below** — the user has flagged that the universal toggle should grey out when the selected mode hasn't shipped its constrained-fit branch, so the unimplemented modes never reach the messagebox path |
-| ⏳ | 🟡 | **Floor-zero toggle disabled state for unsupported baseline modes (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4s. Phase 4s shipped the universal "Floor at zero" Checkbutton (CS-37) and the constrained-fit code path for scattering / scattering+offset / rubberband. Linear / polynomial / spline currently raise a clear `ValueError` when the toggle is on, surfaced via the apply messagebox — but the toggle stays clickable for those modes, so the user has to read the error to find out the mode is unsupported. The user has flagged that the toggle should grey out (Tk `state="disabled"`) whenever the current mode hasn't shipped its constrained-fit branch (linear, polynomial, spline this session) so the unsupported state is discoverable at the toggle, not at apply time. Likely shape: a `_refresh_floor_zero_state()` method called from `_baseline_mode`'s trace and from `_init_left_pane`; reads a small `_FLOOR_ZERO_SUPPORTED_MODES = {"scattering", "scattering+offset", "rubberband"}` constant. Optional cosmetic: the disabled state could also auto-clear the BooleanVar so a user who toggles it on under scattering and then flips to linear sees the toggle reset rather than carrying a hidden value forward — but the persistence umbrella's round-trip prefers the value-carry-forward shape. Touches `uvvis_tab.py` only. Lock the trace order so this method runs before `_refresh_baseline_param_rows`. **Resolves the open user-experience gap in the floor-zero entry above** |
+| ✅ | 🔴 | **Floor-zero baseline as fit-time constraint, per mode (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4r. Universal "Floor at zero" toggle in the baseline panel that, when on, guarantees the corrected absorbance (`parent - B`) is ≥ 0 across the entire range, regardless of which baseline mode is active. **Architecture (locked Phase 4r):** the constraint is enforced at *fit time* by passing `floor_zero=True` into the per-mode `compute_*` functions, not by a post-fit shift. **Phase 4s (CS-37) shipped 3/6 modes:** scattering (closed-form constrained `c`); scattering+offset (convex QP via SLSQP); rubberband (no-op + invariant assert). **Phase 4t (CS-37 expansion) shipped the remaining 3/6 modes:** **linear** (SLSQP on the (a_lo, a_hi) anchor pair, objective minimises L2 distance from the unconstrained sampled values, LinearConstraint at every full-range sample). **polynomial** (SLSQP on the polynomial coefficients with z-space normalization `z = (wl - center) / half_range` so the Vandermonde stays well-scaled for arbitrary order; converted back to wl-space `np.polyfit` ordering by evaluating + re-fitting). **spline** (SLSQP on the per-anchor absorbance vector via NonlinearConstraint that re-uses the shared `_spline_evaluate` helper across all three branches — 4-anchor cubic, 3-anchor quadratic, 2-anchor linear). All five SLSQP-based modes surface convergence failure as `ValueError("<mode> floor-zero fit did not converge: …")`. **UI:** panel-level "Floor at zero" `tk.Checkbutton` in `bl_body`. **Params round-trip:** `params["floor_zero"]: bool` recorded on every BASELINE OperationNode at apply time. **Resolved Phase 4t:** all six modes ship the constrained-fit code path; `_FLOOR_ZERO_SUPPORTED_MODES = frozenset(BASELINE_MODES)` (CS-43); `TestFloorZeroNotYetImplemented` removed and replaced with three behavioural test classes (TestLinearFloorZero / TestPolynomialFloorZero / TestSplineFloorZero) plus three new apply-site integration tests in TestUVVisTabBaseline |
+| ✅ | 🟡 | **Floor-zero toggle disabled state for unsupported baseline modes (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4s. Resolved Phase 4t (CS-43): module-level `_FLOOR_ZERO_SUPPORTED_MODES: frozenset[str]` initialised to `frozenset(uvvis_baseline.BASELINE_MODES)` (defensive scaffolding — Phase 4t shipped floor-zero for all six modes so the disabled branch never fires today); `_FLOOR_ZERO_DISABLED_TOOLTIP: str` carries the hover hint. New `UVVisTab._refresh_floor_zero_state()` method wired to `_baseline_mode`'s trace alongside `_refresh_baseline_param_rows`; calls `_baseline_floor_zero_cb.config(state="normal" or "disabled")` and rotates the tooltip text via `update_text` between the empty string (supported — Tooltip._show bails) and `_FLOOR_ZERO_DISABLED_TOOLTIP` (unsupported — hover hint paints). The BooleanVar value is preserved across enable/disable transitions per the persistence-umbrella carry-forward design lock. Initial calibration call at end of `_init_left_pane`. Tooltip on the Checkbutton constructed once at panel build time and stored as `_baseline_floor_zero_tooltip` so the refresh method can rotate text in place. Four integration tests in TestUVVisTabBaseline pin the contract |
 | ⏳ | 🟡 | **Consolidate scattering+offset into scattering with optional offset toggle (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4s. CS-38 shipped scattering+offset as a sixth `BASELINE_MODES` entry, sharing Tk vars with `scattering`. The user has flagged that the two-mode split is overkill — cleaner UX is a single `scattering` mode with an "Add offset" `tk.Checkbutton` (default off ⇒ a=0 ⇒ pure power law). Concretely: shrink `BASELINE_MODES` back to 5 (drop `scattering+offset`); add `_baseline_scattering_offset: tk.BooleanVar(value=False)` Tk var; surface as a Checkbutton inside the scattering parameter rows; `_collect_baseline_params` reads the var and either calls `compute_scattering` (offset=False) or `compute_scattering_offset` (offset=True) — OR unify both helpers into a single `compute_scattering` that branches on `params["offset"]: bool`. The latter is cleaner (single dispatch entry, one set of fit logic). The shared `_scattering_window` / `_scattering_fit` / `_scattering_offset_fit` helpers in Phase 4s are already the right factoring for this consolidation. **Affected:** `uvvis_baseline.py` (collapse two `compute_*` into one with offset branch; possibly drop `compute_scattering_offset` and `fit_scattering_offset` public names or keep them as thin wrappers), `uvvis_tab.py` (drop `scattering+offset` mode branch in `_refresh_baseline_param_rows` + `_collect_baseline_params`; add offset Checkbutton to scattering rows), tests, COMPONENTS.md (CS-38 section either drops or restructures). Cross-refs the Phase 4m friction #3 register row above (struck through Phase 4s) — the consolidation is the natural follow-up that ships the user's preferred UX shape |
-| ⏳ | 🟢 | **Scattering n-fit scan bounds configurable via params** | Surfaced Phase 4s. The n="fit" branch in `_scattering_fit` and `_scattering_offset_fit` calls `scipy.optimize.minimize_scalar(..., bounds=(0.1, 8.0), method="bounded")`. The hardcoded range covers Rayleigh (n=4), large-particle Mie (n≈2), dust (n≈1) comfortably, but a user with very dilute Tyndall scattering (n ≈ 0.5) or non-standard sub-Rayleigh tails could hit the lower bound and see a mediocre fit silently. Plan: read optional `params["n_fit_min"]: float = 0.1` + `params["n_fit_max"]: float = 8.0` and thread them through. Surface in the panel as two extra Entries shown only when "Fit n" is checked, with sensible defaults pre-filled. Touches `uvvis_baseline.py` (default values + read in fit helpers), `uvvis_tab.py` (Tk vars + conditional row), tests. Cheap; defer until a user reports a fit pinned at the bound |
+| ⏳ | 🟢 | **Scattering n-fit scan bounds configurable via params** | Surfaced Phase 4s. **API ✅ shipped Phase 4t (CS-41):** `params["n_bounds"]: tuple[float, float]` (default `(0.1, 8.0)`) overrides the bounded-scan range in `_scattering_fit` (under `floor_zero=True` only — the unconstrained branch uses log–log linear regression with no bounds) and `_scattering_offset_fit` (always — its 2-D LSQ requires the bounded scan). Validated via `_resolve_n_bounds(params)` (must be a 2-tuple, both ≥ 0, lo < hi). Eight pure-module tests in TestNFitBoundsConfigurable. **UI ⏳ deferred:** the matching Tk row (two extra Entries surfaced when "Fit n" is checked, default-prefill from `_DEFAULT_N_BOUNDS`) ships when a user reports a fit pinned at the bound. Touches `uvvis_tab.py` (new Tk vars + conditional row in `_refresh_baseline_param_rows`) + `_collect_baseline_params` (thread `n_bounds` into the scattering / scattering+offset params dicts) |
 | ⏳ | 🔴 | **OLIS .ols / .asc UV/Vis file format support (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4s. Today the UV/Vis loader handles only the existing supported set (see `uvvis_parser.py`). OLIS instruments produce `.ols` (binary) and/or `.asc` (ASCII column) files that aren't parseable today, blocking import of OLIS spectra into Ptarmigan. Shape depends on the OLIS family — likely a new parser branch in `uvvis_parser.py` keyed on filename suffix (`.ols` → binary header parse + array decode; `.asc` → column-text parse) returning the same `wavelength_nm`/`absorbance` array pair as the existing parsers. Touches `uvvis_parser.py` (new parse_*  function + dispatch by suffix), `binah.py` (file-open dialog filter widens), `test_uvvis_parser.py` (round-trip against a sample OLIS file). Pairs with the persistence umbrella above — the original instrument file is a first-class sidecar in Phase A, so OLIS files need to round-trip the manifest cleanly. The OLIS sample-file format reference will need to be sourced from the user (instrument manufacturer documentation or example files) — implementation session blocks until samples are available |
+| ⏳ | 🟡 | **Per-row `[~]` baseline-curve toggle column alignment across all node types (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4t. CS-36 (Phase 4r) renders the per-row `[~]/[–]` BASELINE toggle ONLY on BASELINE rows (`if node.type == NodeType.BASELINE` in `_populate_node_row`). The result: rows of different node types have different optional-cell counts in the always-visible cluster, so the right-sidebar columns don't align across rows. The user has flagged that the toggle cell should be present for every node type listed in the table, but greyed out (`state="disabled"`) for nodes where there's no baseline curve to show (UVVIS / NORMALISED / SMOOTHED / SECOND_DERIVATIVE / PEAK_LIST). Concretely: drop the `if node.type == NodeType.BASELINE` gate; always pack the button; for non-BASELINE rows configure `state="disabled"` + `text="–"` (or a different glyph that signals "not applicable" rather than "off") + skip the click binding. Likely also wants a tooltip on the disabled state explaining "No baseline curve for this node type" (reuses the CS-42 Tooltip pattern + the empty-string-sentinel CS-43 rotation). Touches `scan_tree_widget._populate_node_row` only. Test coverage: `TestPerNodeBaselineCurveToggle.test_uvvis_row_does_not_have_toggle_button` flips its assertion (the button DOES appear, but state="disabled"); the existing positive BASELINE-row test stays. Cross-refs CS-43's empty-string-sentinel Tooltip pattern — the same shape works here for the disabled row tooltip |
+| ⏳ | 🟡 | **Second-derivative plot on separate right y-axis (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4t. Today CS-20's `SECOND_DERIVATIVE` DataNode reuses the canonical `wavelength_nm` / `absorbance` array schema and renders through the same `uvvis_tab._redraw` curve loop as parent / NORMALISED / SMOOTHED / BASELINE nodes — so its values share the absorbance y-axis. Second-derivative magnitudes are typically 1/100th to 1/1000th of the parent absorbance, so the second-derivative trace either dominates the plot's y-range (collapsing the parent into a flat line) or is visually invisible (sitting at y=0 against the parent's range). The user has flagged that the second derivative should render on a separate right y-axis (matplotlib `ax.twinx()`) so the parent and the derivative can be shown simultaneously without scale conflict. Likely shape: `_redraw` checks `isinstance(node, DataNode) and node.type == NodeType.SECOND_DERIVATIVE` before plotting; for those nodes, lazily create `self._ax2 = self._ax.twinx()` (memoised so multiple second-derivative nodes share the same twin axis), plot onto `_ax2`, and label the right axis (e.g. `"d²A/dλ²"`). Style key option: a per-node `style["y_axis"]: str = "left" | "right"` so a user could route any node to the secondary axis (defaults to "left" except for SECOND_DERIVATIVE which defaults to "right"). Lock decision needed in the implementing session: per-NodeType default vs. per-style-key opt-in. Touches `uvvis_tab._redraw`, possibly `style_dialog` / `node_styles` for the new style key, plus integration tests for the twin-axis presence + the per-NodeType default. Cross-refs the existing per-tab plot widget abstraction (still pre-CS-13 in places) — the twin-axis pattern may want to live in `plot_widget.py` rather than duplicated per-tab |
+| ⏳ | 🟡 | **Top-bar Open File / Reload buttons belong to TDDFT only, not the app top level (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4t. The very top bar of the app currently shows `Open File` + `Reload` buttons that, in practice, only act on the TDDFT tab — they're not relevant to the UV/Vis tab (which has its own subject-loading paths inside the left pane), the XAS / EXAFS tabs (separate file paths), or the planned Compare tab. Today they're rendered at app top level (in `binah.py` or wherever the chrome lives), giving the user a false signal that they're cross-tab gestures. The user has flagged that they should be removed from the top-level row entirely and either (a) re-rendered inside the TDDFT tab where they belong, OR (b) become tab-context-aware so they only show when the TDDFT tab is active. Lock decision needed: (a) is structurally cleaner (each tab owns its own file ingestion); (b) preserves the existing "always-on top bar" pattern. Touches `binah.py` (top-bar removal) + the TDDFT tab module (button re-render, if path (a) chosen). Pairs with any future tab-chrome refactor — the file-open responsibility per tab is also relevant to the OLIS reader register entry above and to the persistence umbrella's `.ptmg` archive UX (load-project gestures stay app-level; load-instrument-file gestures are per-tab) |
 | ⏳ | 🔴 | **Diagnostic console / fitted-parameter panel (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4n. Several places in the app produce numeric diagnostics that currently live only in `OperationNode.params` and never surface to the user: scattering log fit's resolved n (Phase 4m friction #2), upcoming scattering+offset's `a_fitted`, polynomial baseline fit residuals, peak-picking match list, rubberband convex-hull point count, etc. The user is asking whether a small read-only "console" or "log" pane (a scrolling text widget at the bottom of the app or a per-tab footer) would carry these. Two shapes worth weighing: (a) **per-tab inline diagnostic strip** — small read-only panel at the bottom of each tab's left pane that names the most recently applied op and lists its key fitted values; refreshed on every Apply; (b) **app-wide log console** — a collapsible bottom drawer (like an IDE's output pane) that streams every op's "results" line plus warnings / errors / debug; survives tab switches. (b) doubles as a place for the `_redraw` KeyError trace (Phase 4n friction #1) and the messagebox messages currently shown via popups (e.g. "no Compare host connected"). Both shapes are non-trivial; pick before any Phase 4 follow-up that needs to surface a fitted value |
 | ✅ | 🔴 | **Defensive guard in `_redraw` for non-UVVIS DataNodes** | Surfaced by Phase 4n while writing the Send-to-Compare integration test. Resolved Phase 4o (CS-28): positive guard at the top of the per-node loop body (`if "wavelength_nm" not in node.arrays or "absorbance" not in node.arrays: continue`) and a mirror guard wrapped around the unit==`"nm"` xlim min/max comprehension. Silent skip — the diagnostic-console entry (still ⏳) will eventually surface skipped nodes. The Phase 4n note that BASELINE's schema was `wavelength_nm + baseline` was inaccurate — live BASELINE nodes carry `wavelength_nm + absorbance` (line 937 of `uvvis_tab.py`); the only `baseline`-keyed BASELINE in the codebase was the deliberately-malformed stub in `test_send_node_to_compare_skips_non_uvvis_nodes`, which the Phase 4o follow-up commit simplified to use the new guard rather than stub `graph.get_node` |
 | ⏳ | 🟡 | **Long-provenance hist button display options (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4n. The `⌥{n}` always-visible cell (CS-26 promotion) renders the provenance chain length as a literal integer. For complex workflows `n > 9` is realistic — the row's natural width grows with the digit count, which can re-trigger the responsive overflow pattern at the same widths today's tests verify. Options to weigh in the implementing session: (a) cap display at `⌥9+` once n > 9 with the exact count surfaced via tooltip / history sub-frame; (b) two-digit fixed width (`⌥01`...`⌥99`) so the row's natural width is bounded but the count remains readable; (c) hide digits entirely (just `⌥`) and surface the count only via the expanded history sub-frame; (d) SI-suffix style (`⌥9`, `⌥1k` for >999). Touches `scan_tree_widget._populate_node_row` (the `text=f"⌥{chain_len}"` line) and the existing `test_provenance_op_count` style assertions. User has confirmed `n > 9` is "easily seen for complex workflows" so this is not edge-case |
@@ -1629,7 +1638,7 @@ umbrella above; the floor-zero-as-fit-time-constraint entry above).
 Item 7 is a process note. **Do not fix until the relevant
 subsequent Phase 4 session.**
 
-1. 🟡 **Per-row `[~]` toggle has no tooltip.** CS-36's BASELINE-row
+1. 🟡 ~~**Per-row `[~]` toggle has no tooltip.** CS-36's BASELINE-row
    toggle has no hover hint, so a new user has to infer "tilde =
    show baseline curve" from context. The natural attachment point
    is `_Tooltip` (CS-33), but that helper is private to
@@ -1640,7 +1649,10 @@ subsequent Phase 4 session.**
    curve overlay" tooltip in the same session as the helper move,
    which keeps the tooltip pattern in exactly one place. Until
    then, the gesture is discoverable only via experimentation. No
-   new register entry — folds into the `_Tooltip` promotion entry.
+   new register entry — folds into the `_Tooltip` promotion entry.~~
+   ✅ Resolved in Phase 4t (CS-42) — `tooltip.py` extracted +
+   `Tooltip(bc_btn, "Show / hide baseline curve overlay")` attached
+   in `_populate_node_row` after the bc_btn pack.
 
 2. 🟢 **`~` glyph is a tilde, not the dashed-line glyph it's
    meant to evoke.** CS-36's button reads `~` (when on) / `–`
@@ -1705,18 +1717,14 @@ subsequent Phase 4 session.**
    high energies, so the constraint must be enforced at fit
    time. Per-mode work items are independently shippable;
    suggested order is scattering → linear/poly → spline →
-   rubberband.~~ ✅ Partially resolved in Phase 4s (CS-37) —
-   shipped scattering / scattering+offset / rubberband (3/6
-   modes). Linear / polynomial / spline still ⏳ per the
-   per-mode roadmap; the apply path raises a clear
-   `ValueError("floor_zero=True is not yet implemented for
-   baseline mode {mode!r}; ships in a later session per the
-   per-mode roadmap")` for those three modes so users get a
-   real signal rather than silent unconstrained fall-through.
-   The register entry above stays ⏳ until the remaining 3
-   modes ship. Supersedes the old "Scattering baseline floor-
-   zero shift (CS-24 follow-up)" framing — that entry is
-   reframed (priority dropped 🔴 → 🟡) as the scattering-specific
+   rubberband.~~ ✅ Fully resolved across Phase 4s + Phase 4t
+   (CS-37). Phase 4s shipped scattering / scattering+offset /
+   rubberband (3/6 modes); Phase 4t shipped the remaining
+   linear / polynomial / spline (3/6 modes) plus the disabled-
+   state machinery (CS-43). The register entry above is now ✅.
+   Supersedes the old "Scattering baseline floor-zero shift
+   (CS-24 follow-up)" framing — that entry was reframed
+   (priority dropped 🔴 → 🟡) as the scattering-specific
    fitted-offset variant `B(λ) = a + c·λ^(-n)`, ✅ shipped in
    Phase 4s (CS-38), composes orthogonally with the universal
    floor-zero constraint.
@@ -1749,7 +1757,7 @@ elevations from step 5; items 3–6 were surfaced by Claude at
 end-of-session and confirmed by the user. **Do not fix until
 the relevant subsequent Phase 4 session.**
 
-1. 🟡 **Floor-zero toggle stays clickable for unsupported modes
+1. 🟡 ~~**Floor-zero toggle stays clickable for unsupported modes
    (USER-FLAGGED).** The universal "Floor at zero" Checkbutton is
    visible for every mode, but Phase 4s only shipped the
    constrained-fit code path for scattering / scattering+offset /
@@ -1764,7 +1772,13 @@ the relevant subsequent Phase 4 session.**
    trace). The user has confirmed this should be elevated to a
    register entry. Folds into the open per-mode floor-zero
    register entry — the disabled-state polish ships alongside
-   the next per-mode constrained-fit branch.
+   the next per-mode constrained-fit branch.~~ ✅ Resolved in
+   Phase 4t (CS-43). Phase 4t shipped both the remaining 3/6
+   modes (the disabled state never fires for any mode today)
+   AND the disabled-state machinery as defensive scaffolding
+   (`_FLOOR_ZERO_SUPPORTED_MODES = frozenset(BASELINE_MODES)`
+   plus `_refresh_floor_zero_state()` wired to the mode trace
+   plus the empty-string-sentinel Tooltip rotation pattern).
 
 2. 🟡 **Scattering+offset and scattering should consolidate into
    one mode with an "Add offset" toggle (USER-FLAGGED).** CS-38
@@ -1780,7 +1794,7 @@ the relevant subsequent Phase 4 session.**
    directly). The Phase 4s factoring is already the right shape
    for this consolidation.
 
-3. 🟢 **Hardcoded scan bounds `[0.1, 8.0]` in n="fit" branch.**
+3. 🟢 ~~**Hardcoded scan bounds `[0.1, 8.0]` in n="fit" branch.**
    Both `_scattering_fit` and `_scattering_offset_fit` call
    `scipy.optimize.minimize_scalar(..., bounds=(0.1, 8.0),
    method="bounded")`. Covers Rayleigh / Mie / dust comfortably,
@@ -1788,7 +1802,13 @@ the relevant subsequent Phase 4 session.**
    pin at the bound silently. **Cross-ref:** see the new
    register entry "Scattering n-fit scan bounds configurable
    via params" above. Defer until a fit pins at the bound in
-   real use.
+   real use.~~ ✅ API resolved in Phase 4t (CS-41) —
+   `params["n_bounds"]: tuple[float, float]` (default
+   `(0.1, 8.0)`) overrides the bounded-scan range with
+   `_resolve_n_bounds(params)` validation. Eight pure-module
+   tests in TestNFitBoundsConfigurable. UI ⏳ deferred per the
+   register entry above (the Tk row ships when a user reports
+   a fit pinned at the bound).
 
 4. 🟡 **`fit_scattering` runs the fit twice per apply
    (process note).** The apply site calls `compute()` and then
@@ -1828,6 +1848,94 @@ the relevant subsequent Phase 4 session.**
    by filename suffix returning the same `wavelength_nm` /
    `absorbance` array pair. Implementation session blocks
    until OLIS sample files / format reference are available.
+
+### Friction points carried forward from Phase 4t
+
+These are concrete obstacles the next Phase 4 session will hit.
+Identified during Phase 4t while landing the floor-zero
+expansion to all six baseline modes (CS-37 expansion), the
+n_bounds API hook (CS-41), the Tooltip module promotion
+(CS-42), and the floor-zero disabled-state machinery (CS-43).
+Items 1, 2, and 3 are USER-FLAGGED ground-up elevations from
+step 5; items 4 + 5 are session-time discoveries Claude
+flagged for confirmation. **Do not fix until the relevant
+subsequent Phase 4 session.**
+
+1. 🟡 **Per-row `[~]` toggle column alignment across all node
+   types (USER-FLAGGED).** CS-36's BASELINE-row-only render of
+   the `[~]/[–]` toggle leaves the right-sidebar columns
+   misaligned across rows of different node types. The user
+   has flagged that the toggle cell should be present for
+   every row but greyed out when not applicable. **Cross-ref:**
+   see the new register entry "Per-row `[~]` baseline-curve
+   toggle column alignment across all node types
+   (USER-FLAGGED)" above for the architecture (drop the type
+   gate in `_populate_node_row`; configure `state="disabled"`
+   + tooltip explaining "No baseline curve for this node
+   type" via the CS-42 Tooltip pattern). Touches
+   `scan_tree_widget._populate_node_row` only. Test impact:
+   `TestPerNodeBaselineCurveToggle.test_uvvis_row_does_not_have_toggle_button`
+   flips its assertion (button DOES appear, but state="disabled").
+
+2. 🟡 **Second-derivative plot on separate right y-axis
+   (USER-FLAGGED).** Today CS-20's `SECOND_DERIVATIVE`
+   DataNode shares the absorbance y-axis with parent /
+   NORMALISED / SMOOTHED / BASELINE nodes. Magnitudes are
+   typically 1/100x to 1/1000x the parent absorbance, so the
+   trace either dominates the y-range or is invisible. The
+   user has flagged that it should render on a separate right
+   y-axis (matplotlib `ax.twinx()`). **Cross-ref:** see the
+   new register entry "Second-derivative plot on separate right
+   y-axis (USER-FLAGGED)" above for the architecture (lazy
+   `_ax2 = self._ax.twinx()`; per-NodeType default vs.
+   per-style-key opt-in is a lock decision for the
+   implementing session). Touches `uvvis_tab._redraw`,
+   possibly `style_dialog` / `node_styles` for a new
+   `style["y_axis"]` key, plus integration tests for the
+   twin-axis presence + per-NodeType default.
+
+3. 🟡 **Top-bar Open File / Reload buttons belong to TDDFT
+   only, not the app top level (USER-FLAGGED).** The top-bar
+   buttons in `binah.py` (or wherever the app chrome lives)
+   only act on the TDDFT tab in practice but visually suggest
+   cross-tab gestures. The user has flagged that they should
+   be removed from the top-level row entirely. **Cross-ref:**
+   see the new register entry "Top-bar Open File / Reload
+   buttons belong to TDDFT only" above for the architecture
+   (lock decision needed: re-render inside the TDDFT tab vs.
+   tab-context-aware show/hide on the existing top bar).
+   Touches `binah.py` + the TDDFT tab module. Pairs with the
+   OLIS reader register entry (per-tab file ingestion) and
+   the persistence umbrella's `.ptmg` archive UX (load-project
+   gestures stay app-level; load-instrument gestures are
+   per-tab).
+
+4. 🟢 **`_FLOOR_ZERO_SUPPORTED_MODES` is currently dead code.**
+   CS-43's constant is initialised to `frozenset(BASELINE_MODES)`
+   because Phase 4t shipped floor-zero for all six modes —
+   the disabled branch never fires. Today it's defensive
+   scaffolding that catches a future new mode added without
+   floor-zero coverage. Three options weighed: (a) leave
+   as-is + document as defensive (chosen this session); (b)
+   rip it out and add it back when an unsupported mode lands
+   (cleaner but loses the auto-grey safety net); (c) add a
+   "remove if unused by Phase X" reminder. Sticking with (a)
+   — the constant + refresh method is small (~25 lines); the
+   removal cost when CS-43 stops earning its keep is also
+   small. Documentation-style; no register entry.
+
+5. 🟢 **Polynomial floor-zero needs z-space conditioning to
+   converge.** Initial implementation used the raw
+   `wl ∈ [200, 800]` Vandermonde for SLSQP and failed with
+   "Inequality constraints incompatible" for order ≥ 2 (the
+   columns span 6 orders of magnitude). Fix: solve in
+   normalized `z = (wl - center) / half_range` with z-space
+   polyfit for the initial guess; convert back to wl-space by
+   evaluating + re-fitting via `np.polyfit`. Pattern worth
+   noting for any future SLSQP-on-coefficients work in the
+   codebase — wide-domain Vandermondes are the trap.
+   Documentation-style; the conditioning is captured in CS-37
+   under the polynomial bullet. No register entry.
 
 ---
 
@@ -2043,7 +2151,7 @@ the resolving phase + commit SHA appended to the row.
 
 ---
 
-*Document version: 1.18 — May 2026*
+*Document version: 1.19 — May 2026*
 *1.1: Known Bugs register added 2026-04-27 after Phase 4b manual testing.*
 *1.2: Phase 4c — baseline correction lands; B-001 / B-003 / B-004
 resolved; Phase 4c friction points logged.*
@@ -2256,4 +2364,34 @@ console), 🟢 SLSQP failure path uncovered, 🔴 USER-FLAGGED
 OLIS file reader (item 7). 615 tests, all green (579 + 36
 new: 28 pure-module in test_uvvis_baseline + test_uvvis_normalise;
 8 integration in test_uvvis_tab.TestUVVisTabBaseline).*
+*1.19: Phase 4t — combined A+E+R+N intent: completes the
+floor-zero per-mode roadmap (CS-37 expansion to all 6 modes
+via SLSQP), adds the n_bounds API hook (CS-41), promotes
+Tooltip to its own module with three consumers (CS-42), and
+ships the floor-zero disabled-state machinery as defensive
+scaffolding (CS-43). Three register entries marked ✅
+(Floor-zero per mode → CS-37 expansion; Floor-zero disabled
+state → CS-43; Promote Tooltip — was a Phase 4q friction
+section entry → CS-42). One register entry partial-marked
+(Scattering n-fit scan bounds: API ✅ / UI ⏳ → CS-41).
+Phase 4q friction #3 + Phase 4r friction #1 struck through
+(both resolved by CS-42 — the paired Tooltip promotion +
+[~] toggle hover hint). Phase 4r friction #6 fully-struck
+(was partial after Phase 4s; now ✅ Resolved across Phase 4s
++ Phase 4t). Phase 4s friction #1 struck through (resolved
+by CS-43). Phase 4s friction #3 partial-struck (API ✅ /
+UI ⏳ matching the register row). Three new USER-FLAGGED
+register entries from step 5: 🟡 Per-row [~] toggle column
+alignment across all node types; 🟡 Second-derivative plot
+on separate right y-axis; 🟡 Top-bar Open File / Reload
+buttons belong to TDDFT only. Phase 4t friction logged
+(five items): 🟡 USER-FLAGGED [~] column alignment (item
+1), 🟡 USER-FLAGGED 2nd-derivative right-axis (item 2),
+🟡 USER-FLAGGED top-bar TDDFT-only (item 3),
+🟢 _FLOOR_ZERO_SUPPORTED_MODES dead code today (item 4),
+🟢 polynomial z-space conditioning pattern (item 5). 637
+tests, all green (615 + 22 net new: 19 pure-module in
+test_uvvis_baseline; 7 integration in test_uvvis_tab +
+test_scan_tree_widget; 1 replaced; 4 removed from
+TestFloorZeroNotYetImplemented).*
 *Supersedes: BACKLOG.md (original)*

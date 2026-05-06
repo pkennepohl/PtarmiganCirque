@@ -1164,10 +1164,11 @@ class TestUVVisTabBaseline(unittest.TestCase):
         self.assertIn("floor_zero", op.params)
         self.assertFalse(op.params["floor_zero"])
 
-    def test_apply_baseline_linear_with_floor_zero_surfaces_error(self):
-        # CS-37 — linear with floor_zero=True raises a ValueError that
-        # surfaces as the messagebox path; the tab returns None and
-        # does NOT mutate the graph.
+    def test_apply_baseline_linear_with_floor_zero_creates_baseline_node(self):
+        # Phase 4t (CS-37 expansion) — linear floor-zero ships in this
+        # phase. Replaces the Phase 4s "raises a clear ValueError"
+        # contract with the new "constrained-fit succeeds and the op
+        # records floor_zero=True" contract.
         self._add_uvvis("u1")
         items = self.tab._shared_subject_cb.cget("values")
         if isinstance(items, str):
@@ -1179,23 +1180,150 @@ class TestUVVisTabBaseline(unittest.TestCase):
         self.tab._baseline_floor_zero.set(True)
 
         n_before = len(self.graph.nodes)
-        # Patch messagebox to suppress the popup; record the call.
-        captured = {}
-        def _capture(title, message):
-            captured["title"] = title
-            captured["message"] = message
-        import uvvis_tab as _ut
-        original = _ut.messagebox.showerror
-        _ut.messagebox.showerror = _capture
-        try:
-            result = self.tab._apply_baseline()
-        finally:
-            _ut.messagebox.showerror = original
+        result = self.tab._apply_baseline()
+        self.assertIsNotNone(result, "linear floor-zero apply must succeed now")
+        self.assertEqual(len(self.graph.nodes), n_before + 2,
+                         "apply creates op + BASELINE data node")
+        # The op records floor_zero=True for the persistence-umbrella
+        # round-trip.
+        op_ids = [
+            nid for nid, n in self.graph.nodes.items()
+            if isinstance(n, OperationNode)
+            and n.params.get("mode") == "linear"
+        ]
+        self.assertEqual(len(op_ids), 1)
+        op = self.graph.nodes[op_ids[0]]
+        self.assertTrue(op.params["floor_zero"])
 
-        self.assertIsNone(result)
-        self.assertEqual(len(self.graph.nodes), n_before)
-        self.assertIn("floor_zero", captured.get("message", ""))
-        self.assertIn("'linear'", captured.get("message", ""))
+    def test_apply_baseline_polynomial_with_floor_zero_creates_baseline_node(self):
+        # Phase 4t (CS-37 expansion) — polynomial floor-zero ships.
+        # Mirror coverage of the linear test on the polynomial mode so
+        # the SLSQP-with-z-space-conditioning path is exercised at the
+        # apply integration site.
+        self._add_uvvis("u1")
+        items = self.tab._shared_subject_cb.cget("values")
+        if isinstance(items, str):
+            items = tuple(items.split())
+        self.tab._shared_subject.set(items[0])
+        self.tab._baseline_mode.set("polynomial")
+        self.tab._baseline_poly_order.set(2)
+        self.tab._baseline_fit_lo.set("200")
+        self.tab._baseline_fit_hi.set("800")
+        self.tab._baseline_floor_zero.set(True)
+
+        n_before = len(self.graph.nodes)
+        result = self.tab._apply_baseline()
+        self.assertIsNotNone(result, "polynomial floor-zero apply must succeed")
+        self.assertEqual(len(self.graph.nodes), n_before + 2)
+        op_ids = [
+            nid for nid, n in self.graph.nodes.items()
+            if isinstance(n, OperationNode)
+            and n.params.get("mode") == "polynomial"
+        ]
+        self.assertEqual(len(op_ids), 1)
+        self.assertTrue(self.graph.nodes[op_ids[0]].params["floor_zero"])
+
+    def test_apply_baseline_spline_with_floor_zero_creates_baseline_node(self):
+        # Phase 4t (CS-37 expansion) — spline floor-zero ships.
+        # Anchors in the wings of the synthetic Gaussian peak.
+        self._add_uvvis("u1")
+        items = self.tab._shared_subject_cb.cget("values")
+        if isinstance(items, str):
+            items = tuple(items.split())
+        self.tab._shared_subject.set(items[0])
+        self.tab._baseline_mode.set("spline")
+        self.tab._baseline_spline_anchors.set("220, 280, 720, 780")
+        self.tab._baseline_floor_zero.set(True)
+
+        n_before = len(self.graph.nodes)
+        result = self.tab._apply_baseline()
+        self.assertIsNotNone(result, "spline floor-zero apply must succeed")
+        self.assertEqual(len(self.graph.nodes), n_before + 2)
+        op_ids = [
+            nid for nid, n in self.graph.nodes.items()
+            if isinstance(n, OperationNode)
+            and n.params.get("mode") == "spline"
+        ]
+        self.assertEqual(len(op_ids), 1)
+        self.assertTrue(self.graph.nodes[op_ids[0]].params["floor_zero"])
+
+    def test_floor_zero_checkbutton_is_enabled_for_supported_modes(self):
+        # CS-43 — every mode in BASELINE_MODES is in
+        # _FLOOR_ZERO_SUPPORTED_MODES this session, so flipping through
+        # all six modes leaves the checkbutton state="normal" each
+        # time and the tooltip text empty.
+        import uvvis_tab as _ut
+        import uvvis_baseline as _ub
+        self.assertSetEqual(
+            set(_ut._FLOOR_ZERO_SUPPORTED_MODES),
+            set(_ub.BASELINE_MODES),
+        )
+        for mode in _ub.BASELINE_MODES:
+            self.tab._baseline_mode.set(mode)
+            self.tab.update_idletasks()
+            self.assertEqual(
+                str(self.tab._baseline_floor_zero_cb.cget("state")),
+                "normal",
+                f"floor-zero toggle should be enabled for mode {mode!r}",
+            )
+            self.assertEqual(
+                self.tab._baseline_floor_zero_tooltip._text, "",
+                f"tooltip text should be empty for mode {mode!r}",
+            )
+
+    def test_floor_zero_checkbutton_disables_for_unsupported_mode(self):
+        # CS-43 — the disabled-state branch is defensive scaffolding
+        # since today every BASELINE_MODES entry is supported. Force
+        # the supported set to exclude the current mode and confirm
+        # _refresh_floor_zero_state flips the Checkbutton state and
+        # rotates the tooltip text. Using monkey-patch rather than
+        # editing the module-level constant keeps the test isolated.
+        import uvvis_tab as _ut
+        original = _ut._FLOOR_ZERO_SUPPORTED_MODES
+        try:
+            _ut._FLOOR_ZERO_SUPPORTED_MODES = frozenset()
+            self.tab._refresh_floor_zero_state()
+            self.assertEqual(
+                str(self.tab._baseline_floor_zero_cb.cget("state")),
+                "disabled",
+            )
+            self.assertEqual(
+                self.tab._baseline_floor_zero_tooltip._text,
+                _ut._FLOOR_ZERO_DISABLED_TOOLTIP,
+            )
+        finally:
+            _ut._FLOOR_ZERO_SUPPORTED_MODES = original
+            self.tab._refresh_floor_zero_state()
+
+    def test_floor_zero_disabled_state_preserves_var_value(self):
+        # CS-43 design lock — disabling the checkbutton must NOT clear
+        # the BooleanVar (the persistence-umbrella round-trip carries
+        # the user's choice forward across mode flips).
+        import uvvis_tab as _ut
+        self.tab._baseline_floor_zero.set(True)
+        original = _ut._FLOOR_ZERO_SUPPORTED_MODES
+        try:
+            _ut._FLOOR_ZERO_SUPPORTED_MODES = frozenset()
+            self.tab._refresh_floor_zero_state()
+            self.assertTrue(self.tab._baseline_floor_zero.get())
+        finally:
+            _ut._FLOOR_ZERO_SUPPORTED_MODES = original
+            self.tab._refresh_floor_zero_state()
+
+    def test_floor_zero_tooltip_constructed_at_panel_build(self):
+        # CS-42 — the Tooltip on _baseline_floor_zero_cb is built at
+        # init time and stored on the tab so _refresh_floor_zero_state
+        # can rotate the text in place. Simple existence + binding
+        # presence assertion (the actual Toplevel display is timing-
+        # dependent and outside the scope of this test).
+        from tooltip import Tooltip
+        self.assertIsInstance(
+            self.tab._baseline_floor_zero_tooltip, Tooltip,
+        )
+        self.assertIs(
+            self.tab._baseline_floor_zero_tooltip._widget,
+            self.tab._baseline_floor_zero_cb,
+        )
 
     def test_scattering_offset_mode_swaps_parameter_rows(self):
         # CS-38 — selecting scattering+offset reuses scattering's row

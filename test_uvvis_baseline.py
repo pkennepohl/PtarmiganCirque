@@ -546,55 +546,304 @@ class TestComputeBaselineCurve(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 
-class TestFloorZeroNotYetImplemented(unittest.TestCase):
-    """CS-37 — linear / polynomial / spline raise on ``floor_zero=True``.
+class TestLinearFloorZero(unittest.TestCase):
+    """CS-37 (Phase 4t) — linear constrained-fit code path.
 
-    The roadmap defers these three to a later session; the public
-    contract is that callers passing ``floor_zero=True`` to a mode
-    whose constrained-fit path hasn't shipped get a clear ValueError
-    naming the mode rather than a silent unconstrained fall-through.
+    Replaces the Phase 4s ``TestFloorZeroNotYetImplemented`` linear
+    coverage. ``compute_linear`` no longer raises when called with
+    ``floor_zero=True``; it threads SLSQP through ``_linear_floor_zero_fit``.
     """
 
-    def setUp(self):
-        self.wl = np.linspace(200.0, 800.0, 121)
-        self.spectrum = 0.10 + 0.0005 * self.wl
-
-    def test_linear_with_floor_zero_raises(self):
-        with self.assertRaises(ValueError) as cm:
-            ub.compute_linear(
-                self.wl, self.spectrum,
-                {"anchor_lo_nm": 200.0, "anchor_hi_nm": 800.0,
-                 "floor_zero": True},
-            )
-        self.assertIn("floor_zero=True", str(cm.exception))
-        self.assertIn("'linear'", str(cm.exception))
-
-    def test_polynomial_with_floor_zero_raises(self):
-        with self.assertRaises(ValueError) as cm:
-            ub.compute_polynomial(
-                self.wl, self.spectrum,
-                {"order": 1, "fit_lo_nm": 200.0, "fit_hi_nm": 800.0,
-                 "floor_zero": True},
-            )
-        self.assertIn("'polynomial'", str(cm.exception))
-
-    def test_spline_with_floor_zero_raises(self):
-        with self.assertRaises(ValueError) as cm:
-            ub.compute_spline(
-                self.wl, self.spectrum,
-                {"anchors": [200.0, 800.0], "floor_zero": True},
-            )
-        self.assertIn("'spline'", str(cm.exception))
-
-    def test_floor_zero_false_is_a_no_op(self):
-        # Sanity — supplying ``floor_zero=False`` to the unsupported
-        # modes does NOT raise; the unconstrained path runs as before.
-        out = ub.compute_linear(
-            self.wl, self.spectrum,
+    def test_floor_zero_inactive_matches_unconstrained(self):
+        # Gaussian on a positive linear background: the unconstrained
+        # two-anchor line (sampled at the spectrum extremes where the
+        # Gaussian has decayed to ~0) already lies below the data
+        # everywhere, so floor_zero=True must return (essentially) the
+        # same baseline as floor_zero=False.
+        wl = np.linspace(200.0, 800.0, 401)
+        spectrum = 0.10 + 0.0005 * wl + _gaussian(wl, 500, 25.5, height=1.0)
+        out_off = ub.compute_linear(
+            wl, spectrum,
             {"anchor_lo_nm": 200.0, "anchor_hi_nm": 800.0,
              "floor_zero": False},
         )
-        np.testing.assert_allclose(out, np.zeros_like(out), atol=1e-12)
+        out_on = ub.compute_linear(
+            wl, spectrum,
+            {"anchor_lo_nm": 200.0, "anchor_hi_nm": 800.0,
+             "floor_zero": True},
+        )
+        # SLSQP tolerance is loose enough that we use a relative atol
+        # tied to the spectrum scale rather than 1e-12.
+        np.testing.assert_allclose(out_off, out_on, atol=1e-5)
+        self.assertGreaterEqual(float(out_on.min()), -1e-6)
+
+    def test_floor_zero_clamps_when_unconstrained_overshoots(self):
+        # Spectrum with a *negative* dip in the middle: the unconstrained
+        # line through the two extremes overshoots the dip, so the
+        # corrected curve has min < 0. With floor_zero=True the line
+        # must lie ≤ data everywhere → corrected min ≥ 0.
+        wl = np.linspace(200.0, 800.0, 401)
+        spectrum = 0.50 + 0.0 * wl - _gaussian(wl, 500, 50.0, height=0.40)
+        out_off = ub.compute_linear(
+            wl, spectrum,
+            {"anchor_lo_nm": 200.0, "anchor_hi_nm": 800.0,
+             "floor_zero": False},
+        )
+        out_on = ub.compute_linear(
+            wl, spectrum,
+            {"anchor_lo_nm": 200.0, "anchor_hi_nm": 800.0,
+             "floor_zero": True},
+        )
+        self.assertLess(float(out_off.min()), -1e-2)
+        self.assertGreaterEqual(float(out_on.min()), -1e-6)
+
+    def test_anchors_in_either_order_with_floor_zero(self):
+        # Mirror of the unconstrained test_anchors_in_either_order:
+        # the floor-zero path must be ordering-invariant too.
+        wl = np.linspace(200.0, 800.0, 201)
+        spectrum = 0.50 - _gaussian(wl, 500, 50.0, height=0.40)
+        out_a = ub.compute_linear(
+            wl, spectrum,
+            {"anchor_lo_nm": 200.0, "anchor_hi_nm": 800.0,
+             "floor_zero": True},
+        )
+        out_b = ub.compute_linear(
+            wl, spectrum,
+            {"anchor_lo_nm": 800.0, "anchor_hi_nm": 200.0,
+             "floor_zero": True},
+        )
+        np.testing.assert_allclose(out_a, out_b, atol=1e-6)
+
+
+class TestPolynomialFloorZero(unittest.TestCase):
+    """CS-37 (Phase 4t) — polynomial constrained-fit code path.
+
+    Replaces the Phase 4s ``TestFloorZeroNotYetImplemented`` polynomial
+    coverage. ``compute_polynomial`` no longer raises when called with
+    ``floor_zero=True``.
+    """
+
+    def test_floor_zero_inactive_matches_unconstrained(self):
+        # Pure linear bg, order-1 polyfit over the whole range:
+        # unconstrained recovers bg exactly → corrected = 0 → constraint
+        # is bound with equality everywhere → floor_zero=True must
+        # return the same result.
+        wl = np.linspace(200.0, 800.0, 601)
+        spectrum = 0.20 + 1e-3 * wl
+        params_off = {"order": 1, "fit_lo_nm": 200.0, "fit_hi_nm": 800.0,
+                      "floor_zero": False}
+        params_on = dict(params_off, floor_zero=True)
+        out_off = ub.compute_polynomial(wl, spectrum, params_off)
+        out_on = ub.compute_polynomial(wl, spectrum, params_on)
+        np.testing.assert_allclose(out_off, out_on, atol=1e-5)
+        self.assertGreaterEqual(float(out_on.min()), -1e-6)
+
+    def test_floor_zero_clamps_when_unconstrained_overshoots(self):
+        # Quadratic fit over a window that brackets a negative dip:
+        # unconstrained polyfit traces the dip; full-range eval lifts
+        # the baseline above data at the dip's centre. floor_zero must
+        # clamp.
+        wl = np.linspace(200.0, 800.0, 601)
+        spectrum = 0.50 + 0.0 * wl - _gaussian(wl, 500, 50.0, height=0.40)
+        params_off = {"order": 2, "fit_lo_nm": 200.0, "fit_hi_nm": 800.0,
+                      "floor_zero": False}
+        params_on = dict(params_off, floor_zero=True)
+        out_off = ub.compute_polynomial(wl, spectrum, params_off)
+        out_on = ub.compute_polynomial(wl, spectrum, params_on)
+        # Unconstrained polynomial fits the dip — corrected curve has
+        # large positive peaks in the wings (data > baseline there).
+        # Constrained polynomial sits at a constant value below the dip.
+        self.assertGreaterEqual(float(out_on.min()), -1e-6)
+        self.assertGreater(float(out_on.max() - out_off.max()), 0.0)
+
+    def test_floor_zero_order_zero_constant(self):
+        # Order 0 = constant baseline. Constraint forces it to ≤ min(a).
+        wl = np.linspace(200.0, 800.0, 121)
+        spectrum = 0.10 + _gaussian(wl, 500, 25.5, height=1.0)
+        out = ub.compute_polynomial(
+            wl, spectrum,
+            {"order": 0, "fit_lo_nm": 200.0, "fit_hi_nm": 800.0,
+             "floor_zero": True},
+        )
+        self.assertGreaterEqual(float(out.min()), -1e-6)
+
+
+class TestSplineFloorZero(unittest.TestCase):
+    """CS-37 (Phase 4t) — spline constrained-fit code path.
+
+    Replaces the Phase 4s ``TestFloorZeroNotYetImplemented`` spline
+    coverage. ``compute_spline`` no longer raises when called with
+    ``floor_zero=True``.
+    """
+
+    def test_floor_zero_inactive_matches_unconstrained(self):
+        # Gaussian on a positive linear background with anchors in the
+        # peak-free wings: the unconstrained 4-anchor cubic spline
+        # already lies below data everywhere.
+        wl = np.linspace(200.0, 800.0, 601)
+        spectrum = 0.10 + 0.0005 * wl + _gaussian(wl, 500, 25.5, height=1.0)
+        params_off = {"anchors": [220.0, 280.0, 720.0, 780.0],
+                      "floor_zero": False}
+        params_on = dict(params_off, floor_zero=True)
+        out_off = ub.compute_spline(wl, spectrum, params_off)
+        out_on = ub.compute_spline(wl, spectrum, params_on)
+        np.testing.assert_allclose(out_off, out_on, atol=1e-5)
+
+    def test_floor_zero_clamps_when_unconstrained_overshoots(self):
+        # Anchors straddle a negative dip; without floor_zero the
+        # spline traces the dip and pulls the baseline up above data
+        # at the dip centre. floor_zero must keep baseline ≤ data.
+        wl = np.linspace(200.0, 800.0, 601)
+        spectrum = 0.50 + 0.0 * wl - _gaussian(wl, 500, 50.0, height=0.40)
+        params_off = {"anchors": [200.0, 400.0, 600.0, 800.0],
+                      "floor_zero": False}
+        params_on = dict(params_off, floor_zero=True)
+        out_off = ub.compute_spline(wl, spectrum, params_off)
+        out_on = ub.compute_spline(wl, spectrum, params_on)
+        self.assertLess(float(out_off.min()), -1e-3)
+        self.assertGreaterEqual(float(out_on.min()), -1e-6)
+
+    def test_floor_zero_two_anchor_linear_fallback(self):
+        # ≤ 2 anchors → polynomial-degree-1 fallback path inside
+        # _spline_evaluate. Constraint must still propagate.
+        wl = np.linspace(200.0, 800.0, 121)
+        spectrum = 0.10 + _gaussian(wl, 500, 25.5, height=1.0)
+        out = ub.compute_spline(
+            wl, spectrum,
+            {"anchors": [200.0, 800.0], "floor_zero": True},
+        )
+        self.assertGreaterEqual(float(out.min()), -1e-6)
+
+    def test_floor_zero_three_anchor_quadratic_fallback(self):
+        # 3 anchors → polynomial-degree-2 fallback path. Constraint
+        # propagates the same way.
+        wl = np.linspace(200.0, 800.0, 121)
+        spectrum = 0.50 - _gaussian(wl, 500, 50.0, height=0.40)
+        out = ub.compute_spline(
+            wl, spectrum,
+            {"anchors": [200.0, 500.0, 800.0], "floor_zero": True},
+        )
+        self.assertGreaterEqual(float(out.min()), -1e-6)
+
+
+class TestNFitBoundsConfigurable(unittest.TestCase):
+    """CS-41 — ``params["n_bounds"]`` overrides the n="fit" scan range.
+
+    The default is ``(0.1, 8.0)``. The override threads through
+    ``minimize_scalar(..., bounds=...)`` in both ``_scattering_fit``
+    (when ``floor_zero=True`` — the unconstrained branch uses a closed-
+    form log–log linear regression with no bounds) and
+    ``_scattering_offset_fit`` (always — its 2-D LSQ requires the
+    bounded scan). Validated via ``_resolve_n_bounds``.
+    """
+
+    def setUp(self):
+        self.wl = np.linspace(200.0, 800.0, 401)
+        # Synthetic c · λ^(-n) with n=3, c chosen for absorbance ~ 0.5
+        # at the band centre.
+        self.n_truth = 3.0
+        self.c_truth = 1e7
+        self.spectrum = self.c_truth * self.wl ** (-self.n_truth)
+
+    def test_default_bounds_recover_truth_n(self):
+        # Sanity: with the default bounds the n="fit" branch recovers
+        # n_truth = 3 (well inside (0.1, 8.0)). Uses the log–log
+        # branch on `_scattering_fit` (floor_zero=False).
+        out = ub.fit_scattering(
+            self.wl, self.spectrum,
+            {"n": "fit", "fit_lo_nm": 250.0, "fit_hi_nm": 750.0},
+        )
+        self.assertAlmostEqual(out["n_fitted"], self.n_truth, places=4)
+
+    def test_scattering_floor_zero_custom_bounds_recover_truth(self):
+        # floor_zero=True drives `_scattering_fit` through the bounded
+        # scan; bounds (1.0, 5.0) still bracket n_truth so we recover it.
+        out = ub.fit_scattering(
+            self.wl, self.spectrum,
+            {"n": "fit", "fit_lo_nm": 250.0, "fit_hi_nm": 750.0,
+             "floor_zero": True, "n_bounds": (1.0, 5.0)},
+        )
+        self.assertAlmostEqual(out["n_fitted"], self.n_truth, places=3)
+
+    def test_scattering_floor_zero_narrow_bounds_pin_at_edge(self):
+        # Bounds = (0.5, 1.5) exclude n_truth = 3.0; the bounded scan
+        # pins n at the upper edge (the residual decreases toward the
+        # truth direction). Proves the override actually constrains
+        # the scan rather than being silently ignored.
+        out = ub.fit_scattering(
+            self.wl, self.spectrum,
+            {"n": "fit", "fit_lo_nm": 250.0, "fit_hi_nm": 750.0,
+             "floor_zero": True, "n_bounds": (0.5, 1.5)},
+        )
+        self.assertAlmostEqual(out["n_fitted"], 1.5, places=3)
+
+    def test_scattering_offset_recovers_with_custom_bounds(self):
+        # `_scattering_offset_fit` always runs the bounded scan for
+        # n="fit" (its 2-D closed-form (a, c) only works at fixed n).
+        # Bounds (1.0, 5.0) bracket truth → recover n=3.
+        out = ub.fit_scattering_offset(
+            self.wl, self.spectrum,
+            {"n": "fit", "fit_lo_nm": 250.0, "fit_hi_nm": 750.0,
+             "n_bounds": (1.0, 5.0)},
+        )
+        self.assertAlmostEqual(out["n_fitted"], self.n_truth, places=3)
+
+    def test_scattering_offset_narrow_bounds_pin_at_edge(self):
+        # Mirror "narrow bounds pin at edge" on scattering+offset, no
+        # need for floor_zero=True since this helper always uses the
+        # bounded scan.
+        out = ub.fit_scattering_offset(
+            self.wl, self.spectrum,
+            {"n": "fit", "fit_lo_nm": 250.0, "fit_hi_nm": 750.0,
+             "n_bounds": (0.5, 1.5)},
+        )
+        self.assertAlmostEqual(out["n_fitted"], 1.5, places=3)
+
+    def test_invalid_bounds_raise(self):
+        # lo >= hi: raises with a clear message naming the offending pair.
+        with self.assertRaises(ValueError) as cm:
+            ub.compute_scattering(
+                self.wl, self.spectrum,
+                {"n": "fit", "fit_lo_nm": 250.0, "fit_hi_nm": 750.0,
+                 "n_bounds": (5.0, 1.0)},
+            )
+        self.assertIn("n_bounds", str(cm.exception))
+        self.assertIn("lo < hi", str(cm.exception))
+
+    def test_negative_bounds_raise(self):
+        with self.assertRaises(ValueError) as cm:
+            ub.compute_scattering(
+                self.wl, self.spectrum,
+                {"n": "fit", "fit_lo_nm": 250.0, "fit_hi_nm": 750.0,
+                 "n_bounds": (-1.0, 2.0)},
+            )
+        self.assertIn("n_bounds", str(cm.exception))
+        self.assertIn("≥ 0", str(cm.exception))
+
+    def test_non_pair_raises(self):
+        with self.assertRaises(ValueError) as cm:
+            ub.compute_scattering(
+                self.wl, self.spectrum,
+                {"n": "fit", "fit_lo_nm": 250.0, "fit_hi_nm": 750.0,
+                 "n_bounds": "not-a-pair"},
+            )
+        self.assertIn("n_bounds", str(cm.exception))
+
+    def test_n_bounds_only_affects_fit_branch(self):
+        # When n is fixed numerically, n_bounds is read+validated but
+        # has no effect on the fit. Pass an "invalid for fit" but
+        # still-valid pair → no error, output equals the unconfigured
+        # case bit-for-bit.
+        out_a = ub.compute_scattering(
+            self.wl, self.spectrum,
+            {"n": 3.0, "fit_lo_nm": 250.0, "fit_hi_nm": 750.0},
+        )
+        out_b = ub.compute_scattering(
+            self.wl, self.spectrum,
+            {"n": 3.0, "fit_lo_nm": 250.0, "fit_hi_nm": 750.0,
+             "n_bounds": (2.0, 2.5)},
+        )
+        np.testing.assert_array_equal(out_a, out_b)
 
 
 class TestRubberbandFloorZero(unittest.TestCase):
