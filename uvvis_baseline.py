@@ -280,26 +280,40 @@ def compute_polynomial(
 def _polynomial_floor_zero_fit(wl, a, mask, order_n, coeffs_unc):
     """SLSQP-fit polynomial coefficients with the floor-zero constraint.
 
-    ``coeffs`` follow ``np.polyfit`` ordering (highest power first;
-    ``coeffs[-1]`` is the constant term). Initial guess is the
-    unconstrained ``np.polyfit`` result shifted down at the constant
-    term by the worst overage so SLSQP starts feasible.
+    Returns ``coeffs`` in ``np.polyfit`` ordering (highest power first;
+    ``coeffs[-1]`` is the constant term) so the result threads cleanly
+    into ``np.polyval``. The SLSQP solve runs in a normalized variable
+    ``z = (wl − center) / half_range`` so the design matrix stays
+    well-conditioned for arbitrary polynomial order across wide
+    wavelength windows; the fitted polynomial is then evaluated at the
+    full wavelength grid and re-fit by ``np.polyfit`` to recover the
+    wl-space coefficients exactly.
     """
     from scipy.optimize import minimize, LinearConstraint
     wl_w = wl[mask]
     a_w = a[mask]
-    # Vandermonde-style design matrices in np.polyfit ordering
-    # (highest power first) so coeffs threads cleanly into np.polyval.
-    powers = np.arange(order_n, -1, -1)
-    V_w = wl_w[:, None] ** powers[None, :]
-    V_full = wl[:, None] ** powers[None, :]
+    wl_min, wl_max = float(wl.min()), float(wl.max())
+    wl_center = 0.5 * (wl_min + wl_max)
+    wl_half = max(0.5 * (wl_max - wl_min), 1e-12)
+    z_w = (wl_w - wl_center) / wl_half
+    z_full = (wl - wl_center) / wl_half
+
+    # Ascending-power Vandermonde in z (1, z, z^2, ...).
+    powers_asc = np.arange(0, order_n + 1)
+    V_w = z_w[:, None] ** powers_asc[None, :]
+    V_full = z_full[:, None] ** powers_asc[None, :]
+
+    # Initial guess: fit the unconstrained polynomial directly in
+    # z-space (descending, then reverse for ascending). polyfit in
+    # the well-conditioned z-axis is the natural starting point.
+    z_coef_unc_asc = np.polyfit(z_w, a_w, order_n)[::-1]
 
     cons = LinearConstraint(V_full, lb=-np.inf, ub=a)
-    residuals_full = V_full @ coeffs_unc - a
+    residuals_full = V_full @ z_coef_unc_asc - a
     max_overage = float(residuals_full.max()) if residuals_full.size else 0.0
-    x0 = np.array(coeffs_unc, dtype=float).copy()
+    x0 = z_coef_unc_asc.copy()
     if max_overage > 0:
-        x0[-1] -= max_overage  # shift constant term
+        x0[0] -= max_overage  # shift constant term in z-space
 
     def obj(c):
         r = V_w @ c - a_w
@@ -312,7 +326,12 @@ def _polynomial_floor_zero_fit(wl, a, mask, order_n, coeffs_unc):
             f"{result.message}; try widening the fit window or "
             "disabling floor-zero"
         )
-    return result.x
+    # Convert z-space coefs back to wl-space descending coefs by
+    # evaluating the polynomial at every wl sample and re-fitting in
+    # wl-space — robust round-trip without manual basis conversion.
+    z_coef_fit_asc = result.x
+    baseline_full = V_full @ z_coef_fit_asc
+    return np.polyfit(wl, baseline_full, order_n)
 
 
 # ---------------------------------------------------------------------------
