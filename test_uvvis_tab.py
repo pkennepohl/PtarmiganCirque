@@ -814,14 +814,16 @@ class TestUVVisTabBaseline(unittest.TestCase):
         self.assertTrue(hasattr(self.tab, "_shared_subject"))
         self.assertFalse(hasattr(self.tab, "_baseline_subject_cb"))
         self.assertTrue(hasattr(self.tab, "_apply_baseline_btn"))
-        # All four modes are exposed on the combobox.
+        # All six modes are exposed on the combobox (CS-38 added
+        # ``scattering+offset``).
         values = self.tab._baseline_mode_cb.cget("values")
         # Tk returns either a tuple or a string of space-separated names.
         if isinstance(values, str):
             values = tuple(values.split())
         self.assertEqual(
             tuple(values),
-            ("linear", "polynomial", "spline", "rubberband", "scattering"),
+            ("linear", "polynomial", "spline", "rubberband",
+             "scattering", "scattering+offset"),
         )
         # CS-24 (Phase 4m) scattering mode Tk vars exist on the tab.
         self.assertTrue(hasattr(self.tab, "_baseline_scattering_n"))
@@ -1131,6 +1133,158 @@ class TestUVVisTabBaseline(unittest.TestCase):
         self.tab._baseline_anchor_lo.set("220")
         self.assertIsNotNone(self.tab._apply_baseline())
         self.assertEqual(len(self.graph.nodes), n_after_first + 2)
+
+    # ---- Phase 4s — floor-zero, scattering+offset, fit persistence ----
+
+    def test_baseline_floor_zero_toggle_exists_and_defaults_off(self):
+        # CS-37 — universal "Floor at zero" Checkbutton at the top of
+        # the baseline section, bound to a ``tk.BooleanVar`` that
+        # defaults to False.
+        self.assertTrue(hasattr(self.tab, "_baseline_floor_zero"))
+        self.assertTrue(hasattr(self.tab, "_baseline_floor_zero_cb"))
+        self.assertFalse(self.tab._baseline_floor_zero.get())
+        self.assertEqual(self.tab._baseline_floor_zero_cb.cget("text"),
+                         "Floor at zero")
+
+    def test_apply_baseline_writes_floor_zero_into_params(self):
+        # CS-37 — every mode's apply path round-trips the toggle state
+        # into ``params["floor_zero"]`` on the OperationNode.
+        self._add_uvvis("u1")
+        items = self.tab._shared_subject_cb.cget("values")
+        if isinstance(items, str):
+            items = tuple(items.split())
+        self.tab._shared_subject.set(items[0])
+        self.tab._baseline_mode.set("linear")
+        self.tab._baseline_anchor_lo.set("200")
+        self.tab._baseline_anchor_hi.set("800")
+
+        # Default (False) → params records False.
+        op_id, _ = self.tab._apply_baseline()
+        op = self.graph.get_node(op_id)
+        self.assertIn("floor_zero", op.params)
+        self.assertFalse(op.params["floor_zero"])
+
+    def test_apply_baseline_linear_with_floor_zero_surfaces_error(self):
+        # CS-37 — linear with floor_zero=True raises a ValueError that
+        # surfaces as the messagebox path; the tab returns None and
+        # does NOT mutate the graph.
+        self._add_uvvis("u1")
+        items = self.tab._shared_subject_cb.cget("values")
+        if isinstance(items, str):
+            items = tuple(items.split())
+        self.tab._shared_subject.set(items[0])
+        self.tab._baseline_mode.set("linear")
+        self.tab._baseline_anchor_lo.set("200")
+        self.tab._baseline_anchor_hi.set("800")
+        self.tab._baseline_floor_zero.set(True)
+
+        n_before = len(self.graph.nodes)
+        # Patch messagebox to suppress the popup; record the call.
+        captured = {}
+        def _capture(title, message):
+            captured["title"] = title
+            captured["message"] = message
+        import uvvis_tab as _ut
+        original = _ut.messagebox.showerror
+        _ut.messagebox.showerror = _capture
+        try:
+            result = self.tab._apply_baseline()
+        finally:
+            _ut.messagebox.showerror = original
+
+        self.assertIsNone(result)
+        self.assertEqual(len(self.graph.nodes), n_before)
+        self.assertIn("floor_zero", captured.get("message", ""))
+        self.assertIn("'linear'", captured.get("message", ""))
+
+    def test_scattering_offset_mode_swaps_parameter_rows(self):
+        # CS-38 — selecting scattering+offset reuses scattering's row
+        # layout (3 rows: n+fit-n / fit lo / fit hi).
+        self.tab._baseline_mode.set("scattering+offset")
+        self.tab.update_idletasks()
+        count = len(self.tab._baseline_params_frame.winfo_children())
+        self.assertEqual(count, 3,
+                         "scattering+offset shows the same 3 rows as scattering")
+
+    def test_apply_scattering_offset_creates_baseline_node(self):
+        # CS-38 — applying scattering+offset materialises the same op +
+        # data pair shape as scattering, with mode discriminator
+        # ``"scattering+offset"``.
+        self._add_uvvis("u1")
+        items = self.tab._shared_subject_cb.cget("values")
+        if isinstance(items, str):
+            items = tuple(items.split())
+        self.tab._shared_subject.set(items[0])
+        self.tab._baseline_mode.set("scattering+offset")
+        self.tab._baseline_scattering_n.set("4")
+        self.tab._baseline_scattering_fit_lo.set("200")
+        self.tab._baseline_scattering_fit_hi.set("350")
+
+        op_id, out_id = self.tab._apply_baseline()
+        op = self.graph.get_node(op_id)
+        out = self.graph.get_node(out_id)
+        self.assertEqual(op.params["mode"], "scattering+offset")
+        self.assertEqual(out.type, NodeType.BASELINE)
+
+    def test_scattering_n_fit_persists_n_fitted_and_c_fitted(self):
+        # CS-39 — applying scattering with n="fit" writes c_fitted +
+        # n_fitted into params on the OperationNode.
+        self._add_uvvis("u1")
+        items = self.tab._shared_subject_cb.cget("values")
+        if isinstance(items, str):
+            items = tuple(items.split())
+        self.tab._shared_subject.set(items[0])
+        self.tab._baseline_mode.set("scattering")
+        self.tab._baseline_scattering_fit_n.set(True)
+        self.tab._baseline_scattering_fit_lo.set("200")
+        self.tab._baseline_scattering_fit_hi.set("350")
+
+        op_id, _ = self.tab._apply_baseline()
+        op = self.graph.get_node(op_id)
+        self.assertEqual(op.params["n"], "fit")
+        self.assertIn("c_fitted", op.params)
+        self.assertIn("n_fitted", op.params)
+        self.assertIsInstance(op.params["c_fitted"], float)
+        self.assertIsInstance(op.params["n_fitted"], float)
+
+    def test_scattering_fixed_n_persists_c_fitted_only(self):
+        # CS-39 — fixed n: ``n_fitted`` is NOT recorded (the
+        # diagnostic is meaningful only when the fit recovered n).
+        self._add_uvvis("u1")
+        items = self.tab._shared_subject_cb.cget("values")
+        if isinstance(items, str):
+            items = tuple(items.split())
+        self.tab._shared_subject.set(items[0])
+        self.tab._baseline_mode.set("scattering")
+        self.tab._baseline_scattering_fit_n.set(False)
+        self.tab._baseline_scattering_n.set("4")
+        self.tab._baseline_scattering_fit_lo.set("200")
+        self.tab._baseline_scattering_fit_hi.set("350")
+
+        op_id, _ = self.tab._apply_baseline()
+        op = self.graph.get_node(op_id)
+        self.assertIn("c_fitted", op.params)
+        self.assertNotIn("n_fitted", op.params)
+
+    def test_scattering_offset_persists_a_fitted(self):
+        # CS-39 — scattering+offset always records a_fitted +
+        # c_fitted (additive offset is always fitted).
+        self._add_uvvis("u1")
+        items = self.tab._shared_subject_cb.cget("values")
+        if isinstance(items, str):
+            items = tuple(items.split())
+        self.tab._shared_subject.set(items[0])
+        self.tab._baseline_mode.set("scattering+offset")
+        self.tab._baseline_scattering_fit_n.set(False)
+        self.tab._baseline_scattering_n.set("4")
+        self.tab._baseline_scattering_fit_lo.set("200")
+        self.tab._baseline_scattering_fit_hi.set("350")
+
+        op_id, _ = self.tab._apply_baseline()
+        op = self.graph.get_node(op_id)
+        self.assertIn("a_fitted", op.params)
+        self.assertIn("c_fitted", op.params)
+        self.assertNotIn("n_fitted", op.params)
 
 
 @unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")

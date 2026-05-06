@@ -540,5 +540,341 @@ class TestComputeBaselineCurve(unittest.TestCase):
         self.assertIsNone(ub.compute_baseline_curve(self.graph, child))
 
 
+# ---------------------------------------------------------------------------
+# Phase 4s — CS-37 floor-zero, CS-38 scattering+offset, CS-39 fit helpers,
+# CS-40 nm-range error widening.
+# ---------------------------------------------------------------------------
+
+
+class TestFloorZeroNotYetImplemented(unittest.TestCase):
+    """CS-37 — linear / polynomial / spline raise on ``floor_zero=True``.
+
+    The roadmap defers these three to a later session; the public
+    contract is that callers passing ``floor_zero=True`` to a mode
+    whose constrained-fit path hasn't shipped get a clear ValueError
+    naming the mode rather than a silent unconstrained fall-through.
+    """
+
+    def setUp(self):
+        self.wl = np.linspace(200.0, 800.0, 121)
+        self.spectrum = 0.10 + 0.0005 * self.wl
+
+    def test_linear_with_floor_zero_raises(self):
+        with self.assertRaises(ValueError) as cm:
+            ub.compute_linear(
+                self.wl, self.spectrum,
+                {"anchor_lo_nm": 200.0, "anchor_hi_nm": 800.0,
+                 "floor_zero": True},
+            )
+        self.assertIn("floor_zero=True", str(cm.exception))
+        self.assertIn("'linear'", str(cm.exception))
+
+    def test_polynomial_with_floor_zero_raises(self):
+        with self.assertRaises(ValueError) as cm:
+            ub.compute_polynomial(
+                self.wl, self.spectrum,
+                {"order": 1, "fit_lo_nm": 200.0, "fit_hi_nm": 800.0,
+                 "floor_zero": True},
+            )
+        self.assertIn("'polynomial'", str(cm.exception))
+
+    def test_spline_with_floor_zero_raises(self):
+        with self.assertRaises(ValueError) as cm:
+            ub.compute_spline(
+                self.wl, self.spectrum,
+                {"anchors": [200.0, 800.0], "floor_zero": True},
+            )
+        self.assertIn("'spline'", str(cm.exception))
+
+    def test_floor_zero_false_is_a_no_op(self):
+        # Sanity — supplying ``floor_zero=False`` to the unsupported
+        # modes does NOT raise; the unconstrained path runs as before.
+        out = ub.compute_linear(
+            self.wl, self.spectrum,
+            {"anchor_lo_nm": 200.0, "anchor_hi_nm": 800.0,
+             "floor_zero": False},
+        )
+        np.testing.assert_allclose(out, np.zeros_like(out), atol=1e-12)
+
+
+class TestRubberbandFloorZero(unittest.TestCase):
+    """CS-37 — rubberband floor-zero is a no-op + invariant guard.
+
+    The convex-hull lower envelope is ≤ data by construction, so the
+    constraint is satisfied without changing the algorithm; the guard
+    pins the invariant so any future numerical drift surfaces.
+    """
+
+    def test_floor_zero_passes_through(self):
+        wl = np.linspace(200.0, 800.0, 401)
+        spectrum = 0.10 + 0.0005 * wl + _gaussian(wl, 500, 25.5, height=1.0)
+        out = ub.compute_rubberband(wl, spectrum, {"floor_zero": True})
+        # All corrected values are ≥ 0 (modulo the same numerical slack
+        # the unconstrained branch already tolerated).
+        self.assertGreaterEqual(float(out.min()), -1e-9)
+
+    def test_floor_zero_matches_unconstrained_within_tolerance(self):
+        # Rubberband is parameter-free; the floor_zero flag must not
+        # change the output beyond floating-point noise.
+        wl = np.linspace(200.0, 800.0, 121)
+        spectrum = 0.05 + 0.001 * wl + _gaussian(wl, 500, 25.5, height=1.0)
+        out_off = ub.compute_rubberband(wl, spectrum, {"floor_zero": False})
+        out_on = ub.compute_rubberband(wl, spectrum, {"floor_zero": True})
+        np.testing.assert_allclose(out_off, out_on, atol=1e-12)
+
+
+class TestScatteringFloorZero(unittest.TestCase):
+    """CS-37 — scattering closed-form constrained ``c``."""
+
+    def test_pure_power_law_unchanged_with_floor_zero(self):
+        # When the data is exactly the model with c · λ^(-n), the
+        # unconstrained c* already satisfies c · λ_i^(-n) ≤ a_i (with
+        # equality everywhere), so floor_zero=True returns the same
+        # baseline as floor_zero=False.
+        wl = np.linspace(200.0, 800.0, 121)
+        spectrum = 1e8 * wl ** (-4)
+        out_off = ub.compute_scattering(
+            wl, spectrum,
+            {"n": 4, "fit_lo_nm": 200.0, "fit_hi_nm": 800.0,
+             "floor_zero": False},
+        )
+        out_on = ub.compute_scattering(
+            wl, spectrum,
+            {"n": 4, "fit_lo_nm": 200.0, "fit_hi_nm": 800.0,
+             "floor_zero": True},
+        )
+        np.testing.assert_allclose(out_off, out_on, atol=1e-9)
+
+    def test_constraint_clamps_c_to_keep_corrected_non_negative(self):
+        # Build a spectrum whose unconstrained least-squares c* would
+        # over-subtract somewhere in the full range. Concretely: the
+        # fit window is dominated by the power-law tail (so c* is
+        # large), but a smaller-amplitude region sits below c·λ^(-n)
+        # outside the fit window.
+        wl = np.linspace(200.0, 800.0, 601)
+        spectrum = 1e8 * wl ** (-4) + _gaussian(wl, 500, 25.5, height=1.0)
+        # Force the constraint to bind: the data dips at one outside-
+        # window point so c must be reduced.
+        spectrum[300] = 1e8 * wl[300] ** (-4) * 0.5  # dip
+        out = ub.compute_scattering(
+            wl, spectrum,
+            {"n": 4, "fit_lo_nm": 200.0, "fit_hi_nm": 350.0,
+             "floor_zero": True},
+        )
+        self.assertGreaterEqual(float(out.min()), -1e-9)
+
+    def test_n_fit_with_floor_zero_returns_non_negative(self):
+        wl = np.linspace(200.0, 800.0, 121)
+        spectrum = 1e8 * wl ** (-4) + _gaussian(wl, 500, 25.5, height=1.0)
+        out = ub.compute_scattering(
+            wl, spectrum,
+            {"n": "fit", "fit_lo_nm": 200.0, "fit_hi_nm": 350.0,
+             "floor_zero": True},
+        )
+        self.assertGreaterEqual(float(out.min()), -1e-9)
+
+
+class TestScatteringOffsetMode(unittest.TestCase):
+    """CS-38 — composite ``B(λ) = a + c · λ^(-n)``."""
+
+    def test_recovers_peak_with_fixed_n(self):
+        wl = np.linspace(200.0, 800.0, 601)
+        peak = _gaussian(wl, 500.0, 25.5, height=1.0)
+        bg = 0.05 + 1e8 * wl ** (-4)  # additive offset 0.05 + power law
+        spectrum = peak + bg
+        out = ub.compute_scattering_offset(
+            wl, spectrum,
+            {"n": 4, "fit_lo_nm": 200.0, "fit_hi_nm": 350.0},
+        )
+        # Recovered peak height ≈ 1.0; off-peak residual ≈ 0.
+        self.assertAlmostEqual(float(out.max()), 1.0, places=4)
+        self.assertLess(float(np.abs(out[wl < 300]).max()), 1e-3)
+
+    def test_recovers_peak_with_n_fit(self):
+        wl = np.linspace(200.0, 800.0, 601)
+        peak = _gaussian(wl, 500.0, 25.5, height=1.0)
+        bg = 0.05 + 1e8 * wl ** (-4)
+        spectrum = peak + bg
+        out = ub.compute_scattering_offset(
+            wl, spectrum,
+            {"n": "fit", "fit_lo_nm": 200.0, "fit_hi_nm": 350.0},
+        )
+        self.assertAlmostEqual(float(out.max()), 1.0, delta=0.05)
+
+    def test_subtracts_pure_a_plus_power_law_to_zero(self):
+        wl = np.linspace(200.0, 800.0, 121)
+        spectrum = 0.05 + 1e8 * wl ** (-4)
+        out = ub.compute_scattering_offset(
+            wl, spectrum,
+            {"n": 4, "fit_lo_nm": 200.0, "fit_hi_nm": 800.0},
+        )
+        np.testing.assert_allclose(out, np.zeros_like(out), atol=1e-9)
+
+    def test_floor_zero_returns_non_negative(self):
+        wl = np.linspace(200.0, 800.0, 121)
+        spectrum = 0.05 + 1e8 * wl ** (-4) + _gaussian(wl, 500, 25.5, height=1.0)
+        out = ub.compute_scattering_offset(
+            wl, spectrum,
+            {"n": 4, "fit_lo_nm": 200.0, "fit_hi_nm": 350.0,
+             "floor_zero": True},
+        )
+        self.assertGreaterEqual(float(out.min()), -1e-6)
+
+    def test_negative_n_rejected(self):
+        wl = np.linspace(200.0, 800.0, 11)
+        a = np.ones_like(wl)
+        with self.assertRaises(ValueError):
+            ub.compute_scattering_offset(
+                wl, a,
+                {"n": -1.0, "fit_lo_nm": 200.0, "fit_hi_nm": 800.0},
+            )
+
+    def test_non_numeric_non_fit_n_rejected(self):
+        wl = np.linspace(200.0, 800.0, 11)
+        a = np.ones_like(wl)
+        with self.assertRaises(ValueError):
+            ub.compute_scattering_offset(
+                wl, a,
+                {"n": "rayleigh", "fit_lo_nm": 200.0, "fit_hi_nm": 800.0},
+            )
+
+    def test_missing_param_raises(self):
+        wl = np.linspace(200.0, 800.0, 11)
+        a = np.ones_like(wl)
+        with self.assertRaises(KeyError):
+            ub.compute_scattering_offset(wl, a, {"n": 4, "fit_lo_nm": 200.0})
+
+
+class TestFitScatteringHelper(unittest.TestCase):
+    """CS-39 — ``fit_scattering`` returns the resolved fit parameters."""
+
+    def test_fixed_n_returns_c_fitted_and_n_equal_to_input(self):
+        wl = np.linspace(200.0, 800.0, 121)
+        spectrum = 1e8 * wl ** (-4)
+        info = ub.fit_scattering(
+            wl, spectrum,
+            {"n": 4, "fit_lo_nm": 200.0, "fit_hi_nm": 800.0},
+        )
+        self.assertIn("c_fitted", info)
+        self.assertIn("n_fitted", info)
+        self.assertEqual(info["n_fitted"], 4.0)
+        self.assertAlmostEqual(info["c_fitted"], 1e8, delta=1e-2)
+
+    def test_fit_n_returns_recovered_n(self):
+        wl = np.linspace(200.0, 800.0, 121)
+        spectrum = 1e8 * wl ** (-4)
+        info = ub.fit_scattering(
+            wl, spectrum,
+            {"n": "fit", "fit_lo_nm": 200.0, "fit_hi_nm": 800.0},
+        )
+        self.assertAlmostEqual(info["n_fitted"], 4.0, places=3)
+
+    def test_floor_zero_changes_c_when_constraint_binds(self):
+        wl = np.linspace(200.0, 800.0, 601)
+        spectrum = 1e8 * wl ** (-4) + _gaussian(wl, 500, 25.5, height=1.0)
+        spectrum[300] = 1e8 * wl[300] ** (-4) * 0.5
+        info_off = ub.fit_scattering(
+            wl, spectrum,
+            {"n": 4, "fit_lo_nm": 200.0, "fit_hi_nm": 350.0,
+             "floor_zero": False},
+        )
+        info_on = ub.fit_scattering(
+            wl, spectrum,
+            {"n": 4, "fit_lo_nm": 200.0, "fit_hi_nm": 350.0,
+             "floor_zero": True},
+        )
+        # The constrained c is ≤ unconstrained c (or equal if the
+        # constraint did not bind — but the dip we crafted forces it).
+        self.assertLess(info_on["c_fitted"], info_off["c_fitted"])
+
+
+class TestFitScatteringOffsetHelper(unittest.TestCase):
+    """CS-39 — ``fit_scattering_offset`` returns ``a_fitted`` too."""
+
+    def test_returns_all_three_keys(self):
+        wl = np.linspace(200.0, 800.0, 121)
+        spectrum = 0.05 + 1e8 * wl ** (-4)
+        info = ub.fit_scattering_offset(
+            wl, spectrum,
+            {"n": 4, "fit_lo_nm": 200.0, "fit_hi_nm": 800.0},
+        )
+        self.assertIn("a_fitted", info)
+        self.assertIn("c_fitted", info)
+        self.assertIn("n_fitted", info)
+        self.assertAlmostEqual(info["a_fitted"], 0.05, places=4)
+        self.assertAlmostEqual(info["c_fitted"], 1e8, delta=1e-2)
+        self.assertEqual(info["n_fitted"], 4.0)
+
+    def test_fit_n_recovers_all_three(self):
+        wl = np.linspace(200.0, 800.0, 121)
+        spectrum = 0.05 + 1e8 * wl ** (-4)
+        info = ub.fit_scattering_offset(
+            wl, spectrum,
+            {"n": "fit", "fit_lo_nm": 200.0, "fit_hi_nm": 800.0},
+        )
+        self.assertAlmostEqual(info["n_fitted"], 4.0, delta=0.1)
+        self.assertAlmostEqual(info["a_fitted"], 0.05, delta=0.01)
+
+
+class TestErrorMessageDataRange(unittest.TestCase):
+    """CS-40 — fit-window error messages include the data's nm range."""
+
+    def test_polynomial_too_few_points_message_includes_data_range(self):
+        wl = np.linspace(250.0, 750.0, 601)
+        a = np.zeros_like(wl)
+        with self.assertRaises(ValueError) as cm:
+            ub.compute_polynomial(
+                wl, a,
+                {"order": 5, "fit_lo_nm": 100.0, "fit_hi_nm": 100.5},
+            )
+        msg = str(cm.exception)
+        self.assertIn("data spans", msg)
+        self.assertIn("250", msg)
+        self.assertIn("750", msg)
+
+    def test_scattering_too_few_points_message_includes_data_range(self):
+        wl = np.linspace(250.0, 750.0, 121)
+        a = wl ** (-4)
+        with self.assertRaises(ValueError) as cm:
+            ub.compute_scattering(
+                wl, a,
+                {"n": 4, "fit_lo_nm": 900.0, "fit_hi_nm": 950.0},
+            )
+        msg = str(cm.exception)
+        self.assertIn("data spans", msg)
+        self.assertIn("250", msg)
+        self.assertIn("750", msg)
+
+    def test_scattering_offset_too_few_points_message_includes_data_range(self):
+        wl = np.linspace(250.0, 750.0, 121)
+        a = wl ** (-4)
+        with self.assertRaises(ValueError) as cm:
+            ub.compute_scattering_offset(
+                wl, a,
+                {"n": 4, "fit_lo_nm": 900.0, "fit_hi_nm": 950.0},
+            )
+        msg = str(cm.exception)
+        self.assertIn("data spans", msg)
+        self.assertIn("250", msg)
+        self.assertIn("750", msg)
+
+
+class TestDispatcherWithScatteringOffset(unittest.TestCase):
+    """CS-38 — the dispatcher routes ``"scattering+offset"`` to the new helper."""
+
+    def test_compute_routes_scattering_offset(self):
+        wl = np.linspace(200.0, 800.0, 121)
+        spectrum = 0.05 + 1e8 * wl ** (-4)
+        out = ub.compute(
+            "scattering+offset", wl, spectrum,
+            {"n": 4, "fit_lo_nm": 200.0, "fit_hi_nm": 800.0},
+        )
+        np.testing.assert_allclose(out, np.zeros_like(out), atol=1e-9)
+
+    def test_baseline_modes_includes_new_mode(self):
+        self.assertIn("scattering+offset", ub.BASELINE_MODES)
+        self.assertEqual(len(ub.BASELINE_MODES), 6)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

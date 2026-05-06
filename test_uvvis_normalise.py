@@ -196,6 +196,34 @@ class TestInputValidation(unittest.TestCase):
             )
 
 
+class TestErrorMessageDataRange(unittest.TestCase):
+    """CS-40 — empty-window error includes the data's nm range."""
+
+    def test_peak_window_outside_data_message_includes_data_range(self):
+        wl = np.linspace(250.0, 750.0, 121)
+        a = np.ones_like(wl)
+        with self.assertRaises(ValueError) as cm:
+            un.compute_peak(
+                wl, a,
+                {"peak_lo_nm": 900.0, "peak_hi_nm": 950.0},
+            )
+        msg = str(cm.exception)
+        self.assertIn("data spans", msg)
+        self.assertIn("250", msg)
+        self.assertIn("750", msg)
+
+    def test_area_window_outside_data_message_includes_data_range(self):
+        wl = np.linspace(250.0, 750.0, 121)
+        a = np.ones_like(wl)
+        with self.assertRaises(ValueError) as cm:
+            un.compute_area(
+                wl, a,
+                {"area_lo_nm": 900.0, "area_hi_nm": 950.0},
+            )
+        msg = str(cm.exception)
+        self.assertIn("data spans", msg)
+
+
 # ---- Panel tests -------------------------------------------------------
 
 
