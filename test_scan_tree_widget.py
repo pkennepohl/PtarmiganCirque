@@ -1880,13 +1880,18 @@ class TestTruncateLabel(unittest.TestCase):
 
 @unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
 class TestTooltip(unittest.TestCase):
-    """Phase 4q (CS-33) — hover tooltip helper.
+    """Phase 4q (CS-33) / Phase 4t (CS-42) — hover tooltip helper.
 
     Construction-only assertions plus ``update_text``; the actual
     Toplevel display is timing-dependent (600 ms ``after``) and we
     don't drive the event loop in the test suite, so verifying the
     tooltip surface itself is left to manual smoke. The class still
     has to construct cleanly and bind to a parent without raising.
+
+    Imports from the promoted ``tooltip`` module rather than the
+    Phase-4q-era ``_Tooltip`` private alias inside scan_tree_widget;
+    the symbol is re-exported as ``Tooltip`` (no underscore) on the
+    public side.
     """
 
     def setUp(self) -> None:
@@ -1900,26 +1905,26 @@ class TestTooltip(unittest.TestCase):
             pass
 
     def test_construction_binds_without_error(self):
-        from scan_tree_widget import _Tooltip
+        from tooltip import Tooltip
         lbl = tk.Label(self.host, text="hi")
         lbl.pack()
-        tip = _Tooltip(lbl, "the full label")
+        tip = Tooltip(lbl, "the full label")
         self.assertEqual(tip._text, "the full label")
         self.assertIsNone(tip._tip)
 
     def test_update_text_rotates_in_place(self):
-        from scan_tree_widget import _Tooltip
+        from tooltip import Tooltip
         lbl = tk.Label(self.host, text="hi")
         lbl.pack()
-        tip = _Tooltip(lbl, "first")
+        tip = Tooltip(lbl, "first")
         tip.update_text("second")
         self.assertEqual(tip._text, "second")
 
     def test_hide_is_idempotent_when_no_tip_open(self):
-        from scan_tree_widget import _Tooltip
+        from tooltip import Tooltip
         lbl = tk.Label(self.host, text="hi")
         lbl.pack()
-        tip = _Tooltip(lbl, "x")
+        tip = Tooltip(lbl, "x")
         tip._hide()
         tip._hide()
         self.assertIsNone(tip._tip)
@@ -2092,6 +2097,36 @@ class TestPerNodeBaselineCurveToggle(unittest.TestCase):
         self.assertEqual(node.style.get("show_baseline_curve"), True)
         btn2 = self._bc_button_in(widget._row_frames["bl"])
         self.assertEqual(btn2.cget("text"), "~")
+
+    def test_baseline_curve_button_has_tooltip(self):
+        # Phase 4t (CS-42) — Tooltip's promotion lets the per-row
+        # ``[~]/[–]`` BASELINE toggle carry a hover hint. Resolves
+        # Phase 4r friction #1: the gesture was previously
+        # discoverable only by experimentation.
+        from tooltip import Tooltip
+        self.graph.add_node(
+            _data("bl", NodeType.BASELINE, state=NodeState.COMMITTED),
+        )
+        widget = self._build_widget([NodeType.BASELINE])
+        btn = self._bc_button_in(widget._row_frames["bl"])
+        self.assertIsNotNone(btn, "BASELINE row must carry the [~]/[–] toggle")
+        # The Tooltip binds <Enter>/<Leave>/<ButtonPress> on the
+        # button. Verify by confirming the bind list for <Enter> is
+        # non-empty after construction (Tk concatenates added
+        # bindings; the empty string sentinel proves no binding).
+        enter_bind = btn.bind("<Enter>")
+        self.assertNotEqual(
+            enter_bind, "",
+            "[~] toggle must have an <Enter> binding from Tooltip",
+        )
+        # Tooltip is constructed with the canonical hint text.
+        # Walk widget children to find the Tooltip-created Toplevel
+        # would be unreliable (the Toplevel only opens on hover);
+        # instead, sanity-check the Tooltip class can be constructed
+        # standalone with the same text — a smoke test that the
+        # promotion didn't break the helper.
+        sanity = Tooltip(btn, "Show / hide baseline curve overlay")
+        self.assertEqual(sanity._text, "Show / hide baseline curve overlay")
 
 
 @unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
