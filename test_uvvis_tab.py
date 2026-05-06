@@ -2983,5 +2983,118 @@ class TestUVVisTabRedrawGuard(unittest.TestCase):
         self.tab._redraw()  # must not raise
 
 
+class TestMultiAxisRoutingHelpers(unittest.TestCase):
+    """Phase 4u (CS-44) — pure-helper coverage for the multi-axis routing.
+
+    The constants and helpers under test are module-level in
+    ``uvvis_tab`` and have no Tk dependency, so this class does not
+    construct a display. Integration coverage (twin-axis lifecycle in
+    ``_redraw``) lives in ``TestUVVisTabSecondDerivativeIntegration``
+    + the per-role smoke tests later in this file.
+    """
+
+    def test_axis_roles_tuple_shape_and_order(self):
+        # The role tuple is a fixed three-entry vocabulary: primary
+        # is the user-facing left axis, secondary the first twinx,
+        # tertiary the offset-spine third axis. Order matters because
+        # `_redraw` walks it to build the role → Axes map in
+        # deterministic order. Tests pin the shape so a future
+        # signature change (e.g. shrinking back to two roles) shows
+        # up as a CI failure rather than a silent UI surprise.
+        from uvvis_tab import _AXIS_ROLES
+        self.assertEqual(_AXIS_ROLES, ("primary", "secondary", "tertiary"))
+
+    def test_default_y_axis_table_covers_every_renderer_nodetype(self):
+        # Every NodeType that flows through `_spectrum_nodes`,
+        # `_second_derivative_nodes`, or `_peak_list_nodes` must
+        # have an entry in the default table — the lookup falls back
+        # to "primary" for unknowns, but routing decisions for these
+        # NodeTypes should be explicit, not implicit, so a future
+        # NodeType addition cannot silently land on the wrong axis.
+        from uvvis_tab import _DEFAULT_Y_AXIS_BY_NODETYPE
+        for ntype in (NodeType.UVVIS, NodeType.BASELINE,
+                      NodeType.NORMALISED, NodeType.SMOOTHED,
+                      NodeType.PEAK_LIST, NodeType.SECOND_DERIVATIVE):
+            self.assertIn(ntype, _DEFAULT_Y_AXIS_BY_NODETYPE,
+                          f"{ntype} missing from _DEFAULT_Y_AXIS_BY_NODETYPE")
+
+    def test_resolve_y_axis_role_routes_second_derivative_to_secondary(self):
+        from uvvis_tab import _resolve_y_axis_role
+        self.assertEqual(_resolve_y_axis_role(NodeType.SECOND_DERIVATIVE),
+                         "secondary")
+
+    def test_resolve_y_axis_role_routes_other_renderer_types_to_primary(self):
+        # All five non-derivative renderer NodeTypes share the
+        # absorbance y-axis (primary).
+        from uvvis_tab import _resolve_y_axis_role
+        for ntype in (NodeType.UVVIS, NodeType.BASELINE,
+                      NodeType.NORMALISED, NodeType.SMOOTHED,
+                      NodeType.PEAK_LIST):
+            self.assertEqual(_resolve_y_axis_role(ntype), "primary",
+                             f"{ntype} must default to 'primary'")
+
+    def test_resolve_y_axis_role_falls_back_to_primary_for_unknown_type(self):
+        # NodeTypes outside the renderer set (RAW_FILE, ANALYSIS,
+        # XANES, etc.) never reach `_redraw`'s plot loop, but the
+        # helper is total over NodeType — an unknown type defaults
+        # to "primary" so a future renderer extension that forgets
+        # to register its NodeType lands safely on the left axis.
+        from uvvis_tab import _resolve_y_axis_role
+        self.assertEqual(_resolve_y_axis_role(NodeType.RAW_FILE), "primary")
+
+    def test_default_role_values_are_subset_of_axis_roles(self):
+        # Every value in the per-NodeType table must be one of the
+        # three known roles — drift here is a contract bug.
+        from uvvis_tab import _AXIS_ROLES, _DEFAULT_Y_AXIS_BY_NODETYPE
+        for ntype, role in _DEFAULT_Y_AXIS_BY_NODETYPE.items():
+            self.assertIn(role, _AXIS_ROLES,
+                          f"{ntype} maps to {role!r} which is not in "
+                          f"_AXIS_ROLES")
+
+    def test_resolve_non_primary_y_label_is_x_unit_aware(self):
+        # SECOND_DERIVATIVE's label changes with the displayed x
+        # unit — d²A/dλ² when nm, d²A/d(cm⁻¹)² when cm-1, d²A/dE²
+        # when eV. The label is physically meaningful, not
+        # cosmetic, so the helper must round-trip every supported
+        # unit.
+        from uvvis_tab import _resolve_non_primary_y_label
+        self.assertEqual(
+            _resolve_non_primary_y_label(NodeType.SECOND_DERIVATIVE, "nm"),
+            "d²A/dλ²",
+        )
+        self.assertEqual(
+            _resolve_non_primary_y_label(NodeType.SECOND_DERIVATIVE, "cm-1"),
+            "d²A/d(cm⁻¹)²",
+        )
+        self.assertEqual(
+            _resolve_non_primary_y_label(NodeType.SECOND_DERIVATIVE, "eV"),
+            "d²A/dE²",
+        )
+
+    def test_resolve_non_primary_y_label_returns_none_for_unregistered(self):
+        # A (NodeType, x_unit) pair without a registered label
+        # returns None — the role goes unlabelled rather than
+        # picking a guess. UVVIS on any unit and SECOND_DERIVATIVE
+        # on a hypothetical future unit both fall through.
+        from uvvis_tab import _resolve_non_primary_y_label
+        self.assertIsNone(
+            _resolve_non_primary_y_label(NodeType.UVVIS, "nm"))
+        self.assertIsNone(
+            _resolve_non_primary_y_label(NodeType.UVVIS, "cm-1"))
+        self.assertIsNone(
+            _resolve_non_primary_y_label(NodeType.SECOND_DERIVATIVE,
+                                         "future-unit"))
+
+    def test_tertiary_axis_offset_constant_in_typical_range(self):
+        # 1.10–1.15 is the typical matplotlib convention for a
+        # 3rd-axis stacked spine. Pinned as a sanity check; the
+        # constant is intentionally module-level so a future Plot
+        # Settings field can promote it without changing any helper
+        # signatures.
+        from uvvis_tab import _TERTIARY_AXIS_OFFSET_FRAC
+        self.assertGreater(_TERTIARY_AXIS_OFFSET_FRAC, 1.0)
+        self.assertLess(_TERTIARY_AXIS_OFFSET_FRAC, 1.30)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
