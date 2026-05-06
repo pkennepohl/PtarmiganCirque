@@ -4077,7 +4077,7 @@ through the graph-event rebuild path, round-trip back to on.
 
 ---
 
-## CS-37 — Floor-zero baseline as fit-time constraint (Phase 4s, partial)
+## CS-37 — Floor-zero baseline as fit-time constraint (Phase 4s + Phase 4t)
 
 The user's framing: corrected absorbance (`parent − B`) should be
 ≥ 0 across the entire range when the user explicitly asks for it.
@@ -4087,12 +4087,14 @@ For scattering at high energies the unconstrained fit rises too
 steeply and shifting it doesn't fix the shape mismatch — the
 constraint must be enforced at *fit time*.
 
-CS-37 ships the universal "Floor at zero" toggle and the
-constrained-fit code path for **3 of 6 modes**: scattering,
-scattering+offset (CS-38), and rubberband. Linear / polynomial /
-spline raise a clear `ValueError` per the per-mode roadmap (the
-register entry stays ⏳ until those three ship in subsequent
-sessions).
+CS-37's roadmap shipped in two phases:
+
+* **Phase 4s** — universal "Floor at zero" toggle plus the
+  constrained-fit code path for scattering, scattering+offset
+  (CS-38), and rubberband (3 of 6 modes).
+* **Phase 4t** — the remaining three modes: linear, polynomial,
+  spline. ``BASELINE_MODES`` is now fully covered; no mode raises
+  on ``floor_zero=True``.
 
 UI surface
 ----------
@@ -4117,10 +4119,12 @@ combobox `mode_frame` and the per-mode parameter rows
     )
     self._baseline_floor_zero_cb.pack(anchor="w")
 
-Always visible regardless of mode. The greyed-disabled state for
-unsupported modes is deferred (see the new "Floor-zero toggle
-disabled state for unsupported baseline modes" register entry —
-USER-FLAGGED at end of Phase 4s).
+Always visible regardless of mode. Phase 4t adds the disabled-
+state machinery (CS-43) that greys the toggle out when the active
+mode isn't in ``_FLOOR_ZERO_SUPPORTED_MODES``; today the supported
+set covers every mode in ``BASELINE_MODES``, so the disabled
+branch never fires — it's defensive scaffolding for a future
+mode added without floor-zero coverage.
 
 Params round-trip
 -----------------
@@ -4141,17 +4145,18 @@ Pure-module helpers
 possibly-None mapping (`compute_rubberband` accepts `params=None`
 for API symmetry).
 
-For the implemented modes:
+Per-mode implementation:
 
-* **scattering** — closed-form: under the model `B = c · λ^(-n)`,
-  the constraint `c · λ_i^(-n) ≤ a_i` everywhere reduces to
-  `c ≤ min_i(a_i · λ_i^n)`. The unconstrained least-squares `c*`
-  is computed exactly as before; if `c* > c_max`, clamp to
-  `c_max`. With `n="fit"`, a 1-D `scipy.optimize.minimize_scalar`
-  bounded scan over `n ∈ [0.1, 8.0]` carries the closed-form
-  constrained-c step inside as the residual function.
+* **scattering** (Phase 4s) — closed-form: under the model
+  `B = c · λ^(-n)`, the constraint `c · λ_i^(-n) ≤ a_i`
+  everywhere reduces to `c ≤ min_i(a_i · λ_i^n)`. The
+  unconstrained least-squares `c*` is computed exactly as before;
+  if `c* > c_max`, clamp to `c_max`. With `n="fit"`, a 1-D
+  `scipy.optimize.minimize_scalar` bounded scan over `n ∈
+  n_bounds` (CS-41) carries the closed-form constrained-c step
+  inside as the residual function.
 
-* **scattering+offset** (CS-38) — convex QP via
+* **scattering+offset** (Phase 4s, CS-38) — convex QP via
   `scipy.optimize.minimize(method="SLSQP")` with linear
   inequality `a_param + c · λ_i^(-n) ≤ a_i` at every full-range
   sample (encoded via `LinearConstraint`). Initial guess: project
@@ -4159,39 +4164,68 @@ For the implemented modes:
   Failure surfaces as `ValueError("scattering+offset floor-zero
   fit did not converge: …")`.
 
-* **rubberband** — no-op + invariant assert. The convex-hull
-  lower envelope is ≤ data by construction; the guard raises if
-  numerical drift takes the corrected curve below `-1e-9`.
+* **rubberband** (Phase 4s) — no-op + invariant assert. The
+  convex-hull lower envelope is ≤ data by construction; the
+  guard raises if numerical drift takes the corrected curve
+  below `-1e-9`.
 
-For the unimplemented modes (linear / polynomial / spline) the
-top of `compute_*` checks `_floor_zero(params)` and raises:
+* **linear** (Phase 4t) — `_linear_floor_zero_fit` runs SLSQP on
+  the two-anchor pair `(a_lo, a_hi)`. Objective minimises L2
+  distance from the unconstrained sampled values so the result
+  matches the unconstrained line when the constraint isn't
+  binding. ``LinearConstraint`` rows are
+  `(1 - weight_i) · a_lo + weight_i · a_hi ≤ a_i` at every
+  full-range sample, where `weight_i = (wl_i - lo) / (hi - lo)`
+  is the linear-interpolation coefficient. Initial guess shifts
+  the unconstrained pair down by the maximum overage so SLSQP
+  starts feasible.
 
-::
+* **polynomial** (Phase 4t) — `_polynomial_floor_zero_fit` runs
+  SLSQP on the polynomial coefficients. The solve runs in a
+  normalized variable `z = (wl − center) / half_range` so the
+  Vandermonde columns stay within ~1 order of magnitude
+  regardless of polynomial order; without the normalization the
+  raw `wl ∈ [200, 800]` Vandermonde columns span 6 orders of
+  magnitude for order ≥ 2 and SLSQP fails with "Inequality
+  constraints incompatible" before the line search moves. The
+  fitted z-space polynomial is converted back to wl-space
+  ``np.polyfit`` ordering by evaluating at every wl sample and
+  re-fitting — robust round-trip with no manual basis transforms.
 
-    ValueError(
-        "floor_zero=True is not yet implemented for baseline mode "
-        "'<mode>'; ships in a later session per the per-mode roadmap"
-    )
+* **spline** (Phase 4t) — `_spline_floor_zero_fit` runs SLSQP on
+  the per-anchor absorbance vector. The constraint function is
+  expressed via ``NonlinearConstraint`` even though the
+  underlying problem is linear in `anchor_a` (the
+  CubicSpline / polynomial-fallback solve is a linear map from
+  point-values to evaluated-values). The single ``_spline_evaluate``
+  helper is shared between the unconstrained and constrained
+  paths so all three branches (4-anchor cubic spline, 3-anchor
+  quadratic, 2-anchor linear) propagate the constraint
+  consistently.
 
-The apply site catches `(ValueError, KeyError)` and shows the
-message via `messagebox.showerror`; no silent fall-through.
+All five SLSQP-based paths surface convergence failure as
+``ValueError("<mode> floor-zero fit did not converge: …")``;
+the apply site catches `(ValueError, KeyError)` and shows the
+message via `messagebox.showerror`. No silent fall-through.
 
 Lock surface
 ------------
 
-CS-37 is the universal toggle's surface plus the implemented
-modes' constrained-fit code paths. The disabled-toggle state for
-unsupported modes is the open follow-up. The remaining 3/6 modes
-(linear, polynomial, spline) ship independently — each grows a
-constrained-fit branch inside its existing `compute_*` and a
-matching test class.
+CS-37 is the universal toggle's surface plus all six modes'
+constrained-fit code paths (Phase 4s shipped 3/6, Phase 4t
+shipped the remaining 3/6 plus the disabled-state machinery).
+The lock relaxes only when:
+
+* a future new ``BASELINE_MODES`` entry needs its own
+  constrained-fit branch — see CS-43 for how it slots into
+  ``_FLOOR_ZERO_SUPPORTED_MODES``;
+* the apply site grows a "fit-once" refactor that returns the
+  resolved baseline + fit-info from a single ``compute_*`` call
+  instead of re-running ``fit_*`` for diagnostics (Phase 4s
+  friction #4 — process note, no register entry today).
 
 Tests
 -----
-
-`TestFloorZeroNotYetImplemented` (4 pure tests) — linear /
-polynomial / spline raise with the per-mode message when
-`floor_zero=True`; `floor_zero=False` is a no-op.
 
 `TestRubberbandFloorZero` (2 pure tests) — invariant guard
 passes through; output matches unconstrained within fp tolerance.
@@ -4201,12 +4235,36 @@ unchanged when constraint doesn't bind; constrained `c` clamps
 to `min_i(a_i · λ_i^n)` when it does; n="fit" + floor_zero
 returns non-negative corrected output.
 
-`test_baseline_floor_zero_toggle_exists_and_defaults_off`,
-`test_apply_baseline_writes_floor_zero_into_params`,
-`test_apply_baseline_linear_with_floor_zero_surfaces_error`
-(3 integration tests) — Tk var + Checkbutton present and
-default-off; params round-trip; messagebox path on unsupported
-mode.
+Phase 4t replaced the deferral-raise contract with three new
+behavioural classes (the old `TestFloorZeroNotYetImplemented` was
+removed):
+
+* `TestLinearFloorZero` (3 pure tests) — inactive matches
+  unconstrained on a positive-bg Gaussian; clamp-on-overshoot via
+  a negative-dip spectrum; anchor-ordering invariance under the
+  constraint.
+* `TestPolynomialFloorZero` (3 pure tests) — inactive matches on
+  a pure linear bg with order-1; clamp-on-overshoot with order-2
+  on the dip spectrum (exercises the z-space conditioning path);
+  order-0 constant degenerate path.
+* `TestSplineFloorZero` (4 pure tests) — inactive matches via
+  4-anchor cubic spline; clamp-on-overshoot on a 4-anchor spline
+  tracing the dip; 2-anchor linear-fallback and 3-anchor
+  quadratic-fallback paths so the constraint propagation is
+  verified across all three branches of `_spline_evaluate`.
+
+Integration tests:
+
+* `test_baseline_floor_zero_toggle_exists_and_defaults_off`,
+  `test_apply_baseline_writes_floor_zero_into_params` (Phase 4s)
+  — Tk var + Checkbutton present and default-off; params round-trip.
+* `test_apply_baseline_linear_with_floor_zero_creates_baseline_node`
+  (Phase 4t — replaces the Phase 4s "_surfaces_error" test) +
+  `test_apply_baseline_polynomial_with_floor_zero_creates_baseline_node`
+  + `test_apply_baseline_spline_with_floor_zero_creates_baseline_node`
+  — apply-site coverage of the new constrained-fit paths;
+  confirms result is non-None, op + BASELINE data nodes are
+  created, op records `floor_zero=True`.
 
 ---
 
@@ -4489,7 +4547,260 @@ data range.
 
 ---
 
-*Document version: 1.19 — May 2026*
+## CS-41 — Configurable n="fit" scan bounds (Phase 4t)
+
+Phase 4s friction #3: the n="fit" branch in `_scattering_fit` and
+`_scattering_offset_fit` called `scipy.optimize.minimize_scalar(
+..., bounds=(0.1, 8.0), method="bounded")`. The default range
+covers Rayleigh (n=4), large-particle Mie (n≈2), and dust-tail
+(n≈1) comfortably, but a sub-Rayleigh tail (n ≈ 0.5) or an
+unusual fit could pin at the bound silently. CS-41 makes the
+range a per-fit parameter without changing the default.
+
+Hook surface
+------------
+
+`uvvis_baseline._DEFAULT_N_BOUNDS: tuple[float, float] = (0.1, 8.0)`
+captures the historical default. `_resolve_n_bounds(params)` reads
+the optional override and validates `(lo, hi)`:
+
+* must be a 2-tuple (TypeError / IndexError on shape mismatch);
+* both entries ≥ 0;
+* `lo < hi` strictly.
+
+The validated tuple threads through `_scattering_fit` and
+`_scattering_offset_fit` as a kwarg defaulting to
+`_DEFAULT_N_BOUNDS`, then reaches the
+`minimize_scalar(..., bounds=n_bounds, method="bounded")` call.
+
+Branch asymmetry (read carefully)
+---------------------------------
+
+`_scattering_fit`'s n="fit" path has TWO branches:
+
+* `floor_zero=True` — bounded scan via `minimize_scalar`; n_bounds
+  applies.
+* `floor_zero=False` — closed-form log–log linear regression
+  (`np.polyfit(log(wl_w), log(a_w), 1)`); n_bounds is read +
+  validated for symmetry but does not constrain the fit (the
+  log–log path has no bounds).
+
+`_scattering_offset_fit`'s n="fit" path always uses the bounded
+scan (its 2-D closed-form `(a, c)` step requires fixed n), so
+n_bounds always applies for that helper.
+
+UI surface
+----------
+
+None today — the hook is API-only this session. The matching Tk
+row (two extra Entries surfaced when "Fit n" is checked, with
+default-prefill from `_DEFAULT_N_BOUNDS`) is deferred per the
+register entry.
+
+Lock surface
+------------
+
+The default value `(0.1, 8.0)` and the validation contract
+(`0 ≤ lo < hi`) are locked. The lock relaxes when the matching
+UI row ships — adding the Tk vars + the default-prefill +
+threading from `_collect_baseline_params` into `params["n_bounds"]`
+keeps the helper signatures unchanged.
+
+Tests
+-----
+
+`TestNFitBoundsConfigurable` (8 pure tests) — default bounds
+recover truth; custom bounds bracketing truth recover it on both
+helpers under the appropriate branch (floor_zero=True for
+`_scattering_fit`, always for `_scattering_offset_fit`); narrow
+bounds pin n at the upper edge on both; three validation tests
+(`lo >= hi`, negative entry, non-pair); one no-effect test
+confirming n_bounds is read+validated but doesn't alter output
+when n is fixed numerically.
+
+---
+
+## CS-42 — Tooltip module promotion (Phase 4t)
+
+Phase 4q (CS-33) introduced `_Tooltip` as a private class inside
+`scan_tree_widget.py`. Phase 4r friction #1 noted that the new
+per-row `[~]/[–]` baseline-curve toggle (CS-36) needed a tooltip
+of its own but the helper was private; the canonical follow-up
+(Phase 4q friction #3 in the BACKLOG friction section) was to
+extract `_Tooltip` to its own module on first cross-module
+re-use. CS-42 ships that extraction together with the second
+and third consumers.
+
+Module layout
+-------------
+
+`tooltip.py` — new module; only stdlib `tkinter` import. Public
+class `Tooltip` (no leading underscore — public API now).
+Behaviour unchanged from CS-33: 600 ms hover delay,
+borderless `tk.Toplevel`, light-yellow `bg="#FFFFE0"`,
+`<Enter>` / `<Leave>` / `<ButtonPress>` binding triple via
+`add="+"` so widget-owner bindings are not displaced.
+``update_text`` rotates the tooltip text in place; `_show` bails
+silently when text is the empty string, so an "empty-string
+sentinel" pattern works for tooltips that should be silent under
+some states (used by CS-43 for the floor-zero toggle).
+
+Consumers
+---------
+
+* `scan_tree_widget.py` — drops the local class, adds
+  `from tooltip import Tooltip`, renames the two existing
+  call sites (truncated label + sweep-leader truncated label),
+  and adds a third call site:
+  `Tooltip(bc_btn, "Show / hide baseline curve overlay")` on
+  the per-row `[~]/[–]` toggle so the gesture is no longer
+  discoverable only by experimentation. Resolves Phase 4r
+  friction #1.
+* `uvvis_tab.py` — `from tooltip import Tooltip`, attaches a
+  Tooltip to `_baseline_floor_zero_cb` at panel build time and
+  stores it as `_baseline_floor_zero_tooltip` so CS-43's refresh
+  method can rotate the text in place.
+
+Test promotion
+--------------
+
+`test_scan_tree_widget.py` `TestTooltip` updates its imports
+from `from scan_tree_widget import _Tooltip` to
+`from tooltip import Tooltip` (renaming the symbol); the three
+existing tests (construction, update_text, hide-idempotency)
+pass unchanged. New test
+`TestPerNodeBaselineCurveToggle.test_baseline_curve_button_has_tooltip`
+asserts the `<Enter>` binding is present on the [~] toggle and
+that a fresh `Tooltip(btn, …)` constructs cleanly with the
+canonical hint text.
+
+Lock surface
+------------
+
+CS-42 is the module split + the empty-string-sentinel contract.
+The lock relaxes when a tooltip-elsewhere-in-the-app needs a
+new behaviour (e.g. multi-line tooltip wrapping, programmatic
+positioning); the helper grows additively on the consumer's
+demand. No app-wide tooltip styling layer until at least three
+consumers want different defaults.
+
+---
+
+## CS-43 — Floor-zero toggle disabled-state machinery (Phase 4t)
+
+Phase 4s friction #1 (USER-FLAGGED): the universal "Floor at
+zero" Checkbutton stayed clickable for every mode regardless of
+whether `compute_*` had its constrained-fit branch. Linear /
+polynomial / spline raised a `ValueError` from the apply path
+under `floor_zero=True`, but the user only learned the mode was
+unsupported by triggering the messagebox. CS-43 ships the
+disabled-state mechanism that surfaces "unsupported" at the
+toggle.
+
+Module-level constants
+----------------------
+
+`uvvis_tab.py` adds two module-level constants:
+
+::
+
+    _FLOOR_ZERO_SUPPORTED_MODES: frozenset[str] = frozenset(
+        uvvis_baseline.BASELINE_MODES
+    )
+    _FLOOR_ZERO_DISABLED_TOOLTIP: str = (
+        "Floor-zero is not supported for this baseline mode."
+    )
+
+The supported set is initialised to every entry in
+``BASELINE_MODES`` because Phase 4t shipped floor-zero for all
+six modes (E from the session intent). Today the disabled branch
+never fires; the constant remains as defensive scaffolding so a
+future new mode added to ``BASELINE_MODES`` without floor-zero
+coverage greys the toggle out automatically.
+
+Refresh method
+--------------
+
+::
+
+    def _refresh_floor_zero_state(self) -> None:
+        if not hasattr(self, "_baseline_floor_zero_cb"):
+            return
+        mode = self._baseline_mode.get()
+        if mode in _FLOOR_ZERO_SUPPORTED_MODES:
+            self._baseline_floor_zero_cb.config(state="normal")
+            self._baseline_floor_zero_tooltip.update_text("")
+        else:
+            self._baseline_floor_zero_cb.config(state="disabled")
+            self._baseline_floor_zero_tooltip.update_text(
+                _FLOOR_ZERO_DISABLED_TOOLTIP,
+            )
+
+Wired to the `_baseline_mode` Tk var trace alongside
+`_refresh_baseline_param_rows` (callbacks are independent;
+ordering doesn't matter — neither reads the other's state) and
+called once at init time so the toggle starts in the correct
+state.
+
+Design lock — the BooleanVar value is preserved across
+enable/disable transitions. A user who toggles floor-zero ON
+under scattering, flips to a (hypothetically) unsupported mode,
+then flips back to scattering finds the toggle still ON. This
+matches the persistence-umbrella's preferred carry-forward shape.
+
+Tooltip via the empty-string sentinel
+-------------------------------------
+
+The tooltip is constructed once at panel-build time with empty
+text:
+
+::
+
+    self._baseline_floor_zero_tooltip = Tooltip(
+        self._baseline_floor_zero_cb, "",
+    )
+
+`_refresh_floor_zero_state` rotates the text via `update_text`
+between the empty string (supported mode — `Tooltip._show` bails
+silently) and `_FLOOR_ZERO_DISABLED_TOOLTIP` (unsupported mode —
+the hover hint paints). One Tooltip instance, no per-mode
+construction churn.
+
+Lock surface
+------------
+
+CS-43 is the constant + the refresh method + the tooltip rotation
+contract. The lock relaxes only when `_FLOOR_ZERO_SUPPORTED_MODES`
+needs to change shape (e.g. growing a per-mode opt-out reason
+that the tooltip could surface); today it's a flat `frozenset`
+keyed by mode name and the tooltip text is mode-agnostic.
+
+Tests
+-----
+
+`TestUVVisTabBaseline.test_floor_zero_checkbutton_is_enabled_for_supported_modes`
+walks every entry in `BASELINE_MODES` and asserts state="normal"
++ tooltip empty. Pins the Phase 4t invariant
+`_FLOOR_ZERO_SUPPORTED_MODES == frozenset(BASELINE_MODES)`.
+
+`TestUVVisTabBaseline.test_floor_zero_checkbutton_disables_for_unsupported_mode`
+monkey-patches the constant to `frozenset()`, calls the refresh,
+and asserts state="disabled" + tooltip text rotates to
+`_FLOOR_ZERO_DISABLED_TOOLTIP`. Restores the constant in finally
+so isolation holds.
+
+`TestUVVisTabBaseline.test_floor_zero_disabled_state_preserves_var_value`
+pins the carry-forward design lock by setting the BooleanVar
+True, monkey-patching the constant to empty, calling the refresh,
+and asserting the BooleanVar is still True afterwards.
+
+`TestUVVisTabBaseline.test_floor_zero_tooltip_constructed_at_panel_build`
+asserts the tooltip is a `Tooltip` instance bound to
+`_baseline_floor_zero_cb`.
+
+---
+
+*Document version: 1.20 — May 2026*
 *1.1: CS-13 implementation notes added in Phase 4a.*
 *1.2: CS-14 Plot Settings Dialog added in Phase 4b.*
 *1.3: CS-15 UV/Vis Baseline Correction + CS-04 implementation
@@ -4745,5 +5056,41 @@ into scattering with optional offset toggle) and one new
 format support). 615 tests, all green (579 + 36 new: 28
 pure-module in test_uvvis_baseline + test_uvvis_normalise;
 8 integration in TestUVVisTabBaseline).*
+*1.20: Phase 4t — completes the floor-zero per-mode roadmap
+(CS-37 expansion to all 6 modes) plus CS-41 + CS-42 + CS-43.
+CS-37 ships the constrained-fit code paths for the remaining
+three modes: linear (SLSQP on the (a_lo, a_hi) anchor pair),
+polynomial (SLSQP on the polynomial coefficients with z-space
+conditioning so the Vandermonde stays well-scaled for arbitrary
+order), spline (SLSQP on the per-anchor absorbance vector via
+NonlinearConstraint that re-uses the shared `_spline_evaluate`
+helper for all three branches — 4-anchor cubic, 3-anchor
+quadratic, 2-anchor linear). CS-41 adds `params["n_bounds"]:
+tuple[float, float]` (default `(0.1, 8.0)`) overriding the
+n="fit" bounded-scan range in scattering / scattering+offset;
+API-only this session, UI deferred. CS-42 promotes `_Tooltip`
+from `scan_tree_widget` to its own `tooltip.py` module (public
+class `Tooltip`); the per-row `[~]/[–]` baseline-curve toggle
+gains a hover hint and `uvvis_tab` becomes the second consumer
+via the floor-zero checkbutton. CS-43 ships the disabled-state
+machinery for the universal "Floor at zero" toggle:
+`_FLOOR_ZERO_SUPPORTED_MODES` (defensive scaffolding —
+currently `frozenset(BASELINE_MODES)`) +
+`_refresh_floor_zero_state()` wired to the mode trace + tooltip
+rotation via the empty-string sentinel pattern. Three register
+entries marked ✅ (Floor-zero per-mode → CS-37; Floor-zero
+disabled state → CS-43; the Phase 4q friction #3 / Phase 4r
+friction #1 paired entry → CS-42). The "Scattering n-fit scan
+bounds configurable via params" register entry stays ⏳ as
+"API ✅ / UI ⏳". Three new register entries from step 5
+USER-FLAGGED elicitation: per-row `[~]` toggle column
+alignment across all node types; second-derivative plot on
+separate right y-axis; top-bar Open File / Reload buttons
+belong to TDDFT only (not the app top level). Phase 4q
+friction #3 + Phase 4r friction #1 struck through (resolved
+by CS-42). 637 tests, all green (615 + 22 net new: 19
+pure-module in test_uvvis_baseline; 7 integration in
+test_uvvis_tab + test_scan_tree_widget; 1 replaced; 4
+removed from `TestFloorZeroNotYetImplemented`).*
 *To be updated as Open Questions are resolved and new components
 are specified.*
