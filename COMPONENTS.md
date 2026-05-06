@@ -4800,7 +4800,183 @@ asserts the tooltip is a `Tooltip` instance bound to
 
 ---
 
-*Document version: 1.20 — May 2026*
+## CS-44 — Multi-axis plot routing (Phase 4u)
+
+Phase 4u (`uvvis_tab.py` + `test_uvvis_tab.py`) introduces a
+NodeType-keyed axis routing system that resolves the Phase 4t
+friction #2 USER-FLAGGED concern about SECOND_DERIVATIVE values
+collapsing the primary y-axis. The user expanded the original
+"right axis for the second derivative" scope at session start to
+"we may need to build in other secondary axes for other processes
+and might even need to add a third y-axis somehow in some cases",
+so the implementation generalises to a three-role axis vocabulary
+with lazy creation, per-NodeType defaults, and a deferred per-style
+override hook.
+
+**Module-level constants and tables.**
+
+- `_AXIS_ROLES: tuple[str, ...] = ("primary", "secondary", "tertiary")`
+  fixes the role vocabulary in deterministic order. `_redraw` walks
+  this tuple to build the role → Axes map.
+- `_DEFAULT_Y_AXIS_BY_NODETYPE: dict[NodeType, str]` is the per-
+  NodeType default mapping. Today: UVVIS / BASELINE / NORMALISED /
+  SMOOTHED / PEAK_LIST → `"primary"`; SECOND_DERIVATIVE →
+  `"secondary"`. NodeTypes absent from the table fall through to
+  `"primary"` via the lookup default in `_resolve_y_axis_role`.
+  Future NodeType additions (Beer-Lambert concentration; difference
+  spectra; MCR component profiles when chemometrics lands) are a
+  one-line table edit.
+- `_NON_PRIMARY_Y_LABEL: dict[tuple[NodeType, str], str]` is the
+  x-unit-aware label table for non-primary roles. Today populated
+  for `(SECOND_DERIVATIVE, "nm") → "d²A/dλ²"`,
+  `(SECOND_DERIVATIVE, "cm-1") → "d²A/d(cm⁻¹)²"`, and
+  `(SECOND_DERIVATIVE, "eV") → "d²A/dE²"`. The x-unit awareness is
+  a Q3 user decision: the label is physically meaningful, not
+  cosmetic, so it must stay correct as the user toggles the x-axis
+  unit. Pairs absent from the table return `None` and the role
+  goes unlabelled.
+- `_TERTIARY_AXIS_OFFSET_FRAC: float = 1.12` is the matplotlib axes-
+  coordinate position for the tertiary axis's right spine. Tunable
+  later via a Plot Settings field per Q2 user decision; module-level
+  today so the helper signatures stay stable across the eventual
+  promotion. The 1.10–1.15 range is the typical convention for
+  3-axis stacks.
+
+**Pure helpers.**
+
+- `_resolve_y_axis_role(node_type: NodeType) -> str` returns the
+  per-NodeType default. Phase 4u Decision 1 ships per-NodeType only;
+  the future per-style override (`node.style.get("y_axis")`) lands
+  at the front of this function as an additive change without
+  breaking the call sites.
+- `_resolve_non_primary_y_label(node_type: NodeType, x_unit: str)
+  -> Optional[str]` returns the registered label for a given
+  `(NodeType, x_unit)` pair, or `None` for unregistered pairs.
+
+**Lazy axis-creation flow inside `_redraw`.**
+
+After `self._fig.clear()` + re-creating primary, the rewrite
+instantiates `self._axes_by_role: dict[str, Axes] = {"primary": ax}`
+and a local `first_node_type_per_role: dict[str, NodeType]` tracker.
+An inner closure `get_axis(role)` returns the existing axis for a
+role or creates it on first request:
+
+- `"secondary"` → `ax.twinx()`.
+- `"tertiary"` → second `ax.twinx()` with
+  `spines["right"].set_position(("axes", _TERTIARY_AXIS_OFFSET_FRAC))`.
+- Unknown role → falls back to primary (defensive — the future
+  per-style override could surface a malformed value).
+
+Newly-created non-primary axes inherit the primary's tick direction
+and tick label size at creation time (`tick_params(direction=…,
+labelsize=…)`).
+
+The per-node loop body now resolves the role via
+`_resolve_y_axis_role(node.type)`, calls `get_axis(role)` for the
+target Axes, records the first NodeType to land on each non-primary
+role (so labelling is order-deterministic), and dispatches `plot()`
++ `fill_between()` onto the resolved target. CS-29 baseline-curve
+overlay and CS-19 peak-list scatter route through the same resolver
+for consistency, even though both currently resolve to `"primary"`
+— the indirection lets a future routing change land as a single
+table edit.
+
+**Y-label propagation.**
+
+After the per-node loops, `_redraw` walks
+`first_node_type_per_role.items()` and calls
+`_axes_by_role[role].set_ylabel(label, ...)` for each populated
+non-primary role whose first NodeType has a registered label.
+Roles whose first NodeType is unregistered go unlabelled rather
+than showing a guess.
+
+**Legend merge.**
+
+`ax.get_legend_handles_labels()` only collects artists on its own
+Axes, so without an explicit merge a SECOND_DERIVATIVE node on the
+right axis would silently drop out of the legend. The rewrite walks
+every populated `_axes_by_role` axis, concatenates handles + labels,
+and calls `ax.legend(handles, labels, …)` once on primary so the
+user sees a single unified legend.
+
+**Y-limit handling.**
+
+The existing `_ylim_lo` / `_ylim_hi` Tk vars apply to primary only
+this phase (Decision 4 in the Phase 4u step-2 design lock). Per-role
+y-limit Tk vars are explicitly out of scope; the friction note is
+carried forward for the next phase that needs to clamp the
+secondary derivative trace.
+
+**Empty-state hygiene.**
+
+`_draw_empty` was changed to call `self._fig.clear()` instead of
+`self._ax.cla()` — without the full clear, stale twin axes from a
+prior populated draw would linger as floating spines on the empty-
+state placeholder. The role map is reseeded to `{"primary": self._ax}`
+so the next populated redraw starts from a clean slate.
+
+**Related but separate: cm⁻¹ → λ(nm) top axis.**
+
+The existing `secondary_xaxis("top", functions=(_fwd, _fwd))` axis
+that appears under `unit == "cm-1"` is an x-axis sibling on the
+*top* spine of primary, not a y-axis role. It uses matplotlib's
+linked-transform-pair mechanism (different from the y-axis
+`twinx()` machinery above) and stays anchored to primary regardless
+of which y-axis roles are populated. Documented here so future
+readers do not conflate the two.
+
+**Tertiary axis is wired but unused today.**
+
+No NodeType defaults to `"tertiary"` in the production table.
+`TestUVVisTabTertiaryAxisPath.test_tertiary_axis_lazily_created_with_offset_spine`
+proves the offset-spine path works end-to-end by monkey-patching
+`_resolve_y_axis_role` to route a NORMALISED node to `"tertiary"`,
+then asserting (a) the third Axes is created in `_axes_by_role`, (b)
+its right spine sits at `_TERTIARY_AXIS_OFFSET_FRAC` (read from the
+live constant so a future Plot Settings promotion that changes the
+value does not silently break the assertion), and (c) the routed
+curve lands on the tertiary axis while primary keeps the parent.
+
+**Test coverage.**
+
+- `TestMultiAxisRoutingHelpers` (9 pure-module tests, no Tk
+  dependency) — pin the role-tuple shape, the per-NodeType default
+  table coverage, every renderer NodeType's resolved role, the
+  unknown-NodeType fallback, the value-subset-of-roles drift guard,
+  the x-unit-aware non-primary label round-trip across nm / cm-1 /
+  eV, the unregistered-pair `None` return, and the tertiary-offset
+  constant in the typical matplotlib range.
+- `TestUVVisTabSecondDerivativeIntegration` — three existing tests
+  updated to the post-CS-44 "primary has 1, secondary has 1" line
+  shape (was: "primary has 2"); four new tests (`test_secondary_axis_label_is_x_unit_aware`,
+  `test_legend_merges_handles_across_primary_and_secondary`,
+  `test_no_secondary_axis_when_only_primary_nodes_visible`,
+  `test_empty_state_resets_role_map_to_primary_only`).
+- `TestUVVisTabTertiaryAxisPath` — one new test
+  (`test_tertiary_axis_lazily_created_with_offset_spine`).
+
+**Locked invariants.**
+
+- `_AXIS_ROLES` shape, order, and length are pinned by tests.
+  Shrinking back to two roles or reordering would surface as a CI
+  failure.
+- `_DEFAULT_Y_AXIS_BY_NODETYPE` must contain every renderer
+  NodeType (UVVIS / BASELINE / NORMALISED / SMOOTHED / PEAK_LIST /
+  SECOND_DERIVATIVE) explicitly. Adding a new renderer NodeType
+  requires adding a row.
+- The `_resolve_y_axis_role` signature is `(node_type: NodeType)
+  -> str`. The future per-style override extends to `(node_type,
+  style: Mapping | None = None) -> str` — additive only.
+- Y-limit Tk vars apply to primary. Per-role limits are deferred.
+- `_TERTIARY_AXIS_OFFSET_FRAC` is module-level; promote to a Plot
+  Settings field when a real tertiary-axis NodeType lands.
+- `_draw_empty` must `_fig.clear()` (not `cla()`) and reseed
+  `_axes_by_role` to primary-only. Skipping the reseed leaks twin
+  axes across populated → empty transitions.
+
+---
+
+*Document version: 1.21 — May 2026*
 *1.1: CS-13 implementation notes added in Phase 4a.*
 *1.2: CS-14 Plot Settings Dialog added in Phase 4b.*
 *1.3: CS-15 UV/Vis Baseline Correction + CS-04 implementation
@@ -5092,5 +5268,33 @@ by CS-42). 637 tests, all green (615 + 22 net new: 19
 pure-module in test_uvvis_baseline; 7 integration in
 test_uvvis_tab + test_scan_tree_widget; 1 replaced; 4
 removed from `TestFloorZeroNotYetImplemented`).*
+*1.21: Phase 4u — multi-axis plot routing lands (CS-44).
+SECOND_DERIVATIVE renders on a lazily-created right y-axis
+via the new `_AXIS_ROLES` / `_DEFAULT_Y_AXIS_BY_NODETYPE` /
+`_NON_PRIMARY_Y_LABEL` / `_TERTIARY_AXIS_OFFSET_FRAC`
+constants + the `_resolve_y_axis_role` /
+`_resolve_non_primary_y_label` helpers in `uvvis_tab.py`.
+Per-NodeType default keys SECOND_DERIVATIVE → `"secondary"`
+and every existing renderer NodeType → `"primary"`; tertiary
+infrastructure ships wired-but-unused for a future NodeType
+that needs a third stacked axis (validated end-to-end via a
+monkey-patched routing test). `_redraw` builds
+`_axes_by_role` lazily; CS-29 baseline-curve overlay and
+CS-19 peak-list scatter route through the same resolver for
+consistency. Legend handles + labels are merged across every
+populated role before being drawn on primary so the
+SECOND_DERIVATIVE label still appears in the unified legend.
+The x-unit-aware secondary y-label table covers nm /
+cm-1 / eV. `_draw_empty` switched from `cla()` to
+`_fig.clear()` + role-map reseed so populated → empty
+transitions don't leak twin axes. Per-style
+`node.style["y_axis"]` override and per-role y-limit Tk vars
+deferred per Decisions 1 + 4 in the Phase 4u step-2 design
+lock. Three existing SECOND_DERIVATIVE assertions updated to
+the new "primary has 1, secondary has 1" line shape. 651
+tests, all green (637 + 14 net new: 9 pure-helper in
+TestMultiAxisRoutingHelpers + 5 integration in
+TestUVVisTabSecondDerivativeIntegration /
+TestUVVisTabTertiaryAxisPath).*
 *To be updated as Open Questions are resolved and new components
 are specified.*
