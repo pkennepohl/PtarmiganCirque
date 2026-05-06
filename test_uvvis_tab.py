@@ -1896,9 +1896,10 @@ class TestUVVisTabSecondDerivativeIntegration(unittest.TestCase):
 
     def test_second_derivative_node_renders_as_line_not_scatter(self):
         # Apply second derivative through the panel; the resulting
-        # SECOND_DERIVATIVE node must show up as a second matplotlib
-        # line on the next redraw (parent UVVIS curve + child
-        # derivative curve), NOT as scatter.
+        # SECOND_DERIVATIVE node must show up as a Line2D on the
+        # secondary y-axis (Phase 4u CS-44 routes
+        # NodeType.SECOND_DERIVATIVE to "secondary"). Parent UVVIS
+        # stays on primary. NOT scatter on either axis.
         self._add_uvvis("u1")
         self.tab.update_idletasks()
         self._select_first_d2_subject()
@@ -1906,10 +1907,20 @@ class TestUVVisTabSecondDerivativeIntegration(unittest.TestCase):
         self.tab._second_derivative_panel._polyorder.set(3)
         self.tab._second_derivative_panel._apply()
         self.tab.update_idletasks()
-        self.assertEqual(len(self.tab._ax.get_lines()), 2,
-                         "derivative must render as a Line2D, not scatter")
+        # Phase 4u (CS-44): parent on primary, derivative on secondary.
+        self.assertEqual(len(self.tab._ax.get_lines()), 1,
+                         "primary axis carries only the parent UVVIS")
+        self.assertIn("secondary", self.tab._axes_by_role,
+                      "SECOND_DERIVATIVE must lazily create the "
+                      "secondary twin axis")
+        self.assertEqual(
+            len(self.tab._axes_by_role["secondary"].get_lines()), 1,
+            "derivative must render as a Line2D on secondary, not scatter")
         self.assertEqual(len(self.tab._ax.collections), 0,
-                         "no scatter overlay for a second derivative")
+                         "no scatter overlay on primary")
+        self.assertEqual(
+            len(self.tab._axes_by_role["secondary"].collections), 0,
+            "no scatter overlay on secondary")
 
     def test_second_derivative_node_has_sidebar_row(self):
         self._add_uvvis("u1")
@@ -1929,12 +1940,24 @@ class TestUVVisTabSecondDerivativeIntegration(unittest.TestCase):
         self._select_first_d2_subject()
         _, out_id = self.tab._second_derivative_panel._apply()
         self.tab.update_idletasks()
-        self.assertEqual(len(self.tab._ax.get_lines()), 2)
+        # Phase 4u (CS-44): pre-discard the primary axis carries
+        # the parent UVVIS and the secondary twin carries the
+        # derivative.
+        self.assertEqual(len(self.tab._ax.get_lines()), 1)
+        self.assertEqual(
+            len(self.tab._axes_by_role["secondary"].get_lines()), 1)
         self.graph.discard_node(out_id)
         self.tab.update_idletasks()
+        # After the discard there are no SECOND_DERIVATIVE nodes on
+        # the live list; the lazy axis-creation path skips
+        # "secondary" entirely, so the role map shrinks back to
+        # primary-only.
         lines = self.tab._ax.get_lines()
         self.assertEqual(len(lines), 1)
         self.assertEqual(lines[0].get_label(), "u1")
+        self.assertNotIn("secondary", self.tab._axes_by_role,
+                         "secondary axis must not be created when no "
+                         "node routes to it")
 
     def test_second_derivative_does_not_appear_in_shared_subject_list(self):
         # SECOND_DERIVATIVE is intentionally excluded from
@@ -1981,10 +2004,188 @@ class TestUVVisTabSecondDerivativeIntegration(unittest.TestCase):
         self._select_first_d2_subject()
         _, out_id = self.tab._second_derivative_panel._apply()
         self.tab.update_idletasks()
-        self.assertEqual(len(self.tab._ax.get_lines()), 2)
+        # Phase 4u (CS-44): parent on primary, derivative on secondary.
+        self.assertEqual(len(self.tab._ax.get_lines()), 1)
+        self.assertEqual(
+            len(self.tab._axes_by_role["secondary"].get_lines()), 1)
         self.graph.set_style(out_id, {"visible": False})
         self.tab.update_idletasks()
+        # Hidden derivative falls out of the live list, so the
+        # secondary axis is no longer created on this redraw.
         self.assertEqual(len(self.tab._ax.get_lines()), 1)
+        self.assertNotIn("secondary", self.tab._axes_by_role)
+
+    def test_secondary_axis_label_is_x_unit_aware(self):
+        # Phase 4u (CS-44): the secondary y-axis label switches with
+        # the displayed x-unit because d²A/dλ² is only correct when
+        # the x grid is wavelength. Cycle through nm / cm-1 / eV
+        # and pin each label.
+        self._add_uvvis("u1")
+        self.tab.update_idletasks()
+        self._select_first_d2_subject()
+        self.tab._second_derivative_panel._apply()
+        self.tab.update_idletasks()
+
+        for unit, expected in (("nm", "d²A/dλ²"),
+                               ("cm-1", "d²A/d(cm⁻¹)²"),
+                               ("eV", "d²A/dE²")):
+            self.tab._x_unit.set(unit)
+            self.tab._on_unit_change()
+            self.tab.update_idletasks()
+            self.assertIn("secondary", self.tab._axes_by_role,
+                          f"secondary axis missing after switching to {unit}")
+            self.assertEqual(
+                self.tab._axes_by_role["secondary"].get_ylabel(),
+                expected,
+                f"secondary y-label wrong for x-unit={unit}")
+
+    def test_legend_merges_handles_across_primary_and_secondary(self):
+        # Phase 4u (CS-44): a single legend lives on primary but
+        # collects handles from every populated role. Without the
+        # merge, a SECOND_DERIVATIVE node on the right axis would
+        # silently drop out of the legend.
+        self._add_uvvis("u1")
+        self.tab.update_idletasks()
+        self._select_first_d2_subject()
+        _, out_id = self.tab._second_derivative_panel._apply()
+        self.tab.update_idletasks()
+
+        legend = self.tab._ax.get_legend()
+        self.assertIsNotNone(legend, "primary axis must own the legend")
+        labels = [t.get_text() for t in legend.get_texts()]
+        self.assertIn("u1", labels,
+                      "parent UVVIS label must be in the legend")
+        d2_label = self.graph.get_node(out_id).label
+        self.assertIn(d2_label, labels,
+                      "SECOND_DERIVATIVE label must be merged into the "
+                      "legend even though it lives on the secondary axis")
+
+    def test_no_secondary_axis_when_only_primary_nodes_visible(self):
+        # Phase 4u (CS-44): twin axes are lazy. A graph with only
+        # primary-mapped node types renders identically to the
+        # pre-CS-44 single-axis layout — `_axes_by_role` carries
+        # exactly one entry.
+        self._add_uvvis("u1")
+        self.tab.update_idletasks()
+        self.assertEqual(len(self.tab._axes_by_role), 1,
+                         "primary-only graph must not create twin axes")
+        self.assertIn("primary", self.tab._axes_by_role)
+
+    def test_empty_state_resets_role_map_to_primary_only(self):
+        # _draw_empty must `_fig.clear()` and rebuild the role map
+        # so a populated draw → empty transition does not leak twin
+        # axes (orphaned spines from a hidden secondary derivative).
+        self._add_uvvis("u1")
+        self.tab.update_idletasks()
+        self._select_first_d2_subject()
+        _, out_id = self.tab._second_derivative_panel._apply()
+        self.tab.update_idletasks()
+        self.assertIn("secondary", self.tab._axes_by_role)
+        # Hide every live node — the next redraw flips into the
+        # empty placeholder branch.
+        for nid in (
+                [n.id for n in self.graph.nodes_of_type(NodeType.UVVIS,
+                                                        state=None)]
+                + [out_id]):
+            self.graph.set_style(nid, {"visible": False})
+        self.tab.update_idletasks()
+        self.assertEqual(self.tab._axes_by_role, {"primary": self.tab._ax},
+                         "_draw_empty must reseed _axes_by_role to "
+                         "primary-only")
+
+
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestUVVisTabTertiaryAxisPath(unittest.TestCase):
+    """Phase 4u (CS-44) — tertiary axis path coverage.
+
+    No NodeType defaults to "tertiary" today, so the offset-spine
+    machinery has no production exercise. To prove the code path,
+    monkey-patch ``uvvis_tab._resolve_y_axis_role`` to route a
+    spectrum NodeType to "tertiary" and check that the third Axes
+    is created with its right spine offset to
+    ``_TERTIARY_AXIS_OFFSET_FRAC``. This is the user-flagged
+    "possibly a 3rd y-axis somehow in some cases" requirement —
+    the table edit lands as a one-line change once a real third-
+    axis NodeType (Beer-Lambert concentration, difference spectra
+    against a reference, etc.) shows up.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from uvvis_tab import UVVisTab
+        cls.UVVisTab = UVVisTab
+
+    def setUp(self):
+        self.host = tk.Frame(_root)
+        self.host.pack()
+        self.graph = ProjectGraph()
+        self.tab = self.UVVisTab(self.host, graph=self.graph)
+
+    def tearDown(self):
+        try:
+            self.tab.destroy()
+        except Exception:
+            pass
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    def test_tertiary_axis_lazily_created_with_offset_spine(self):
+        import uvvis_tab as ut
+
+        wl = np.linspace(200.0, 800.0, 601)
+        absorb = np.exp(-((wl - 500.0) / 50.0) ** 2) + 0.05
+        # Two nodes: parent UVVIS on primary (default), a NORMALISED
+        # node which we route to "tertiary" via monkey-patch so the
+        # offset-spine path lights up.
+        self.graph.add_node(DataNode(
+            id="u1", type=NodeType.UVVIS,
+            arrays={"wavelength_nm": wl, "absorbance": absorb},
+            metadata={"source_file": "syn"},
+            label="u1", state=NodeState.COMMITTED,
+            style={"color": "#111", "visible": True, "in_legend": True},
+        ))
+        self.graph.add_node(DataNode(
+            id="n1", type=NodeType.NORMALISED,
+            arrays={"wavelength_nm": wl, "absorbance": absorb * 2.0},
+            metadata={"source_file": "syn"},
+            label="n1", state=NodeState.COMMITTED,
+            style={"color": "#222", "visible": True, "in_legend": True},
+        ))
+
+        original_resolver = ut._resolve_y_axis_role
+
+        def routed_to_tertiary(node_type):
+            if node_type == NodeType.NORMALISED:
+                return "tertiary"
+            return original_resolver(node_type)
+
+        ut._resolve_y_axis_role = routed_to_tertiary
+        try:
+            self.tab._redraw()
+            self.tab.update_idletasks()
+            self.assertIn("tertiary", self.tab._axes_by_role,
+                          "tertiary axis must be created when at least "
+                          "one node routes to it")
+            tert = self.tab._axes_by_role["tertiary"]
+            # The right spine of the tertiary axis is offset to the
+            # tunable module constant. Match within float tolerance
+            # against the live constant so a future Plot Settings
+            # promotion that changes the value does not silently
+            # break this assertion.
+            position = tert.spines["right"].get_position()
+            self.assertEqual(position[0], "axes")
+            self.assertAlmostEqual(position[1],
+                                   ut._TERTIARY_AXIS_OFFSET_FRAC,
+                                   places=4)
+            self.assertEqual(len(tert.get_lines()), 1,
+                             "the routed NORMALISED curve must land on "
+                             "the tertiary axis")
+            self.assertEqual(len(self.tab._ax.get_lines()), 1,
+                             "primary axis must keep its single UVVIS line")
+        finally:
+            ut._resolve_y_axis_role = original_resolver
 
 
 @unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
