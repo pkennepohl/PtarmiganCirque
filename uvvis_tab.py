@@ -135,6 +135,73 @@ _FLOOR_ZERO_DISABLED_TOOLTIP: str = (
 )
 
 
+# ── Multi-axis plot routing (Phase 4u, CS-44) ────────────────────────────────
+# Phase 4t carry-forward friction #2: SECOND_DERIVATIVE values are
+# typically 1/100x to 1/1000x the parent absorbance, so plotting them
+# on a shared y-axis collapses the parent into a flat line or hides
+# the derivative entirely. CS-44 routes each rendered node to one of
+# three named axis roles. Today only "primary" and "secondary" are
+# populated by the per-NodeType default table; "tertiary" is wired
+# through the lazy axis-creation machinery so a future NodeType (or a
+# future per-style override) can land as a one-line table edit.
+#
+# Per-NodeType default mapping. A NodeType absent from the dict
+# defaults to "primary". The future per-node override hook will land
+# at the front of ``_resolve_y_axis_role`` reading
+# ``node.style.get("y_axis")``; per-NodeType remains the fallback.
+_AXIS_ROLES: tuple[str, ...] = ("primary", "secondary", "tertiary")
+
+_DEFAULT_Y_AXIS_BY_NODETYPE: dict[NodeType, str] = {
+    NodeType.UVVIS:             "primary",
+    NodeType.BASELINE:          "primary",
+    NodeType.NORMALISED:        "primary",
+    NodeType.SMOOTHED:          "primary",
+    NodeType.PEAK_LIST:         "primary",
+    NodeType.SECOND_DERIVATIVE: "secondary",
+}
+
+# X-unit-aware y-axis label for nodes routed to a non-primary role.
+# Keyed by ``(NodeType, x_unit)``; the first node of a given NodeType
+# placed on a non-primary role determines that role's label. Unknown
+# (NodeType, x_unit) combinations return None and the role goes
+# unlabelled.
+_NON_PRIMARY_Y_LABEL: dict[tuple[NodeType, str], str] = {
+    (NodeType.SECOND_DERIVATIVE, "nm"):   "d²A/dλ²",
+    (NodeType.SECOND_DERIVATIVE, "cm-1"): "d²A/d(cm⁻¹)²",
+    (NodeType.SECOND_DERIVATIVE, "eV"):   "d²A/dE²",
+}
+
+# Fractional x-position of the tertiary axis spine (matplotlib
+# ``axes`` coordinate). Tunable later via a Plot Settings field; for
+# now it is a module constant so a future settings row can promote
+# it without changing the helper signatures. Typical matplotlib
+# offset for a 3rd-axis stack is 1.10–1.15.
+_TERTIARY_AXIS_OFFSET_FRAC: float = 1.12
+
+
+def _resolve_y_axis_role(node_type: NodeType) -> str:
+    """Return the axis role string for a node of ``node_type``.
+
+    Phase 4u ships per-NodeType defaults only — see
+    :data:`_DEFAULT_Y_AXIS_BY_NODETYPE`. A NodeType absent from the
+    table defaults to ``"primary"``. The future per-node override
+    (``node.style.get("y_axis")``) will land at the front of this
+    function as an additive change; the per-NodeType default remains
+    the fallback.
+    """
+    return _DEFAULT_Y_AXIS_BY_NODETYPE.get(node_type, "primary")
+
+
+def _resolve_non_primary_y_label(node_type: NodeType, x_unit: str) -> Optional[str]:
+    """Return the y-axis label for a non-primary role, or ``None``.
+
+    Looks up :data:`_NON_PRIMARY_Y_LABEL` by ``(node_type, x_unit)``.
+    Returns ``None`` for any pair without a registered label so the
+    caller can leave the role unlabelled rather than guessing.
+    """
+    return _NON_PRIMARY_Y_LABEL.get((node_type, x_unit))
+
+
 class UVVisTab(tk.Frame):
     """UV/Vis/NIR import, display and analysis panel."""
 
@@ -1117,6 +1184,15 @@ class UVVisTab(tk.Frame):
         self._fig = Figure(figsize=(7, 4.5), dpi=100)
         self._ax  = self._fig.add_subplot(111)
 
+        # Phase 4u (CS-44): role → matplotlib Axes map. Tracks every
+        # populated axis (primary + lazy twin axes for "secondary" /
+        # "tertiary") so the legend merge, tick-direction propagation,
+        # and tests can introspect them by role. Reseeded on every
+        # `_redraw` after `self._fig.clear()`.
+        self._axes_by_role: dict[str, "matplotlib.axes.Axes"] = {
+            "primary": self._ax,
+        }
+
         self._canvas = FigureCanvasTkAgg(self._fig, master=parent)
         self._canvas.get_tk_widget().pack(
             side=tk.TOP, fill=tk.BOTH, expand=True)
@@ -1468,7 +1544,14 @@ class UVVisTab(tk.Frame):
     # ══════════════════════════════════════════════════════════════════════════
 
     def _draw_empty(self):
-        self._ax.cla()
+        # Phase 4u (CS-44): clear the whole figure rather than just
+        # `self._ax.cla()` so stale twin axes from a prior populated
+        # draw (a SECOND_DERIVATIVE node on "secondary", a future
+        # NodeType on "tertiary") don't linger as empty floating
+        # spines in the empty state. Re-seed the role map.
+        self._fig.clear()
+        self._ax = self._fig.add_subplot(111)
+        self._axes_by_role = {"primary": self._ax}
         self._ax.set_facecolor("#f8f8f8")
         self._ax.text(0.5, 0.5, "Load a UV/Vis file to begin",
                       ha="center", va="center",
@@ -1514,7 +1597,46 @@ class UVVisTab(tk.Frame):
         unit = self._x_unit.get()
         cfg  = self._plot_config
 
-        # Background colour (Plot Settings → Appearance).
+        # Phase 4u (CS-44): re-seed the role → Axes map for this
+        # redraw. Twin axes ("secondary" / "tertiary") are created
+        # lazily via ``get_axis(role)`` only when at least one node
+        # routes to that role, so a graph without SECOND_DERIVATIVE
+        # nodes ends up with exactly one Axes (primary) and behaves
+        # identically to the pre-CS-44 single-axis layout.
+        self._axes_by_role = {"primary": ax}
+        first_node_type_per_role: dict[str, NodeType] = {}
+
+        tick_dir = cfg.get("tick_direction", "out")
+        tick_size = cfg.get("tick_label_font_size", 9)
+
+        def get_axis(role: str):
+            """Return (creating if needed) the Axes for ``role``.
+
+            Primary is always available. Secondary is a plain
+            ``twinx()``. Tertiary is a second ``twinx()`` with its
+            right spine offset to ``_TERTIARY_AXIS_OFFSET_FRAC``
+            (matplotlib axes coordinates) so the three y-axis labels
+            stack visually. Unknown roles fall back to primary so a
+            future per-style override with a malformed value cannot
+            crash the renderer.
+            """
+            if role in self._axes_by_role:
+                return self._axes_by_role[role]
+            if role == "secondary":
+                ax_new = ax.twinx()
+            elif role == "tertiary":
+                ax_new = ax.twinx()
+                ax_new.spines["right"].set_position(
+                    ("axes", _TERTIARY_AXIS_OFFSET_FRAC))
+            else:  # pragma: no cover — defensive fallback
+                return ax
+            ax_new.tick_params(direction=tick_dir, labelsize=tick_size)
+            self._axes_by_role[role] = ax_new
+            return ax_new
+
+        # Background colour (Plot Settings → Appearance). Only the
+        # primary Axes carries a face colour; twin axes overlay it
+        # transparently, so setting it once is correct.
         ax.set_facecolor(cfg.get("background_color", "#ffffff"))
 
         for node in live:
@@ -1529,6 +1651,10 @@ class UVVisTab(tk.Frame):
             if ("wavelength_nm" not in node.arrays
                     or "absorbance" not in node.arrays):
                 continue
+            role = _resolve_y_axis_role(node.type)
+            target = get_axis(role)
+            if role != "primary":
+                first_node_type_per_role.setdefault(role, node.type)
             style  = node.style
             colour = style.get("color", "#333333")
             wl     = node.arrays["wavelength_nm"]
@@ -1538,16 +1664,16 @@ class UVVisTab(tk.Frame):
             order  = np.argsort(x)
             x, y   = x[order], y[order]
             label  = node.label if style.get("in_legend", True) else None
-            ax.plot(x, y,
-                    color=colour,
-                    linestyle=style.get("linestyle", "solid"),
-                    linewidth=style.get("linewidth", 1.5),
-                    alpha=style.get("alpha", 0.9),
-                    label=label)
+            target.plot(x, y,
+                        color=colour,
+                        linestyle=style.get("linestyle", "solid"),
+                        linewidth=style.get("linewidth", 1.5),
+                        alpha=style.get("alpha", 0.9),
+                        label=label)
             if style.get("fill", False):
-                ax.fill_between(x, 0, y,
-                                color=colour,
-                                alpha=style.get("fill_alpha", 0.08))
+                target.fill_between(x, 0, y,
+                                    color=colour,
+                                    alpha=style.get("fill_alpha", 0.08))
 
         # ── Baseline-curve overlays (CS-29, Phase 4o) ─────────────────
         # Opt-in dashed overlay: for every visible BASELINE node,
@@ -1557,7 +1683,13 @@ class UVVisTab(tk.Frame):
         # dashed line sits visually on top of its parent. Helper is
         # silent on every failure path (returns None) so a malformed
         # graph cannot crash this branch.
+        # Phase 4u (CS-44): the overlay is routed via
+        # ``_resolve_y_axis_role(NodeType.BASELINE)`` for consistency
+        # with the main loop. BASELINE → "primary" today, so this is
+        # currently a no-op dispatch; the indirection lets a future
+        # axis-routing change land as a single table edit.
         if self._show_baseline_curves.get():
+            baseline_target = get_axis(_resolve_y_axis_role(NodeType.BASELINE))
             for bn in self._spectrum_nodes():
                 if bn.type != NodeType.BASELINE:
                     continue
@@ -1583,12 +1715,13 @@ class UVVisTab(tk.Frame):
                 bcolour = bn.style.get("color", "#333333")
                 blabel = (f"{bn.label} (baseline)"
                           if bn.style.get("in_legend", True) else None)
-                ax.plot(bx, by,
-                        color=bcolour,
-                        linestyle="--",
-                        linewidth=bn.style.get("linewidth", 1.5),
-                        alpha=0.7,
-                        label=blabel)
+                baseline_target.plot(
+                    bx, by,
+                    color=bcolour,
+                    linestyle="--",
+                    linewidth=bn.style.get("linewidth", 1.5),
+                    alpha=0.7,
+                    label=blabel)
 
         # ── Peak list overlays (CS-19, Phase 4h) ──────────────────────
         # Render every visible PEAK_LIST node as a scatter on top of
@@ -1602,6 +1735,9 @@ class UVVisTab(tk.Frame):
         # (downward triangle pointing at the peak); a future
         # marker-style schema decision (CS-19 implementation note)
         # could expose this to the user.
+        # Phase 4u (CS-44): peak overlays routed via the helper too —
+        # PEAK_LIST → "primary" today. Same one-line-edit principle.
+        peak_target = get_axis(_resolve_y_axis_role(NodeType.PEAK_LIST))
         for peak_node in self._peak_list_nodes():
             pstyle = peak_node.style
             if not pstyle.get("visible", True):
@@ -1615,7 +1751,7 @@ class UVVisTab(tk.Frame):
                                   self._y_unit.get())
             plabel = (peak_node.label
                       if pstyle.get("in_legend", True) else None)
-            ax.scatter(
+            peak_target.scatter(
                 px, py,
                 color=pstyle.get("color", "#333333"),
                 alpha=pstyle.get("alpha", 0.9),
@@ -1652,6 +1788,23 @@ class UVVisTab(tk.Frame):
             fontweight=("bold" if cfg.get("ylabel_font_bold", True) else "normal"),
         )
 
+        # Phase 4u (CS-44): label each populated non-primary role
+        # from the (NodeType, x_unit) → label table. The first node
+        # type to land on a given role determines the role's label.
+        # Roles whose first NodeType has no registered label go
+        # unlabelled rather than picking a guess.
+        for role, first_ntype in first_node_type_per_role.items():
+            non_primary_label = _resolve_non_primary_y_label(first_ntype, unit)
+            if non_primary_label is None:
+                continue
+            self._axes_by_role[role].set_ylabel(
+                non_primary_label,
+                fontsize=cfg.get("ylabel_font_size", 10),
+                fontweight=(
+                    "bold" if cfg.get("ylabel_font_bold", True) else "normal"
+                ),
+            )
+
         # Title: "auto" has no UV/Vis-derivable default so it falls
         # through as no title; "custom" uses the user-entered text;
         # "none" (default factory value) suppresses the title entirely.
@@ -1663,13 +1816,15 @@ class UVVisTab(tk.Frame):
                 fontweight=("bold" if cfg.get("title_font_bold", True) else "normal"),
             )
 
-        # Tick direction + tick label size.
-        ax.tick_params(
-            direction=cfg.get("tick_direction", "out"),
-            labelsize=cfg.get("tick_label_font_size", 9),
-        )
+        # Tick direction + tick label size on primary; non-primary
+        # roles already inherited these in ``get_axis`` at creation.
+        ax.tick_params(direction=tick_dir, labelsize=tick_size)
 
         # ── Secondary λ(nm) axis ──────────────────────────────────────────────
+        # This is an x-axis sibling on the *top* spine of the primary
+        # axis (different from the role-keyed y-axis machinery above);
+        # it stays anchored to ``ax`` regardless of which roles are
+        # populated below.
         if unit == "cm-1" and self._show_nm_axis.get():
             def _fwd(x):
                 with np.errstate(divide="ignore", invalid="ignore"):
@@ -1692,6 +1847,9 @@ class UVVisTab(tk.Frame):
                 ax.set_xlim(hi_nm, lo_nm)
 
         # ── Apply stored x-limits ─────────────────────────────────────────────
+        # x-limits are applied to primary; twin axes share the x-axis
+        # with primary via matplotlib's ``twinx`` mechanics, so they
+        # inherit automatically.
         lo_x = self._parse_lim(self._xlim_lo)
         hi_x = self._parse_lim(self._xlim_hi)
         if lo_x is not None or hi_x is not None:
@@ -1704,6 +1862,11 @@ class UVVisTab(tk.Frame):
                             hi_x if hi_x is not None else cur[1])
 
         # ── Apply stored y-limits ─────────────────────────────────────────────
+        # Phase 4u (CS-44): the existing _ylim_lo / _ylim_hi Tk vars
+        # apply to the primary y-axis only this phase. Per-role limit
+        # rows are explicitly out of scope (Decision 4 in the Phase 4u
+        # design lock); friction note carried forward for the next
+        # phase that needs to clamp the secondary derivative trace.
         lo_y = self._parse_lim(self._ylim_lo)
         hi_y = self._parse_lim(self._ylim_hi)
         if lo_y is not None or hi_y is not None:
@@ -1712,15 +1875,30 @@ class UVVisTab(tk.Frame):
                         hi_y if hi_y is not None else cur[1])
 
         # ── Legend (Plot Settings → Legend) ──────────────────────────────────
-        handles, labels = ax.get_legend_handles_labels()
-        if handles and cfg.get("legend_show", True):
+        # Phase 4u (CS-44): merge handles + labels across every
+        # populated role so a single legend on the primary axis
+        # describes both the absorbance traces and the secondary
+        # derivative curve. ``ax.get_legend_handles_labels()`` only
+        # picks up artists on its own Axes, so without this merge a
+        # SECOND_DERIVATIVE node on the right axis would silently
+        # drop out of the legend.
+        all_handles: list = []
+        all_labels: list = []
+        for role_ax in self._axes_by_role.values():
+            h, l = role_ax.get_legend_handles_labels()
+            all_handles.extend(h)
+            all_labels.extend(l)
+        if all_handles and cfg.get("legend_show", True):
             ax.legend(
+                all_handles, all_labels,
                 fontsize=cfg.get("legend_font_size", 8),
                 loc=cfg.get("legend_position", "best"),
                 framealpha=0.7,
             )
 
         # ── Grid (Plot Settings → Appearance) ───────────────────────────────
+        # Grid is drawn on primary only — gridlines from twin axes
+        # would visually compete with the primary's grid.
         if cfg.get("grid", True):
             ax.grid(True, linestyle=":", alpha=0.4)
         else:
