@@ -574,6 +574,21 @@ class UVVisTab(tk.Frame):
         self._baseline_scattering_fit_lo = tk.StringVar(value="")
         self._baseline_scattering_fit_hi = tk.StringVar(value="")
 
+        # CS-37 (Phase 4s) — universal "Floor at zero" toggle. Shown for
+        # every mode (the param round-trips on every BASELINE
+        # OperationNode); the constrained-fit code path is implemented
+        # for scattering / scattering+offset / rubberband, and raises
+        # a clear ValueError for linear / polynomial / spline (per the
+        # per-mode roadmap in BACKLOG).
+        self._baseline_floor_zero = tk.BooleanVar(value=False)
+        floor_frame = tk.Frame(bl_body)
+        floor_frame.pack(fill=tk.X, padx=4, pady=(2, 0))
+        self._baseline_floor_zero_cb = tk.Checkbutton(
+            floor_frame, text="Floor at zero",
+            variable=self._baseline_floor_zero, font=F9,
+        )
+        self._baseline_floor_zero_cb.pack(anchor="w")
+
         # Conditional parameter rows. The frame is rebuilt on every
         # mode change to keep layout straightforward.
         self._baseline_params_frame = tk.Frame(bl_body)
@@ -707,7 +722,12 @@ class UVVisTab(tk.Frame):
             tk.Label(self._baseline_params_frame,
                      text="(parameter-free convex hull)",
                      fg="gray", font=F9).pack(anchor="w", pady=(4, 0))
-        elif mode == "scattering":
+        elif mode in ("scattering", "scattering+offset"):
+            # CS-38 — scattering+offset shares the scattering Tk vars
+            # and parameter row layout (the additive constant ``a`` is
+            # always fitted, so no extra UI). The mode discriminator
+            # picks the right ``compute_*`` at apply time.
+            #
             # n entry + "Fit n" checkbox on the same row; checkbox
             # disables the entry so the user sees which way the fit
             # branch is pinned.
@@ -813,14 +833,21 @@ class UVVisTab(tk.Frame):
         Raises ``ValueError`` (with a user-readable message) on bad
         input. Per CS-03 the caller writes whatever this returns
         verbatim into the OperationNode's params dict.
+
+        CS-37 (Phase 4s): every returned dict carries ``floor_zero:
+        bool`` so the panel-level toggle round-trips through every
+        mode's OperationNode (regardless of whether the constrained-
+        fit code path is implemented for that mode yet).
         """
+        floor_zero = bool(self._baseline_floor_zero.get())
         if mode == "linear":
             try:
                 lo = float(self._baseline_anchor_lo.get())
                 hi = float(self._baseline_anchor_hi.get())
             except ValueError:
                 raise ValueError("Both anchors must be numeric (nm).")
-            return {"anchor_lo_nm": lo, "anchor_hi_nm": hi}
+            return {"anchor_lo_nm": lo, "anchor_hi_nm": hi,
+                    "floor_zero": floor_zero}
         if mode == "polynomial":
             try:
                 order = int(self._baseline_poly_order.get())
@@ -829,7 +856,8 @@ class UVVisTab(tk.Frame):
             except (ValueError, tk.TclError):
                 raise ValueError(
                     "Order must be int; fit window endpoints must be numeric.")
-            return {"order": order, "fit_lo_nm": lo, "fit_hi_nm": hi}
+            return {"order": order, "fit_lo_nm": lo, "fit_hi_nm": hi,
+                    "floor_zero": floor_zero}
         if mode == "spline":
             raw = self._baseline_spline_anchors.get().strip()
             if not raw:
@@ -841,10 +869,10 @@ class UVVisTab(tk.Frame):
                 raise ValueError("Anchors must be comma-separated numbers (nm).")
             if len(anchors) < 2:
                 raise ValueError("Spline requires at least 2 anchors.")
-            return {"anchors": anchors}
+            return {"anchors": anchors, "floor_zero": floor_zero}
         if mode == "rubberband":
-            return {}
-        if mode == "scattering":
+            return {"floor_zero": floor_zero}
+        if mode in ("scattering", "scattering+offset"):
             try:
                 lo = float(self._baseline_scattering_fit_lo.get())
                 hi = float(self._baseline_scattering_fit_hi.get())
@@ -852,13 +880,15 @@ class UVVisTab(tk.Frame):
                 raise ValueError(
                     "Fit window endpoints must be numeric (nm).")
             if self._baseline_scattering_fit_n.get():
-                return {"n": "fit", "fit_lo_nm": lo, "fit_hi_nm": hi}
+                return {"n": "fit", "fit_lo_nm": lo, "fit_hi_nm": hi,
+                        "floor_zero": floor_zero}
             try:
                 n_val = float(self._baseline_scattering_n.get())
             except ValueError:
                 raise ValueError(
                     "n must be numeric (or check 'Fit n' to fit it).")
-            return {"n": n_val, "fit_lo_nm": lo, "fit_hi_nm": hi}
+            return {"n": n_val, "fit_lo_nm": lo, "fit_hi_nm": hi,
+                    "floor_zero": floor_zero}
         raise ValueError(f"Unknown baseline mode: {mode!r}")
 
     def _apply_baseline(self) -> Optional[Tuple[str, str]]:
@@ -936,6 +966,32 @@ class UVVisTab(tk.Frame):
         except (ValueError, KeyError) as exc:
             messagebox.showerror("Baseline computation", str(exc))
             return None
+
+        # CS-39 (Phase 4s) — persist resolved fit parameters on the
+        # OperationNode for the scattering modes. The fit ran inside
+        # ``compute()``; the matching ``fit_*`` helper recovers the
+        # same values so a downstream consumer (export header,
+        # provenance footer, future diagnostic console) can read
+        # ``c_fitted`` / ``n_fitted`` / ``a_fitted`` without re-running
+        # the operation. Failure here is non-fatal — the corrected
+        # spectrum already exists; we simply skip the diagnostic keys.
+        if mode == "scattering":
+            try:
+                info = uvvis_baseline.fit_scattering(wl, absorb, params)
+                op_params["c_fitted"] = info["c_fitted"]
+                if str(params.get("n", "")).lower() == "fit":
+                    op_params["n_fitted"] = info["n_fitted"]
+            except (ValueError, KeyError):
+                pass
+        elif mode == "scattering+offset":
+            try:
+                info = uvvis_baseline.fit_scattering_offset(wl, absorb, params)
+                op_params["a_fitted"] = info["a_fitted"]
+                op_params["c_fitted"] = info["c_fitted"]
+                if str(params.get("n", "")).lower() == "fit":
+                    op_params["n_fitted"] = info["n_fitted"]
+            except (ValueError, KeyError):
+                pass
 
         op_id = uuid.uuid4().hex
         out_id = uuid.uuid4().hex

@@ -814,14 +814,16 @@ class TestUVVisTabBaseline(unittest.TestCase):
         self.assertTrue(hasattr(self.tab, "_shared_subject"))
         self.assertFalse(hasattr(self.tab, "_baseline_subject_cb"))
         self.assertTrue(hasattr(self.tab, "_apply_baseline_btn"))
-        # All four modes are exposed on the combobox.
+        # All six modes are exposed on the combobox (CS-38 added
+        # ``scattering+offset``).
         values = self.tab._baseline_mode_cb.cget("values")
         # Tk returns either a tuple or a string of space-separated names.
         if isinstance(values, str):
             values = tuple(values.split())
         self.assertEqual(
             tuple(values),
-            ("linear", "polynomial", "spline", "rubberband", "scattering"),
+            ("linear", "polynomial", "spline", "rubberband",
+             "scattering", "scattering+offset"),
         )
         # CS-24 (Phase 4m) scattering mode Tk vars exist on the tab.
         self.assertTrue(hasattr(self.tab, "_baseline_scattering_n"))
