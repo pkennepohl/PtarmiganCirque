@@ -43,6 +43,7 @@ from nodes import (
 )
 from scan_tree_widget import ScanTreeWidget
 from style_dialog import open_style_dialog
+from tooltip import Tooltip
 import plot_settings_dialog
 import uvvis_baseline
 import uvvis_normalise
@@ -113,6 +114,25 @@ def _absorbance_to_y(absorbance: np.ndarray, y_unit: str) -> np.ndarray:
     if y_unit == "%T":
         return 100.0 * np.power(10.0, -np.clip(absorbance, -10, 10))
     return absorbance
+
+
+# Phase 4t (CS-43) — set of baseline modes whose ``compute_*``
+# implements the floor-zero constraint. The "Floor at zero" toggle
+# is enabled when the current mode is in this set, disabled
+# otherwise. Today (Phase 4t) all six modes ship the constrained-
+# fit code path, so the disabled state never fires in the default
+# build — the constant remains as defensive scaffolding so a future
+# new mode added to ``BASELINE_MODES`` without floor-zero coverage
+# greys the toggle out automatically. Cross-ref: CS-37 + the BACKLOG
+# entry "Floor-zero toggle disabled state for unsupported baseline
+# modes (USER-FLAGGED)".
+_FLOOR_ZERO_SUPPORTED_MODES: frozenset[str] = frozenset(
+    uvvis_baseline.BASELINE_MODES
+)
+
+_FLOOR_ZERO_DISABLED_TOOLTIP: str = (
+    "Floor-zero is not supported for this baseline mode."
+)
 
 
 class UVVisTab(tk.Frame):
@@ -554,6 +574,12 @@ class UVVisTab(tk.Frame):
         self._baseline_mode_cb.pack(fill=tk.X)
         self._baseline_mode.trace_add(
             "write", lambda *_: self._refresh_baseline_param_rows())
+        # Phase 4t (CS-43) — keep the "Floor at zero" toggle's
+        # state in sync with the active mode. Two callbacks fire on
+        # the same trace; ordering does not matter (they don't read
+        # each other's state).
+        self._baseline_mode.trace_add(
+            "write", lambda *_: self._refresh_floor_zero_state())
 
         # Per-mode parameter Tk vars (kept on the tab so values
         # survive mode flips). String entries default to empty so the
@@ -588,6 +614,19 @@ class UVVisTab(tk.Frame):
             variable=self._baseline_floor_zero, font=F9,
         )
         self._baseline_floor_zero_cb.pack(anchor="w")
+        # Phase 4t (CS-42 + CS-43) — Tooltip on the "Floor at zero"
+        # checkbutton. Empty initial text means the hover hint is
+        # silent under the supported-mode branch (Tooltip._show
+        # bails on empty strings). _refresh_floor_zero_state rotates
+        # the text to the explanatory hint when the toggle is
+        # disabled. Stored on the tab so the refresh method can
+        # reach it.
+        self._baseline_floor_zero_tooltip = Tooltip(
+            self._baseline_floor_zero_cb, "",
+        )
+        # Initial calibration — fires before the user touches the
+        # mode combobox so the toggle starts in the correct state.
+        self._refresh_floor_zero_state()
 
         # Conditional parameter rows. The frame is rebuilt on every
         # mode change to keep layout straightforward.
@@ -674,6 +713,31 @@ class UVVisTab(tk.Frame):
         """
         if hasattr(self, "_status_lbl"):
             self._status_lbl.config(text=text, fg="#003d7a")
+
+    def _refresh_floor_zero_state(self) -> None:
+        """Enable / disable the "Floor at zero" toggle by current mode (CS-43).
+
+        Reads ``self._baseline_mode`` and consults
+        ``_FLOOR_ZERO_SUPPORTED_MODES``. Modes outside the supported set
+        get the Checkbutton in ``state="disabled"`` plus a hover hint
+        explaining the unsupported state; supported modes get the
+        Checkbutton enabled and the hint blanked (empty-string sentinel
+        makes :meth:`Tooltip._show` bail silently). The BooleanVar's
+        value is preserved across enable / disable transitions so the
+        persistence-umbrella round-trip carries the user's choice
+        forward without auto-clear.
+        """
+        if not hasattr(self, "_baseline_floor_zero_cb"):
+            return
+        mode = self._baseline_mode.get()
+        if mode in _FLOOR_ZERO_SUPPORTED_MODES:
+            self._baseline_floor_zero_cb.config(state="normal")
+            self._baseline_floor_zero_tooltip.update_text("")
+        else:
+            self._baseline_floor_zero_cb.config(state="disabled")
+            self._baseline_floor_zero_tooltip.update_text(
+                _FLOOR_ZERO_DISABLED_TOOLTIP,
+            )
 
     def _refresh_baseline_param_rows(self) -> None:
         """Rebuild the parameter rows for the currently selected mode."""
