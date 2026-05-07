@@ -20,6 +20,11 @@ from pathlib import Path
 
 import numpy as np
 
+# Silence modal Tk messageboxes before any apply-site error path
+# can fire (e.g. bad input rejected via messagebox.showerror).
+from _test_silence import silence_all_messageboxes
+silence_all_messageboxes()
+
 try:
     import tkinter as tk
     _root = tk.Tk()
