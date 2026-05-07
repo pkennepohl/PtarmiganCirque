@@ -1878,6 +1878,138 @@ class TestTruncateLabel(unittest.TestCase):
         self.assertGreater(_LABEL_MAX_CHARS, 1)
 
 
+class TestCellMinPxVocabulary(unittest.TestCase):
+    """Phase 4w (CS-47) — per-cell minimum width vocabulary.
+
+    No Tk root required; the constants are pure data.
+    """
+
+    def test_dict_is_a_mapping_of_cell_name_to_positive_int(self):
+        from scan_tree_widget import _CELL_MIN_PX
+        self.assertIsInstance(_CELL_MIN_PX, dict)
+        self.assertGreater(len(_CELL_MIN_PX), 0)
+        for name, px in _CELL_MIN_PX.items():
+            self.assertIsInstance(name, str)
+            self.assertIsInstance(px, int)
+            self.assertGreater(px, 0)
+
+    def test_every_optional_cell_has_a_min_entry(self):
+        # Every cell named in _RESPONSIVE_THRESHOLDS_PX must also
+        # have a width budget in _CELL_MIN_PX so the vocabulary is
+        # complete.
+        from scan_tree_widget import _CELL_MIN_PX, _RESPONSIVE_THRESHOLDS_PX
+        for name, _px in _RESPONSIVE_THRESHOLDS_PX:
+            self.assertIn(name, _CELL_MIN_PX)
+
+    def test_always_visible_cells_are_documented(self):
+        # The CS-26 always-visible minimum (state, vis_cb, label,
+        # hist, gear, compare, x) must have entries; the CS-48
+        # row_toggle slot too; the provisional-only commit cell too.
+        from scan_tree_widget import _CELL_MIN_PX
+        always = (
+            "state", "vis_cb", "row_toggle", "label",
+            "hist", "gear", "compare", "x", "commit",
+        )
+        for name in always:
+            self.assertIn(name, _CELL_MIN_PX, msg=name)
+
+
+class TestSidebarMinWidth(unittest.TestCase):
+    """Phase 4w (CS-47) — pinned sidebar floor constant."""
+
+    def test_constant_is_a_positive_int(self):
+        from scan_tree_widget import _SIDEBAR_MIN_WIDTH_PX
+        self.assertIsInstance(_SIDEBAR_MIN_WIDTH_PX, int)
+        self.assertGreater(_SIDEBAR_MIN_WIDTH_PX, 0)
+
+    def test_floor_matches_smallest_responsive_threshold(self):
+        # The sidebar floor and the smallest threshold must agree so
+        # the responsive helper never gets a width below which it
+        # has not been calibrated.
+        from scan_tree_widget import (
+            _SIDEBAR_MIN_WIDTH_PX,
+            _RESPONSIVE_COLLAPSE_PX,
+        )
+        self.assertEqual(_SIDEBAR_MIN_WIDTH_PX, _RESPONSIVE_COLLAPSE_PX)
+
+
+class TestLabelCharCapacity(unittest.TestCase):
+    """Phase 4w (CS-47) — pure helper for the dynamic label cap.
+
+    No Tk root required.
+    """
+
+    def test_unrealised_canvas_returns_static_fallback(self):
+        from scan_tree_widget import (
+            _label_char_capacity, _LABEL_MAX_CHARS,
+        )
+        # canvas_width <= 1 → unrealised geometry, fall back.
+        self.assertEqual(
+            _label_char_capacity(1, 7, 100), _LABEL_MAX_CHARS,
+        )
+        self.assertEqual(
+            _label_char_capacity(0, 7, 100), _LABEL_MAX_CHARS,
+        )
+
+    def test_invalid_font_metric_returns_static_fallback(self):
+        from scan_tree_widget import (
+            _label_char_capacity, _LABEL_MAX_CHARS,
+        )
+        # avg_char_px <= 0 → font metrics unavailable, fall back.
+        self.assertEqual(
+            _label_char_capacity(500, 0, 100), _LABEL_MAX_CHARS,
+        )
+        self.assertEqual(
+            _label_char_capacity(500, -1, 100), _LABEL_MAX_CHARS,
+        )
+
+    def test_overhead_exceeds_canvas_returns_static_fallback(self):
+        from scan_tree_widget import (
+            _label_char_capacity, _LABEL_MAX_CHARS,
+        )
+        # No room left for the label cell → fall back rather than
+        # return zero or a negative.
+        self.assertEqual(
+            _label_char_capacity(100, 7, 200), _LABEL_MAX_CHARS,
+        )
+
+    def test_wide_canvas_grows_cap_above_static_fallback(self):
+        from scan_tree_widget import (
+            _label_char_capacity, _LABEL_CHAR_CEIL,
+        )
+        # 600 px canvas, 200 px overhead, 7 px / char → 400/7 ≈ 57.
+        cap = _label_char_capacity(600, 7, 200)
+        self.assertGreater(cap, 32)
+        self.assertLessEqual(cap, _LABEL_CHAR_CEIL)
+
+    def test_narrow_canvas_shrinks_cap_below_static_fallback(self):
+        from scan_tree_widget import (
+            _label_char_capacity, _LABEL_CHAR_FLOOR,
+        )
+        # 250 px canvas, 200 px overhead, 7 px / char → 50/7 ≈ 7.
+        # Clamped up to the floor.
+        cap = _label_char_capacity(250, 7, 200)
+        self.assertGreaterEqual(cap, _LABEL_CHAR_FLOOR)
+        self.assertLess(cap, 32)
+
+    def test_clamps_to_floor_for_extreme_overhead(self):
+        from scan_tree_widget import (
+            _label_char_capacity, _LABEL_CHAR_FLOOR,
+        )
+        # Available width gives 1-2 chars worth of room; floor takes
+        # over.
+        cap = _label_char_capacity(210, 7, 200)
+        self.assertEqual(cap, _LABEL_CHAR_FLOOR)
+
+    def test_clamps_to_ceil_for_extreme_canvas_width(self):
+        from scan_tree_widget import (
+            _label_char_capacity, _LABEL_CHAR_CEIL,
+        )
+        # Wide canvas with cheap chars would compute a 1000+ cap.
+        cap = _label_char_capacity(2000, 4, 100)
+        self.assertEqual(cap, _LABEL_CHAR_CEIL)
+
+
 @unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
 class TestTooltip(unittest.TestCase):
     """Phase 4q (CS-33) / Phase 4t (CS-42) — hover tooltip helper.
