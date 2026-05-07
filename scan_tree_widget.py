@@ -143,12 +143,45 @@ _DEFAULT_STYLE: dict[str, Any] = {
 # width at or above which any optional cell is shown). Kept as a
 # module-level alias so callers / tests have a single "is the row
 # narrow?" sentinel.
+# Phase 4w (CS-47): per-cell minimum natural widths. Documented
+# vocabulary of every row cell so a sidebar audit has a single source
+# of truth. The cumulative sum of always-visible cell mins plus a
+# floor for the label cell gives ``_SIDEBAR_MIN_WIDTH_PX``; the
+# optional cells contribute to ``_RESPONSIVE_THRESHOLDS_PX`` (whose
+# integer values are pinned by the existing test suite at 240 / 280 /
+# 320 — see ``test_swatch_revealed_first_at_smallest_threshold`` &
+# siblings — and so are constructed by hand below rather than summed
+# from this dict). Adding a cell to a row means listing it here too.
+_CELL_MIN_PX: dict[str, int] = {
+    "state":      18,   # 🔒/⋯ — width=2 char Label
+    "swatch":     24,   # colour Button width=2 (optional, P1)
+    "vis_cb":     22,   # ☑ Checkbutton, no text
+    "row_toggle": 22,   # Phase 4w (CS-48): [~] / placeholder slot
+    "label":      56,   # floor: ~8 chars at TkDefaultFont
+    "leg":        22,   # ✓/– Button width=2 (optional, P2)
+    "ls_canvas":  38,   # 38×16 linestyle canvas (optional, P3)
+    "hist":       28,   # ⌥n Button (always visible since CS-26)
+    "gear":       22,   # ⚙ Button
+    "compare":    22,   # → Button
+    "commit":     22,   # 🔒 commit Button (provisional rows only)
+    "x":          22,   # ✕ Button
+}
+
 _RESPONSIVE_THRESHOLDS_PX: tuple[tuple[str, int], ...] = (
     ("swatch",    240),
     ("leg",       280),
     ("ls_canvas", 320),
 )
 _RESPONSIVE_COLLAPSE_PX: int = _RESPONSIVE_THRESHOLDS_PX[0][1]
+
+# Phase 4w (CS-47): pinned floor for the right-pane sidebar. Set to
+# the same integer as the smallest responsive threshold so the
+# PanedWindow's ``minsize`` and the responsive-collapse threshold
+# stay in lock-step — narrowing the sash never produces a row that
+# can't render at least the always-visible minimum. ``UVVisTab``
+# reads this value when configuring ``body.add(sidebar_pane,
+# minsize=_SIDEBAR_MIN_WIDTH_PX)``.
+_SIDEBAR_MIN_WIDTH_PX: int = _RESPONSIVE_COLLAPSE_PX
 
 # Phase 4q (CS-33): label truncation cap. Long chains of UV/Vis ops
 # accumulate suffixes ("NiAqua · baseline (linear) · norm (peak)" etc.)
@@ -160,7 +193,24 @@ _RESPONSIVE_COLLAPSE_PX: int = _RESPONSIVE_THRESHOLDS_PX[0][1]
 # remains accessible via a hover tooltip and the existing in-place
 # rename gesture (double-click, which now reads the full label from
 # the graph rather than the widget's truncated text).
+#
+# Phase 4w (CS-47) makes the cap responsive to the actual sidebar
+# width via ``_label_char_capacity``: a wide sidebar shows more of
+# the label without truncation, a narrow sidebar shows less. The
+# constant below is the static fallback used when canvas width or
+# font metrics are unavailable (unrealised geometry, headless
+# tests). The CS-33 invariants on ``_truncate_label`` (signature,
+# default cap, ``text[:max-1] + "…"`` shape) are preserved.
 _LABEL_MAX_CHARS: int = 32
+
+# Phase 4w (CS-47): clamps for the dynamic label cap. The floor keeps
+# at least eight characters visible even on the narrowest realised
+# sidebar (so a name like "spectrum" is never cut to nothing); the
+# ceil prevents a very wide sidebar from disabling truncation
+# entirely (a 1500-char "label" is a graph-data bug, not a
+# rendering opportunity).
+_LABEL_CHAR_FLOOR: int = 8
+_LABEL_CHAR_CEIL: int = 64
 
 # Phase 4r (CS-35): visual nesting indent for sweep-group members
 # rendered inline below an expanded leader (CS-32). The leader row
@@ -188,6 +238,47 @@ def _truncate_label(text: str, max_chars: int = _LABEL_MAX_CHARS) -> str:
     if len(text) <= max_chars:
         return text
     return text[:max_chars - 1] + "…"
+
+
+def _label_char_capacity(
+    canvas_width_px: int,
+    avg_char_px: int,
+    overhead_px: int,
+) -> int:
+    """Compute the dynamic label-character cap for a given sidebar width.
+
+    Phase 4w (CS-47). The static ``_LABEL_MAX_CHARS = 32`` cap was
+    fine for "narrow but readable" sidebars but wastes pixels when
+    the user widens the sash to 600 px and is too generous when the
+    user narrows it to 240 px. The dynamic cap adapts: more pixels
+    means more characters, fewer pixels means fewer.
+
+    Inputs (all in pixels for the canvas dimension; ``avg_char_px`` is
+    a font-metric measurement):
+
+    * ``canvas_width_px`` — current sidebar canvas width.
+    * ``avg_char_px``     — average character width for the label
+      font, e.g. ``font.measure("M")`` or
+      ``font.measure("ABCDEFGHIJabcdefghij") // 20``.
+    * ``overhead_px``     — sum of always-visible non-label cells
+      plus per-row padding, i.e. how much pixel real-estate the row
+      consumes before the label cell starts.
+
+    The returned cap is clamped to ``[_LABEL_CHAR_FLOOR,
+    _LABEL_CHAR_CEIL]``. When the sidebar is unrealised
+    (``canvas_width_px <= 1``), font metrics are unavailable
+    (``avg_char_px <= 0``), or overhead exceeds the available width,
+    the helper falls back to ``_LABEL_MAX_CHARS`` so the existing
+    static-cap behaviour is preserved at construction time and in
+    headless test environments where geometry never settles.
+    """
+    if canvas_width_px <= 1 or avg_char_px <= 0:
+        return _LABEL_MAX_CHARS
+    available = canvas_width_px - overhead_px
+    if available <= 0:
+        return _LABEL_MAX_CHARS
+    chars = available // avg_char_px
+    return max(_LABEL_CHAR_FLOOR, min(_LABEL_CHAR_CEIL, chars))
 
 
 def _style_get(node: DataNode, key: str) -> Any:
