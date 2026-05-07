@@ -4976,7 +4976,343 @@ curve lands on the tertiary axis while primary keeps the parent.
 
 ---
 
-*Document version: 1.21 — May 2026*
+## CS-45 — Per-OperationType implementation hash registry (Phase 4v)
+
+**Source files.** `operation_hash.py` (new module).
+
+**Purpose.** A per-OperationType registry maps each op to the bundle
+of `compute_*` + shared helpers that constitute its implementation.
+`compute_implementation_hash(op_type)` returns the SHA-256 of the
+sorted-by-qualname concatenation of `inspect.getsource()` bytes for
+every registered callable, domain-separated by op name. Apply sites
+stamp the result into `OperationNode.metadata["implementation_hash"]`;
+project load (CS-46) recomputes the hash and surfaces drift via
+`LoadedProject.implementation_warnings`.
+
+**Why automatic source-hash (Q1.a lock) and not manual semver.**
+- Zero developer overhead — no string to bump on every conditioning
+  tweak; auto-detected the Phase 4t polynomial conditioning swap that
+  motivated the umbrella entry.
+- Manual semver gets forgotten; the failure mode (silent drift) is
+  exactly what the entry was raised to prevent.
+- False positives from whitespace-only edits are the right behaviour
+  on the precautionary-principle side: re-run is one click in the
+  load-time mismatch dialog, and a stable formatter (e.g. `black`)
+  keeps run-to-run noise out.
+
+**Data model additions.**
+
+`OperationNode` (in `nodes.py`) gains two new fields with defaults
+that preserve every existing construction site:
+
+- `metadata: dict[str, Any] = field(default_factory=dict)` — apply
+  sites stamp `metadata["implementation_hash"]` here.
+- `deterministic: bool = True` — persistence Phase A may skip the
+  array sidecar for deterministic ops (re-derived on load); always
+  stores arrays for non-deterministic ops. Every op shipped today is
+  deterministic; the field exists for the future Monte Carlo /
+  MCR-ALS / bootstrap entries.
+
+**Module surface.**
+
+```
+_HASH_REGISTRY: dict[OperationType, tuple[Callable, ...]]   # private
+_HASH_CACHE: dict[OperationType, str]                       # private
+SENTINEL_PREFIX = "unregistered:"                           # public
+
+register_implementation(op_type, *callables) -> None
+clear_registry() -> None
+is_registered(op_type) -> bool
+registered_op_types() -> tuple[OperationType, ...]
+compute_implementation_hash(op_type) -> str
+register_default_implementations() -> None
+```
+
+**Hash algorithm.**
+
+```
+h = SHA256()
+h.update(b"op_type:" + op_name.encode() + b"\n")
+for fn in sorted(bundle, key=qualname):
+    h.update(b"fn:" + qualname(fn).encode() + b"\n")
+    h.update(getsource(fn).encode() + b"\n")
+return h.hexdigest()
+```
+
+Domain separation by op name prevents the registry from accidentally
+colliding hashes between two ops with the same callables. Sorting by
+qualname ensures bundle-order independence. Cache invalidates on
+`register_implementation` so test re-registration produces fresh
+hashes.
+
+**Default registrations (production).**
+
+`register_default_implementations()` is called from
+`OrcaTDDFTApp.__init__` before any apply runs:
+
+| OperationType | Bundle |
+|---|---|
+| `BASELINE` | six `compute_*` (linear / polynomial / spline / rubberband / scattering / scattering_offset) + four shared helpers (`_floor_zero`, `_resolve_n_bounds`, `_spline_evaluate`, `_spline_floor_zero_fit`) + three scattering helpers (`_scattering_window`, `_scattering_fit`, `_scattering_offset_fit`) |
+| `NORMALISE` | `compute_peak`, `compute_area`, `_coerce`, `_window_mask` |
+| `SMOOTH` | `compute_savgol`, `compute_moving_avg`, `_coerce` |
+| `PEAK_PICK` | `compute_prominence`, `compute_manual`, `_coerce` |
+| `SECOND_DERIVATIVE` | `compute`, `_coerce` |
+| `LOAD` | `parse_uvvis_file` |
+
+Unregistered ops (DEGLITCH / SHIFT_ENERGY / AVERAGE / DIFFERENCE /
+FEFF_RUN / BXAS_FIT) return `"unregistered:<OperationType.name>"`
+sentinels. Manifest diffs of sentinel-vs-sentinel are no-ops; sentinel-
+vs-real-hash is treated as a structural change worth surfacing.
+
+**Apply sites that stamp.**
+
+| Site | OperationType |
+|---|---|
+| `uvvis_tab._apply_baseline` | `BASELINE` |
+| `uvvis_tab._on_uvvis_loaded` | `LOAD` |
+| `uvvis_normalise.NormalisationPanel._apply` | `NORMALISE` |
+| `uvvis_smoothing.SmoothingPanel._apply` | `SMOOTH` |
+| `uvvis_peak_picking.PeakPickingPanel._apply` | `PEAK_PICK` |
+| `uvvis_second_derivative.SecondDerivativePanel._apply` | `SECOND_DERIVATIVE` |
+
+Each adds `metadata={"implementation_hash":
+compute_implementation_hash(OperationType.X)}` to the
+`OperationNode(...)` constructor call.
+
+**Test coverage.**
+
+- `test_operation_hash.TestUnregisteredSentinel` (2)
+- `test_operation_hash.TestRegistration` (3)
+- `test_operation_hash.TestHashDeterminism` (3)
+- `test_operation_hash.TestDomainSeparation` (1)
+- `test_operation_hash.TestHashCache` (1)
+- `test_operation_hash.TestDefaultRegistrations` (3)
+- `test_operation_hash.TestSourceHashSensitivity` (2)
+- `test_nodes_metadata_field` (8 tests on the new
+  OperationNode fields)
+- `test_persistence_phase_a.TestApplySiteStampsImplementationHash`
+  (5 — one per stamping site)
+- `test_persistence_phase_a.TestImplementationMismatchSurface`
+  (2 — load drift detection + clean-load no-warnings)
+
+**Locked invariants.**
+
+- The hash domain-separates by `OperationType.name` — two registry
+  entries with the same callables but different op names produce
+  different hashes.
+- The registry is a single source of truth: helpers shared between
+  modes (e.g. `_floor_zero` across the six BASELINE branches) MUST
+  appear once in the BASELINE bundle. Adding a helper without
+  registering it is the silent-drift failure mode the entry was
+  raised to prevent.
+- The unregistered sentinel is `"unregistered:<name>"` with the
+  exact `SENTINEL_PREFIX` constant — change this and every drift
+  detector breaks.
+
+---
+
+## CS-46 — Persistence Phase A: manifest + sidecar (Phase 4v)
+
+**Source files.** `project_io.py` (full rewrite — replaced four
+`NotImplementedError` stubs with the manifest+sidecar
+implementation).
+
+**Architecture (locked Phase 4r, shipped Phase 4v).**
+
+- Content-addressed manifest JSON + sidecar HDF5 files.
+- Sidecars carry every raw array (DataNode arrays). Sidecar
+  filenames are the SHA-256 of the canonical (sorted-by-key) byte
+  serialisation of the arrays dict, so two DataNodes with identical
+  payloads share a single sidecar.
+- Single `protected: bool` header flag gates verification on load.
+  Phase A always writes `protected: false`; Phase C flips it to
+  `true` once Merkle/signed verification lands.
+- Whole-app save: one manifest, one set of sidecars. Top-level
+  `plot_defaults` mirrors `plot_settings_dialog._USER_DEFAULTS`;
+  per-tab `tabs[<name>].plot_config` carries each tab's local
+  overrides; per-tab `tabs[<name>].graph` carries the full
+  ProjectGraph (data nodes + op nodes + edges + active overrides).
+
+**On-disk layout.**
+
+```
+myproject.ptmg/
++-- manifest.json
++-- sidecars/
+    +-- <hash>.h5         # one HDF5 per unique arrays bundle
+    +-- ...
+```
+
+**Manifest schema (top-level).**
+
+```json
+{
+  "ptarmigan_format": "ptmg",
+  "ptarmigan_format_version": 1,
+  "ptarmigan_version": "0.X.Y",
+  "python_version": "3.12.x",
+  "name": "...",
+  "created_at": "ISO 8601",
+  "modified_at": "ISO 8601",
+  "protected": false,
+  "plot_defaults": { ... },
+  "tabs": {
+    "uvvis": {
+      "plot_config": { ... },
+      "graph": {
+        "data_nodes": [
+          {"id": "...", "type": "UVVIS", "label": "...", "state": "PROVISIONAL",
+           "created_at": "...", "active": true, "style": {...}, "metadata": {...},
+           "arrays_hash": "abc123..."},
+          ...
+        ],
+        "op_nodes": [
+          {"id": "...", "type": "BASELINE", "engine": "internal",
+           "engine_version": "0.X.Y", "params": {...},
+           "input_ids": [...], "output_ids": [...],
+           "timestamp": "...", "duration_ms": 0, "status": "SUCCESS",
+           "log": "", "state": "PROVISIONAL",
+           "metadata": {"implementation_hash": "..."},
+           "deterministic": true},
+          ...
+        ],
+        "edges": [["parent_id", "child_id"], ...],
+        "active_overrides": {"dataset_id": "override_id", ...}
+      }
+    }
+  }
+}
+```
+
+**Public API.**
+
+```
+save_project(path, *, name, plot_defaults, tabs) -> Path
+load_project(path) -> LoadedProject
+verify_project(path) -> {"array_warnings": [...], "implementation_warnings": [...]}
+
+@dataclass class TabPayload:
+    plot_config: dict[str, Any]
+    graph: ProjectGraph
+
+@dataclass class LoadedProject:
+    name: str
+    created_at: str
+    modified_at: str
+    ptarmigan_version: str
+    plot_defaults: dict[str, Any]
+    tabs: dict[str, TabPayload]
+    implementation_warnings: list[str]
+
+# Retained from pre-Phase-A project_io
+hash_file(path) -> str        # SHA-256 of file contents
+copy_project(src, dst) -> Path  # Save As helper
+```
+
+**Sidecar HDF5 round-trip.**
+
+- `_hash_arrays(arrays)` — SHA-256 over a canonical encoding (per
+  array, in sorted-key order, encoded as
+  `"k:" + key + "\nd:" + dtype + "\ns:" + shape + "\nb:" + bytes + "\n"`).
+- `_write_arrays_sidecar(path, arrays)` — `h5py.File("w")` with
+  `compression="gzip"`, `compression_opts=4`. ~3-5 KB per typical
+  601-sample UV/Vis absorbance pair.
+- `_read_arrays_sidecar(path)` — round-trip back into a
+  `dict[str, np.ndarray]`.
+
+**Implementation hash verification at load.**
+
+For every OperationNode whose `metadata["implementation_hash"]` is a
+real hash (not the unregistered sentinel), `_deserialise_graph`
+recomputes the registry hash and appends per-op drift to
+`implementation_warnings`. Two distinct mismatch shapes:
+
+- "implementation changed since save" — both sides have a real hash
+  but they differ.
+- "no implementation is registered in this build" — the manifest
+  has a real hash but the current registry returns a sentinel.
+
+The host (`binah.py`) wraps the warnings in a "Implementation
+Changed Since Save" dialog with two buttons today: Keep cached +
+Show details. Re-run all changed is deferred (see the new register
+entry; needs a workflow-replay mechanism).
+
+**Workflow restoration (`_restore_workflow_payload`).**
+
+`UVVisTab._restore_workflow_payload(payload: TabPayload)` swaps
+graph contents in place: clears the existing graph, re-adds every
+node + edge from `payload.graph`, restores `_active_overrides`,
+fires a single GRAPH_LOADED notification so subscribers refresh
+once. Subwidgets keep their reference to `self._graph` so the
+post-restore plot+sidebar refresh uses the same code path as a
+normal apply.
+
+XAS / EXAFS / TDDFT tabs do not yet ship a `_restore_workflow_payload`;
+when they migrate to ProjectGraphs (Phase 5+), each gains a parallel
+method (see the new register entry).
+
+**Workflow menu wiring (binah.py).**
+
+```
+File:
+  Save Workflow            (Ctrl+Alt+S)
+  Save Workflow As…
+  Open Workflow…           (Ctrl+Alt+O)
+  Recent Workflows  >
+```
+
+These coexist with the existing TDDFT-only `.otproj` save/load
+gestures (left intact per Phase A scope; unification is a future
+phase). `tk.filedialog.askdirectory` picks a directory; the chosen
+path gets a `.ptmg` suffix appended if absent. Recent workflows
+persist to the same `~/.binah_config.json` under
+`"recent_workflows"`.
+
+**Phase A explicit deferrals (each is a new register entry).**
+
+- `.ptmg` zip-archive form (directory only this phase).
+- Original instrument file persistence (DataNode arrays round-trip;
+  the source instrument file does not yet).
+- Phases B (subgraph export), C (signed Merkle manifest), D
+  (OpenTimestamps anchoring).
+- Migration of legacy `.ptproj` / `.otproj` files (per user lock:
+  "compatibility with existing project files is NOT a goal").
+- Sidecar garbage collection across saves.
+- Re-run all changed ops at load.
+
+**Test coverage.**
+
+- `test_project_io.TestEmptySaveLoad` (3)
+- `test_project_io.TestRoundTrip` (4)
+- `test_project_io.TestSidecarDedup` (2)
+- `test_project_io.TestVerifyMismatch` (6)
+- `test_project_io.TestErrorPaths` (4)
+- `test_project_io.TestCreatedAtPersistsAcrossSaves` (1)
+- `test_project_io.TestJsonifyHelpers` (1)
+- `test_project_io.TestUnregisteredOpRoundTrip` (1)
+- `test_persistence_phase_a.TestSaveLoadRoundTrip` (2)
+- `test_persistence_phase_a.TestRestoreWorkflowPayload` (2)
+- `test_persistence_phase_a.TestImplementationMismatchSurface` (2)
+
+**Locked invariants.**
+
+- `PTMG_FORMAT = "ptmg"` and `PTMG_FORMAT_VERSION = 1` constants
+  pin the manifest's `ptarmigan_format` / `ptarmigan_format_version`
+  keys. A future schema change bumps the version and adds
+  back-compat handling.
+- Sidecar filenames are exactly `<arrays_hash>.h5` (no prefix). The
+  raw-instrument-file follow-up uses `raw_<file_hash>.<ext>` to keep
+  the namespaces separate.
+- `_hash_arrays` MUST sort keys (canonical encoding); otherwise
+  insertion-order-dependent hashes break dedup.
+- `LoadedProject.implementation_warnings` is exactly the list of
+  drift warnings — empty list ⇒ no drift; never `None`.
+- The manifest carries `protected: false` in Phase A; Phase C ships
+  the verification path that flips it to `true`.
+
+---
+
+*Document version: 1.22 — May 2026*
 *1.1: CS-13 implementation notes added in Phase 4a.*
 *1.2: CS-14 Plot Settings Dialog added in Phase 4b.*
 *1.3: CS-15 UV/Vis Baseline Correction + CS-04 implementation
@@ -5296,5 +5632,30 @@ tests, all green (637 + 14 net new: 9 pure-helper in
 TestMultiAxisRoutingHelpers + 5 integration in
 TestUVVisTabSecondDerivativeIntegration /
 TestUVVisTabTertiaryAxisPath).*
+*1.22: Phase 4v — per-OperationType implementation hash (CS-45)
++ persistence Phase A manifest+sidecar round-trip (CS-46).
+`operation_hash.py` (new module) registers a per-op bundle of
+`compute_*` + shared helpers and computes a SHA-256 over the
+sorted-by-qualname `inspect.getsource()` bytes; `OperationNode`
+gains `metadata: dict` + `deterministic: bool` fields; six apply
+sites stamp `metadata["implementation_hash"]` at apply time.
+`project_io.py` (full rewrite) replaces the prior
+`NotImplementedError` stubs with the manifest+sidecar
+implementation: content-addressed HDF5 sidecars (one per unique
+arrays bundle, gzip-compressed), whole-app manifest covering
+`plot_defaults` + per-tab `plot_config` + per-tab `graph` (data
+nodes + op nodes + edges + active overrides). `binah.py` adds
+Save Workflow / Save Workflow As… / Open Workflow… / Recent
+Workflows menu items routing to the new format and surfaces
+`LoadedProject.implementation_warnings` via a "Implementation
+Changed Since Save" dialog (Keep cached + Show details; Re-run
+deferred). UVVisTab gains `_restore_workflow_payload` for
+in-place graph swap on load. Phase A explicit deferrals: .ptmg
+zip-archive form, original instrument file persistence, sidecar
+GC, re-run-all-changed action, Phases B/C/D. Test infrastructure
+addition: `_test_silence` module silences modal Tk messageboxes
+during test runs (wired into `run_tests.py` and
+`test_persistence_phase_a.py`). 708 tests, all green (651 + 45
+new pure-module + 12 new integration).*
 *To be updated as Open Questions are resolved and new components
 are specified.*
