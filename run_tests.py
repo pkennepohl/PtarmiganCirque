@@ -14,6 +14,7 @@ import unittest
 
 TEST_MODULES = (
     "test_nodes",
+    "test_nodes_metadata_field",
     "test_graph",
     "test_node_styles",
     "test_collapsible_section",
@@ -28,6 +29,9 @@ TEST_MODULES = (
     "test_uvvis_tab",
     "test_provenance_export",
     "test_node_export",
+    "test_operation_hash",
+    "test_project_io",
+    "test_persistence_phase_a",
 )
 
 

@@ -48,6 +48,7 @@ from nodes import (
     OperationNode,
     OperationType,
 )
+from operation_hash import compute_implementation_hash
 from version import __version__ as PTARMIGAN_VERSION
 
 
@@ -465,6 +466,8 @@ class SmoothingPanel(tk.Frame):
             output_ids=[out_id],
             status="SUCCESS",
             state=NodeState.PROVISIONAL,
+            metadata={"implementation_hash":
+                      compute_implementation_hash(OperationType.SMOOTH)},
         )
 
         # Default colour for the new SMOOTHED node — pick a fresh

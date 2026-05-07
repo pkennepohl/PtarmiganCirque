@@ -53,6 +53,7 @@ from nodes import (
     OperationNode,
     OperationType,
 )
+from operation_hash import compute_implementation_hash
 from version import __version__ as PTARMIGAN_VERSION
 
 
@@ -495,6 +496,8 @@ class PeakPickingPanel(tk.Frame):
             output_ids=[out_id],
             status="SUCCESS",
             state=NodeState.PROVISIONAL,
+            metadata={"implementation_hash":
+                      compute_implementation_hash(OperationType.PEAK_PICK)},
         )
 
         # Default colour for the new PEAK_LIST node — pick a fresh
