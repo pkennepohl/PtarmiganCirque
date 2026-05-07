@@ -41,6 +41,7 @@ from nodes import (
     OperationNode,
     OperationType,
 )
+from operation_hash import compute_implementation_hash
 from scan_tree_widget import ScanTreeWidget
 from style_dialog import open_style_dialog
 from tooltip import Tooltip
@@ -1136,6 +1137,8 @@ class UVVisTab(tk.Frame):
             output_ids=[out_id],
             status="SUCCESS",
             state=NodeState.PROVISIONAL,
+            metadata={"implementation_hash":
+                      compute_implementation_hash(OperationType.BASELINE)},
         )
 
         # Default colour for the new BASELINE node — pick a fresh
@@ -1250,6 +1253,45 @@ class UVVisTab(tk.Frame):
             self._graph.unsubscribe(self._on_graph_event)
         except Exception:
             pass
+
+    # ══════════════════════════════════════════════════════════════════════════
+    #  Workflow restore (Phase 4v / CS-46)
+    # ══════════════════════════════════════════════════════════════════════════
+
+    def _restore_workflow_payload(self, payload) -> None:
+        """Replace this tab's graph contents and plot config with a
+        loaded workflow's payload.
+
+        Mutates ``self._graph`` in place rather than swapping the
+        object identity — every subwidget (ScanTreeWidget, the five
+        operation panels) holds its own reference to ``self._graph``
+        from construction time, and reassigning the attribute would
+        leave them pointing at the orphaned old graph. In-place
+        replacement preserves identity, every subscriber stays
+        subscribed, and one ``GRAPH_LOADED`` event drives a full UI
+        rebuild (``_redraw`` + ``_refresh_shared_subjects`` here;
+        ScanTreeWidget rebuilds via its own GRAPH_LOADED handler).
+        """
+        new_graph = payload.graph
+
+        # Suspend notifications while we wipe and refill so the UI
+        # does not see the intermediate "empty graph" state.
+        saved_subs = list(self._graph._subscribers)
+        self._graph._subscribers = []
+        try:
+            self._graph.nodes.clear()
+            self._graph.edges.clear()
+            self._graph._active_overrides.clear()
+            self._graph.nodes.update(new_graph.nodes)
+            self._graph.edges.extend(new_graph.edges)
+            self._graph._active_overrides.update(new_graph._active_overrides)
+        finally:
+            self._graph._subscribers = saved_subs
+
+        if payload.plot_config:
+            self._plot_config = copy.deepcopy(dict(payload.plot_config))
+
+        self._graph._notify(GraphEvent(GraphEventType.GRAPH_LOADED, ""))
 
     # ══════════════════════════════════════════════════════════════════════════
     #  Style dialog hand-off (CS-05)
@@ -1458,6 +1500,8 @@ class UVVisTab(tk.Frame):
             output_ids=[uvvis_id],
             status="SUCCESS",
             state=NodeState.COMMITTED,
+            metadata={"implementation_hash":
+                      compute_implementation_hash(OperationType.LOAD)},
         )
 
         # 3. UVVIS DataNode — parsed arrays + style with default colour.

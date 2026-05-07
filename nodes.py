@@ -251,6 +251,22 @@ class OperationNode:
     state : NodeState
         Lifecycle state. New operations default to ``PROVISIONAL``;
         only ``COMMITTED`` operations appear in ``log.jsonl``.
+    metadata : dict[str, Any]
+        Free-form provenance and audit fields. Apply sites stamp
+        ``metadata["implementation_hash"]`` from
+        ``operation_hash.compute_implementation_hash`` so project
+        load can detect when the algorithmic code path that produced
+        an output has changed since the project was saved
+        (Phase 4v / persistence Phase A). Must be JSON-serialisable.
+    deterministic : bool
+        ``True`` (the default) means the operation produces the same
+        output bytes every time it is re-run on the same inputs with
+        the same params and the same implementation hash. Persistence
+        Phase A may skip storing the output array sidecar for
+        deterministic ops (re-derived on load) and always stores
+        arrays for non-deterministic ops (Monte Carlo, randomised
+        initialisation, etc.). All operations shipped today are
+        deterministic.
     """
 
     id: str
@@ -265,3 +281,5 @@ class OperationNode:
     status: str = "SUCCESS"
     log: str = ""
     state: NodeState = NodeState.PROVISIONAL
+    metadata: dict[str, Any] = field(default_factory=dict)
+    deterministic: bool = True

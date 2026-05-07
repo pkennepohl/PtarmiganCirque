@@ -52,6 +52,13 @@ class OrcaTDDFTApp(tk.Tk):
         self.minsize(800, 550)
         self._sidebar_visible = True
 
+        # Populate the per-OperationType implementation hash registry
+        # (Phase 4v / CS-45) before anything that constructs an
+        # OperationNode runs — every apply site reads
+        # compute_implementation_hash to stamp metadata.
+        from operation_hash import register_default_implementations
+        register_default_implementations()
+
         self._parser     = OrcaParser()
         self._exp_parser = ExperimentalParser()
 
@@ -60,9 +67,15 @@ class OrcaTDDFTApp(tk.Tk):
         self._file_section_idx: dict = {}   # remembers last selected section per file path
         self._project_path: str = ""        # path of currently open .otproj (or "")
         self._recent_projects: list = []    # up to 10 recently opened/saved projects
+        # Phase 4v / CS-46: workflow path + recent workflows track the new
+        # .ptmg directory format, kept separate from the legacy TDDFT
+        # .otproj path so the two save/load gestures do not collide.
+        self._workflow_path: str = ""
+        self._recent_workflows: list = []
         self._cfg_path = os.path.join(
             os.path.expanduser("~"), ".binah_config.json")
         self._load_recent_projects()
+        self._load_recent_workflows()
 
         self._build_menu()
         self._build_top_bar()
@@ -94,6 +107,24 @@ class OrcaTDDFTApp(tk.Tk):
         file_menu.add_cascade(label="Recent Projects", menu=self._recent_menu)
         file_menu.add_separator()
 
+        # ── Workflow (.ptmg) operations (Phase 4v / CS-46) ─────────────────────
+        # Separate from the legacy TDDFT .otproj gestures above. Saves the
+        # whole-app workflow (UV/Vis ProjectGraph + plot defaults +
+        # per-tab plot configs) into a content-addressed manifest+sidecar
+        # directory; Open re-hydrates it.
+        file_menu.add_command(label="Open Workflow…",
+                              accelerator="Ctrl+Shift+L",
+                              command=self._open_workflow)
+        file_menu.add_command(label="Save Workflow",
+                              accelerator="Ctrl+Shift+W",
+                              command=self._save_workflow)
+        file_menu.add_command(label="Save Workflow As…",
+                              command=self._save_workflow_as)
+        self._recent_workflows_menu = tk.Menu(file_menu, tearoff=0)
+        file_menu.add_cascade(label="Recent Workflows",
+                              menu=self._recent_workflows_menu)
+        file_menu.add_separator()
+
         # ── Individual file operations ────────────────────────────────────────
         file_menu.add_command(label="Open .out File…",         accelerator="Ctrl+O",
                               command=self._open_file)
@@ -122,8 +153,13 @@ class OrcaTDDFTApp(tk.Tk):
         self.bind_all("<Control-s>",       lambda _: self._save_project())
         self.bind_all("<Control-S>",       lambda _: self._save_project_as())
         self.bind_all("<Control-e>",       lambda _: self._load_experimental())
-        # Populate recent-projects menu (needs self._recent_menu to exist first)
+        # Phase 4v / CS-46 — workflow accelerators distinct from the legacy
+        # TDDFT project gestures above.
+        self.bind_all("<Control-W>",       lambda _: self._save_workflow())
+        self.bind_all("<Control-L>",       lambda _: self._open_workflow())
+        # Populate recent-projects + recent-workflows menus.
         self._rebuild_recent_menu()
+        self._rebuild_recent_workflows_menu()
 
     # ------------------------------------------------------------------ #
     #  Top toolbar                                                          #
@@ -1269,6 +1305,250 @@ class OrcaTDDFTApp(tk.Tk):
                 "Some items could not be restored:\n\n" + "\n".join(f"• {w}" for w in warnings),
                 parent=self,
             )
+
+    # ------------------------------------------------------------------ #
+    #  Workflow (.ptmg) — Phase 4v / CS-46                                  #
+    # ------------------------------------------------------------------ #
+    def _load_recent_workflows(self):
+        """Load the recent-workflows list from the shared config file."""
+        try:
+            import json
+            if os.path.exists(self._cfg_path):
+                with open(self._cfg_path, "r", encoding="utf-8") as f:
+                    cfg = json.load(f)
+                self._recent_workflows = [
+                    p for p in cfg.get("recent_workflows", [])
+                    if isinstance(p, str)
+                ][:10]
+        except Exception:
+            self._recent_workflows = []
+
+    def _save_recent_workflows(self):
+        """Persist the recent-workflows list to the shared config file."""
+        try:
+            import json
+            cfg = {}
+            if os.path.exists(self._cfg_path):
+                with open(self._cfg_path, "r", encoding="utf-8") as f:
+                    cfg = json.load(f)
+            cfg["recent_workflows"] = self._recent_workflows[:10]
+            with open(self._cfg_path, "w", encoding="utf-8") as f:
+                json.dump(cfg, f, indent=2)
+        except Exception:
+            pass
+
+    def _add_recent_workflow(self, path: str):
+        path = os.path.normpath(os.path.abspath(path))
+        self._recent_workflows = (
+            [path] + [p for p in self._recent_workflows if p != path]
+        )[:10]
+        self._save_recent_workflows()
+        self._rebuild_recent_workflows_menu()
+
+    def _rebuild_recent_workflows_menu(self):
+        self._recent_workflows_menu.delete(0, tk.END)
+        if not self._recent_workflows:
+            self._recent_workflows_menu.add_command(
+                label="(no recent workflows)", state=tk.DISABLED)
+            return
+        for path in self._recent_workflows:
+            self._recent_workflows_menu.add_command(
+                label=os.path.basename(path),
+                command=lambda p=path: self._open_recent_workflow(p),
+            )
+        self._recent_workflows_menu.add_separator()
+        self._recent_workflows_menu.add_command(
+            label="Clear Recent",
+            command=self._clear_recent_workflows,
+        )
+
+    def _open_recent_workflow(self, path: str):
+        if not os.path.isdir(path):
+            messagebox.showerror(
+                "Workflow Not Found",
+                f"Cannot find workflow directory:\n{path}\n\n"
+                f"It will be removed from recent workflows.",
+                parent=self,
+            )
+            self._recent_workflows = [p for p in self._recent_workflows
+                                      if p != path]
+            self._save_recent_workflows()
+            self._rebuild_recent_workflows_menu()
+            return
+        self._do_open_workflow(path)
+
+    def _clear_recent_workflows(self):
+        self._recent_workflows = []
+        self._save_recent_workflows()
+        self._rebuild_recent_workflows_menu()
+
+    def _save_workflow(self):
+        """Save to current workflow path, or prompt for one if unsaved."""
+        if not self._workflow_path:
+            self._save_workflow_as()
+            return
+        self._do_save_workflow(self._workflow_path)
+
+    def _save_workflow_as(self):
+        from pathlib import Path
+        # askdirectory + a parent directory: the user picks where to put
+        # the new project; the project itself is a directory named
+        # <something>.ptmg inside that parent. To keep the gesture
+        # familiar (Save As with a name field), prompt with
+        # asksaveasfilename in directory mode by appending .ptmg if the
+        # user did not supply it.
+        path = filedialog.asksaveasfilename(
+            title="Save Workflow As…",
+            defaultextension=".ptmg",
+            filetypes=[("Ptarmigan workflow", "*.ptmg")],
+        )
+        if not path:
+            return
+        p = Path(path)
+        if p.suffix != ".ptmg":
+            p = p.with_suffix(".ptmg")
+        self._do_save_workflow(str(p))
+
+    def _do_save_workflow(self, path_str: str):
+        from pathlib import Path
+        import project_io
+        import plot_settings_dialog as psd
+        p = Path(path_str)
+        self._status.set("Saving workflow…")
+        self.update_idletasks()
+        try:
+            tabs = self._collect_workflow_tabs()
+            project_io.save_project(
+                p,
+                name=p.stem,
+                plot_defaults=dict(psd._USER_DEFAULTS),
+                tabs=tabs,
+            )
+            self._workflow_path = str(p)
+            self.title(f"Binah — {p.name}")
+            self._status.set(f"Workflow saved: {p.name}")
+            self._add_recent_workflow(str(p))
+        except Exception as exc:
+            messagebox.showerror(
+                "Save Workflow Error",
+                f"Could not save workflow:\n{exc}",
+                parent=self,
+            )
+            self._status.set("Save workflow failed.")
+
+    def _open_workflow(self):
+        path = filedialog.askdirectory(title="Open Workflow…")
+        if not path:
+            return
+        self._do_open_workflow(path)
+
+    def _do_open_workflow(self, path: str):
+        from pathlib import Path
+        import project_io
+        import plot_settings_dialog as psd
+        self._status.set("Loading workflow…")
+        self.update_idletasks()
+        try:
+            loaded = project_io.load_project(Path(path))
+        except FileNotFoundError as exc:
+            messagebox.showerror(
+                "Open Workflow Error",
+                f"Not a Ptarmigan workflow directory:\n{path}\n\n{exc}",
+                parent=self,
+            )
+            self._status.set("Open workflow failed.")
+            return
+        except (ValueError, OSError) as exc:
+            messagebox.showerror(
+                "Open Workflow Error",
+                f"Could not read workflow:\n{exc}",
+                parent=self,
+            )
+            self._status.set("Open workflow failed.")
+            return
+
+        # Restore plot defaults (in-place mutate so any open
+        # PlotSettingsDialog sees the new values immediately).
+        psd._USER_DEFAULTS.clear()
+        psd._USER_DEFAULTS.update(loaded.plot_defaults)
+
+        # Restore each tab's state. Tab modules opt in to round-trip via
+        # a _restore_workflow_payload(payload) method; tabs that don't
+        # have one (TDDFT / XANES / EXAFS in Phase A) silently skip.
+        for tab_name, payload in loaded.tabs.items():
+            self._apply_workflow_payload_to_tab(tab_name, payload)
+
+        self._workflow_path = path
+        self.title(f"Binah — {os.path.basename(path)}")
+        self._status.set(f"Workflow loaded: {os.path.basename(path)}")
+        self._add_recent_workflow(path)
+
+        if loaded.implementation_warnings:
+            self._show_implementation_warnings_dialog(
+                loaded.implementation_warnings)
+
+    def _collect_workflow_tabs(self) -> dict:
+        """Build the per-tab payload dict for save_project. Tabs that
+        do not yet round-trip (TDDFT / XANES / EXAFS in Phase A) are
+        omitted; the schema accepts an empty tabs dict on save and
+        load."""
+        import project_io
+        tabs: dict[str, project_io.TabPayload] = {}
+        uvvis_tab = getattr(self, "_uvvis_tab", None)
+        if uvvis_tab is not None:
+            tabs["uvvis"] = project_io.TabPayload(
+                plot_config=dict(getattr(uvvis_tab, "_plot_config", {})),
+                graph=uvvis_tab._graph,
+            )
+        return tabs
+
+    def _apply_workflow_payload_to_tab(self, tab_name: str, payload) -> None:
+        """Hand a TabPayload to the tab module's restore hook."""
+        if tab_name == "uvvis":
+            uvvis_tab = getattr(self, "_uvvis_tab", None)
+            if uvvis_tab is not None and hasattr(
+                    uvvis_tab, "_restore_workflow_payload"):
+                uvvis_tab._restore_workflow_payload(payload)
+
+    def _show_implementation_warnings_dialog(self, warnings: list):
+        """Phase 4v / CS-45 mismatch dialog. Q2-locked policy is
+        warn-only: the cached outputs load as-is, and the user can
+        either dismiss the notice or open a details window listing
+        every drifted op. Re-running the affected ops is deferred to
+        a follow-up phase (a re-runner needs op-type-specific
+        replay logic that is a substantial module on its own)."""
+        n = len(warnings)
+        plural = "" if n == 1 else "s"
+        summary = (
+            f"{n} operation{plural} in this workflow were produced by "
+            f"code that has changed since the workflow was saved. The "
+            f"cached results have been loaded as-is.\n\n"
+            f"Click 'Show Details' to see which operations changed."
+        )
+        show = messagebox.askyesno(
+            "Implementation Changed Since Save",
+            summary + "\n\nShow details?",
+            parent=self,
+        )
+        if not show:
+            return
+        top = tk.Toplevel(self)
+        top.title("Implementation Drift Details")
+        top.transient(self)
+        tk.Label(
+            top,
+            text=(f"{n} operation{plural} were saved with a different "
+                  f"implementation than the current build:"),
+            anchor="w", justify="left", padx=10, pady=8,
+        ).pack(fill=tk.X)
+        text = tk.Text(top, width=90, height=min(20, max(6, n + 2)),
+                       wrap="word")
+        text.pack(fill=tk.BOTH, expand=True, padx=10, pady=4)
+        for w in warnings:
+            text.insert(tk.END, f"• {w}\n")
+        text.configure(state="disabled")
+        tk.Button(top, text="Close", command=top.destroy).pack(
+            pady=8)
 
     # ------------------------------------------------------------------ #
     #  About dialog                                                         #
