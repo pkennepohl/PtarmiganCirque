@@ -2273,6 +2273,344 @@ class TestPerNodeBaselineCurveToggle(unittest.TestCase):
 
 
 @unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestRowToggleColumnAlignment(unittest.TestCase):
+    """Phase 4w (CS-48) — every row carries a fixed-width row_toggle slot.
+
+    The slot's purpose is column alignment across node types:
+    BASELINE rows host the ``[~]`` baseline-curve toggle inside it;
+    every other type uses an empty placeholder Frame of the same
+    width. The label cell starts at the same x-coordinate either
+    way (Phase 4t friction #1).
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from scan_tree_widget import ScanTreeWidget, _CELL_MIN_PX
+        cls.ScanTreeWidget = ScanTreeWidget
+        cls.SLOT_PX = _CELL_MIN_PX["row_toggle"]
+
+    def setUp(self) -> None:
+        self.host = tk.Frame(_root)
+        self.host.pack()
+        self.graph = ProjectGraph()
+
+    def tearDown(self) -> None:
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    def _row_toggle_slot(self, row: tk.Frame) -> tk.Frame | None:
+        """Locate the always-packed row_toggle slot Frame.
+
+        It's the only direct tk.Frame child of the row that's packed
+        side="left" with our explicit width. (Other side="left"
+        children are tk.Label / tk.Button / tk.Checkbutton.)
+        """
+        for child in row.winfo_children():
+            if not isinstance(child, tk.Frame):
+                continue
+            try:
+                info = child.pack_info()
+            except tk.TclError:
+                continue
+            if info.get("side") != "left":
+                continue
+            try:
+                w = int(child.cget("width"))
+            except (tk.TclError, ValueError):
+                continue
+            if w == self.SLOT_PX:
+                return child
+        return None
+
+    def _build_widget(self, filter_types):
+        _, cb = _redraw_calls()
+        widget = self.ScanTreeWidget(
+            self.host, self.graph, filter_types, cb,
+        )
+        widget.update_idletasks()
+        return widget
+
+    def test_baseline_row_has_row_toggle_slot(self):
+        self.graph.add_node(
+            _data("bl", NodeType.BASELINE, state=NodeState.COMMITTED),
+        )
+        widget = self._build_widget([NodeType.BASELINE])
+        slot = self._row_toggle_slot(widget._row_frames["bl"])
+        self.assertIsNotNone(slot, "BASELINE row missing row_toggle slot")
+
+    def test_uvvis_row_has_row_toggle_slot_too(self):
+        self.graph.add_node(
+            _data("u", NodeType.UVVIS, state=NodeState.COMMITTED),
+        )
+        widget = self._build_widget([NodeType.UVVIS])
+        slot = self._row_toggle_slot(widget._row_frames["u"])
+        self.assertIsNotNone(slot, "UVVIS row missing row_toggle slot")
+
+    def test_baseline_row_slot_holds_the_toggle_button(self):
+        # The BASELINE slot's child set must include a Button whose
+        # text is the on-glyph "~". The non-BASELINE slot must have
+        # no children.
+        self.graph.add_node(
+            _data("bl", NodeType.BASELINE, state=NodeState.COMMITTED),
+        )
+        widget = self._build_widget([NodeType.BASELINE])
+        slot = self._row_toggle_slot(widget._row_frames["bl"])
+        self.assertIsNotNone(slot)
+        children = slot.winfo_children()
+        self.assertEqual(len(children), 1)
+        self.assertIsInstance(children[0], tk.Button)
+        self.assertEqual(children[0].cget("text"), "~")
+
+    def test_uvvis_row_slot_is_empty_placeholder(self):
+        self.graph.add_node(
+            _data("u", NodeType.UVVIS, state=NodeState.COMMITTED),
+        )
+        widget = self._build_widget([NodeType.UVVIS])
+        slot = self._row_toggle_slot(widget._row_frames["u"])
+        self.assertIsNotNone(slot)
+        self.assertEqual(slot.winfo_children(), [])
+
+    def test_slots_have_identical_width_across_row_types(self):
+        # Add one row of each major type; every row's slot must be
+        # exactly the same width so labels start at the same x.
+        for nid, nt in (
+            ("u",  NodeType.UVVIS),
+            ("bl", NodeType.BASELINE),
+            ("n",  NodeType.NORMALISED),
+            ("s",  NodeType.SMOOTHED),
+        ):
+            self.graph.add_node(
+                _data(nid, nt, state=NodeState.COMMITTED),
+            )
+        widget = self._build_widget(
+            [NodeType.UVVIS, NodeType.BASELINE,
+             NodeType.NORMALISED, NodeType.SMOOTHED],
+        )
+        widths = []
+        for nid in ("u", "bl", "n", "s"):
+            slot = self._row_toggle_slot(widget._row_frames[nid])
+            self.assertIsNotNone(slot, msg=f"missing slot on {nid}")
+            widths.append(int(slot.cget("width")))
+        self.assertEqual(len(set(widths)), 1,
+                         msg=f"row_toggle widths differ across types: {widths}")
+        self.assertEqual(widths[0], self.SLOT_PX)
+
+
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestDynamicLabelCapWiring(unittest.TestCase):
+    """Phase 4w (CS-47) — canvas-driven re-truncation in the live widget.
+
+    Drives the widget through ``_apply_responsive_layout`` with a
+    stubbed canvas width, then checks the painted label and the
+    label-tooltip text.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from scan_tree_widget import ScanTreeWidget
+        cls.ScanTreeWidget = ScanTreeWidget
+
+    def setUp(self) -> None:
+        self.host = tk.Frame(_root)
+        self.host.pack()
+        self.graph = ProjectGraph()
+
+    def tearDown(self) -> None:
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    def _build_widget(self):
+        _, cb = _redraw_calls()
+        widget = self.ScanTreeWidget(
+            self.host, self.graph, [NodeType.UVVIS], cb,
+        )
+        widget.update_idletasks()
+        return widget
+
+    def _label_widget(self, widget, node_id):
+        for w in widget._row_frames[node_id].winfo_children():
+            if isinstance(w, tk.Label) and w.cget("text") not in ("🔒", "⋯"):
+                return w
+        return None
+
+    def _force_canvas_width(self, widget, width):
+        """Force the canvas to report ``width`` from ``winfo_width``.
+
+        ``ScanTreeWidget._current_label_cap`` reads the canvas width
+        directly. Geometry stubs by setting the canvas's geometry
+        wouldn't propagate during teardown. The cleanest stub is to
+        monkey-patch the bound method.
+        """
+        widget._scroll_canvas.winfo_width = lambda: width  # type: ignore
+
+    def test_wide_canvas_paints_more_chars_than_static_cap(self):
+        from scan_tree_widget import _LABEL_MAX_CHARS
+        long = "x" * 80  # well above any cap
+        self.graph.add_node(_data("a", label=long))
+        widget = self._build_widget()
+
+        # At construction time the canvas isn't realised, so the
+        # static fallback cap (32) drives the paint. Now stub a
+        # wide canvas and re-run the responsive layout for the row.
+        self._force_canvas_width(widget, 800)
+        row = widget._row_frames["a"]
+        widget._apply_responsive_layout("a", row)
+        widget.update_idletasks()
+
+        lbl = self._label_widget(widget, "a")
+        self.assertIsNotNone(lbl)
+        painted = lbl.cget("text")
+        # The dynamic cap at 800 px canvas should grow well above 32.
+        self.assertGreater(len(painted), _LABEL_MAX_CHARS)
+        self.assertTrue(painted.endswith("…"))
+
+    def test_narrow_canvas_paints_fewer_chars_than_static_cap(self):
+        from scan_tree_widget import _LABEL_MAX_CHARS, _LABEL_CHAR_FLOOR
+        long = "y" * 80
+        self.graph.add_node(_data("a", label=long))
+        widget = self._build_widget()
+
+        # Force a narrow canvas (just above the sidebar floor) — at
+        # 250 px the dynamic cap drops below 32 and clamps near the
+        # floor. The painted label must be shorter than the static
+        # fallback would have produced.
+        self._force_canvas_width(widget, 250)
+        row = widget._row_frames["a"]
+        widget._apply_responsive_layout("a", row)
+        widget.update_idletasks()
+
+        lbl = self._label_widget(widget, "a")
+        self.assertIsNotNone(lbl)
+        painted = lbl.cget("text")
+        self.assertLess(len(painted), _LABEL_MAX_CHARS)
+        self.assertGreaterEqual(len(painted), _LABEL_CHAR_FLOOR)
+        self.assertTrue(painted.endswith("…"))
+
+    def test_resize_rotates_tooltip_text_in_place(self):
+        # When the canvas widens enough to fit the full label, the
+        # always-attached tooltip's text rotates to "" (the
+        # silent-tooltip sentinel). When it narrows again, the
+        # tooltip's text picks up the full label.
+        # Label is 40 chars — above the 32-static cap so it
+        # truncates at narrow widths, below the 64 _LABEL_CHAR_CEIL
+        # so a wide canvas can fit it.
+        long = "z" * 40
+        self.graph.add_node(_data("a", label=long))
+        widget = self._build_widget()
+
+        # Narrow path first — tooltip should carry the full label.
+        self._force_canvas_width(widget, 250)
+        row = widget._row_frames["a"]
+        widget._apply_responsive_layout("a", row)
+        widget.update_idletasks()
+        tip = widget._optional_row_widgets["a"]["label_tooltip"]
+        self.assertIsNotNone(tip)
+        self.assertEqual(tip._text, long)
+
+        # Now wide enough to fit — tooltip text rotates to "".
+        # 1500 px canvas with ~7 px / char and ~186 px overhead
+        # gives capacity ≈ 187, clamped to ceil 64 ≥ 40 → no
+        # truncation.
+        self._force_canvas_width(widget, 1500)
+        widget._apply_responsive_layout("a", row)
+        widget.update_idletasks()
+        tip = widget._optional_row_widgets["a"]["label_tooltip"]
+        self.assertEqual(tip._text, "")
+
+
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestWidestLabelPixelWidth(unittest.TestCase):
+    """Phase 4w (CS-47) — public ``widest_label_pixel_width`` measurement.
+
+    Used by ``UVVisTab._calibrate_sidebar_width`` to size the sash.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from scan_tree_widget import ScanTreeWidget
+        cls.ScanTreeWidget = ScanTreeWidget
+
+    def setUp(self) -> None:
+        self.host = tk.Frame(_root)
+        self.host.pack()
+        self.graph = ProjectGraph()
+
+    def tearDown(self) -> None:
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    def _build_widget(self, filter_types=None):
+        if filter_types is None:
+            filter_types = [NodeType.UVVIS]
+        _, cb = _redraw_calls()
+        widget = self.ScanTreeWidget(
+            self.host, self.graph, filter_types, cb,
+        )
+        widget.update_idletasks()
+        return widget
+
+    def test_empty_graph_returns_zero(self):
+        widget = self._build_widget()
+        self.assertEqual(widget.widest_label_pixel_width(), 0)
+
+    def test_returns_max_label_pixel_width(self):
+        # Two labels; the longer one's measure must dominate.
+        self.graph.add_node(_data("a", label="short"))
+        self.graph.add_node(_data("b", label="a much longer label"))
+        widget = self._build_widget()
+        widest = widget.widest_label_pixel_width()
+        # Sanity: must be a positive int and at least the length of
+        # the long label (in pixels) — exact value is font-dependent
+        # but it cannot be smaller than the short label's width.
+        self.assertIsInstance(widest, int)
+        self.assertGreater(widest, 0)
+
+    def test_honours_node_filter(self):
+        # A node outside the widget's filter must not contribute.
+        self.graph.add_node(
+            _data("u", NodeType.UVVIS, label="x"),
+        )
+        self.graph.add_node(
+            _data("b", NodeType.BASELINE,
+                  label="this label is much longer"),
+        )
+        widget = self._build_widget(filter_types=[NodeType.UVVIS])
+        widest = widget.widest_label_pixel_width()
+        # Only "x" was a candidate; widest is the pixel width of "x".
+        # Smaller than what the BASELINE label would produce.
+        widget2 = self._build_widget(
+            filter_types=[NodeType.UVVIS, NodeType.BASELINE],
+        )
+        widest2 = widget2.widest_label_pixel_width()
+        self.assertLess(widest, widest2)
+
+    def test_hidden_nodes_excluded_when_show_hidden_off(self):
+        # A hidden (active=False) node is filtered out by
+        # _candidate_nodes when "Show hidden" is off, so its label
+        # doesn't influence the measurement.
+        self.graph.add_node(
+            _data("a", label="visible", active=True),
+        )
+        self.graph.add_node(
+            _data("b", label="x" * 50, active=False),
+        )
+        widget = self._build_widget()
+        widest_visible_only = widget.widest_label_pixel_width()
+        # Now flip "Show hidden" on and re-measure.
+        widget._show_hidden.set(True)
+        widget._rebuild()
+        widget.update_idletasks()
+        widest_with_hidden = widget.widest_label_pixel_width()
+        self.assertLess(widest_visible_only, widest_with_hidden)
+
+
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
 class TestSweepGroupNestedIndent(unittest.TestCase):
     """Phase 4r (CS-35) — sweep-group expanded members visual nesting.
 
