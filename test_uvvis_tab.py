@@ -487,6 +487,122 @@ class TestUVVisTabSidebar(unittest.TestCase):
 
 
 @unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestUVVisTabSidebarCalibration(unittest.TestCase):
+    """Phase 4w (CS-47) — first-paint sash auto-bump.
+
+    The tab schedules ``_calibrate_sidebar_width`` via
+    ``after_idle`` after construction; it computes a target
+    sidebar width from the widest current label plus the always-
+    visible row overhead and moves the rightmost sash there.
+    Idempotent + one-shot — ``_sidebar_calibrated`` flips True
+    after the first successful run so manual sash drags persist.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from uvvis_tab import UVVisTab
+        from scan_tree_widget import _SIDEBAR_MIN_WIDTH_PX
+        cls.UVVisTab = UVVisTab
+        cls.SIDEBAR_MIN_PX = _SIDEBAR_MIN_WIDTH_PX
+
+    def setUp(self):
+        self.host = tk.Frame(_root)
+        self.host.pack(fill="both", expand=True)
+        self.graph = ProjectGraph()
+        self.tab = self.UVVisTab(self.host, graph=self.graph)
+        self.tab.pack(fill="both", expand=True)
+
+    def tearDown(self):
+        try:
+            self.tab.destroy()
+        except Exception:
+            pass
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    def test_paned_window_minsize_uses_sidebar_constant(self):
+        # Drill into the PanedWindow's pane configuration. The
+        # sidebar pane is the third (index 2) child of body_paned;
+        # its minsize must equal the pinned constant so the helper
+        # and the geometry manager stay in lock-step.
+        paned = self.tab._body_paned
+        sidebar_pane = self.tab._sidebar_pane
+        # Tk reports paneconfigure values via paneconfigure().
+        cfg = paned.paneconfigure(sidebar_pane)
+        # The minsize entry comes back as a 5-tuple
+        # (option, dbName, dbClass, default, current).
+        minsize = int(cfg["minsize"][-1])
+        self.assertEqual(minsize, self.SIDEBAR_MIN_PX)
+
+    def test_calibration_flag_starts_false(self):
+        self.assertFalse(self.tab._sidebar_calibrated)
+
+    def test_calibration_bails_when_paned_window_unrealised(self):
+        # Stub the paned-window width to an unrealised value (1).
+        # The flag must stay False so a later attempt can succeed
+        # once the geometry settles.
+        self.tab._body_paned.winfo_width = lambda: 1  # type: ignore
+        self.tab._calibrate_sidebar_width()
+        self.assertFalse(self.tab._sidebar_calibrated)
+
+    def test_calibration_sets_flag_and_places_sash_when_realised(self):
+        # Stub the geometry queries: paned 1000 px wide, sidebar
+        # 240 px target (no labels yet → widest_label = 0 → target
+        # clamps up to the sidebar floor). Sash 2 should land at
+        # 1000 - 240 = 760.
+        self.tab._body_paned.winfo_width = lambda: 1000  # type: ignore
+        captured: dict[str, tuple] = {}
+
+        def _fake_sash_place(idx, x, y):
+            captured["args"] = (idx, x, y)
+        self.tab._body_paned.sash_place = _fake_sash_place  # type: ignore
+
+        self.tab._calibrate_sidebar_width()
+        self.assertTrue(self.tab._sidebar_calibrated)
+        self.assertEqual(captured["args"][0], 2)
+        # Sash x = paned_width - target_sidebar_width.
+        # target floor is _SIDEBAR_MIN_WIDTH_PX (240).
+        self.assertEqual(captured["args"][1],
+                         1000 - self.SIDEBAR_MIN_PX)
+
+    def test_calibration_is_idempotent_after_first_success(self):
+        # Once flag flips True, subsequent calls must not place the
+        # sash again — preserves manual drags.
+        self.tab._body_paned.winfo_width = lambda: 1000  # type: ignore
+        calls = []
+
+        def _fake_sash_place(idx, x, y):
+            calls.append((idx, x, y))
+        self.tab._body_paned.sash_place = _fake_sash_place  # type: ignore
+
+        self.tab._calibrate_sidebar_width()
+        self.tab._calibrate_sidebar_width()
+        self.tab._calibrate_sidebar_width()
+        self.assertEqual(len(calls), 1)
+
+    def test_calibration_caps_at_max_calibrated_px(self):
+        # Inject a fake widest_label_pixel_width so the target would
+        # exceed the cap. The sash must clamp to the max so the plot
+        # pane keeps room.
+        self.tab._scan_tree.widest_label_pixel_width = (  # type: ignore
+            lambda font=None: 5000
+        )
+        self.tab._body_paned.winfo_width = lambda: 1200  # type: ignore
+        captured = {}
+        self.tab._body_paned.sash_place = (  # type: ignore
+            lambda idx, x, y: captured.setdefault("x", x)
+        )
+        self.tab._calibrate_sidebar_width()
+        # Target capped at _SIDEBAR_MAX_CALIBRATED_PX (480).
+        self.assertEqual(
+            captured["x"],
+            1200 - self.tab._SIDEBAR_MAX_CALIBRATED_PX,
+        )
+
+
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
 class TestUVVisTabStyleDialogIntegration(unittest.TestCase):
     """Phase 4a Part C — inline dialog gone, unified StyleDialog wired."""
 

@@ -42,7 +42,7 @@ from nodes import (
     OperationType,
 )
 from operation_hash import compute_implementation_hash
-from scan_tree_widget import ScanTreeWidget
+from scan_tree_widget import ScanTreeWidget, _SIDEBAR_MIN_WIDTH_PX
 from style_dialog import open_style_dialog
 from tooltip import Tooltip
 import plot_settings_dialog
@@ -388,8 +388,22 @@ class UVVisTab(tk.Frame):
         self._build_plot(plot_pane)
 
         sidebar_pane = tk.Frame(body, bd=1, relief=tk.SUNKEN)
-        body.add(sidebar_pane, minsize=240)
+        # Phase 4w (CS-47): pull the sidebar floor from the widget
+        # module so the responsive helper's smallest threshold and
+        # the PanedWindow's hard minimum stay in lock-step. If the
+        # widget bumps its floor in a later phase, this minsize
+        # follows automatically.
+        body.add(sidebar_pane, minsize=_SIDEBAR_MIN_WIDTH_PX)
         self._build_sidebar(sidebar_pane)
+        # Cache the PanedWindow + sidebar pane handles so
+        # ``_calibrate_sidebar_width`` can place the sash without
+        # reaching back through the widget tree on every call.
+        self._body_paned: tk.PanedWindow = body
+        self._sidebar_pane: tk.Frame = sidebar_pane
+        # Phase 4w (CS-47): one-shot calibration flag. Set to True
+        # after the first ``_calibrate_sidebar_width`` runs so the
+        # user's manual sash-drags persist across rebuilds.
+        self._sidebar_calibrated: bool = False
 
         # Drive plot redraws off graph events. Dialog and row mutations
         # go through ``graph.set_style`` → ``NODE_STYLE_CHANGED`` which
@@ -397,6 +411,16 @@ class UVVisTab(tk.Frame):
         # tab's: unsubscribed automatically on ``<Destroy>``.
         self._graph.subscribe(self._on_graph_event)
         self.bind("<Destroy>", self._on_destroy_unsubscribe, add="+")
+
+        # Phase 4w (CS-47): defer the first sidebar calibration to
+        # idle time so the PanedWindow has had a chance to lay out
+        # its three panes. Without ``after_idle`` the geometry
+        # measurements return zero and the sash placement is a
+        # no-op.
+        try:
+            self.after_idle(self._calibrate_sidebar_width)
+        except tk.TclError:
+            pass
 
     # ── Toolbar ───────────────────────────────────────────────────────────────
 
@@ -522,6 +546,71 @@ class UVVisTab(tk.Frame):
             export_cb=self._on_export_node,
         )
         self._scan_tree.pack(fill=tk.BOTH, expand=True, padx=2, pady=2)
+
+    # ── Sidebar width calibration (Phase 4w CS-47) ─────────────────────────────
+
+    # Cap on the calibrated sidebar width so very long labels can't
+    # take half the window on first paint. ~480 px holds roughly 64
+    # characters of label plus the always-visible row chrome — past
+    # that the user is better served by manual sash-dragging or by
+    # editing the labels themselves.
+    _SIDEBAR_MAX_CALIBRATED_PX: int = 480
+
+    def _calibrate_sidebar_width(self) -> None:
+        """Auto-size the sidebar pane to fit the widest label on first paint.
+
+        Phase 4w (CS-47). Computes a target sidebar width from
+        ``ScanTreeWidget.widest_label_pixel_width()`` plus the
+        always-visible row overhead (``_label_overhead_px``) and
+        moves sash 2 (the rightmost sash, between plot pane and
+        sidebar pane) so the sidebar is exactly that wide. Idempotent
+        but one-shot: ``_sidebar_calibrated`` flips True after the
+        first successful call so subsequent rebuilds preserve any
+        manual sash drag the user has applied.
+
+        Bounds: clamped to ``[_SIDEBAR_MIN_WIDTH_PX,
+        _SIDEBAR_MAX_CALIBRATED_PX]`` so an empty graph (zero widest
+        label) still gets at least the floor and a 600-char label
+        doesn't push the plot pane out of the window. If the
+        PanedWindow geometry isn't realised yet, the call bails
+        silently — the user's drag will still work whenever they
+        first try.
+        """
+        if self._sidebar_calibrated:
+            return
+        try:
+            paned = self._body_paned
+            sidebar_pane = self._sidebar_pane
+            scan_tree = self._scan_tree
+        except AttributeError:
+            return
+        try:
+            paned_width = paned.winfo_width()
+        except tk.TclError:
+            return
+        if paned_width <= 1:
+            # Geometry hasn't settled. Try again on the next idle
+            # tick — common when the tab is constructed but not yet
+            # mapped (the test harness, for instance).
+            try:
+                self.after(50, self._calibrate_sidebar_width)
+            except tk.TclError:
+                pass
+            return
+
+        widest_label_px = scan_tree.widest_label_pixel_width()
+        overhead_px = scan_tree._label_overhead_px()
+        target = widest_label_px + overhead_px
+        target = max(_SIDEBAR_MIN_WIDTH_PX, target)
+        target = min(self._SIDEBAR_MAX_CALIBRATED_PX, target)
+        # The sash sits at x = paned_width - target; the sidebar
+        # pane occupies the slice from there to the right edge.
+        sash_x = max(0, paned_width - target)
+        try:
+            paned.sash_place(2, sash_x, 0)
+        except tk.TclError:
+            return
+        self._sidebar_calibrated = True
 
     # ── Left panel (baseline + normalisation + smoothing + peak picking
     #    + second derivative,

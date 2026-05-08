@@ -89,7 +89,7 @@ from __future__ import annotations
 
 import logging
 import tkinter as tk
-from tkinter import colorchooser
+from tkinter import colorchooser, font as tkfont
 from typing import Any, Callable, Iterable, Sequence, Union
 
 from graph import GraphEvent, GraphEventType, ProjectGraph
@@ -143,12 +143,45 @@ _DEFAULT_STYLE: dict[str, Any] = {
 # width at or above which any optional cell is shown). Kept as a
 # module-level alias so callers / tests have a single "is the row
 # narrow?" sentinel.
+# Phase 4w (CS-47): per-cell minimum natural widths. Documented
+# vocabulary of every row cell so a sidebar audit has a single source
+# of truth. The cumulative sum of always-visible cell mins plus a
+# floor for the label cell gives ``_SIDEBAR_MIN_WIDTH_PX``; the
+# optional cells contribute to ``_RESPONSIVE_THRESHOLDS_PX`` (whose
+# integer values are pinned by the existing test suite at 240 / 280 /
+# 320 — see ``test_swatch_revealed_first_at_smallest_threshold`` &
+# siblings — and so are constructed by hand below rather than summed
+# from this dict). Adding a cell to a row means listing it here too.
+_CELL_MIN_PX: dict[str, int] = {
+    "state":      18,   # 🔒/⋯ — width=2 char Label
+    "swatch":     24,   # colour Button width=2 (optional, P1)
+    "vis_cb":     22,   # ☑ Checkbutton, no text
+    "row_toggle": 22,   # Phase 4w (CS-48): [~] / placeholder slot
+    "label":      56,   # floor: ~8 chars at TkDefaultFont
+    "leg":        22,   # ✓/– Button width=2 (optional, P2)
+    "ls_canvas":  38,   # 38×16 linestyle canvas (optional, P3)
+    "hist":       28,   # ⌥n Button (always visible since CS-26)
+    "gear":       22,   # ⚙ Button
+    "compare":    22,   # → Button
+    "commit":     22,   # 🔒 commit Button (provisional rows only)
+    "x":          22,   # ✕ Button
+}
+
 _RESPONSIVE_THRESHOLDS_PX: tuple[tuple[str, int], ...] = (
     ("swatch",    240),
     ("leg",       280),
     ("ls_canvas", 320),
 )
 _RESPONSIVE_COLLAPSE_PX: int = _RESPONSIVE_THRESHOLDS_PX[0][1]
+
+# Phase 4w (CS-47): pinned floor for the right-pane sidebar. Set to
+# the same integer as the smallest responsive threshold so the
+# PanedWindow's ``minsize`` and the responsive-collapse threshold
+# stay in lock-step — narrowing the sash never produces a row that
+# can't render at least the always-visible minimum. ``UVVisTab``
+# reads this value when configuring ``body.add(sidebar_pane,
+# minsize=_SIDEBAR_MIN_WIDTH_PX)``.
+_SIDEBAR_MIN_WIDTH_PX: int = _RESPONSIVE_COLLAPSE_PX
 
 # Phase 4q (CS-33): label truncation cap. Long chains of UV/Vis ops
 # accumulate suffixes ("NiAqua · baseline (linear) · norm (peak)" etc.)
@@ -160,7 +193,24 @@ _RESPONSIVE_COLLAPSE_PX: int = _RESPONSIVE_THRESHOLDS_PX[0][1]
 # remains accessible via a hover tooltip and the existing in-place
 # rename gesture (double-click, which now reads the full label from
 # the graph rather than the widget's truncated text).
+#
+# Phase 4w (CS-47) makes the cap responsive to the actual sidebar
+# width via ``_label_char_capacity``: a wide sidebar shows more of
+# the label without truncation, a narrow sidebar shows less. The
+# constant below is the static fallback used when canvas width or
+# font metrics are unavailable (unrealised geometry, headless
+# tests). The CS-33 invariants on ``_truncate_label`` (signature,
+# default cap, ``text[:max-1] + "…"`` shape) are preserved.
 _LABEL_MAX_CHARS: int = 32
+
+# Phase 4w (CS-47): clamps for the dynamic label cap. The floor keeps
+# at least eight characters visible even on the narrowest realised
+# sidebar (so a name like "spectrum" is never cut to nothing); the
+# ceil prevents a very wide sidebar from disabling truncation
+# entirely (a 1500-char "label" is a graph-data bug, not a
+# rendering opportunity).
+_LABEL_CHAR_FLOOR: int = 8
+_LABEL_CHAR_CEIL: int = 64
 
 # Phase 4r (CS-35): visual nesting indent for sweep-group members
 # rendered inline below an expanded leader (CS-32). The leader row
@@ -188,6 +238,47 @@ def _truncate_label(text: str, max_chars: int = _LABEL_MAX_CHARS) -> str:
     if len(text) <= max_chars:
         return text
     return text[:max_chars - 1] + "…"
+
+
+def _label_char_capacity(
+    canvas_width_px: int,
+    avg_char_px: int,
+    overhead_px: int,
+) -> int:
+    """Compute the dynamic label-character cap for a given sidebar width.
+
+    Phase 4w (CS-47). The static ``_LABEL_MAX_CHARS = 32`` cap was
+    fine for "narrow but readable" sidebars but wastes pixels when
+    the user widens the sash to 600 px and is too generous when the
+    user narrows it to 240 px. The dynamic cap adapts: more pixels
+    means more characters, fewer pixels means fewer.
+
+    Inputs (all in pixels for the canvas dimension; ``avg_char_px`` is
+    a font-metric measurement):
+
+    * ``canvas_width_px`` — current sidebar canvas width.
+    * ``avg_char_px``     — average character width for the label
+      font, e.g. ``font.measure("M")`` or
+      ``font.measure("ABCDEFGHIJabcdefghij") // 20``.
+    * ``overhead_px``     — sum of always-visible non-label cells
+      plus per-row padding, i.e. how much pixel real-estate the row
+      consumes before the label cell starts.
+
+    The returned cap is clamped to ``[_LABEL_CHAR_FLOOR,
+    _LABEL_CHAR_CEIL]``. When the sidebar is unrealised
+    (``canvas_width_px <= 1``), font metrics are unavailable
+    (``avg_char_px <= 0``), or overhead exceeds the available width,
+    the helper falls back to ``_LABEL_MAX_CHARS`` so the existing
+    static-cap behaviour is preserved at construction time and in
+    headless test environments where geometry never settles.
+    """
+    if canvas_width_px <= 1 or avg_char_px <= 0:
+        return _LABEL_MAX_CHARS
+    available = canvas_width_px - overhead_px
+    if available <= 0:
+        return _LABEL_MAX_CHARS
+    chars = available // avg_char_px
+    return max(_LABEL_CHAR_FLOOR, min(_LABEL_CHAR_CEIL, chars))
 
 
 def _style_get(node: DataNode, key: str) -> Any:
@@ -313,7 +404,13 @@ class ScanTreeWidget(tk.Frame):
         # entry maps a name ("swatch", "leg", "ls_canvas") to the
         # optional widget plus ``vis_cb`` (the swatch's re-pack
         # anchor for ``pack(before=...)``).
-        self._optional_row_widgets: dict[str, dict[str, tk.Widget]] = {}
+        # Phase 4w (CS-47): inner value type relaxed to ``Any`` so
+        # the dict can also hold the (optional) Tooltip handle for
+        # the row's label widget — needed for dynamic re-truncation
+        # in ``_apply_responsive_layout``. Pre-existing entries
+        # (swatch, leg, ls_canvas, vis_cb) are still tk.Widget; the
+        # ``label_tooltip`` slot is the one ``Tooltip | None`` value.
+        self._optional_row_widgets: dict[str, dict[str, Any]] = {}
 
         self._build_chrome()
 
@@ -621,6 +718,26 @@ class ScanTreeWidget(tk.Frame):
         )
         vis_cb.pack(side="left")
 
+        # Row-toggle slot — Phase 4w (CS-48). A fixed-width column
+        # packed on every row regardless of node type so the label
+        # cell starts at the same x-coordinate across UVVIS /
+        # BASELINE / NORMALISED / SMOOTHED / PEAK_LIST /
+        # SECOND_DERIVATIVE rows. This was Phase 4t friction #1: the
+        # ``[~]`` baseline-curve toggle existed only on BASELINE
+        # rows, so non-BASELINE labels gained ~24 px of leftward
+        # space — making column structure visibly different across
+        # rows. The slot is a tk.Frame with ``pack_propagate(False)``
+        # held at ``_CELL_MIN_PX["row_toggle"]`` width; on BASELINE
+        # rows the ``[~]`` Button is parented to it (no change to
+        # the toggle's behaviour), on every other type the slot is
+        # an empty placeholder that consumes pixels but renders
+        # nothing.
+        row_toggle = tk.Frame(
+            row, width=_CELL_MIN_PX["row_toggle"],
+        )
+        row_toggle.pack(side="left", padx=(2, 0), fill="y")
+        row_toggle.pack_propagate(False)
+
         # Phase 4r (CS-36): per-node baseline-curve overlay toggle.
         # Only added on BASELINE rows. ``[~]`` when on (default),
         # ``[–]`` when off — parallel to the legend ``✓/–`` glyph
@@ -631,14 +748,15 @@ class ScanTreeWidget(tk.Frame):
         # baselines on the same parent). Mutation routes through
         # ``set_style`` so ``GraphEvent.NODE_STYLE_CHANGED`` triggers
         # ``uvvis_tab._redraw`` — same path as the visibility and
-        # legend toggles. Absent on non-BASELINE rows: a disabled
-        # placeholder would waste pixels on every UVVIS / NORMALISED
-        # / SMOOTHED / PEAK_LIST row.
+        # legend toggles. Phase 4w (CS-48): the button is parented
+        # to ``row_toggle`` (the always-packed column slot) rather
+        # than to ``row`` directly, so its position aligns with the
+        # equivalent placeholder slot on non-BASELINE rows.
         if node.type == NodeType.BASELINE:
             bc_var = tk.BooleanVar(
                 value=bool(node.style.get("show_baseline_curve", True))
             )
-            bc_btn = tk.Button(row, width=2, relief=tk.FLAT)
+            bc_btn = tk.Button(row_toggle, width=2, relief=tk.FLAT)
 
             def _refresh_bc(_b=bc_btn, _v=bc_var):
                 _b.config(
@@ -655,7 +773,7 @@ class ScanTreeWidget(tk.Frame):
                 )
             bc_btn.config(command=_toggle_bc)
             _refresh_bc()
-            bc_btn.pack(side="left", padx=(2, 0))
+            bc_btn.pack(fill="both", expand=True)
             # Phase 4t (CS-42) — promoted Tooltip's first cross-module
             # consumer. Phase 4r friction #1 noted the gesture was
             # discoverable only by experimentation; the hover hint
@@ -664,20 +782,37 @@ class ScanTreeWidget(tk.Frame):
             Tooltip(bc_btn, "Show / hide baseline curve overlay")
 
         # Label (double-click to edit in-place). Phase 4q (CS-33):
-        # the displayed text is truncated at ``_LABEL_MAX_CHARS`` to
-        # keep the row's natural width bounded — long UV/Vis chains
-        # accumulate suffixes that would otherwise push the row past
-        # the canvas width even with the CS-30 responsive helper.
-        # When truncation happens, attach a hover tooltip so the full
-        # label remains visible without a rename. The rename Entry
-        # reads the full label from the graph (see
-        # ``_begin_label_edit``), so editing always starts with the
-        # untruncated text regardless of what's painted.
-        display_text = _truncate_label(node.label)
+        # the displayed text is truncated to keep the row's natural
+        # width bounded — long UV/Vis chains accumulate suffixes
+        # that would otherwise push the row past the canvas width
+        # even with the CS-30 responsive helper. When truncation
+        # happens, attach a hover tooltip so the full label remains
+        # visible without a rename. The rename Entry reads the full
+        # label from the graph (see ``_begin_label_edit``), so
+        # editing always starts with the untruncated text regardless
+        # of what's painted.
+        #
+        # Phase 4w (CS-47): the cap is now derived from the actual
+        # canvas width via ``_current_label_cap`` instead of the
+        # static ``_LABEL_MAX_CHARS = 32``. Falls back to the static
+        # cap when geometry / font metrics aren't yet realised, so
+        # construction-time behaviour and headless tests are
+        # preserved. The same recomputation runs from
+        # ``_apply_responsive_layout`` whenever the canvas is
+        # resized, so widening the sash visibly grows the label.
+        cap = self._current_label_cap()
+        display_text = _truncate_label(node.label, max_chars=cap)
         label = tk.Label(row, text=display_text, anchor="w")
         label.pack(side="left", fill="x", expand=True, padx=(2, 4))
-        if display_text != node.label:
-            Tooltip(label, node.label)
+        # Always attach a tooltip; its empty-string sentinel makes it
+        # silently inert when truncation isn't cutting the text. The
+        # canvas-resize re-truncation in ``_apply_responsive_layout``
+        # rotates the text via ``update_text`` rather than churning
+        # Tooltip handles.
+        label_tooltip = Tooltip(
+            label,
+            node.label if display_text != node.label else "",
+        )
         label.bind(
             "<Double-Button-1>",
             lambda _e, nid=node.id, lbl=label, frm=row:
@@ -779,11 +914,22 @@ class ScanTreeWidget(tk.Frame):
         # swatch's re-pack anchor: without ``before=vis_cb`` a
         # re-packed swatch lands on the wrong side of the label, which
         # has ``fill="x", expand=True``.
+        #
+        # Phase 4w (CS-47): the ``label`` widget plus its (possibly
+        # ``None``) tooltip are tracked here too so
+        # ``_apply_responsive_layout`` can re-truncate the painted
+        # text on canvas resize without rebuilding the row. The
+        # tooltip handle is stored under ``label_tooltip``; a
+        # newly-truncated label that previously fitted will get a
+        # fresh ``Tooltip`` attached, and a label that previously
+        # truncated but now fits will have its tooltip destroyed.
         self._optional_row_widgets[node.id] = {
-            "swatch":     swatch,
-            "leg":        leg_btn,
-            "ls_canvas":  ls_canvas,
-            "vis_cb":     vis_cb,
+            "swatch":        swatch,
+            "leg":           leg_btn,
+            "ls_canvas":     ls_canvas,
+            "vis_cb":        vis_cb,
+            "label":         label,
+            "label_tooltip": label_tooltip,
         }
 
         # Phase 4p (CS-30): the responsive helper is now driven by
@@ -802,6 +948,108 @@ class ScanTreeWidget(tk.Frame):
         # Re-attach history sub-frame if currently expanded.
         if node.id in self._expanded_history:
             self._render_history(node.id)
+
+    # ------------------------------------------------------------
+    # Label measurement (Phase 4w CS-47)
+    # ------------------------------------------------------------
+
+    def _label_font(self) -> tkfont.Font | None:
+        """Return the Tk font used for sidebar row labels.
+
+        Reads the named font ``TkDefaultFont`` since
+        ``_populate_node_row`` constructs the label as
+        ``tk.Label(row, text=…)`` without an explicit ``font=…``.
+        Returns ``None`` if the named font lookup fails (e.g. the
+        widget isn't realised yet); callers must handle that.
+        """
+        try:
+            return tkfont.nametofont("TkDefaultFont")
+        except (tk.TclError, RuntimeError):
+            return None
+
+    def _avg_char_px(self) -> int:
+        """Average pixel width of a label character.
+
+        Sampled by measuring a 20-character mixed-case string and
+        dividing — more representative than ``measure("M")`` for
+        proportional fonts. Returns ``0`` when font metrics are
+        unavailable; ``_label_char_capacity`` falls back to the
+        static cap in that case.
+        """
+        font = self._label_font()
+        if font is None:
+            return 0
+        try:
+            sample = "ABCDEFGHIJabcdefghij"
+            total = font.measure(sample)
+            if total <= 0:
+                return 0
+            return max(1, total // len(sample))
+        except tk.TclError:
+            return 0
+
+    def _label_overhead_px(self) -> int:
+        """Pixels consumed by always-visible non-label cells + padding.
+
+        Used by ``_current_label_cap`` to estimate the label cell's
+        share of the canvas width. Optional cells (swatch, leg,
+        ls_canvas) are excluded: at each responsive threshold the
+        sidebar gains roughly the optional cell's width plus a small
+        padding allowance, so the label cell's share stays roughly
+        constant across thresholds — using the always-visible total
+        approximates the "what's left for the label" budget without
+        per-call introspection of which optionals are mapped.
+        """
+        always = (
+            "state", "vis_cb", "row_toggle",
+            "hist", "gear", "compare", "x",
+        )
+        return sum(_CELL_MIN_PX[c] for c in always) + 30  # +slack
+
+    def _current_label_cap(self) -> int:
+        """Compute the dynamic label-character cap for the current canvas.
+
+        Falls back to ``_LABEL_MAX_CHARS`` when the canvas isn't yet
+        realised or the named font's metrics aren't available — this
+        keeps construction-time and headless-test behaviour
+        identical to Phase 4q (CS-33).
+        """
+        try:
+            canvas_width = self._scroll_canvas.winfo_width()
+        except (tk.TclError, AttributeError):
+            return _LABEL_MAX_CHARS
+        return _label_char_capacity(
+            canvas_width_px=canvas_width,
+            avg_char_px=self._avg_char_px(),
+            overhead_px=self._label_overhead_px(),
+        )
+
+    def widest_label_pixel_width(
+        self, font: tkfont.Font | None = None,
+    ) -> int:
+        """Return the longest candidate node label's pixel width.
+
+        Phase 4w (CS-47). Used by ``UVVisTab._calibrate_sidebar_width``
+        to size the sash on first paint so long labels are readable
+        without manual sash-dragging. Walks the same candidates that
+        ``_rebuild`` would render (filtered, "Show hidden" honoured)
+        and returns ``max(font.measure(label))`` over the set.
+        Returns ``0`` when the candidate list is empty or font
+        metrics fail.
+        """
+        if font is None:
+            font = self._label_font()
+        if font is None:
+            return 0
+        widest = 0
+        for node in self._candidate_nodes():
+            try:
+                w = font.measure(node.label)
+            except tk.TclError:
+                continue
+            if w > widest:
+                widest = w
+        return widest
 
     # ------------------------------------------------------------
     # Responsive row collapse (B-002, Phase 4d)
@@ -913,6 +1161,41 @@ class ScanTreeWidget(tk.Frame):
             except tk.TclError:
                 pass
 
+        # Phase 4w (CS-47): re-truncate the label at the cap derived
+        # from the current canvas width. The same call cycle that
+        # reflows optional cells on resize also adjusts the painted
+        # label, so widening the sash visibly shows more characters
+        # of long labels and narrowing trims them. The full label
+        # stays in the graph; only the painted text changes.
+        label_widget = widgets.get("label")
+        if label_widget is not None:
+            try:
+                node = self._graph.get_node(node_id)
+            except KeyError:
+                return
+            if not isinstance(node, DataNode):
+                return
+            cap = self._current_label_cap()
+            new_text = _truncate_label(node.label, max_chars=cap)
+            try:
+                if label_widget.cget("text") != new_text:
+                    label_widget.config(text=new_text)
+            except tk.TclError:
+                return
+
+            # Tooltip rotation: pass the full label when truncation
+            # cuts the text, otherwise the empty-string sentinel
+            # which makes Tooltip's ``_show`` bail silently. Single
+            # handle for the lifetime of the row — see
+            # ``_populate_node_row`` for the always-attach pattern.
+            existing_tip = widgets.get("label_tooltip")
+            if existing_tip is not None:
+                full = node.label if new_text != node.label else ""
+                try:
+                    existing_tip.update_text(full)
+                except (AttributeError, tk.TclError):
+                    pass
+
     # ------------------------------------------------------------
     # Sweep group row
     # ------------------------------------------------------------
@@ -967,14 +1250,17 @@ class ScanTreeWidget(tk.Frame):
         # Parent label is also subject to truncation — same long-chain
         # problem as regular rows (Phase 4q CS-33 / Phase 4p friction
         # #3). Tooltip carries the full text only when truncation
-        # actually cut it.
+        # actually cut it. Phase 4w (CS-47) reads the cap from the
+        # current canvas width like the regular-row path does.
+        cap = self._current_label_cap()
+        truncated = _truncate_label(parent_label_full, max_chars=cap)
         leader_text = (
-            f"{_truncate_label(parent_label_full)} "
+            f"{truncated} "
             f"· sweep ({len(members)} variants)"
         )
         leader_lbl = tk.Label(row, text=leader_text, anchor="w")
         leader_lbl.pack(side="left", fill="x", expand=True, padx=(2, 4))
-        if _truncate_label(parent_label_full) != parent_label_full:
+        if truncated != parent_label_full:
             Tooltip(
                 leader_lbl,
                 f"{parent_label_full} · sweep ({len(members)} variants)",

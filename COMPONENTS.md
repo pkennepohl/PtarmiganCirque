@@ -5312,7 +5312,211 @@ persist to the same `~/.binah_config.json` under
 
 ---
 
-*Document version: 1.22 — May 2026*
+## CS-47 — Adjustable sidebar measurement vocabulary + dynamic label cap (Phase 4w)
+
+**Source files.** `scan_tree_widget.py` (per-cell vocabulary, sidebar
+floor, dynamic-cap helper, widest-label measurement, re-truncation
+in `_apply_responsive_layout`); `uvvis_tab.py` (PanedWindow `minsize`
+reads the pinned constant; `_calibrate_sidebar_width` runs once via
+`after_idle`).
+
+**Purpose.** Auto-bump the right-pane PanedWindow sash on first paint
+to fit the widest current label cell, with the truncation cap
+adapting to the actual sidebar width via font metrics. The user
+re-flagged the manual sash drag during Phase 4v as still-broken-and-
+blocking-work; CS-47 is the auto-width path and the dynamic-cap
+companion. Pairs with CS-48's column-alignment work for a
+cohesive sidebar visual-quality phase.
+
+**Module-level constants (locked Phase 4w step 2).**
+- `_CELL_MIN_PX: dict[str, int]` — documented per-cell minimum
+  natural widths covering every cell in a sidebar row: `state` (18),
+  `swatch` (24), `vis_cb` (22), `row_toggle` (22 — CS-48 slot),
+  `label` (56 floor), `leg` (22), `ls_canvas` (38), `hist` (28),
+  `gear` (22), `compare` (22), `commit` (22), `x` (22). Single
+  source of truth; future row-cell additions list themselves here.
+- `_SIDEBAR_MIN_WIDTH_PX: int = _RESPONSIVE_COLLAPSE_PX` — pinned
+  floor matching the smallest threshold from CS-26's
+  `_RESPONSIVE_THRESHOLDS_PX` (240). `UVVisTab` reads this when
+  configuring `body.add(sidebar_pane, minsize=…)` so the responsive
+  helper and the geometry manager stay in lock-step.
+- `_LABEL_CHAR_FLOOR: int = 8`, `_LABEL_CHAR_CEIL: int = 64` —
+  clamps for the dynamic label cap. The floor keeps at least eight
+  characters visible at the narrowest realised sidebar; the ceil
+  prevents a 1500-px sidebar from disabling truncation entirely.
+  `_LABEL_MAX_CHARS = 32` retained as the static fallback when
+  geometry / font metrics are unavailable (CS-33 invariant
+  preserved).
+
+**Pure helper.**
+```
+_label_char_capacity(canvas_width_px, avg_char_px, overhead_px) → int
+```
+Returns `clamp((canvas_width_px - overhead_px) // avg_char_px,
+[_LABEL_CHAR_FLOOR, _LABEL_CHAR_CEIL])`. Falls back to
+`_LABEL_MAX_CHARS` when `canvas_width_px ≤ 1` (unrealised),
+`avg_char_px ≤ 0` (font metrics unavailable), or
+`overhead_px ≥ canvas_width_px` (no room for the label cell).
+
+**Widget instance methods.**
+- `_label_font()` — looks up `tkfont.nametofont("TkDefaultFont")`
+  (the font `_populate_node_row` constructs the label with).
+  Returns `None` when the lookup fails.
+- `_avg_char_px()` — measures `font.measure("ABCDEFGHIJabcdefghij") //
+  20`, more representative for proportional fonts than `measure("M")`.
+  Returns `0` when font metrics fail; the helper falls back.
+- `_label_overhead_px()` — sum of `_CELL_MIN_PX[c]` for each
+  always-visible cell (state, vis_cb, row_toggle, hist, gear,
+  compare, x) + 30 px padding slack. Optional cells excluded —
+  at each responsive threshold the sidebar gains roughly
+  cell-width + small padding, so the label cell's share stays
+  approximately constant across thresholds.
+- `_current_label_cap()` — instance shortcut wrapping
+  `_label_char_capacity(_scroll_canvas.winfo_width(),
+  _avg_char_px(), _label_overhead_px())`.
+- `widest_label_pixel_width(font=None) → int` — public method,
+  walks `_candidate_nodes()` and returns
+  `max(font.measure(node.label))`. Returns 0 when the candidate
+  list is empty or font metrics fail. Used by
+  `UVVisTab._calibrate_sidebar_width` to size the sash.
+
+**Re-truncation on resize.** `_apply_responsive_layout` runs from
+the canvas-`<Configure>` binding (CS-30) on every sash drag.
+After the optional-cell reflow it now also computes
+`new_cap = _current_label_cap()`, re-truncates the label widget's
+text via `_truncate_label(node.label, max_chars=new_cap)`, and
+rotates the always-attached label tooltip's text using its
+empty-string sentinel (`Tooltip.update_text("")` makes `_show`
+silently bail). No tooltip create/destroy churn; one Tooltip per
+row for the lifetime of the row.
+
+**`UVVisTab._calibrate_sidebar_width`.** One-shot, scheduled via
+`self.after_idle(self._calibrate_sidebar_width)` after
+`_build_chrome` completes. Idempotent — `_sidebar_calibrated: bool`
+flips True after the first successful call so manual sash drags
+persist across rebuilds. Computes:
+```
+target = clamp(
+    widest_label_pixel_width() + _label_overhead_px(),
+    [_SIDEBAR_MIN_WIDTH_PX, _SIDEBAR_MAX_CALIBRATED_PX = 480],
+)
+sash_x = max(0, paned_width - target)
+body.sash_place(2, sash_x, 0)
+```
+Sash 2 is the rightmost (between plot pane and sidebar pane).
+Bails silently when the PanedWindow's geometry isn't realised
+yet (`paned.winfo_width() <= 1`), retrying via
+`self.after(50, ...)` so the calibration eventually succeeds
+once the tab is mapped.
+
+**Locks.**
+- `_LABEL_MAX_CHARS = 32` constant value, `_truncate_label`
+  signature, and the `text[:max-1] + "…"` shape all preserved
+  (CS-33 invariants).
+- `_RESPONSIVE_THRESHOLDS_PX` integer values + tuple shape +
+  priority order all preserved (CS-26 invariants).
+- `_apply_responsive_layout(node_id, row, width=None)` signature
+  preserved (CS-30 invariant).
+- `_optional_row_widgets[node_id]` inner type relaxed from
+  `dict[str, tk.Widget]` to `dict[str, Any]` to host the
+  Tooltip handle. Pre-existing keys (swatch, leg, ls_canvas,
+  vis_cb) still hold tk.Widget; `label` holds the label widget;
+  `label_tooltip` holds `Tooltip | None`.
+
+**What changes when this lock relaxes.** New row cells must list
+themselves in `_CELL_MIN_PX`; new responsive-threshold tiers
+must keep ascending integer order so the existing
+`test_*_revealed_at_*_threshold` tests pass. Bumping
+`_SIDEBAR_MIN_WIDTH_PX` higher than `_RESPONSIVE_COLLAPSE_PX`
+would either widen the threshold tuple in lock-step or break
+TestResponsiveCollapse — keep them equal.
+
+**Implementation notes.**
+- Calibration uses `after_idle` not synchronous because tab
+  construction completes before geometry settles. Without the
+  defer, `paned.winfo_width()` returns 1 every time.
+- The `_SIDEBAR_MAX_CALIBRATED_PX = 480` cap is intentional: a
+  60-char label at ~7 px / char + ~190 px overhead = ~610 px,
+  past 480 the plot pane gets squeezed below comfort; manual
+  sash-drag remains the escape valve.
+- Tooltip rotation via empty-string sentinel rather than
+  create/destroy: Tooltip has no `destroy()` method, only
+  `update_text(...)`. `_show` bails silently on empty text.
+- The dynamic label cap uses the canvas width, not the row
+  width — the row's natural width is content-driven and would
+  shrink-the-cap-shrinks-the-row in a feedback loop. The
+  canvas width is the available sidebar space, the
+  source-of-truth.
+
+---
+
+## CS-48 — Row-toggle column slot (Phase 4w)
+
+**Source files.** `scan_tree_widget.py` (`_populate_node_row`
+adds the always-packed `row_toggle` Frame slot; the BASELINE-only
+bc_btn is parented inside it).
+
+**Purpose.** Make the sidebar row-toggle column align across every
+node type so labels start at the same x-coordinate regardless of
+whether the row owns the `[~]` baseline-curve toggle. Phase 4t
+friction #1 — the user-flagged misalignment that the original
+proposal would have fixed by packing a disabled `state="disabled"`
+Button on every row. Phase 4w design rejected the disabled-button
+shape in favour of a fixed-width Frame placeholder: cheaper (no
+Button + tooltip per non-BASELINE row) and avoids the "what does a
+disabled `[~]` mean?" UX confusion.
+
+**Layout contract.**
+```
+row_toggle = tk.Frame(row, width=_CELL_MIN_PX["row_toggle"])  # = 22
+row_toggle.pack(side="left", padx=(2, 0), fill="y")
+row_toggle.pack_propagate(False)  # keep width even with no children
+
+if node.type == NodeType.BASELINE:
+    bc_btn = tk.Button(row_toggle, …)  # parent is row_toggle, NOT row
+    bc_btn.pack(fill="both", expand=True)
+    Tooltip(bc_btn, "Show / hide baseline curve overlay")
+# else: row_toggle is an empty placeholder
+```
+
+The slot is packed `fill="y"` so its height matches the row's
+height regardless of children; `pack_propagate(False)` keeps the
+22 px width even when the slot contains the bc_btn (whose natural
+width may differ slightly).
+
+**Locks.**
+- `_CELL_MIN_PX["row_toggle"] = 22` is the slot's width. Changing
+  it is a CS-47 / CS-48 joint lock (the cell vocabulary stays
+  consistent).
+- The slot is packed unconditionally on every row at the
+  position previously occupied only by `bc_btn` on BASELINE
+  rows. Changing the position would break test
+  `TestRowToggleColumnAlignment.test_slots_have_identical_width_
+  across_row_types`.
+- CS-36's behaviour preserved verbatim: `[~]` button fires the
+  same `set_style({"show_baseline_curve": …})` → graph event
+  → `_redraw` chain. Only the parent widget moved.
+
+**What changes when this lock relaxes.** Adding more row-toggle
+buttons (e.g. a per-NORMALISED row "show normalisation curve"
+overlay) means parenting them to the same slot — but the slot's
+fixed-width contract means only one button can be visible at a
+time without restructuring. A future "two-toggle row" would
+require either widening the slot or stacking buttons via grid.
+
+**Implementation notes.**
+- Test helper `_bc_button_in` was updated to recurse one level
+  into Frame children when looking for the bc_btn — the button
+  is no longer a direct child of `row`. The recursion stops at
+  the first matching Button to keep the helper cheap.
+- Non-BASELINE rows pay the cost of one extra Tk widget per row
+  (the placeholder Frame). At dozens of rows the cost is
+  negligible; at hundreds it would still be ~22 KB of Tk
+  bookkeeping — within budget.
+
+---
+
+*Document version: 1.23 — May 2026*
 *1.1: CS-13 implementation notes added in Phase 4a.*
 *1.2: CS-14 Plot Settings Dialog added in Phase 4b.*
 *1.3: CS-15 UV/Vis Baseline Correction + CS-04 implementation
@@ -5657,5 +5861,43 @@ addition: `_test_silence` module silences modal Tk messageboxes
 during test runs (wired into `run_tests.py` and
 `test_persistence_phase_a.py`). 708 tests, all green (651 + 45
 new pure-module + 12 new integration).*
+*1.23: Phase 4w — adjustable-sidebar UX work (CS-47 + CS-48).
+CS-47 ships per-cell minimum-width vocabulary (`_CELL_MIN_PX`
+covering every row cell), pinned `_SIDEBAR_MIN_WIDTH_PX = 240`
+(matching the smallest CS-26 threshold so the responsive helper
+and the PanedWindow `minsize` stay in lock-step), pure helper
+`_label_char_capacity(canvas_width_px, avg_char_px, overhead_px)`
+clamped to `[_LABEL_CHAR_FLOOR=8, _LABEL_CHAR_CEIL=64]` with
+fallback to `_LABEL_MAX_CHARS=32`, widget-instance methods
+`_label_font` / `_avg_char_px` / `_label_overhead_px` /
+`_current_label_cap` / `widest_label_pixel_width`, and the
+`_apply_responsive_layout` re-truncation pass that rotates
+the always-attached label tooltip's text via the empty-string
+sentinel (no Tooltip create/destroy churn).
+`UVVisTab._calibrate_sidebar_width` runs once via `after_idle`
+after construction, computes `target = clamp(widest_label_px +
+overhead_px, [240, 480])` and calls `body.sash_place(2,
+paned_width - target, 0)`. Idempotent — the
+`_sidebar_calibrated` flag flips True after the first
+successful run so manual sash drags persist. CS-48 ships the
+fixed-width `row_toggle` Frame slot at
+`_CELL_MIN_PX["row_toggle"] = 22` packed on every row
+regardless of node type so labels start at the same x;
+BASELINE rows host the `[~]` toggle inside the slot, every
+other type leaves it empty. The original Phase 4t friction #1
+proposal (disabled-button on every row) was rejected as more
+expensive and UX-confusing. Existing `TestPerNodeBaselineCurve
+Toggle._bc_button_in` test helper updated to recurse one level
+into the slot. CS-33 invariants (`_LABEL_MAX_CHARS = 32`,
+`_truncate_label` signature, `text[:max-1] + "…"` shape),
+CS-26 invariants (`_RESPONSIVE_THRESHOLDS_PX` values + tuple
+shape + priority order), CS-30's responsive-helper signature,
+CS-35's indent_px kwarg, and CS-36's per-row-toggle
+behavioural contract all preserved. 738 tests, all green
+(708 + 30 new: 12 pure-module across TestCellMinPxVocabulary
++ TestSidebarMinWidth + TestLabelCharCapacity; 18 integration
+across TestRowToggleColumnAlignment + TestDynamicLabelCap
+Wiring + TestWidestLabelPixelWidth +
+TestUVVisTabSidebarCalibration).*
 *To be updated as Open Questions are resolved and new components
 are specified.*
