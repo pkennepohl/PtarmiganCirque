@@ -2122,22 +2122,33 @@ class TestPerNodeBaselineCurveToggle(unittest.TestCase):
     def _bc_button_in(self, row: tk.Frame) -> tk.Button | None:
         """Return the per-row baseline-curve toggle button, or None.
 
-        Filters by side="left" + text in {"~", "–"} so the legend
-        button (which lives on side="right" and can also display
-        "–") is not confused with this one.
+        Phase 4w (CS-48) parents the button to the always-packed
+        ``row_toggle`` Frame slot rather than to ``row`` directly so
+        the column aligns across all node types. The helper walks
+        one nesting level deep into any tk.Frame children of the row
+        to find the button. Filters by text in {"~", "–"} so the
+        legend button (which lives on side="right" and can also
+        display "–") is not confused with this one.
         """
-        for child in row.winfo_children():
-            if not isinstance(child, tk.Button):
-                continue
-            try:
-                info = child.pack_info()
-            except tk.TclError:
-                continue
-            if info.get("side") != "left":
-                continue
-            if child.cget("text") in ("~", "–"):
-                return child
-        return None
+        def _scan(parent: tk.Frame) -> tk.Button | None:
+            for child in parent.winfo_children():
+                if isinstance(child, tk.Button):
+                    if child.cget("text") in ("~", "–"):
+                        # Reject the legend button by checking pack
+                        # side: legend lives on the right cluster.
+                        try:
+                            info = child.pack_info()
+                        except tk.TclError:
+                            info = {}
+                        if info.get("side") == "right":
+                            continue
+                        return child
+                elif isinstance(child, tk.Frame):
+                    nested = _scan(child)
+                    if nested is not None:
+                        return nested
+            return None
+        return _scan(row)
 
     def _build_widget(self, filter_types):
         _, cb = _redraw_calls()
