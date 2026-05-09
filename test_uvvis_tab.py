@@ -3833,5 +3833,380 @@ class TestUVVisTabPhase4xCrossTypeAcceptance(unittest.TestCase):
                          NodeType.SECOND_DERIVATIVE)
 
 
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display required")
+class TestUVVisTabPhase4yYAxisOverride(unittest.TestCase):
+    """Phase 4y (CS-50) — per-style ``y_axis`` override end-to-end.
+
+    Combines the renderer's per-node style threading (commit 3)
+    with the user-facing flows: a node carrying
+    ``style["y_axis"] = "secondary"`` lands on the secondary axis
+    even though its NodeType-default is "primary"; a SECOND_DERIVATIVE
+    overridden to "primary" lands on primary; a SmoothingPanel apply
+    on a SECOND_DERIVATIVE parent auto-inherits the parent's
+    effective role (closes Phase 4x friction #6); the per-row ∀
+    fan-out widens its scope to every renderable node.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from uvvis_tab import UVVisTab
+        cls.UVVisTab = UVVisTab
+
+    def setUp(self):
+        self.host = tk.Frame(_root)
+        self.host.pack()
+        self.graph = ProjectGraph()
+        self.tab = self.UVVisTab(self.host, graph=self.graph)
+        self.tab.pack(fill=tk.BOTH, expand=True)
+        self.tab.update_idletasks()
+
+    def tearDown(self):
+        try:
+            self.tab.destroy()
+        except Exception:
+            pass
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    # ---- fixtures ----
+
+    def _add_uvvis(self, nid: str = "u1",
+                   y_axis_override: str | None = None) -> str:
+        wl = np.linspace(200.0, 800.0, 601)
+        absorb = np.exp(-((wl - 500.0) ** 2) / (2.0 * 25.5 ** 2)) + 0.05
+        from node_styles import default_spectrum_style
+        style = default_spectrum_style("#1f77b4")
+        if y_axis_override is not None:
+            style["y_axis"] = y_axis_override
+        self.graph.add_node(DataNode(
+            id=nid, type=NodeType.UVVIS,
+            arrays={"wavelength_nm": wl, "absorbance": absorb},
+            metadata={"_load_id": f"L_{nid}", "source_file": f"syn_{nid}"},
+            label=nid, state=NodeState.COMMITTED,
+            style=style,
+        ))
+        return nid
+
+    def _select_shared(self, node_id: str) -> None:
+        for key, nid in self.tab._shared_subject_map.items():
+            if nid == node_id:
+                self.tab._shared_subject.set(key)
+                self.tab.update_idletasks()
+                return
+        self.fail(f"node {node_id!r} not in shared subject map")
+
+    # ---- override routes UVVIS to secondary ----
+
+    def test_uvvis_with_secondary_override_renders_on_secondary(self):
+        # A UVVIS node with ``style["y_axis"] = "secondary"`` lands
+        # on the secondary axis even though its NodeType-default is
+        # "primary". Pre-CS-50 the override was unread; the renderer
+        # now threads ``node.style`` into ``_resolve_y_axis_role``.
+        self._add_uvvis("u1", y_axis_override="secondary")
+        self.tab._redraw()
+        self.tab.update_idletasks()
+        self.assertIn("secondary", self.tab._axes_by_role)
+        sec = self.tab._axes_by_role["secondary"]
+        self.assertEqual(len(sec.get_lines()), 1)
+        # Primary stays empty of node lines (the override removed
+        # the only spectrum from the primary axis).
+        self.assertEqual(len(self.tab._ax.get_lines()), 0)
+
+    def test_uvvis_with_default_renders_on_primary_unchanged(self):
+        # The freshly-created default ``style["y_axis"] = None``
+        # must preserve pre-CS-50 routing exactly — no secondary
+        # axis at all when only UVVIS is present.
+        self._add_uvvis("u1")
+        self.tab._redraw()
+        self.tab.update_idletasks()
+        self.assertNotIn("secondary", self.tab._axes_by_role)
+        self.assertEqual(len(self.tab._ax.get_lines()), 1)
+
+    def test_second_derivative_override_can_route_back_to_primary(self):
+        # The carry-forward T register entry's "small-magnitude
+        # derivative shares parent's scale" case: a SECOND_DERIVATIVE
+        # overridden to "primary" lands on primary.
+        self._add_uvvis("u1")
+        self.tab.update_idletasks()
+        # Apply second-derivative panel to create the derivative.
+        _, deriv_id = self.tab._second_derivative_panel._apply()
+        self.tab.update_idletasks()
+        # Override the derivative to primary.
+        self.graph.set_style(deriv_id, {"y_axis": "primary"})
+        self.tab._redraw()
+        self.tab.update_idletasks()
+        # No secondary axis: both nodes route to primary now.
+        self.assertNotIn("secondary", self.tab._axes_by_role)
+        self.assertEqual(len(self.tab._ax.get_lines()), 2)
+
+    # ---- baseline-curve overlay follows the per-node override ----
+
+    def test_baseline_overlay_follows_per_node_y_axis_override(self):
+        # CS-29 dashed overlay follows the BASELINE node's effective
+        # axis after Phase 4y — the overlay's get_axis(role) call
+        # threads the BASELINE node's style. A BASELINE overridden to
+        # "secondary" puts both its main render AND its dashed
+        # overlay on the secondary axis.
+        from nodes import OperationType
+        self._add_uvvis("u1")
+        self.tab.update_idletasks()
+        self.tab._baseline_mode.set("linear")
+        self.tab._baseline_anchor_lo.set("250")
+        self.tab._baseline_anchor_hi.set("750")
+        self.tab._refresh_baseline_param_rows()
+        # Walk the existing inline baseline Apply path. The helper
+        # returns (op_id, baseline_id) — unpack and address the
+        # data-side child.
+        _op_id, baseline_id = self.tab._apply_baseline()
+        self.tab.update_idletasks()
+        self.graph.set_style(baseline_id, {"y_axis": "secondary"})
+        self.tab._show_baseline_curves.set(True)
+        self.tab._redraw()
+        self.tab.update_idletasks()
+        self.assertIn("secondary", self.tab._axes_by_role)
+        sec_lines = self.tab._axes_by_role["secondary"].get_lines()
+        # Two lines on secondary: the main BASELINE render + the
+        # dashed overlay. Without the per-bn threading the overlay
+        # would land on primary while the main render landed on
+        # secondary — visually broken.
+        self.assertEqual(len(sec_lines), 2)
+        # One must carry the dashed linestyle (the overlay).
+        styles = [ln.get_linestyle() for ln in sec_lines]
+        self.assertIn("--", styles)
+
+
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display required")
+class TestUVVisTabPhase4yCrossTypedInheritance(unittest.TestCase):
+    """Phase 4y (CS-50) — cross-typed-Apply ``y_axis`` inheritance.
+
+    SmoothingPanel's CS-49 widening accepts a SECOND_DERIVATIVE
+    parent. Without inheritance the resulting SMOOTHED node routes
+    to primary (NodeType default) — the visually-broken case Phase
+    4x friction #6 documented. Decision (i) of this session: the
+    apply-time code on ``SmoothingPanel._apply`` auto-sets
+    ``style["y_axis"]`` on the new node to the parent's effective
+    role when (and only when) the NodeType defaults differ.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from uvvis_tab import UVVisTab
+        cls.UVVisTab = UVVisTab
+
+    def setUp(self):
+        self.host = tk.Frame(_root)
+        self.host.pack()
+        self.graph = ProjectGraph()
+        self.tab = self.UVVisTab(self.host, graph=self.graph)
+        self.tab.pack(fill=tk.BOTH, expand=True)
+        self.tab.update_idletasks()
+
+    def tearDown(self):
+        try:
+            self.tab.destroy()
+        except Exception:
+            pass
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    def _add_uvvis(self, nid: str = "u1") -> str:
+        wl = np.linspace(200.0, 800.0, 601)
+        absorb = np.exp(-((wl - 500.0) ** 2) / (2.0 * 25.5 ** 2)) + 0.05
+        self.graph.add_node(DataNode(
+            id=nid, type=NodeType.UVVIS,
+            arrays={"wavelength_nm": wl, "absorbance": absorb},
+            metadata={"_load_id": f"L_{nid}", "source_file": f"syn_{nid}"},
+            label=nid, state=NodeState.COMMITTED,
+            style={"color": "#1f77b4", "linestyle": "solid",
+                   "linewidth": 1.5, "alpha": 0.9, "visible": True,
+                   "in_legend": True, "fill": False, "fill_alpha": 0.08,
+                   "y_axis": None},
+        ))
+        return nid
+
+    def _select_shared(self, node_id: str) -> None:
+        for key, nid in self.tab._shared_subject_map.items():
+            if nid == node_id:
+                self.tab._shared_subject.set(key)
+                self.tab.update_idletasks()
+                return
+        self.fail(f"node {node_id!r} not in shared subject map")
+
+    # ---- inheritance fires when defaults differ ----
+
+    def test_smoothed_of_second_derivative_inherits_secondary(self):
+        # The Phase 4x friction #6 case: smooth a SECOND_DERIVATIVE.
+        # NodeType defaults differ (SMOOTHED → primary,
+        # SECOND_DERIVATIVE → secondary), so the apply-time hook
+        # writes ``style["y_axis"] = "secondary"`` onto the new
+        # SMOOTHED node so it renders alongside its parent.
+        self._add_uvvis("u1")
+        self.tab.update_idletasks()
+        _, deriv_id = self.tab._second_derivative_panel._apply()
+        self.tab.update_idletasks()
+        self._select_shared(deriv_id)
+        self.tab._smoothing_panel._mode_var.set("savgol")
+        self.tab._smoothing_panel._window_length.set(5)
+        self.tab._smoothing_panel._polyorder.set(2)
+        _, smoothed_id = self.tab._smoothing_panel._apply()
+        self.tab.update_idletasks()
+        smoothed = self.graph.get_node(smoothed_id)
+        self.assertEqual(smoothed.style.get("y_axis"), "secondary")
+        # The renderer routes accordingly.
+        self.tab._redraw()
+        self.tab.update_idletasks()
+        self.assertIn("secondary", self.tab._axes_by_role)
+        sec_lines = self.tab._axes_by_role["secondary"].get_lines()
+        # Both the SECOND_DERIVATIVE parent and the SMOOTHED child
+        # land on secondary — two lines.
+        self.assertEqual(len(sec_lines), 2)
+
+    def test_smoothed_of_uvvis_does_not_set_y_axis(self):
+        # Same-default case (UVVIS → primary, SMOOTHED → primary):
+        # the inheritance hook leaves ``style["y_axis"] = None`` so
+        # future routing-table edits propagate cleanly.
+        self._add_uvvis("u1")
+        self.tab.update_idletasks()
+        self.tab._smoothing_panel._mode_var.set("savgol")
+        self.tab._smoothing_panel._window_length.set(5)
+        self.tab._smoothing_panel._polyorder.set(2)
+        _, smoothed_id = self.tab._smoothing_panel._apply()
+        self.tab.update_idletasks()
+        self.assertIsNone(self.graph.get_node(smoothed_id).style.get("y_axis"))
+
+    def test_smoothed_inherits_parent_override_not_just_default(self):
+        # Parent's *effective* role drives the decision: a UVVIS with
+        # an explicit override to "secondary" smooths into a
+        # SMOOTHED child that also lands on "secondary".
+        from node_styles import default_spectrum_style
+        wl = np.linspace(200.0, 800.0, 601)
+        absorb = np.exp(-((wl - 500.0) ** 2) / (2.0 * 25.5 ** 2)) + 0.05
+        style = default_spectrum_style("#1f77b4")
+        style["y_axis"] = "secondary"
+        self.graph.add_node(DataNode(
+            id="u2", type=NodeType.UVVIS,
+            arrays={"wavelength_nm": wl, "absorbance": absorb},
+            metadata={"_load_id": "L_u2", "source_file": "syn_u2"},
+            label="u2", state=NodeState.COMMITTED,
+            style=style,
+        ))
+        self.tab.update_idletasks()
+        self._select_shared("u2")
+        self.tab._smoothing_panel._mode_var.set("savgol")
+        self.tab._smoothing_panel._window_length.set(5)
+        self.tab._smoothing_panel._polyorder.set(2)
+        _, smoothed_id = self.tab._smoothing_panel._apply()
+        self.tab.update_idletasks()
+        # SMOOTHED's NodeType-default is primary; the parent's
+        # effective role is secondary; the hook writes "secondary".
+        self.assertEqual(
+            self.graph.get_node(smoothed_id).style.get("y_axis"),
+            "secondary",
+        )
+
+
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display required")
+class TestUVVisTabPhase4yApplyToAllScope(unittest.TestCase):
+    """Phase 4y (CS-50) — per-row ∀ widens for ``y_axis``.
+
+    Per Decision (iii): the per-row ∀ button next to the StyleDialog
+    Combobox writes the chosen role to **every renderable node**
+    (UVVIS / BASELINE / NORMALISED / SMOOTHED / SECOND_DERIVATIVE /
+    PEAK_LIST). Other style keys preserve the existing
+    ``_spectrum_nodes()`` (UVVIS + BASELINE + NORMALISED + SMOOTHED)
+    scope so a linewidth ∀ does not silently rewrite annotation
+    overlays.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from uvvis_tab import UVVisTab
+        cls.UVVisTab = UVVisTab
+
+    def setUp(self):
+        self.host = tk.Frame(_root)
+        self.host.pack()
+        self.graph = ProjectGraph()
+        self.tab = self.UVVisTab(self.host, graph=self.graph)
+        self.tab.pack(fill=tk.BOTH, expand=True)
+        self.tab.update_idletasks()
+
+    def tearDown(self):
+        try:
+            self.tab.destroy()
+        except Exception:
+            pass
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    def _add_uvvis(self, nid: str = "u1") -> str:
+        wl = np.linspace(200.0, 800.0, 601)
+        absorb = np.exp(-((wl - 500.0) ** 2) / (2.0 * 25.5 ** 2)) + 0.05
+        from node_styles import default_spectrum_style
+        self.graph.add_node(DataNode(
+            id=nid, type=NodeType.UVVIS,
+            arrays={"wavelength_nm": wl, "absorbance": absorb},
+            metadata={"_load_id": f"L_{nid}", "source_file": f"syn_{nid}"},
+            label=nid, state=NodeState.COMMITTED,
+            style=default_spectrum_style("#1f77b4"),
+        ))
+        return nid
+
+    def test_y_axis_fans_out_to_second_derivative_too(self):
+        # A UVVIS + a SECOND_DERIVATIVE child. Fan-out scope for
+        # ``y_axis`` includes the derivative, even though it's not
+        # in ``_spectrum_nodes``.
+        self._add_uvvis("u1")
+        self.tab.update_idletasks()
+        _, deriv_id = self.tab._second_derivative_panel._apply()
+        self.tab.update_idletasks()
+        self.tab._on_uvvis_apply_to_all("y_axis", "secondary")
+        self.assertEqual(
+            self.graph.get_node("u1").style.get("y_axis"), "secondary"
+        )
+        self.assertEqual(
+            self.graph.get_node(deriv_id).style.get("y_axis"), "secondary"
+        )
+
+    def test_y_axis_fans_out_to_peak_list_too(self):
+        # Add a PEAK_LIST node by running peak-picking on the UVVIS.
+        self._add_uvvis("u1")
+        self.tab.update_idletasks()
+        _, peak_id = self.tab._peak_picking_panel._apply()
+        self.tab.update_idletasks()
+        self.tab._on_uvvis_apply_to_all("y_axis", "tertiary")
+        self.assertEqual(
+            self.graph.get_node(peak_id).style.get("y_axis"), "tertiary"
+        )
+
+    def test_other_keys_preserve_spectrum_only_scope(self):
+        # A linewidth fan-out hits UVVIS (in _spectrum_nodes) but
+        # NOT the SECOND_DERIVATIVE (outside it). Pinning the
+        # narrower scope so a future widening lands deliberately.
+        self._add_uvvis("u1")
+        self.tab.update_idletasks()
+        _, deriv_id = self.tab._second_derivative_panel._apply()
+        self.tab.update_idletasks()
+        # Snapshot the derivative's pre-fan-out linewidth.
+        original_lw = self.graph.get_node(deriv_id).style.get("linewidth", 1.5)
+        self.tab._on_uvvis_apply_to_all("linewidth", 3.5)
+        # UVVIS got the new value.
+        self.assertAlmostEqual(
+            self.graph.get_node("u1").style.get("linewidth"), 3.5
+        )
+        # SECOND_DERIVATIVE kept its original value (untouched
+        # because it's outside _spectrum_nodes).
+        self.assertAlmostEqual(
+            self.graph.get_node(deriv_id).style.get("linewidth", original_lw),
+            original_lw,
+        )
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
