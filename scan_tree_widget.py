@@ -281,6 +281,80 @@ def _label_char_capacity(
     return max(_LABEL_CHAR_FLOOR, min(_LABEL_CHAR_CEIL, chars))
 
 
+# Phase 4z (CS-51): the always-visible cell vocabulary, lifted out of
+# ``_label_overhead_px`` so the pure helpers below can share it. Order
+# is informative only — the sum is order-independent. Listing every
+# always-visible cell from the row spec (CS-04 §6.1, CS-26's promotion
+# of ``hist`` into the always-visible set, and CS-48's ``row_toggle``).
+_ALWAYS_VISIBLE_CELLS: tuple[str, ...] = (
+    "state", "vis_cb", "row_toggle",
+    "hist", "gear", "compare", "x",
+)
+
+# Phase 4z (CS-51): per-row pixel slack added on top of the per-cell
+# minimums to cover inter-cell padding (each ``pack(padx=2)`` etc.).
+# Lifted from the historical ``_label_overhead_px`` body where it
+# lived as the literal ``+ 30``. Pinned by
+# ``test_compute_label_overhead_no_optional_cells_matches_phase_4w``
+# below so the no-args path stays byte-equivalent to Phase 4w.
+_OVERHEAD_SLACK_PX: int = 30
+
+
+def _compute_label_overhead_px(
+    visible_optional_cells: Iterable[str] = (),
+) -> int:
+    """Pixels consumed by non-label cells at a given visibility set.
+
+    Phase 4z (CS-51). The pure successor to the static
+    ``_label_overhead_px`` instance method's body. Returns
+    ``sum(_CELL_MIN_PX[c] for c in always_visible_cells +
+    visible_optional_cells) + _OVERHEAD_SLACK_PX``.
+
+    Inputs:
+
+    * ``visible_optional_cells`` — names of optional cells that will
+      be packed into the row at the width under consideration. Pass
+      ``()`` (the default) to get the always-visible-only baseline,
+      which matches the Phase 4w behaviour byte-for-byte (186 px).
+      Names must come from ``_RESPONSIVE_THRESHOLDS_PX`` ("swatch",
+      "leg", "ls_canvas") — the helper does NOT validate, it just
+      indexes ``_CELL_MIN_PX``. Unknown names raise ``KeyError`` so
+      a typo at the call site fails loudly.
+
+    Pure (no Tk dependencies). Used by ``_label_overhead_px`` to make
+    the dynamic label cap aware of which optional cells are about to
+    be revealed at the current canvas width — CS-26 reveals an
+    optional cell at its threshold (e.g. swatch at 240 px) without
+    growing the canvas, so without this widening the label cap stays
+    sized for the swatch-absent state and the right-side cells (✕)
+    fall off the row's right edge. Phase 4x friction #1 reproduction.
+    """
+    base = sum(_CELL_MIN_PX[c] for c in _ALWAYS_VISIBLE_CELLS)
+    optional = sum(_CELL_MIN_PX[c] for c in visible_optional_cells)
+    return base + optional + _OVERHEAD_SLACK_PX
+
+
+def _visible_optional_cells_for_width(width_px: int) -> tuple[str, ...]:
+    """Names of optional cells revealed at ``width_px`` per CS-26.
+
+    Phase 4z (CS-51). Walks ``_RESPONSIVE_THRESHOLDS_PX`` (ascending
+    by threshold by construction) and returns the cell names whose
+    thresholds are ``<= width_px``. Returned in threshold-ascending
+    order. Returns ``()`` when ``width_px < _RESPONSIVE_COLLAPSE_PX``
+    (no optional cells visible). Pure helper — does not touch any
+    widget state.
+
+    Mirrors ``_apply_responsive_layout``'s reveal logic exactly:
+    ``want_<cell> = width >= thresholds[<cell>]``. Centralising the
+    rule means ``_label_overhead_px`` and ``_apply_responsive_layout``
+    can never disagree about which cells are mapped at a given width.
+    """
+    return tuple(
+        cell for cell, threshold in _RESPONSIVE_THRESHOLDS_PX
+        if width_px >= threshold
+    )
+
+
 def _style_get(node: DataNode, key: str) -> Any:
     """Read a style value with the module default as a fallback."""
     return node.style.get(key, _DEFAULT_STYLE[key])
@@ -988,23 +1062,32 @@ class ScanTreeWidget(tk.Frame):
         except tk.TclError:
             return 0
 
-    def _label_overhead_px(self) -> int:
-        """Pixels consumed by always-visible non-label cells + padding.
+    def _label_overhead_px(self, width: int | None = None) -> int:
+        """Pixels consumed by non-label cells at the current row layout.
 
         Used by ``_current_label_cap`` to estimate the label cell's
-        share of the canvas width. Optional cells (swatch, leg,
-        ls_canvas) are excluded: at each responsive threshold the
-        sidebar gains roughly the optional cell's width plus a small
-        padding allowance, so the label cell's share stays roughly
-        constant across thresholds — using the always-visible total
-        approximates the "what's left for the label" budget without
-        per-call introspection of which optionals are mapped.
+        share of the canvas width.
+
+        Phase 4z (CS-51): width-aware. When ``width`` is given, the
+        overhead reflects which optional cells will be packed at that
+        width per ``_RESPONSIVE_THRESHOLDS_PX``, so the dynamic label
+        cap shrinks the moment the swatch (or leg / ls_canvas)
+        reappears as the sash widens past its reveal threshold. When
+        ``width`` is ``None`` (the no-arg call from
+        ``_calibrate_sidebar_width``) the helper returns the
+        always-visible-only baseline — byte-equivalent to Phase 4w —
+        so the one-shot sash calibration's target is unchanged.
+
+        See ``_compute_label_overhead_px`` /
+        ``_visible_optional_cells_for_width`` for the pure helpers
+        that do the actual computation; this method just funnels the
+        instance's state into them.
         """
-        always = (
-            "state", "vis_cb", "row_toggle",
-            "hist", "gear", "compare", "x",
+        if width is None:
+            return _compute_label_overhead_px()
+        return _compute_label_overhead_px(
+            _visible_optional_cells_for_width(width)
         )
-        return sum(_CELL_MIN_PX[c] for c in always) + 30  # +slack
 
     def _current_label_cap(self) -> int:
         """Compute the dynamic label-character cap for the current canvas.
@@ -1013,6 +1096,14 @@ class ScanTreeWidget(tk.Frame):
         realised or the named font's metrics aren't available — this
         keeps construction-time and headless-test behaviour
         identical to Phase 4q (CS-33).
+
+        Phase 4z (CS-51): forwards ``canvas_width`` into the
+        width-aware ``_label_overhead_px`` so the cap shrinks the
+        moment an optional cell (swatch / leg / ls_canvas) reveals
+        at its CS-26 threshold. Without this forwarding the static
+        overhead stays sized for the swatch-absent state and the
+        label widget refuses to shrink, clipping the right-side
+        cells (Phase 4x friction #1).
         """
         try:
             canvas_width = self._scroll_canvas.winfo_width()
@@ -1021,7 +1112,7 @@ class ScanTreeWidget(tk.Frame):
         return _label_char_capacity(
             canvas_width_px=canvas_width,
             avg_char_px=self._avg_char_px(),
-            overhead_px=self._label_overhead_px(),
+            overhead_px=self._label_overhead_px(width=canvas_width),
         )
 
     def widest_label_pixel_width(

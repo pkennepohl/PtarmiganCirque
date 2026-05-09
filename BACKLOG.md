@@ -1656,8 +1656,8 @@ subsequent Phase 4 session.**
 | ⏳ | 🟡 | **UI lexicon / glossary doc — workflow vs project, sidebar vs sash, etc. (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4w (step 5 elicitation). Phase 4v's persistence work (CS-46) shipped the `.ptmg` file format and changed the menu entries from "Save Project" to "Save Workflow" — but the docs (BACKLOG.md, COMPONENTS.md, the in-app messages) still mix "project" and "workflow" interchangeably, and parallel ambiguity exists for several other UI elements (sidebar/sash/pane; row/cell/cluster; gear/style-dialog). The user has asked for a single canonical lexicon document so terminology stays consistent across Claude sessions and human conversations. **Architecture proposal:** new `LEXICON.md` (or `UI_GLOSSARY.md`) at the repo root, structured as a flat list of canonical terms with definitions. Suggested seed entries: **workflow** (a single `.ptmg` save unit covering all open tabs' graphs + plot defaults; what we used to call "project" pre-CS-46), **project** (deprecated synonym for workflow — kept in the codebase only on internal helper names where renaming would create churn for no gain), **sidebar** (the right-pane host for ScanTreeWidget, including the "Loaded Spectra" header strip), **sash** (the PanedWindow drag handle between two panes), **pane** (a top-level layout region inside a tab — left / centre / right), **row** (one ScanTreeWidget entry corresponding to one DataNode), **cell** (one widget within a row — state, swatch, vis_cb, …; see `_CELL_MIN_PX`), **always-visible cluster** (the cells that survive the responsive collapse — state, vis_cb, row_toggle, label, hist, gear, compare, x), **optional cluster** (the cells that collapse — swatch, leg, ls_canvas), **gear** (the ⚙ button that opens the unified style dialog), **scan-tree** (synonym for sidebar's body widget, ScanTreeWidget), **subject** (the parent DataNode the shared subject combobox routes operations against). **Lock decisions for the implementing session:** (i) where does it live — repo root (alongside BACKLOG / COMPONENTS) or `docs/`? (ii) is it a flat list or hierarchical (categorised by area)? (iii) do we add a CI check that rejects new mentions of deprecated synonyms? Cross-refs every doc touched by Phase 4v's "Save Workflow" rename — those mentions should be audited for "project" leakage at the same time |
 | ⏳ | 🟢 | **Cross-tab sash calibration — extract `_calibrate_sidebar_width` to shared host (CS-47 follow-up)** | Surfaced Phase 4w. CS-47's auto-bump only fires for `UVVisTab` because that's where it was wired; XAS / EXAFS / the future Compare / Simulate tabs each construct their own PanedWindow + ScanTreeWidget combination and would need parallel calibration. The clean path is to lift `_calibrate_sidebar_width` (plus `_SIDEBAR_MAX_CALIBRATED_PX`, plus the cached `_body_paned` / `_sidebar_pane` / `_sidebar_calibrated` triple) into a shared `tab_shell.py` mixin. Pairs perfectly with the existing 🟡 "Refactor uvvis_tab.py — extract host shell" register entry — that refactor's right-pane chrome extraction is the exact home for this method. Defer until the refactor lands |
 | ⏳ | 🟢 | **Re-calibrate sash on first NODE_ADDED after construction (CS-47 follow-up, USER-CONFIRMED)** | Surfaced Phase 4w + user-confirmed. CS-47's `_calibrate_sidebar_width` fires once on `after_idle` after the tab is built, but at that point the graph is empty — `widest_label_pixel_width()` returns 0 and the sash falls through to `_SIDEBAR_MIN_WIDTH_PX = 240`. After the user loads a project (or imports files), longer labels appear but the sash isn't re-bumped (the `_sidebar_calibrated` flag has flipped True). User-acceptable trade-off — predictability beats opportunistic re-bumping for typical workflows — but a simple follow-up: subscribe to `GraphEvent.NODE_ADDED` and clear `_sidebar_calibrated` when the first DataNode appears (one-shot refresh on first content). **Lock decision needed:** does the re-bump fire for every load or only when the *current* widest label exceeds the previously-calibrated target? Defer until the missing re-bump is observed in real use |
-| ⏳ | 🟢 | **Measure actual row overhead instead of static `_label_overhead_px` estimate (CS-47 follow-up)** | Surfaced Phase 4w. `_label_overhead_px` returns a static `sum(_CELL_MIN_PX[c] for c in always_visible_cells) + 30` ≈ 186 px estimate. Real per-row overhead varies with whether the commit (🔒) cell is packed (provisional rows only) and whether optional cells (swatch / leg / ls_canvas) are visible at the current sash width. Drift is bounded at ≤ 30 px (the slack term) so the dynamic label cap is in the right ballpark, but a precise measurement (`row.winfo_reqwidth() - label.winfo_reqwidth()` per row, or sum of `child.winfo_reqwidth()` for all non-label children) would tighten the cap. Cheap polish; defer until either a too-aggressive or too-loose truncation is reported in real use |
-| ⏳ | 🟡 | **Loaded Spectra responsive layout drops the ✕ when the swatch reappears at intermediate widths (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4x (step 5 elicitation). User reproduced: at the minimum sash width the row fits cleanly (lock / vis_cb / label / hist / gear / → / ✕ visible, no swatch); incrementing the sash by a small amount triggers the swatch column to re-appear (per the CS-26 / CS-30 responsive collapse threshold) BUT the ✕ falls off the right edge of the row at the same width — net effect, the user can no longer remove a node from a row that just gained a colour swatch. **Suspected root cause:** the cell-priority order in `_RESPONSIVE_THRESHOLDS_PX` (CS-26) admits the swatch cell at a threshold that overlaps with the dynamic label cap from CS-47's `_label_char_capacity` — the label cap is computed from `canvas_width - _label_overhead_px`, where `_label_overhead_px` is a static estimate that does NOT account for the swatch's width when it returns at the same threshold. The label cap stays generous (it was sized for the swatch-absent state), the label widget refuses to shrink, and the right-side cells (✕ at the very end) get clipped. Also implicates the static `_label_overhead_px` Phase 4w friction #6. **Architecture proposal (lock pending):** (a) thread the optional-cell visibility into `_label_overhead_px` so the cap shrinks the moment the swatch reappears (couples the two helpers — currently independent); (b) OR bump the responsive threshold for swatch reappearance higher so there's always slack for the ✕ at the same width; (c) OR measure actual per-row overhead post-pack (Phase 4w friction #6) and use that as the cap source. Pairs with **Phase 4w friction #6** (measure actual row overhead) and **CS-26 / CS-30 / CS-47 / CS-48** cluster. **Lock decisions:** (i) which of the three architectures lands? (ii) does the cap re-compute on every `_apply_responsive_layout` call (today: yes, on canvas <Configure>) or only when the optional-cell set changes? (iii) does the fix change the threshold values themselves (CS-26 lock relaxation) or only the label-cap derivation? **Affected:** `scan_tree_widget.py` (the `_label_overhead_px` helper, `_apply_responsive_layout`, possibly `_RESPONSIVE_THRESHOLDS_PX` itself if the lock relaxes), tests for the new threshold/label-cap interaction. User has explicitly flagged "tempted to leave it for a little while" — defer until at least one other 🟡 widget-layout entry comes through, or until a regression on a different sash width is reported |
+| ✅ | 🟢 | ~~**Measure actual row overhead instead of static `_label_overhead_px` estimate (CS-47 follow-up)**~~ ✅ Resolved in Phase 4z (CS-51). The width-aware `_label_overhead_px(width=…)` path now sums `_CELL_MIN_PX[c]` for the always-visible cells PLUS the optional cells revealed at `width` per `_RESPONSIVE_THRESHOLDS_PX`, eliminating the static-estimate drift for the optional-cell axis (the dominant source of error). The commit-cell (🔒, provisional only) drift remains as ≤ 22 px noise, but per-cell-vocabulary truth replaces the post-pack `winfo_reqwidth()` measurement that this entry originally proposed — same goal, simpler implementation, no Tk geometry coupling. Spirit honoured. |
+| ✅ | 🟡 | ~~**Loaded Spectra responsive layout drops the ✕ when the swatch reappears at intermediate widths (USER-FLAGGED)**~~ ✅ Resolved in Phase 4z (CS-51). Architecture (a) landed: `_label_overhead_px(width=…)` is now width-aware and sums the optional cells revealed at the current canvas width per CS-26's `_RESPONSIVE_THRESHOLDS_PX`. `_current_label_cap` forwards the canvas width into it, so the dynamic label cap shrinks the moment the swatch reappears at 240 px. CS-26 thresholds + `_label_char_capacity` signature unchanged (decision (iii) — no threshold-value relaxation). Cap recompute lifecycle unchanged (decision (ii) — every `_apply_responsive_layout` call). Calibration site unchanged (no-args path is byte-equivalent to Phase 4w). Pinned by `TestComputeLabelOverheadPx` / `TestVisibleOptionalCellsForWidth` / `TestLabelOverheadPxWidthAware` (19 pure tests) + `TestDynamicLabelCapWiringPhase4z` (5 integration tests). |
 | ⏳ | 🟡 | **StyleDialog must surface ALL node-table parameters (incl. label rename) + tighten organisation for scale (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4x (step 5 elicitation). Today the per-node StyleDialog (gear icon) covers the universal style schema (`color`, `linestyle`, `linewidth`, `alpha`, `visible`, `in_legend`, `fill`, `fill_alpha`) plus per-NodeType extensions (CS-05 + CS-36 `show_baseline_curve`). The user has flagged that as more parameters land (label rename gesture, plot_kind from the markers register entry, `y_axis` from carry-forward T, etc.), the dialog will become unwieldy without a re-organisation pass. **Architecture proposal (lock pending):** restructure the dialog around grouped sections — Appearance (color / swatch / linestyle / linewidth / alpha), Legend (in_legend, label-rename Entry), Fill (fill / fill_alpha), Per-type (show_baseline_curve, plot_kind, y_axis, …); each group is a `tk.LabelFrame` so the visual grouping is obvious. **First concrete add:** label-rename Entry — today the only path to rename a node is to double-click the row label in the sidebar (CS-33 `_begin_label_edit`); having it inside the StyleDialog mirrors how the user thinks about "node properties" and avoids competing for the gesture's attention. Cross-refs: CS-33 (label-edit machinery), CS-44 follow-up T (per-style `y_axis` row), the markers register entry above (plot_kind / marker / marker_size). **Lock decisions:** (i) does the dialog get a tabbed shape (Appearance / Provenance / Per-type) — pairs with the next register entry below — or stay single-pane with LabelFrame groupings? (ii) does the label-rename Entry surface a validation error inline (e.g. duplicate-label warning) or rely on the existing CS-33 rules? (iii) which existing widgets lift into per-type groupings vs stay universal? **Affected:** `style_dialog.py` (re-layout + new label-rename Entry), tests for the new section grouping + label-rename round-trip. Pairs with C and D below (same window) |
 | ⏳ | 🟡 | **Per-node parameter window: add a Provenance tab (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4x (step 5 elicitation). The right-sidebar's per-row history dropdown (the `▿` chevron next to the label, opens an ad-hoc list of "Op A → Op B → Op C") is intentionally compact — but the user has asked for a more detailed view that lives inside the gear-icon dialog as a second tab. The new tab would show: ancestor walk back to the RAW_FILE / multi-input source, full op params for each step (params dict pretty-printed), timestamps, engine + engine_version, implementation hash (CS-45), status, log excerpts (when populated). **Architecture proposal (lock pending):** convert the StyleDialog to a `ttk.Notebook` shape — Tab 1 "Style" (today's content, possibly re-organised per the previous register entry); Tab 2 "Provenance" (the new view). Reuses the same Toplevel + button row (Apply · ∀ Apply to All · Save · Cancel). The provenance tab is read-only this phase; the "add historical node" gesture lands as the separate register entry below (D). **Lock decisions:** (i) is the provenance tab populated lazily (on-tab-switch) or eagerly (at dialog construction)? (ii) does it scroll vertically as a single column, or render as a tree with expandable nodes? (iii) does it show DISCARDED ancestors (history-style) or filter them? **Affected:** `style_dialog.py` (Notebook restructure), graph-walk helper for the ancestor list (likely a new `ProjectGraph.ancestors_of(node_id)` method), tests for the tab construction + the ancestor walk. Pairs with B above (same dialog) and D below (same tab — D adds a gesture, this entry adds the read-only view) |
 | ⏳ | 🟡 | **"Add to graph" gesture from a node's Provenance tab (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4x (step 5 elicitation). Once C lands (read-only Provenance tab), the user has asked for an "Add to graph" gesture per ancestor — clicking it materialises the historical ancestor as a new live node in the same graph without re-loading from disk. Concrete use case: the user has a SMOOTHED node loaded; they realise they want to compare the smoothed result against the underlying RAW_FILE / UVVIS parent; today the only path is to either (a) un-discard the parent (if it was discarded) or (b) re-load the source file via the LOAD path (which creates a fresh UVVIS DataNode with a different id, breaks the existing graph linkage to the SMOOTHED descendant). The new gesture would walk the ancestor chain, find the requested historical node, flip its `active` flag back to True (if currently inactive) OR clone it as a new live node parented on the same source. **Architecture (lock pending):** (a) does the gesture flip the existing node's `active` flag (cheap; preserves graph identity; couples to the existing CS-22 `_spectrum_nodes` filter), OR clone the node as a new id (preserves the historical node's state but creates a graph-edge fork)? (b) what's the gesture — button per provenance row, right-click, drag-and-drop into the sidebar? (c) does it emit a NODE_ADDED event (clone path) or NODE_STYLE_CHANGED + a re-render trigger (active-flip path)? **Affected:** `style_dialog.py` (the new gesture in the Provenance tab), `graph.py` (a new `restore_ancestor` or similar helper, depending on which architecture lands), `uvvis_tab._refresh_shared_subjects` (re-runs after the gesture so the resurrected node appears in the combobox), tests for both architectures. Pairs with C above (the tab the gesture lives on) AND with the existing 🟡 Trash can register entry (Trash + this gesture overlap conceptually — both surface "previously hidden" nodes) |
@@ -2263,7 +2263,7 @@ relevant subsequent Phase 4 session.**
    NODE_ADDED is desirable. **Cross-ref:** see the new
    register entry above.
 
-6. 🟢 **Static label-overhead estimate vs measured per-row
+6. ~~🟢 **Static label-overhead estimate vs measured per-row
    overhead.** `_label_overhead_px` returns a static ~186 px
    sum-of-cell-mins + slack rather than measuring the actual
    per-row overhead (which varies with whether commit /
@@ -2271,7 +2271,14 @@ relevant subsequent Phase 4 session.**
    ≤30 px so the dynamic cap is in the right ballpark.
    Cheap polish; defer until a too-aggressive or too-loose
    truncation is reported. **Cross-ref:** see the new
-   register entry above.
+   register entry above.~~ ✅ Resolved in Phase 4z (CS-51) for
+   the optional-cell visibility axis (the dominant source of
+   drift). The width-aware `_label_overhead_px(width=…)` now
+   sums optional cells revealed at the current canvas width
+   per CS-26's thresholds. Commit-cell (🔒, provisional only)
+   drift remains as ≤22 px residual noise but is well within
+   the existing slack term — defer until a real-world
+   truncation regression is reported on a provisional row.
 
 7. 🟢 **`_optional_row_widgets` inner type relaxed from
    `dict[str, tk.Widget]` to `dict[str, Any]` to accommodate
@@ -2304,7 +2311,7 @@ Items 6–8 are documentation-style notes / cross-refs without
 new register entries. **Do not fix until the relevant subsequent
 Phase 4 session.**
 
-1. 🟡 **Loaded Spectra responsive layout drops the ✕ when the
+1. ~~🟡 **Loaded Spectra responsive layout drops the ✕ when the
    swatch reappears at intermediate widths (USER-FLAGGED).**
    User reproduced during Phase 4x step 5: minimum sash width
    fits cleanly (no swatch, ✕ visible); incrementing the sash
@@ -2317,7 +2324,15 @@ Phase 4 session.**
    explicitly flagged "tempted to leave it for a little
    while". **Cross-ref:** see the new register entry above for
    the architecture (three options for tying label cap to
-   optional-cell visibility).
+   optional-cell visibility).~~ ✅ Resolved in Phase 4z (CS-51).
+   Architecture (a) landed: `_label_overhead_px(width=…)`
+   width-aware, summing optional cells revealed per CS-26 at
+   the current canvas width; `_current_label_cap` forwards the
+   width. The pure helpers `_compute_label_overhead_px` and
+   `_visible_optional_cells_for_width` mirror
+   `_apply_responsive_layout`'s reveal predicate so the cap and
+   the row layout cannot drift. The bug-fix invariant is pinned
+   by `test_cap_at_swatch_threshold_smaller_than_static_overhead_path`.
 
 2. 🟡 **StyleDialog must surface ALL node-table parameters
    incl. label rename + tighten organisation for scale
@@ -2491,6 +2506,57 @@ session.**
    "(default — follow type)" or "follow type default" so the
    semantics surface in the dropdown. Defer until a usability
    report. No new register entry; cross-ref only.
+
+### Friction points carried forward from Phase 4z
+
+These are concrete obstacles the next Phase 4 session will hit.
+Identified during Phase 4z while landing the width-aware label-
+cell overhead helper (CS-51) — closing both Phase 4x friction
+#1 (USER-FLAGGED) and Phase 4w friction #6. All three items
+below are Claude-surfaced 🟢 polish notes flagged during step 5;
+none have new register entries (the user explicitly accepted no
+new items at step 5). **Do not fix until the relevant subsequent
+Phase 4 session.**
+
+1. 🟢 **`_calibrate_sidebar_width` still uses the no-args
+   (always-visible-only) overhead path (Claude-surfaced).** The
+   one-shot sash calibration calls `self._label_overhead_px()`
+   without a width arg, so the calibrated target reflects the
+   always-visible cluster only. At the calibration target width
+   itself the optionals (swatch / leg / ls_canvas) WILL be
+   visible, so the calibration may undershoot the ideal sash
+   width by up to 84 px (sum of all three optional cell mins).
+   `_SIDEBAR_MAX_CALIBRATED_PX = 480` usually swallows the
+   shortfall; not a bug today. Cheap follow-up: use a fixed-
+   point or single-pass derivation that targets a width where
+   the optionals will be visible. No new register entry; defer
+   until a "calibration too narrow" regression is reported.
+
+2. 🟢 **Floor clamping at narrow widths masks the bug-fix
+   visual cue between 239→240 px (Claude-surfaced).** At those
+   widths both the static and dynamic `_label_char_capacity`
+   results clamp to `_LABEL_CHAR_FLOOR = 8`, so the painted
+   label is identical at 239 and 240. The right-side cells are
+   no longer clipped (the user-flagged bug IS fixed) because
+   the cap correctly accounts for the swatch's overhead in the
+   dynamic path — but the visible label-truncation cue only
+   fires at the leg / ls_canvas boundaries (279→280, 319→320).
+   Cosmetic: a future polish could lower `_LABEL_CHAR_FLOOR`
+   to 6 (or fold the floor into the threshold-derivation logic
+   so it scales with width). No new register entry.
+
+3. 🟢 **`_OVERHEAD_SLACK_PX = 30` is still a heuristic
+   constant (Claude-surfaced).** Lifted from Phase 4w as-is.
+   Now that the per-cell-vocabulary axis is honest, the
+   inter-cell padding slack could be tightened (Tk's pack
+   `padx=2` etc. sums to less than 30 px in practice). Cheap
+   follow-up: instrument one paint cycle, measure
+   `row.winfo_reqwidth() - sum(child.winfo_reqwidth())`
+   across the always-visible set, pin the constant to the
+   measurement. No new register entry; defer until either too-
+   tight or too-loose truncation surfaces in real use. Closes
+   the residual portion of the now-✅ Phase 4w friction #6
+   that wasn't addressed by the per-cell-vocabulary path.
 
 ---
 
@@ -2706,7 +2772,7 @@ the resolving phase + commit SHA appended to the row.
 
 ---
 
-*Document version: 1.24 — May 2026*
+*Document version: 1.25 — May 2026*
 *1.1: Known Bugs register added 2026-04-27 after Phase 4b manual testing.*
 *1.2: Phase 4c — baseline correction lands; B-001 / B-003 / B-004
 resolved; Phase 4c friction points logged.*
@@ -3139,4 +3205,34 @@ to `(node_type, style=None)` in lockstep with the helper
 signature; `test_per_row_buttons_emit_one_call_per_universal_key`
 asserts nine per-row ∀ buttons (was eight) and includes
 `y_axis` in the expected key list.*
+*1.25: Phase 4z — width-aware label-cell overhead helper (CS-51).
+Closes Phase 4x friction #1 (USER-FLAGGED Loaded Spectra row drops
+the ✕ when the swatch reappears at intermediate sash widths) AND
+Phase 4w friction #6 (measure actual row overhead). Two new pure
+module-level helpers in `scan_tree_widget.py` —
+`_compute_label_overhead_px(visible_optional_cells=())` and
+`_visible_optional_cells_for_width(width_px)` — and a width-aware
+`_label_overhead_px(width=None)` instance method whose width-aware
+path sums the always-visible cell mins PLUS the optional cells
+revealed at the current canvas width per CS-26's
+`_RESPONSIVE_THRESHOLDS_PX`. `_current_label_cap` forwards the
+canvas width into it so the dynamic label cap shrinks the moment
+the swatch (or leg / ls_canvas) reappears at its reveal threshold,
+preventing the right-side cells (incl. the ✕) from being clipped.
+Calibration site (`_calibrate_sidebar_width`) keeps the no-args
+path — byte-equivalent to Phase 4w. Decisions taken: (i)
+architecture (a) — width-aware overhead, NOT post-pack
+`winfo_reqwidth()`; (ii) cap recompute lifecycle unchanged (every
+`_apply_responsive_layout` call); (iii) NO change to
+`_RESPONSIVE_THRESHOLDS_PX` integer values (CS-26 lock preserved;
+only CS-47 lock relaxes for the `_label_overhead_px` signature).
+Three new Claude-surfaced 🟢 friction items captured at step 5
+without new register entries: calibration still uses the no-args
+path (may undershoot by up to 84 px); floor clamping at 239→240
+masks the visual cue (right-side cells still un-clipped, but
+label-truncation diff hidden); `_OVERHEAD_SLACK_PX = 30` is a
+heuristic constant. 805 tests, all green (781 + 24 new: 7 in
+TestComputeLabelOverheadPx + 7 in TestVisibleOptionalCellsForWidth
++ 5 in TestLabelOverheadPxWidthAware + 5 in
+TestDynamicLabelCapWiringPhase4z).*
 *Supersedes: BACKLOG.md (original)*
