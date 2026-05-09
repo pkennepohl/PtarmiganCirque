@@ -2783,6 +2783,179 @@ class TestDynamicLabelCapWiring(unittest.TestCase):
 
 
 @unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestDynamicLabelCapWiringPhase4z(unittest.TestCase):
+    """Phase 4z (CS-51) — width-aware overhead at the reveal thresholds.
+
+    Verifies that the label cap actually shrinks the moment the
+    swatch / leg / ls_canvas reveals at its CS-26 threshold. Closes
+    Phase 4x friction #1 (USER-FLAGGED): without the width-aware
+    overhead, the cap stayed sized for the swatch-absent state and
+    the right-side cells (incl. the ✕) fell off the row's right
+    edge when the swatch reappeared.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from scan_tree_widget import ScanTreeWidget
+        cls.ScanTreeWidget = ScanTreeWidget
+
+    def setUp(self) -> None:
+        self.host = tk.Frame(_root)
+        self.host.pack()
+        self.graph = ProjectGraph()
+
+    def tearDown(self) -> None:
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    def _build_widget(self):
+        _, cb = _redraw_calls()
+        widget = self.ScanTreeWidget(
+            self.host, self.graph, [NodeType.UVVIS], cb,
+        )
+        widget.update_idletasks()
+        return widget
+
+    def _force_canvas_width(self, widget, width):
+        widget._scroll_canvas.winfo_width = lambda: width  # type: ignore
+
+    def _label_widget(self, widget, node_id):
+        for w in widget._row_frames[node_id].winfo_children():
+            if isinstance(w, tk.Label) and w.cget("text") not in ("🔒", "⋯"):
+                return w
+        return None
+
+    def test_cap_at_swatch_threshold_smaller_than_static_overhead_path(self):
+        # The Phase 4x friction #1 bug-fix invariant. At the swatch
+        # threshold (240 px) the swatch column reveals, so the
+        # width-aware overhead grows by _CELL_MIN_PX["swatch"]. The
+        # dynamic cap therefore must come out smaller than the
+        # cap the Phase 4w static-overhead path would have produced
+        # at the same width — pinning the bug fix without depending
+        # on threshold-boundary floor clamping. Pre-Phase 4z this
+        # would fail (observed == static_path).
+        from scan_tree_widget import (
+            _label_char_capacity, _compute_label_overhead_px,
+        )
+        long = "x" * 80
+        self.graph.add_node(_data("a", label=long))
+        widget = self._build_widget()
+
+        # Use a width where neither the static nor dynamic path
+        # hits the floor — 280 px (leg threshold). Dynamic overhead
+        # at 280 includes swatch + leg (≥ 232 px); static remains
+        # 186 px; the available-pixel difference is wide enough to
+        # show across font widths.
+        self._force_canvas_width(widget, 280)
+        observed = widget._current_label_cap()
+        static_path = _label_char_capacity(
+            canvas_width_px=280,
+            avg_char_px=widget._avg_char_px(),
+            overhead_px=_compute_label_overhead_px(),
+        )
+        self.assertLess(
+            observed, static_path,
+            msg=("dynamic cap must be smaller than the static-overhead "
+                 "cap at 280 px — that's the Phase 4z fix"),
+        )
+
+    def test_cap_shrinks_at_leg_reveal_threshold_vs_just_below(self):
+        # At 279 px only the swatch is visible; at 280 px the leg
+        # joins it. The width-aware overhead grows by
+        # _CELL_MIN_PX["leg"], so the dynamic cap must shrink even
+        # though the canvas grew by one pixel. Sanity that the
+        # threshold transition is observable through
+        # ``_current_label_cap`` for the second optional cell too.
+        long = "x" * 80
+        self.graph.add_node(_data("a", label=long))
+        widget = self._build_widget()
+
+        self._force_canvas_width(widget, 279)
+        cap_below = widget._current_label_cap()
+
+        self._force_canvas_width(widget, 280)
+        cap_at = widget._current_label_cap()
+
+        self.assertLess(
+            cap_at, cap_below,
+            msg=("at 279 px only swatch is visible; at 280 px leg "
+                 "joins it; the cap must shrink across that boundary"),
+        )
+
+    def test_cap_shrinks_at_ls_canvas_reveal_threshold_vs_just_below(self):
+        # And again at the ls_canvas reveal (320 px). The threshold
+        # gap (319 → 320) crosses the third optional cell.
+        long = "x" * 80
+        self.graph.add_node(_data("a", label=long))
+        widget = self._build_widget()
+
+        self._force_canvas_width(widget, 319)
+        cap_below = widget._current_label_cap()
+
+        self._force_canvas_width(widget, 320)
+        cap_at = widget._current_label_cap()
+
+        self.assertLess(cap_at, cap_below)
+
+    def test_cap_below_swatch_threshold_matches_phase_4w_static_path(self):
+        # Below the smallest threshold no optional cells are
+        # visible, so the width-aware overhead equals the no-args
+        # baseline (186 px). The cap at width = 239 px must
+        # therefore equal what the Phase 4w static-overhead path
+        # would have produced — a back-compat invariant.
+        from scan_tree_widget import (
+            _label_char_capacity, _compute_label_overhead_px,
+        )
+        long = "x" * 80
+        self.graph.add_node(_data("a", label=long))
+        widget = self._build_widget()
+        self._force_canvas_width(widget, 239)
+
+        observed = widget._current_label_cap()
+        expected_static = _label_char_capacity(
+            canvas_width_px=239,
+            avg_char_px=widget._avg_char_px(),
+            overhead_px=_compute_label_overhead_px(),  # no optionals
+        )
+        self.assertEqual(observed, expected_static)
+
+    def test_painted_label_shrinks_at_leg_reveal_threshold(self):
+        # End-to-end observable: at 279 px only the swatch is
+        # mapped, at 280 px the leg joins it, so the painted label
+        # must have strictly fewer characters at 280 than at 279.
+        # Pre-Phase 4z this would fail because the static overhead
+        # stayed at 186 across the boundary, so the painted label
+        # was identical and the right-side cells (incl. ✕) got
+        # clipped. Use the leg boundary rather than swatch so
+        # neither cap clamps to the floor — the floor would mask
+        # the visible diff.
+        long = "x" * 80
+        self.graph.add_node(_data("a", label=long))
+        widget = self._build_widget()
+
+        self._force_canvas_width(widget, 279)
+        row = widget._row_frames["a"]
+        widget._apply_responsive_layout("a", row)
+        widget.update_idletasks()
+        below = self._label_widget(widget, "a").cget("text")
+
+        self._force_canvas_width(widget, 280)
+        widget._apply_responsive_layout("a", row)
+        widget.update_idletasks()
+        at = self._label_widget(widget, "a").cget("text")
+
+        self.assertLess(
+            len(at), len(below),
+            msg=(f"painted label at 280 px ({len(at)} chars) "
+                 f"should be strictly shorter than at 279 px "
+                 f"({len(below)} chars) — leg reveal fires the "
+                 f"width-aware overhead"),
+        )
+
+
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
 class TestWidestLabelPixelWidth(unittest.TestCase):
     """Phase 4w (CS-47) — public ``widest_label_pixel_width`` measurement.
 
