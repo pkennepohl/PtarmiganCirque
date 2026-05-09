@@ -3434,5 +3434,284 @@ class TestMultiAxisRoutingHelpers(unittest.TestCase):
         self.assertLess(_TERTIARY_AXIS_OFFSET_FRAC, 1.30)
 
 
+# ---------------------------------------------------------------------------
+# Phase 4x (CS-49) — cross-type parent acceptance, end-to-end
+# ---------------------------------------------------------------------------
+
+
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display required")
+class TestUVVisTabPhase4xCrossTypeAcceptance(unittest.TestCase):
+    """End-to-end coverage of the Phase 4x panel-parent widening.
+
+    Closes the user-flagged Phase 4w friction #1 ("Cannot do
+    baseline correction from a smoothed spectrum. Cannot smooth
+    derivative plots."). Two new workflows must work end-to-end via
+    the shared subject combobox:
+
+    1. Smooth → baseline-correct: load UVVIS, smooth it
+       (SMOOTHED child), flip the shared subject to the SMOOTHED
+       child, click the inline baseline Apply, get a BASELINE child
+       parented on the SMOOTHED node.
+    2. Second-derivative → smooth: load UVVIS, second-derivative it
+       (SECOND_DERIVATIVE child), flip the shared subject to the
+       derivative (now visible in the combobox), click the smoothing
+       Apply, get a SMOOTHED child parented on the SECOND_DERIVATIVE
+       node.
+
+    Plus three audit-stability checks: a SECOND_DERIVATIVE subject
+    enables ONLY SmoothingPanel (the other three panels + inline
+    baseline stay disabled — those tuples were intentionally NOT
+    widened in Phase 4x).
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from uvvis_tab import UVVisTab
+        cls.UVVisTab = UVVisTab
+
+    def setUp(self):
+        self.host = tk.Frame(_root)
+        self.host.pack()
+        self.graph = ProjectGraph()
+        self.tab = self.UVVisTab(self.host, graph=self.graph)
+        self.tab.pack(fill=tk.BOTH, expand=True)
+        self.tab.update_idletasks()
+
+    def tearDown(self):
+        try:
+            self.tab.destroy()
+        except Exception:
+            pass
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    # ---- helpers ----------------------------------------------------
+
+    def _add_uvvis(self, nid: str = "u1") -> str:
+        wl = np.linspace(200.0, 800.0, 601)
+        absorb = np.exp(-((wl - 500.0) ** 2) / (2.0 * 25.5 ** 2)) + 0.05
+        self.graph.add_node(DataNode(
+            id=nid, type=NodeType.UVVIS,
+            arrays={"wavelength_nm": wl, "absorbance": absorb},
+            metadata={"_load_id": f"L_{nid}", "source_file": f"syn_{nid}"},
+            label=nid, state=NodeState.COMMITTED,
+            style={"color": "#1f77b4", "linestyle": "solid",
+                   "linewidth": 1.5, "alpha": 0.9, "visible": True,
+                   "in_legend": True, "fill": False, "fill_alpha": 0.08},
+        ))
+        return nid
+
+    def _select_shared(self, node_id: str) -> None:
+        for key, nid in self.tab._shared_subject_map.items():
+            if nid == node_id:
+                self.tab._shared_subject.set(key)
+                self.tab.update_idletasks()
+                return
+        self.fail(f"node {node_id!r} not in shared subject map")
+
+    # ---- workflow 1: smooth → baseline-correct -------------------
+
+    def test_baseline_apply_on_smoothed_subject_creates_baseline_child(self):
+        # Load UVVIS, smooth it via the smoothing panel, flip the
+        # shared subject to the SMOOTHED child, configure the
+        # baseline section for linear mode with explicit anchors,
+        # click Apply.
+        from nodes import OperationType
+        self._add_uvvis("u1")
+        self.tab.update_idletasks()
+        self.tab._smoothing_panel._mode_var.set("savgol")
+        self.tab._smoothing_panel._window_length.set(5)
+        self.tab._smoothing_panel._polyorder.set(2)
+        _, smoothed_id = self.tab._smoothing_panel._apply()
+        self.tab.update_idletasks()
+        self._select_shared(smoothed_id)
+
+        # Apply button now enabled (covered by the rewritten
+        # test_smoothed_subject_disables_normalise_only above);
+        # configure linear mode + go.
+        self.tab._baseline_mode.set("linear")
+        self.tab._baseline_anchor_lo.set("250")
+        self.tab._baseline_anchor_hi.set("750")
+        self.tab._refresh_baseline_param_rows()
+
+        n_before = len(self.graph.nodes)
+        self.tab._apply_baseline()
+        self.tab.update_idletasks()
+        n_after = len(self.graph.nodes)
+        # Apply produces one OperationNode + one DataNode.
+        self.assertEqual(n_after - n_before, 2)
+
+        # Find the new BASELINE node and confirm it is parented on
+        # the SMOOTHED node via a single BASELINE op.
+        baseline_nodes = [
+            n for n in self.graph.nodes_of_type(NodeType.BASELINE,
+                                                 state=None)
+            if n.metadata.get("baseline_parent_id") == smoothed_id
+        ]
+        self.assertEqual(len(baseline_nodes), 1,
+                         "exactly one BASELINE child of the SMOOTHED "
+                         "node must exist after Apply")
+        baseline = baseline_nodes[0]
+        self.assertEqual(baseline.state, NodeState.PROVISIONAL)
+        # Walk the graph: BASELINE DataNode → BASELINE OperationNode → SMOOTHED parent.
+        op_parents = self.graph.parents_of(baseline.id)
+        self.assertEqual(len(op_parents), 1)
+        op = self.graph.get_node(op_parents[0])
+        self.assertEqual(op.type, OperationType.BASELINE)
+        self.assertEqual(op.input_ids, [smoothed_id])
+        # Output type stays BASELINE (the op-natural NodeType).
+        self.assertEqual(baseline.type, NodeType.BASELINE)
+        # Arrays carry the canonical curve schema.
+        self.assertIn("wavelength_nm", baseline.arrays)
+        self.assertIn("absorbance", baseline.arrays)
+
+    def test_baseline_dashed_overlay_recovers_baseline_curve_from_smoothed_parent(self):
+        # CS-29 dashed overlay walks BASELINE.absorbance =
+        # parent.absorbance - baseline_curve. The helper
+        # (uvvis_baseline.compute_baseline_curve) is type-agnostic
+        # but Phase 4x is the first phase where a SMOOTHED parent
+        # is reachable; pin that the helper still returns a (wl,
+        # curve) tuple — not None — when the parent is SMOOTHED.
+        from uvvis_baseline import compute_baseline_curve
+        self._add_uvvis("u1")
+        self.tab.update_idletasks()
+        self.tab._smoothing_panel._mode_var.set("savgol")
+        self.tab._smoothing_panel._window_length.set(5)
+        self.tab._smoothing_panel._polyorder.set(2)
+        _, smoothed_id = self.tab._smoothing_panel._apply()
+        self.tab.update_idletasks()
+        self._select_shared(smoothed_id)
+        self.tab._baseline_mode.set("linear")
+        self.tab._baseline_anchor_lo.set("250")
+        self.tab._baseline_anchor_hi.set("750")
+        self.tab._refresh_baseline_param_rows()
+        self.tab._apply_baseline()
+        self.tab.update_idletasks()
+
+        baseline = next(
+            n for n in self.graph.nodes_of_type(NodeType.BASELINE,
+                                                 state=None)
+            if n.metadata.get("baseline_parent_id") == smoothed_id
+        )
+        result = compute_baseline_curve(self.graph, baseline)
+        self.assertIsNotNone(result,
+                             "compute_baseline_curve must succeed "
+                             "with a SMOOTHED parent (Phase 4x)")
+        wl, curve = result
+        self.assertEqual(wl.shape, curve.shape)
+
+    # ---- workflow 2: second-derivative → smooth -------------------
+
+    def test_smoothing_apply_on_second_derivative_subject_creates_smoothed_child(self):
+        # Load UVVIS, derive it, flip the shared subject to the
+        # SECOND_DERIVATIVE child (now in the combobox), click
+        # smoothing Apply.
+        from nodes import OperationType
+        self._add_uvvis("u1")
+        self.tab.update_idletasks()
+        # Apply second-derivative via its panel — the panel is
+        # already wired to the shared subject (defaulting to u1).
+        _, d2_id = self.tab._second_derivative_panel._apply()
+        self.tab.update_idletasks()
+        # Flip the shared subject to the new derivative.
+        self._select_shared(d2_id)
+        # SmoothingPanel's Apply button must now be enabled.
+        self.assertEqual(
+            str(self.tab._smoothing_panel._apply_btn.cget("state")),
+            "normal",
+            "SmoothingPanel must accept a SECOND_DERIVATIVE subject "
+            "after the Phase 4x widening")
+
+        self.tab._smoothing_panel._mode_var.set("savgol")
+        self.tab._smoothing_panel._window_length.set(11)
+        self.tab._smoothing_panel._polyorder.set(2)
+        n_before = len(self.graph.nodes)
+        op_id, out_id = self.tab._smoothing_panel._apply()
+        n_after = len(self.graph.nodes)
+        self.assertEqual(n_after - n_before, 2)
+
+        op = self.graph.get_node(op_id)
+        out = self.graph.get_node(out_id)
+        self.assertEqual(op.type, OperationType.SMOOTH)
+        self.assertEqual(op.input_ids, [d2_id])
+        # Output carries the natural op NodeType (SMOOTHED), not
+        # the parent's type (SECOND_DERIVATIVE). The y-axis-misroute
+        # caveat is the open Phase 4u friction #10 / per-style
+        # y_axis override hook.
+        self.assertEqual(out.type, NodeType.SMOOTHED)
+        self.assertEqual(out.metadata["smoothing_parent_id"], d2_id)
+
+    # ---- audit-stability: SECOND_DERIVATIVE keeps the other
+    # ---- panels disabled ----------------------------------------
+
+    def test_second_derivative_subject_disables_non_smoothing_panels(self):
+        # With a SECOND_DERIVATIVE subject in the shared combobox,
+        # ONLY SmoothingPanel becomes enabled (CS-49 widening).
+        # NormalisationPanel, PeakPickingPanel, SecondDerivativePanel,
+        # and the inline baseline section all stay disabled — those
+        # tuples were intentionally NOT widened in Phase 4x.
+        self._add_uvvis("u1")
+        self.tab.update_idletasks()
+        _, d2_id = self.tab._second_derivative_panel._apply()
+        self.tab.update_idletasks()
+        self._select_shared(d2_id)
+
+        self.assertEqual(
+            str(self.tab._smoothing_panel._apply_btn.cget("state")),
+            "normal",
+            "SmoothingPanel — widened in Phase 4x — must enable")
+        self.assertEqual(
+            str(self.tab._normalisation_panel._apply_btn.cget("state")),
+            "disabled",
+            "NormalisationPanel — audit-time NOT widened — stays "
+            "disabled on a SECOND_DERIVATIVE subject")
+        self.assertEqual(
+            str(self.tab._peak_picking_panel._apply_btn.cget("state")),
+            "disabled",
+            "PeakPickingPanel — audit-time NOT widened — stays "
+            "disabled on a SECOND_DERIVATIVE subject")
+        self.assertEqual(
+            str(self.tab._second_derivative_panel._apply_btn.cget("state")),
+            "disabled",
+            "SecondDerivativePanel — chained derivatives excluded "
+            "by audit decision — stays disabled")
+        self.assertEqual(
+            str(self.tab._apply_baseline_btn.cget("state")),
+            "disabled",
+            "Inline baseline — Phase 4x added SMOOTHED only, NOT "
+            "SECOND_DERIVATIVE — stays disabled")
+
+    # ---- combobox order: spectrum first, then derivative -------
+
+    def test_shared_combobox_orders_spectrum_then_derivative(self):
+        # _refresh_shared_subjects walks _spectrum_nodes() FIRST
+        # (UVVIS → BASELINE → NORMALISED → SMOOTHED) then
+        # _second_derivative_nodes(). This pins the order so a
+        # future re-shuffle has to update both the docstring and
+        # this test.
+        u1 = self._add_uvvis("u1")
+        self.tab.update_idletasks()
+        _, d2_id = self.tab._second_derivative_panel._apply()
+        self.tab.update_idletasks()
+        items = self.tab._shared_subject_cb.cget("values")
+        if isinstance(items, str):
+            items = tuple(items.split())
+        self.assertEqual(len(items), 2)
+        # First entry maps to UVVIS; last entry maps to
+        # SECOND_DERIVATIVE.
+        first_id = self.tab._shared_subject_map[items[0]]
+        last_id = self.tab._shared_subject_map[items[-1]]
+        self.assertEqual(first_id, u1)
+        self.assertEqual(last_id, d2_id)
+        # NodeType sanity — defends the test against future label
+        # collisions.
+        self.assertEqual(self.graph.get_node(first_id).type,
+                         NodeType.UVVIS)
+        self.assertEqual(self.graph.get_node(last_id).type,
+                         NodeType.SECOND_DERIVATIVE)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
