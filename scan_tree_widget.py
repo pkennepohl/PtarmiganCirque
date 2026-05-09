@@ -1096,6 +1096,14 @@ class ScanTreeWidget(tk.Frame):
         realised or the named font's metrics aren't available — this
         keeps construction-time and headless-test behaviour
         identical to Phase 4q (CS-33).
+
+        Phase 4z (CS-51): forwards ``canvas_width`` into the
+        width-aware ``_label_overhead_px`` so the cap shrinks the
+        moment an optional cell (swatch / leg / ls_canvas) reveals
+        at its CS-26 threshold. Without this forwarding the static
+        overhead stays sized for the swatch-absent state and the
+        label widget refuses to shrink, clipping the right-side
+        cells (Phase 4x friction #1).
         """
         try:
             canvas_width = self._scroll_canvas.winfo_width()
@@ -1104,7 +1112,7 @@ class ScanTreeWidget(tk.Frame):
         return _label_char_capacity(
             canvas_width_px=canvas_width,
             avg_char_px=self._avg_char_px(),
-            overhead_px=self._label_overhead_px(),
+            overhead_px=self._label_overhead_px(width=canvas_width),
         )
 
     def widest_label_pixel_width(
