@@ -224,9 +224,29 @@ class SmoothingPanel(tk.Frame):
     #: NodeTypes the panel accepts as parents for the SMOOTH op.
     #: Smoothing a smoothed node is allowed (user may iterate
     #: Savitzky-Golay then a moving-average pass).
+    #:
+    #: Phase 4x widening (CS-49) — SECOND_DERIVATIVE joins the
+    #: accepted set so noisy d²A/dλ² traces can be smoothed without
+    #: the user having to first smooth the parent absorbance and
+    #: re-derive. The math is type-agnostic: Savitzky-Golay /
+    #: moving-average operate on whatever ``arrays["absorbance"]``
+    #: holds, and SECOND_DERIVATIVE carries that same key (the
+    #: y-values are d²A/dλ² rather than A, but the smoother does
+    #: not care). The output node still carries
+    #: ``NodeType.SMOOTHED``, so it routes to the "primary" axis
+    #: under CS-44's ``_DEFAULT_Y_AXIS_BY_NODETYPE``; the
+    #: smoothed-of-derivative misroute (smoothed d²A on the
+    #: absorbance axis) is the open Phase 4u friction #10 / future
+    #: per-style ``y_axis`` override hook, deferred to that
+    #: register entry.
+    #:
+    #: PEAK_LIST stays excluded — its array shape
+    #: (``peak_wavelengths_nm`` / ``peak_absorbances``) does not
+    #: match the curve schema the smoother expects.
     ACCEPTED_PARENT_TYPES: tuple[NodeType, ...] = (
         NodeType.UVVIS, NodeType.BASELINE,
         NodeType.NORMALISED, NodeType.SMOOTHED,
+        NodeType.SECOND_DERIVATIVE,
     )
 
     def __init__(
