@@ -20,7 +20,7 @@ from __future__ import annotations
 import copy
 import os
 import uuid
-from typing import Callable, List, Optional, Tuple
+from typing import Any, Callable, List, Mapping, Optional, Tuple
 
 import numpy as np
 import tkinter as tk
@@ -147,9 +147,10 @@ _FLOOR_ZERO_DISABLED_TOOLTIP: str = (
 # future per-style override) can land as a one-line table edit.
 #
 # Per-NodeType default mapping. A NodeType absent from the dict
-# defaults to "primary". The future per-node override hook will land
-# at the front of ``_resolve_y_axis_role`` reading
-# ``node.style.get("y_axis")``; per-NodeType remains the fallback.
+# defaults to "primary". The per-node override hook (Phase 4y, CS-50)
+# lives at the front of ``_resolve_y_axis_role`` reading
+# ``node.style.get("y_axis")``; per-NodeType remains the fallback when
+# the override is None or malformed.
 _AXIS_ROLES: tuple[str, ...] = ("primary", "secondary", "tertiary")
 
 _DEFAULT_Y_AXIS_BY_NODETYPE: dict[NodeType, str] = {
@@ -180,16 +181,29 @@ _NON_PRIMARY_Y_LABEL: dict[tuple[NodeType, str], str] = {
 _TERTIARY_AXIS_OFFSET_FRAC: float = 1.12
 
 
-def _resolve_y_axis_role(node_type: NodeType) -> str:
+def _resolve_y_axis_role(
+    node_type: NodeType,
+    style: Optional[Mapping[str, Any]] = None,
+) -> str:
     """Return the axis role string for a node of ``node_type``.
 
-    Phase 4u ships per-NodeType defaults only — see
-    :data:`_DEFAULT_Y_AXIS_BY_NODETYPE`. A NodeType absent from the
-    table defaults to ``"primary"``. The future per-node override
-    (``node.style.get("y_axis")``) will land at the front of this
-    function as an additive change; the per-NodeType default remains
-    the fallback.
+    Resolution order (Phase 4y, CS-50):
+    1. Per-style override: if ``style`` carries a ``"y_axis"`` whose
+       value is one of :data:`_AXIS_ROLES`, return it. Any other value
+       (``None``, missing key, malformed string) falls through.
+    2. Per-NodeType default: looked up in
+       :data:`_DEFAULT_Y_AXIS_BY_NODETYPE`; absent NodeTypes default
+       to ``"primary"``.
+
+    The ``style`` parameter is optional and defaults to ``None`` so
+    every pre-CS-50 caller (overlay-axis resolvers in :meth:`_redraw`
+    that operate on a NodeType-constant rather than a per-node style)
+    keeps its exact pre-Phase-4y behaviour.
     """
+    if style is not None:
+        override = style.get("y_axis")
+        if isinstance(override, str) and override in _AXIS_ROLES:
+            return override
     return _DEFAULT_Y_AXIS_BY_NODETYPE.get(node_type, "primary")
 
 

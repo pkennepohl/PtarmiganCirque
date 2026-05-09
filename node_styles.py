@@ -53,6 +53,13 @@ __all__ = [
 # Keys present in every dict returned by :func:`default_spectrum_style`.
 # Tests can use this to assert that callers haven't drifted from the
 # shared schema.
+#
+# Phase 4y (CS-50): ``y_axis`` joins as the per-style override hook for
+# CS-44 multi-axis routing. Default ``None`` means "follow my NodeType
+# default" (the literal :func:`uvvis_tab._resolve_y_axis_role` fallback);
+# a non-None value (one of the CS-44 axis roles) overrides the routing
+# per-node. Persistence (CS-46) auto-rides the existing style-dict
+# round-trip — no manifest schema change.
 DEFAULT_SPECTRUM_STYLE_KEYS: tuple[str, ...] = (
     "color",
     "linestyle",
@@ -62,6 +69,7 @@ DEFAULT_SPECTRUM_STYLE_KEYS: tuple[str, ...] = (
     "in_legend",
     "fill",
     "fill_alpha",
+    "y_axis",
 )
 
 
@@ -81,6 +89,11 @@ def default_spectrum_style(colour: str) -> dict[str, Any]:
         "in_legend":  True,
         "fill":       False,
         "fill_alpha": 0.08,
+        # Phase 4y (CS-50): per-style y-axis override hook. ``None`` =
+        # follow the per-NodeType default in
+        # ``uvvis_tab._DEFAULT_Y_AXIS_BY_NODETYPE``; a non-None value
+        # ("primary" / "secondary" / "tertiary") overrides per-node.
+        "y_axis":     None,
     }
 
 
