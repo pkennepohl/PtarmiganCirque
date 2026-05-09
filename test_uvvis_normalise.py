@@ -307,6 +307,17 @@ class TestNormalisationPanel(unittest.TestCase):
         self.assertEqual(self._apply_btn_state(), "disabled")
 
     def test_accepted_parent_types_constant(self):
+        # Phase 4x (CS-49) audit pass: NormalisationPanel.ACCEPTED_PARENT_TYPES
+        # is intentionally NOT widened. The existing comment on the
+        # constant documents the rationale: "SMOOTHED is intentionally
+        # excluded — normalisation should run on raw or baseline-
+        # corrected curves, before smoothing, so the smooth window
+        # matches the canonical amplitude scale." User has not
+        # flagged a workflow gap here. SECOND_DERIVATIVE is also
+        # excluded (peak/area normalisation on a derivative would
+        # divide by a zero-crossing). This test pins the audit-time
+        # decision so a future widening must update both the comment
+        # and this assertion.
         self.assertEqual(
             un.NormalisationPanel.ACCEPTED_PARENT_TYPES,
             (NodeType.UVVIS, NodeType.BASELINE, NodeType.NORMALISED),

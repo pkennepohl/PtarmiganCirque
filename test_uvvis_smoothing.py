@@ -297,10 +297,102 @@ class TestSmoothingPanel(unittest.TestCase):
         self.assertEqual(self._apply_btn_state(), "disabled")
 
     def test_accepted_parent_types_constant(self):
+        # Phase 4x (CS-49) widening — SECOND_DERIVATIVE joins the
+        # accepted parent set so the user can smooth a noisy d²A/dλ²
+        # trace directly. The widening was the user-flagged Phase 4w
+        # friction #1 fix. PEAK_LIST stays excluded (incompatible
+        # array shape).
         self.assertEqual(
             us.SmoothingPanel.ACCEPTED_PARENT_TYPES,
             (NodeType.UVVIS, NodeType.BASELINE,
-             NodeType.NORMALISED, NodeType.SMOOTHED),
+             NodeType.NORMALISED, NodeType.SMOOTHED,
+             NodeType.SECOND_DERIVATIVE),
+        )
+
+    def test_set_subject_second_derivative_enables_apply(self):
+        # Phase 4x (CS-49): a SECOND_DERIVATIVE parent now passes the
+        # gate. Reproduces the user-reported "Cannot smooth derivative
+        # plots" workflow (Phase 4w friction #1).
+        wl = np.linspace(200.0, 800.0, 601)
+        d2 = _gaussian(wl, 500.0, 25.5, height=1.0) + 0.05
+        self.graph.add_node(DataNode(
+            id="d1", type=NodeType.SECOND_DERIVATIVE,
+            arrays={"wavelength_nm": wl, "absorbance": d2},
+            metadata={}, label="d1", state=NodeState.PROVISIONAL,
+            style={"color": "#111", "linestyle": "solid",
+                   "linewidth": 1.5, "alpha": 0.9, "visible": True,
+                   "in_legend": True, "fill": False, "fill_alpha": 0.08},
+        ))
+        self.panel.set_subject("d1")
+        self.assertEqual(self._apply_btn_state(), "normal")
+
+    def test_apply_on_second_derivative_creates_smoothed_node(self):
+        # Phase 4x (CS-49): end-to-end — applying smoothing to a
+        # SECOND_DERIVATIVE parent must build the OperationNode + a
+        # SMOOTHED DataNode without raising. The smoother does not
+        # know that the y-values are d²A/dλ² rather than A; the math
+        # is amplitude-agnostic.
+        wl = np.linspace(200.0, 800.0, 601)
+        rng = np.random.RandomState(7)
+        d2 = (_gaussian(wl, 500.0, 25.5, height=1.0)
+              + 0.10 * rng.randn(wl.size))
+        self.graph.add_node(DataNode(
+            id="d1", type=NodeType.SECOND_DERIVATIVE,
+            arrays={"wavelength_nm": wl, "absorbance": d2},
+            metadata={}, label="d1", state=NodeState.PROVISIONAL,
+            style={"color": "#111", "linestyle": "solid",
+                   "linewidth": 1.5, "alpha": 0.9, "visible": True,
+                   "in_legend": True, "fill": False, "fill_alpha": 0.08},
+        ))
+        self.panel.set_subject("d1")
+        self.panel._mode_var.set("savgol")
+        self.panel._window_length.set(11)
+        self.panel._polyorder.set(2)
+
+        n_before = len(self.graph.nodes)
+        op_id, out_id = self.panel._apply()
+        n_after = len(self.graph.nodes)
+        self.assertEqual(n_after - n_before, 2)
+
+        op = self.graph.get_node(op_id)
+        out = self.graph.get_node(out_id)
+        self.assertEqual(op.type, OperationType.SMOOTH)
+        self.assertEqual(self.graph.parents_of(op_id), ["d1"])
+        # Output type is the op's natural NodeType — SMOOTHED — not
+        # the parent's type. The misroute (smoothed d²A on the
+        # absorbance "primary" axis under CS-44) is the open Phase
+        # 4u friction #10 / future per-style y_axis override hook;
+        # out of scope for Phase 4x.
+        self.assertEqual(out.type, NodeType.SMOOTHED)
+        self.assertEqual(out.metadata["smoothing_parent_id"], "d1")
+        # Smoothing actually reduced the high-frequency content.
+        in_var = float(np.std(np.diff(d2)))
+        out_var = float(np.std(np.diff(out.arrays["absorbance"])))
+        self.assertLess(out_var, in_var * 0.5)
+
+    def test_apply_on_second_derivative_carries_implementation_hash(self):
+        # Phase 4x: stamping (CS-45) must run on the cross-typed
+        # apply path the same as the homogeneous case.
+        from operation_hash import compute_implementation_hash
+        wl = np.linspace(200.0, 800.0, 101)
+        self.graph.add_node(DataNode(
+            id="d1", type=NodeType.SECOND_DERIVATIVE,
+            arrays={"wavelength_nm": wl,
+                    "absorbance": _gaussian(wl, 500.0, 25.5, height=1.0)},
+            metadata={}, label="d1", state=NodeState.PROVISIONAL,
+            style={"color": "#111", "linestyle": "solid",
+                   "linewidth": 1.5, "alpha": 0.9, "visible": True,
+                   "in_legend": True, "fill": False, "fill_alpha": 0.08},
+        ))
+        self.panel.set_subject("d1")
+        self.panel._mode_var.set("savgol")
+        self.panel._window_length.set(5)
+        self.panel._polyorder.set(2)
+        op_id, _ = self.panel._apply()
+        op = self.graph.get_node(op_id)
+        self.assertEqual(
+            op.metadata["implementation_hash"],
+            compute_implementation_hash(OperationType.SMOOTH),
         )
 
     def test_no_inline_title_label_inside_panel_body(self):

@@ -304,6 +304,15 @@ class TestPeakPickingPanel(unittest.TestCase):
         self.assertEqual(self._apply_btn_state(), "disabled")
 
     def test_accepted_parent_types_constant(self):
+        # Phase 4x (CS-49) audit pass: PeakPickingPanel.ACCEPTED_PARENT_TYPES
+        # is intentionally NOT widened. PEAK_LIST stays excluded
+        # (chained peak picking on a peak list is undefined).
+        # SECOND_DERIVATIVE is also excluded by audit decision —
+        # picking peaks of d²A/dλ² conflates absorbance maxima with
+        # derivative zero-crossings, so the user-facing semantics of
+        # the resulting PEAK_LIST node would be ambiguous. User has
+        # not flagged. This test pins the audit-time decision so a
+        # future widening must update the rationale comment too.
         self.assertEqual(
             pp.PeakPickingPanel.ACCEPTED_PARENT_TYPES,
             (NodeType.UVVIS, NodeType.BASELINE,
