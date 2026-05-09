@@ -2276,10 +2276,16 @@ class TestUVVisTabTertiaryAxisPath(unittest.TestCase):
 
         original_resolver = ut._resolve_y_axis_role
 
-        def routed_to_tertiary(node_type):
+        def routed_to_tertiary(node_type, style=None):
+            # Phase 4y (CS-50) widened the helper signature to accept
+            # an optional ``style`` for the per-style override hook;
+            # the test's monkey-patch widens in lockstep so the
+            # renderer's per-node call ``_resolve_y_axis_role(
+            # node.type, node.style)`` reaches the patched function
+            # without a TypeError.
             if node_type == NodeType.NORMALISED:
                 return "tertiary"
-            return original_resolver(node_type)
+            return original_resolver(node_type, style)
 
         ut._resolve_y_axis_role = routed_to_tertiary
         try:
