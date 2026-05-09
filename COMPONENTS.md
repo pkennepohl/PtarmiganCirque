@@ -5886,7 +5886,158 @@ NodeType primary y-label gap).
 
 ---
 
-*Document version: 1.25 — May 2026*
+## CS-51 — Width-aware label-cell overhead helper (Phase 4z)
+
+**Source files.** `scan_tree_widget.py` (two new pure module-level
+helpers, lifted constants, width-kwarg on the `_label_overhead_px`
+instance method, one-line wire change in `_current_label_cap`).
+
+**Purpose.** Close Phase 4x friction #1 (USER-FLAGGED): at the
+swatch reveal threshold (240 px) the swatch column reappears per
+CS-26's `_RESPONSIVE_THRESHOLDS_PX`, but Phase 4w's
+`_label_overhead_px` was a static estimate that didn't account for
+the swatch's 24 px width. The dynamic label cap stayed sized for
+the swatch-absent state, the label widget refused to shrink, and
+the right-side cells (incl. the `✕`) fell off the row's right
+edge — the user could no longer remove a node that just gained a
+colour swatch. Closes Phase 4w friction #6 (measure actual row
+overhead) for the optional-cell visibility axis (the dominant
+source of overhead drift).
+
+**Module-level constants (locked Phase 4z step 2).**
+- `_ALWAYS_VISIBLE_CELLS: tuple[str, ...]` — `("state", "vis_cb",
+  "row_toggle", "hist", "gear", "compare", "x")`. Lifted from the
+  Phase 4w `_label_overhead_px` body so the pure helpers below
+  can share it. Order is informative only; the sum is order-
+  independent. Pinned by
+  `test_always_visible_cells_match_phase_4w_set` so a future cell
+  promotion is intentional and forces a CS-26 audit.
+- `_OVERHEAD_SLACK_PX: int = 30` — per-row pixel slack added on
+  top of the per-cell minimums, covering inter-cell padding
+  (`pack(padx=2)` etc.). Lifted from the Phase 4w `+ 30` literal.
+  Pinned by `test_baseline_decomposition_matches_cell_vocabulary`
+  so the no-args overhead path stays byte-equivalent to Phase 4w
+  (186 px = sum of the seven always-visible cell mins + 30).
+
+**Pure helpers.**
+```
+_compute_label_overhead_px(visible_optional_cells: Iterable[str] = ()) -> int
+_visible_optional_cells_for_width(width_px: int) -> tuple[str, ...]
+```
+
+`_compute_label_overhead_px` returns
+`sum(_CELL_MIN_PX[c] for c in _ALWAYS_VISIBLE_CELLS) +
+sum(_CELL_MIN_PX[c] for c in visible_optional_cells) +
+_OVERHEAD_SLACK_PX`. No-args path returns 186 px (byte-equivalent
+to Phase 4w). Unknown cell names raise `KeyError` so call-site
+typos fail loudly.
+
+`_visible_optional_cells_for_width` walks
+`_RESPONSIVE_THRESHOLDS_PX` (ascending by threshold by
+construction) and returns the cell names whose thresholds are
+`<= width_px`. Mirrors `_apply_responsive_layout`'s reveal
+predicate exactly (`want_<cell> = width >= thresholds[<cell>]`),
+so the label cap and the optional-cell layout cannot drift —
+pinned by
+`test_helper_matches_apply_responsive_layout_reveal_predicate`.
+
+**Widget instance method.** `_label_overhead_px(self, width:
+int | None = None) -> int` — the Phase 4w method gains a `width`
+kwarg. When `width` is given, the method returns
+`_compute_label_overhead_px(_visible_optional_cells_for_width(width))`,
+i.e. always-visible plus the optional cells revealed at that
+width. When `width` is `None`, the method returns
+`_compute_label_overhead_px()` — the no-args baseline, byte-
+equivalent to Phase 4w. The signature change is the CS-47 lock
+relaxation specifically scoped for this intent.
+
+**Wire change.** `_current_label_cap` reads the canvas width via
+`self._scroll_canvas.winfo_width()` (unchanged from Phase 4w) and
+now forwards it as `self._label_overhead_px(width=canvas_width)`
+into the cap calculation. The dynamic label cap therefore shrinks
+the moment any optional cell reappears at its CS-26 threshold —
+the per-row overhead the cap divides by grows by exactly the
+revealed cell's `_CELL_MIN_PX` contribution, and the available-
+pixel budget for the label cell drops accordingly.
+
+**`_calibrate_sidebar_width` is unchanged.** The one-shot sash
+calibration still calls `self._label_overhead_px()` with no
+args, so its target width is byte-equivalent to Phase 4w. Phase
+4z friction #1 (Claude-surfaced) flags this as a future
+opportunity — the calibration target may undershoot by up to
+84 px (the sum of all three optional cell mins) — but the
+`_SIDEBAR_MAX_CALIBRATED_PX = 480` cap usually swallows the
+shortfall, so it's a deferred polish.
+
+**Locks.**
+- `_ALWAYS_VISIBLE_CELLS` content. Adding or removing an entry
+  requires a CS-26 threshold audit (the optional-cell threshold
+  set assumes which cells are always-visible). Pinned by
+  `test_always_visible_cells_match_phase_4w_set`.
+- `_OVERHEAD_SLACK_PX = 30` integer value. Phase 4w byte-
+  equivalence depends on this constant matching the Phase 4w
+  `+ 30` literal. Pinned by
+  `test_baseline_decomposition_matches_cell_vocabulary`.
+- `_compute_label_overhead_px` and `_visible_optional_cells_for_width`
+  signatures. The width-aware path of `_label_overhead_px`
+  delegates directly to these; signature change requires
+  updating the delegation.
+- `_label_overhead_px(self, width: int | None = None)` signature.
+  The `width=None` default is byte-required by
+  `_calibrate_sidebar_width`'s no-args call. The two existing
+  Phase 4w call sites (`_calibrate_sidebar_width` no-args,
+  `_current_label_cap` width-forward) are pinned by their
+  respective integration tests.
+- `_RESPONSIVE_THRESHOLDS_PX` integer values + tuple shape +
+  priority order all preserved (CS-26 invariants —
+  `_visible_optional_cells_for_width` reads them, never
+  modifies).
+- `_label_char_capacity` signature, `_LABEL_MAX_CHARS = 32`
+  fallback, `_LABEL_CHAR_FLOOR = 8` / `_LABEL_CHAR_CEIL = 64`
+  clamps all preserved (CS-47 invariants).
+
+**What changes when this lock relaxes.** Tightening
+`_OVERHEAD_SLACK_PX` to a measured value (Phase 4z friction #3)
+will require a one-line constant change + update to the
+byte-equivalence test's expected baseline. Adding a fourth
+optional cell to `_RESPONSIVE_THRESHOLDS_PX` automatically widens
+`_visible_optional_cells_for_width`'s return tuple — no helper
+change needed, but the new threshold value should follow the
+ascending-order convention.
+
+**Implementation notes.**
+- The pure-helper / instance-method split mirrors Phase 4w's
+  `_label_char_capacity` pure helper + `_current_label_cap`
+  instance shortcut split — the helpers don't touch any widget
+  state and can be tested without a Tk root (19 of the 24 new
+  tests are pure).
+- Architecture (a) was chosen over (c) (post-pack
+  `winfo_reqwidth()` measurement) because (a) computes overhead
+  from the same `_CELL_MIN_PX` source of truth that drives
+  `_RESPONSIVE_THRESHOLDS_PX`, eliminating drift between the cap
+  and the reveal predicate by construction. (c) would have
+  required a packed row to measure, which the cap helper runs
+  before the row is necessarily realised in geometry.
+- Architecture (b) (bump the swatch reveal threshold higher) was
+  rejected: it would have changed CS-26's locked threshold
+  values, regressing the existing
+  `test_swatch_revealed_first_at_smallest_threshold` /
+  `test_leg_revealed_at_middle_threshold` /
+  `test_ls_canvas_revealed_at_largest_threshold` invariants and
+  pushing the optional cells out further than user manual sash-
+  drag testing has validated.
+- Below the smallest reveal threshold (239 px) and at very narrow
+  thresholds (240 px specifically), `_label_char_capacity`
+  clamps the cap to `_LABEL_CHAR_FLOOR = 8`. The bug fix is
+  effective (the right-side cells no longer get clipped because
+  the cap calculation correctly accounts for the swatch's
+  overhead in the dynamic path) but the *visible* label-
+  truncation cue between 239 and 240 px is masked by the floor
+  — see Phase 4z friction #2.
+
+---
+
+*Document version: 1.26 — May 2026*
 *1.1: CS-13 implementation notes added in Phase 4a.*
 *1.2: CS-14 Plot Settings Dialog added in Phase 4b.*
 *1.3: CS-15 UV/Vis Baseline Correction + CS-04 implementation
