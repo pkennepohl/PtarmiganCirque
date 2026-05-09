@@ -91,6 +91,45 @@ _LS_OPTIONS: tuple[tuple[str, str], ...] = (
 )
 
 
+# Phase 4y (CS-50): Combobox options for the per-style ``y_axis``
+# override row. The "(default)" entry maps to ``None`` — meaning
+# "follow my NodeType default in
+# ``uvvis_tab._DEFAULT_Y_AXIS_BY_NODETYPE``." The three concrete
+# values match ``uvvis_tab._AXIS_ROLES``; if that tuple shape ever
+# grows or shrinks, this list (and the round-trip helpers below)
+# must move in lockstep.
+_Y_AXIS_DISPLAY_DEFAULT: str = "(default)"
+_Y_AXIS_OPTIONS: tuple[str, ...] = (
+    _Y_AXIS_DISPLAY_DEFAULT, "primary", "secondary", "tertiary",
+)
+
+
+def _y_axis_display_to_value(display: str):
+    """Combobox display string → ``style["y_axis"]`` value.
+
+    "(default)" → ``None``; any registered role string passes through
+    unchanged; anything else (defensive) → ``None`` so a malformed
+    Combobox state never lands a bogus role string in a graph node.
+    """
+    if display == _Y_AXIS_DISPLAY_DEFAULT:
+        return None
+    if display in ("primary", "secondary", "tertiary"):
+        return display
+    return None
+
+
+def _y_axis_value_to_display(value) -> str:
+    """``style["y_axis"]`` value → Combobox display string.
+
+    ``None`` (and any malformed value) renders as "(default)"; a
+    registered role string renders as itself. Symmetrical with
+    :func:`_y_axis_display_to_value`.
+    """
+    if isinstance(value, str) and value in ("primary", "secondary", "tertiary"):
+        return value
+    return _Y_AXIS_DISPLAY_DEFAULT
+
+
 # Module-level defaults used when the node's style dict is missing a
 # key the universal section needs to render. Kept in sync with the
 # defaults the ScanTreeWidget uses (``scan_tree_widget._DEFAULT_STYLE``).
@@ -108,6 +147,11 @@ _UNIVERSAL_DEFAULTS: dict[str, Any] = {
     # no graph contract change.
     "visible":     True,
     "in_legend":   True,
+    # Phase 4y (CS-50): per-style y-axis override hook (CS-44 follow-up).
+    # ``None`` = follow per-NodeType default; a non-None value is the
+    # explicit override. Default kept ``None`` so a node without the
+    # key behaves exactly as pre-CS-50 (per-NodeType routing only).
+    "y_axis":      None,
 }
 
 
@@ -470,6 +514,69 @@ class StyleDialog(tk.Toplevel):
         )
         row += 1
 
+        # ── Y axis (Combobox) ─────────────────────────────────────
+        # Phase 4y (CS-50): per-style y-axis override — closes the
+        # carry-forward T register entry from Phase 4u Decision 1
+        # (deferred per "Default only for now is okay"). The
+        # Combobox lets the user pin a node to a specific axis role
+        # independently of its NodeType-default. "(default)" =
+        # ``style["y_axis"] = None`` (follow per-NodeType default);
+        # "primary" / "secondary" / "tertiary" write the literal
+        # role string. Other tabs (XANES / EXAFS / Compare) ignore
+        # the key today; only ``uvvis_tab._redraw`` reads it via
+        # ``_resolve_y_axis_role(node.type, node.style)``.
+        self._build_y_axis_row(sec, row)
+        row += 1
+
+    def _build_y_axis_row(self, parent: tk.Widget, row: int) -> None:
+        """Combobox row for the per-style ``y_axis`` override (CS-50).
+
+        Uses a 4-column layout matching the surrounding rows
+        (label · control · spacer · ∀). The Combobox is read-only
+        (``state="readonly"``) so the user cannot type a malformed
+        value; the ``ComboboxSelected`` virtual event fires on a
+        user-driven selection and writes through ``_write_partial``.
+
+        Round-trip helpers (``_y_axis_display_to_value`` /
+        ``_y_axis_value_to_display``) translate between the
+        Combobox display strings and the persisted ``None | str``
+        style value so a freshly-loaded node displays "(default)"
+        when its ``y_axis`` is ``None``.
+        """
+        current = self._style_get("y_axis")
+        var = tk.StringVar(value=_y_axis_value_to_display(current))
+        self._control_vars["y_axis"] = var
+
+        tk.Label(parent, text="Y axis:", font=("", 9, "bold")).grid(
+            row=row, column=0, sticky="w", pady=3,
+        )
+        cb = ttk.Combobox(
+            parent, textvariable=var, state="readonly",
+            values=list(_Y_AXIS_OPTIONS), width=12,
+        )
+        cb.grid(row=row, column=1, columnspan=2, sticky="w", padx=4)
+
+        def _on_selected(_event=None, _v=var):
+            self._write_partial(
+                {"y_axis": _y_axis_display_to_value(_v.get())}
+            )
+        cb.bind("<<ComboboxSelected>>", _on_selected)
+
+        # Per-row ∀ button — writes the chosen y_axis to every
+        # renderable node in the host tab (CS-50 Decision (iii)).
+        # The bottom ∀ Apply-to-All button does NOT fan ``y_axis``
+        # (intentionally absent from ``_BULK_UNIVERSAL_KEYS``,
+        # parallel to ``visible`` / ``in_legend``: collapsing every
+        # derivative onto primary in one click is a footgun).
+        self._add_apply_one_button(
+            parent, row, 3, "y_axis",
+            lambda v=var: _y_axis_display_to_value(v.get()),
+        )
+
+        def _refresh(value, _v=var):
+            _v.set(_y_axis_value_to_display(value))
+        self._control_refresh["y_axis"] = _refresh
+
     def _build_universal_checkbox_row(
         self, parent: tk.Widget, row: int,
         label: str, check_text: str, key: str,
@@ -727,6 +834,7 @@ class StyleDialog(tk.Toplevel):
             "linestyle", "linewidth", "alpha",
             "color", "fill", "fill_alpha",
             "visible", "in_legend",
+            "y_axis",
         ):
             var = self._control_vars.get(key)
             if var is None:
@@ -742,6 +850,12 @@ class StyleDialog(tk.Toplevel):
                 value = bool(value)
             elif key in ("linestyle", "color"):
                 value = str(value)
+            elif key == "y_axis":
+                # Phase 4y (CS-50): the Combobox carries a display
+                # string ("(default)" / "primary" / "secondary" /
+                # "tertiary"); the persisted value is ``None`` for
+                # "(default)" and the literal role string otherwise.
+                value = _y_axis_display_to_value(str(value))
             out[key] = value
         return out
 

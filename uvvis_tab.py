@@ -20,7 +20,7 @@ from __future__ import annotations
 import copy
 import os
 import uuid
-from typing import Callable, List, Optional, Tuple
+from typing import Any, Callable, List, Mapping, Optional, Tuple
 
 import numpy as np
 import tkinter as tk
@@ -147,9 +147,10 @@ _FLOOR_ZERO_DISABLED_TOOLTIP: str = (
 # future per-style override) can land as a one-line table edit.
 #
 # Per-NodeType default mapping. A NodeType absent from the dict
-# defaults to "primary". The future per-node override hook will land
-# at the front of ``_resolve_y_axis_role`` reading
-# ``node.style.get("y_axis")``; per-NodeType remains the fallback.
+# defaults to "primary". The per-node override hook (Phase 4y, CS-50)
+# lives at the front of ``_resolve_y_axis_role`` reading
+# ``node.style.get("y_axis")``; per-NodeType remains the fallback when
+# the override is None or malformed.
 _AXIS_ROLES: tuple[str, ...] = ("primary", "secondary", "tertiary")
 
 _DEFAULT_Y_AXIS_BY_NODETYPE: dict[NodeType, str] = {
@@ -180,16 +181,29 @@ _NON_PRIMARY_Y_LABEL: dict[tuple[NodeType, str], str] = {
 _TERTIARY_AXIS_OFFSET_FRAC: float = 1.12
 
 
-def _resolve_y_axis_role(node_type: NodeType) -> str:
+def _resolve_y_axis_role(
+    node_type: NodeType,
+    style: Optional[Mapping[str, Any]] = None,
+) -> str:
     """Return the axis role string for a node of ``node_type``.
 
-    Phase 4u ships per-NodeType defaults only — see
-    :data:`_DEFAULT_Y_AXIS_BY_NODETYPE`. A NodeType absent from the
-    table defaults to ``"primary"``. The future per-node override
-    (``node.style.get("y_axis")``) will land at the front of this
-    function as an additive change; the per-NodeType default remains
-    the fallback.
+    Resolution order (Phase 4y, CS-50):
+    1. Per-style override: if ``style`` carries a ``"y_axis"`` whose
+       value is one of :data:`_AXIS_ROLES`, return it. Any other value
+       (``None``, missing key, malformed string) falls through.
+    2. Per-NodeType default: looked up in
+       :data:`_DEFAULT_Y_AXIS_BY_NODETYPE`; absent NodeTypes default
+       to ``"primary"``.
+
+    The ``style`` parameter is optional and defaults to ``None`` so
+    every pre-CS-50 caller (overlay-axis resolvers in :meth:`_redraw`
+    that operate on a NodeType-constant rather than a per-node style)
+    keeps its exact pre-Phase-4y behaviour.
     """
+    if style is not None:
+        override = style.get("y_axis")
+        if isinstance(override, str) and override in _AXIS_ROLES:
+            return override
     return _DEFAULT_Y_AXIS_BY_NODETYPE.get(node_type, "primary")
 
 
@@ -1506,22 +1520,40 @@ class UVVisTab(tk.Frame):
     def _on_uvvis_apply_to_all(self, param: str, value) -> None:
         """∀ fan-out: write ``param=value`` onto every visible spectrum node.
 
-        Scope is ``_spectrum_nodes`` (UVVIS + BASELINE), not the
-        UVVIS-only ``_uvvis_nodes``. Phase 4d widened this so the
-        new ``visible`` / ``in_legend`` controls (B-002) cover the
-        whole sidebar — but the widening applies to every key, since
-        the user invoking ∀ on, say, a linewidth in a sidebar mixing
-        UVVIS and BASELINE rows expects every visible row to take
-        the value. ``set_style`` is a merge per CS-01, so keys other
-        than ``param`` on each target node are preserved.
+        Default scope is ``_spectrum_nodes`` (UVVIS + BASELINE +
+        NORMALISED + SMOOTHED), not the UVVIS-only ``_uvvis_nodes``.
+        Phase 4d widened this so the new ``visible`` / ``in_legend``
+        controls (B-002) cover the whole sidebar — but the widening
+        applies to every key, since the user invoking ∀ on, say, a
+        linewidth in a sidebar mixing UVVIS and BASELINE rows
+        expects every visible row to take the value. ``set_style``
+        is a merge per CS-01, so keys other than ``param`` on each
+        target node are preserved.
 
         BASELINE rows lack a baseline-specific style schema today;
         they share the universal style keys with UVVIS, so the merge
         is well-defined. Should a future BASELINE-specific key land
         (e.g., a baseline-fit colour distinct from the spectrum
         colour) the fan-out scope can be revisited.
+
+        Phase 4y (CS-50): the per-row ∀ button next to the StyleDialog
+        ``y_axis`` Combobox writes the chosen axis role to **every
+        renderable node**, including SECOND_DERIVATIVE and PEAK_LIST.
+        ``y_axis`` is the only axis-routing key, so widening the
+        fan-out to those types is the user's intended "everyone goes
+        on this axis" gesture (per Phase 4y Decision (iii)). Other
+        keys keep the spectrum-only scope so a linewidth fan-out
+        does not silently rewrite annotation overlays.
         """
-        for node in self._spectrum_nodes():
+        if param == "y_axis":
+            targets = (
+                self._spectrum_nodes()
+                + self._second_derivative_nodes()
+                + self._peak_list_nodes()
+            )
+        else:
+            targets = self._spectrum_nodes()
+        for node in targets:
             self._graph.set_style(node.id, {param: value})
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -1824,7 +1856,13 @@ class UVVisTab(tk.Frame):
             if ("wavelength_nm" not in node.arrays
                     or "absorbance" not in node.arrays):
                 continue
-            role = _resolve_y_axis_role(node.type)
+            # Phase 4y (CS-50): thread ``node.style`` so the per-style
+            # ``y_axis`` override short-circuits the per-NodeType
+            # default. ``style.get("y_axis") is None`` (the freshly-
+            # created default for every spectrum-shaped node) preserves
+            # the pre-CS-50 routing exactly; a non-None role string
+            # routes the node to that axis regardless of its NodeType.
+            role = _resolve_y_axis_role(node.type, node.style)
             target = get_axis(role)
             if role != "primary":
                 first_node_type_per_role.setdefault(role, node.type)
@@ -1857,12 +1895,17 @@ class UVVisTab(tk.Frame):
         # silent on every failure path (returns None) so a malformed
         # graph cannot crash this branch.
         # Phase 4u (CS-44): the overlay is routed via
-        # ``_resolve_y_axis_role(NodeType.BASELINE)`` for consistency
-        # with the main loop. BASELINE → "primary" today, so this is
-        # currently a no-op dispatch; the indirection lets a future
-        # axis-routing change land as a single table edit.
+        # ``_resolve_y_axis_role`` for consistency with the main
+        # loop. BASELINE → "primary" today by NodeType default, so
+        # the dispatch is normally a no-op; the indirection lets a
+        # future axis-routing change land as a single table edit.
+        # Phase 4y (CS-50): the resolver call moved INSIDE the per-bn
+        # loop so a BASELINE node carrying a per-style ``y_axis``
+        # override routes its dashed overlay to the SAME axis as
+        # the main BASELINE render (otherwise the main curve and
+        # its overlay would land on different axes — visually
+        # broken).
         if self._show_baseline_curves.get():
-            baseline_target = get_axis(_resolve_y_axis_role(NodeType.BASELINE))
             for bn in self._spectrum_nodes():
                 if bn.type != NodeType.BASELINE:
                     continue
@@ -1888,6 +1931,9 @@ class UVVisTab(tk.Frame):
                 bcolour = bn.style.get("color", "#333333")
                 blabel = (f"{bn.label} (baseline)"
                           if bn.style.get("in_legend", True) else None)
+                baseline_target = get_axis(
+                    _resolve_y_axis_role(bn.type, bn.style)
+                )
                 baseline_target.plot(
                     bx, by,
                     color=bcolour,
@@ -1909,8 +1955,12 @@ class UVVisTab(tk.Frame):
         # marker-style schema decision (CS-19 implementation note)
         # could expose this to the user.
         # Phase 4u (CS-44): peak overlays routed via the helper too —
-        # PEAK_LIST → "primary" today. Same one-line-edit principle.
-        peak_target = get_axis(_resolve_y_axis_role(NodeType.PEAK_LIST))
+        # PEAK_LIST → "primary" today by NodeType default. Same
+        # one-line-edit principle.
+        # Phase 4y (CS-50): the resolver call moved INSIDE the
+        # per-peak-node loop so a PEAK_LIST node carrying a per-style
+        # ``y_axis`` override (e.g. peaks of a derivative routed to
+        # the secondary axis) lands on the right axis.
         for peak_node in self._peak_list_nodes():
             pstyle = peak_node.style
             if not pstyle.get("visible", True):
@@ -1924,6 +1974,9 @@ class UVVisTab(tk.Frame):
                                   self._y_unit.get())
             plabel = (peak_node.label
                       if pstyle.get("in_legend", True) else None)
+            peak_target = get_axis(
+                _resolve_y_axis_role(peak_node.type, pstyle)
+            )
             peak_target.scatter(
                 px, py,
                 color=pstyle.get("color", "#333333"),

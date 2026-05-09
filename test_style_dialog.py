@@ -485,6 +485,7 @@ class TestStyleDialogApplyToAll(unittest.TestCase):
             "fill_alpha": 0.2,
             "visible": True,
             "in_legend": True,
+            "y_axis": None,
         }))
         seen: list = []
         dlg = self.StyleDialog(
@@ -493,11 +494,12 @@ class TestStyleDialogApplyToAll(unittest.TestCase):
         )
         dlg.update_idletasks()
 
-        # Universal section has eight per-row ∀ buttons after Phase 4d
-        # added ``visible`` and ``in_legend`` for B-002.
+        # Universal section has nine per-row ∀ buttons after Phase 4y
+        # (CS-50) added ``y_axis`` (joining the eight from Phase 4d
+        # which added ``visible`` and ``in_legend`` for B-002).
         btns = self._find_apply_one_buttons(dlg)
         self.assertEqual(
-            len(btns), 8,
+            len(btns), 9,
             "expected one ∀ per universal-section row",
         )
         for b in btns:
@@ -508,7 +510,8 @@ class TestStyleDialogApplyToAll(unittest.TestCase):
             keys,
             ["linestyle", "linewidth", "alpha",
              "color", "fill", "fill_alpha",
-             "visible", "in_legend"],
+             "visible", "in_legend",
+             "y_axis"],
         )
 
     # ---- bottom ∀ Apply to All ----
@@ -766,6 +769,259 @@ class TestStyleDialogVisibleInLegend(unittest.TestCase):
         self.assertNotIn(
             "in_legend", self.style_dialog._BULK_UNIVERSAL_KEYS,
         )
+
+
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestStyleDialogYAxisOverride(unittest.TestCase):
+    """Phase 4y (CS-50) — universal-section ``y_axis`` Combobox row.
+
+    Carry-forward T from Phase 4u Decision 1 was deferred per the
+    user's "Default only for now is okay" lock; CS-49's cross-type
+    widening (Phase 4x) made the smoothed-of-derivative misroute
+    newly reachable, so T became the next session's intent.
+
+    Coverage:
+    * Combobox initial state reads from ``node.style["y_axis"]`` and
+      maps ``None`` → "(default)" / role string → role string
+    * Selecting a role writes through ``set_style`` with the literal
+      role string (or ``None`` for "(default)")
+    * Apply / Save round-trip the override via
+      ``_read_universal_values``
+    * The per-row ∀ delegate fans the chosen value out via
+      ``on_apply_to_all``
+    * An external ``set_style`` update refreshes the Combobox
+      without looping back into ``set_style``
+    * The bottom ∀ Apply-to-All button does NOT include ``y_axis``
+      (intentional — parallel to Phase 4d's ``visible`` / ``in_legend``
+      carve-out; collapsing every derivative onto primary in one
+      click is a footgun)
+    * The display ↔ value round-trip helpers are total over the
+      Combobox's option list and reject malformed input
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import style_dialog
+        cls.style_dialog = style_dialog
+        cls.StyleDialog = style_dialog.StyleDialog
+
+    def setUp(self):
+        self.style_dialog._open_dialogs.clear()
+        self.host = tk.Frame(_root)
+        self.graph = ProjectGraph()
+
+    def tearDown(self):
+        for dlg in list(self.style_dialog._open_dialogs.values()):
+            try:
+                dlg.destroy()
+            except Exception:
+                pass
+        self.style_dialog._open_dialogs.clear()
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    # ---- initial state from node.style ----
+
+    def test_y_axis_initial_state_default_renders_as_label(self):
+        # ``style["y_axis"] = None`` must render as "(default)" so a
+        # freshly-created node carries no visible override in the UI.
+        self.graph.add_node(_data("a", style={"y_axis": None}))
+        dlg = self.StyleDialog(self.host, self.graph, "a")
+        dlg.update_idletasks()
+        var = dlg._control_vars.get("y_axis")
+        self.assertIsNotNone(var)
+        self.assertEqual(var.get(), self.style_dialog._Y_AXIS_DISPLAY_DEFAULT)
+
+    def test_y_axis_initial_state_secondary_renders_literal(self):
+        self.graph.add_node(_data("a", style={"y_axis": "secondary"}))
+        dlg = self.StyleDialog(self.host, self.graph, "a")
+        dlg.update_idletasks()
+        self.assertEqual(dlg._control_vars["y_axis"].get(), "secondary")
+
+    def test_y_axis_missing_key_renders_as_default(self):
+        # Pre-CS-50 nodes lack the key entirely; the Combobox falls
+        # back to "(default)" via ``_UNIVERSAL_DEFAULTS["y_axis"]``.
+        self.graph.add_node(_data("a", style={"linewidth": 2.0}))
+        dlg = self.StyleDialog(self.host, self.graph, "a")
+        dlg.update_idletasks()
+        self.assertEqual(
+            dlg._control_vars["y_axis"].get(),
+            self.style_dialog._Y_AXIS_DISPLAY_DEFAULT,
+        )
+
+    # ---- write-through via Combobox selection ----
+
+    def test_selecting_secondary_writes_literal_role_to_style(self):
+        self.graph.add_node(_data("a", style={"y_axis": None}))
+        dlg = self.StyleDialog(self.host, self.graph, "a")
+        dlg.update_idletasks()
+        # Simulate user-driven selection: set the StringVar then
+        # generate the virtual event the dialog binds to.
+        dlg._control_vars["y_axis"].set("secondary")
+        # The bind on <<ComboboxSelected>> fires from the widget;
+        # tests can call the bound function directly. Find the
+        # Combobox via the control map indirectly by invoking the
+        # write_partial path through a synthetic event call. The
+        # simplest path: invoke the bound callback by generating the
+        # virtual event on every ttk.Combobox descendant.
+        for widget in dlg.winfo_children():
+            self._trigger_combobox_selected(widget)
+        self.assertEqual(self.graph.get_node("a").style["y_axis"], "secondary")
+
+    def test_selecting_default_writes_none_to_style(self):
+        self.graph.add_node(_data("a", style={"y_axis": "tertiary"}))
+        dlg = self.StyleDialog(self.host, self.graph, "a")
+        dlg.update_idletasks()
+        dlg._control_vars["y_axis"].set(
+            self.style_dialog._Y_AXIS_DISPLAY_DEFAULT,
+        )
+        for widget in dlg.winfo_children():
+            self._trigger_combobox_selected(widget)
+        self.assertIsNone(self.graph.get_node("a").style["y_axis"])
+
+    @staticmethod
+    def _trigger_combobox_selected(widget):
+        # Walk the widget tree, fire <<ComboboxSelected>> on every
+        # ttk.Combobox so the write-through callback runs.
+        from tkinter import ttk
+        if isinstance(widget, ttk.Combobox):
+            widget.event_generate("<<ComboboxSelected>>")
+        for child in widget.winfo_children():
+            TestStyleDialogYAxisOverride._trigger_combobox_selected(child)
+
+    # ---- Apply / Save / Cancel round-trip ----
+
+    def test_apply_button_round_trips_override(self):
+        # Apply re-emits the current widget state via _do_apply →
+        # _read_universal_values which now includes y_axis.
+        self.graph.add_node(_data("a", style={"y_axis": None}))
+        dlg = self.StyleDialog(self.host, self.graph, "a")
+        dlg.update_idletasks()
+        dlg._control_vars["y_axis"].set("primary")
+        dlg._do_apply()
+        self.assertEqual(self.graph.get_node("a").style["y_axis"], "primary")
+
+    def test_save_button_round_trips_override(self):
+        self.graph.add_node(_data("a", style={"y_axis": None}))
+        dlg = self.StyleDialog(self.host, self.graph, "a")
+        dlg.update_idletasks()
+        dlg._control_vars["y_axis"].set("tertiary")
+        dlg._do_save()
+        # Save destroys the dialog; the value stays on the node.
+        self.assertEqual(self.graph.get_node("a").style["y_axis"], "tertiary")
+
+    def test_cancel_button_reverts_override_to_snapshot(self):
+        # Snapshot is taken in __init__ from the node's style. Cancel
+        # re-emits the snapshot via set_style so the override reverts.
+        self.graph.add_node(_data("a", style={"y_axis": "secondary"}))
+        dlg = self.StyleDialog(self.host, self.graph, "a")
+        dlg.update_idletasks()
+        # User mid-session change.
+        dlg._control_vars["y_axis"].set("tertiary")
+        for widget in dlg.winfo_children():
+            self._trigger_combobox_selected(widget)
+        self.assertEqual(self.graph.get_node("a").style["y_axis"], "tertiary")
+        # Cancel reverts to the snapshot value.
+        dlg._do_cancel()
+        self.assertEqual(self.graph.get_node("a").style["y_axis"], "secondary")
+
+    # ---- per-row ∀ fan-out ----
+
+    def test_per_row_apply_one_delegates_y_axis(self):
+        seen: list = []
+        self.graph.add_node(_data("a", style={"y_axis": "secondary"}))
+        dlg = self.StyleDialog(
+            self.host, self.graph, "a",
+            on_apply_to_all=lambda k, v: seen.append((k, v)),
+        )
+        dlg.update_idletasks()
+        dlg._delegate_apply_one("y_axis", "secondary")
+        self.assertIn(("y_axis", "secondary"), seen)
+
+    # ---- external sync ----
+
+    def test_external_set_style_refreshes_combobox(self):
+        self.graph.add_node(_data("a", style={"y_axis": None}))
+        dlg = self.StyleDialog(self.host, self.graph, "a")
+        dlg.update_idletasks()
+        # An external source (sibling dialog, ScanTreeWidget, ∀ fan-
+        # out) writes a new override on the same node.
+        self.graph.set_style("a", {"y_axis": "secondary"})
+        dlg.update_idletasks()
+        self.assertEqual(dlg._control_vars["y_axis"].get(), "secondary")
+
+    # ---- bulk fan-out exclusion ----
+
+    def test_bulk_universal_keys_excludes_y_axis(self):
+        # Phase 4y Decision (iii): the bottom ∀ Apply-to-All button
+        # does NOT fan out y_axis. Only the per-row ∀ does, parallel
+        # to the Phase 4d visible / in_legend carve-out.
+        self.assertNotIn("y_axis", self.style_dialog._BULK_UNIVERSAL_KEYS)
+
+    def test_bottom_apply_all_does_not_fan_y_axis(self):
+        seen: list = []
+        self.graph.add_node(_data("a", style={
+            "linestyle": "dashed", "linewidth": 2.0, "alpha": 0.7,
+            "color": "#ff0000", "fill": True, "fill_alpha": 0.2,
+            "visible": True, "in_legend": True,
+            "y_axis": "secondary",
+        }))
+        dlg = self.StyleDialog(
+            self.host, self.graph, "a",
+            on_apply_to_all=lambda k, v: seen.append((k, v)),
+        )
+        dlg.update_idletasks()
+        dlg._do_apply_all()
+        keys = [k for (k, _) in seen]
+        # y_axis stays out of the bulk fan-out.
+        self.assertNotIn("y_axis", keys)
+        # The other bulk keys still fire.
+        self.assertIn("linewidth", keys)
+
+    # ---- module-level defaults + helper round-trip ----
+
+    def test_universal_defaults_carry_y_axis_none(self):
+        self.assertIn("y_axis", self.style_dialog._UNIVERSAL_DEFAULTS)
+        self.assertIsNone(self.style_dialog._UNIVERSAL_DEFAULTS["y_axis"])
+
+    def test_y_axis_options_match_axis_roles(self):
+        # The four Combobox options are "(default)" + the three
+        # CS-44 roles. If `_AXIS_ROLES` ever changes shape, this
+        # tuple must move in lockstep — pin both for drift.
+        from uvvis_tab import _AXIS_ROLES
+        self.assertEqual(
+            self.style_dialog._Y_AXIS_OPTIONS,
+            (self.style_dialog._Y_AXIS_DISPLAY_DEFAULT,) + _AXIS_ROLES,
+        )
+
+    def test_display_to_value_round_trip(self):
+        sd = self.style_dialog
+        self.assertIsNone(
+            sd._y_axis_display_to_value(sd._Y_AXIS_DISPLAY_DEFAULT))
+        self.assertEqual(sd._y_axis_display_to_value("primary"), "primary")
+        self.assertEqual(sd._y_axis_display_to_value("secondary"),
+                         "secondary")
+        self.assertEqual(sd._y_axis_display_to_value("tertiary"),
+                         "tertiary")
+        # Defensive: malformed display strings collapse to None so
+        # we never write a bogus role into a graph node.
+        self.assertIsNone(sd._y_axis_display_to_value("bogus"))
+        self.assertIsNone(sd._y_axis_display_to_value(""))
+
+    def test_value_to_display_round_trip(self):
+        sd = self.style_dialog
+        self.assertEqual(sd._y_axis_value_to_display(None),
+                         sd._Y_AXIS_DISPLAY_DEFAULT)
+        self.assertEqual(sd._y_axis_value_to_display("primary"), "primary")
+        self.assertEqual(sd._y_axis_value_to_display("secondary"),
+                         "secondary")
+        # Malformed persisted values fall back to "(default)".
+        self.assertEqual(sd._y_axis_value_to_display("bogus"),
+                         sd._Y_AXIS_DISPLAY_DEFAULT)
+        self.assertEqual(sd._y_axis_value_to_display(17),
+                         sd._Y_AXIS_DISPLAY_DEFAULT)
 
 
 if __name__ == "__main__":

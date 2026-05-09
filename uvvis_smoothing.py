@@ -506,6 +506,32 @@ class SmoothingPanel(tk.Frame):
             "smoothing_parent_id": subject_id,
         }
 
+        # Phase 4y (CS-50): cross-typed-Apply y_axis inheritance.
+        # CS-49 widened ``ACCEPTED_PARENT_TYPES`` to include
+        # SECOND_DERIVATIVE; the resulting SMOOTHED output's NodeType
+        # default routes it to the primary axis under CS-44, which
+        # collapses the d²A/dλ² values onto the absorbance scale and
+        # was flagged as Phase 4x friction #6 / open-carry-forward T.
+        # Resolution per Phase 4y Decision (i): when the parent's
+        # *effective* y_axis (post-override) differs from the new
+        # node's NodeType default, set ``style["y_axis"]`` on the
+        # output to the parent's effective role so the smoothed
+        # curve renders on the same axis as its parent. Else leave
+        # ``None`` so future routing-table edits propagate cleanly.
+        new_style = default_spectrum_style(colour)
+        from uvvis_tab import (
+            _resolve_y_axis_role,
+            _DEFAULT_Y_AXIS_BY_NODETYPE,
+        )
+        parent_role = _resolve_y_axis_role(
+            parent_node.type, parent_node.style,
+        )
+        own_default_role = _DEFAULT_Y_AXIS_BY_NODETYPE.get(
+            NodeType.SMOOTHED, "primary",
+        )
+        if parent_role != own_default_role:
+            new_style["y_axis"] = parent_role
+
         data_node = DataNode(
             id=out_id,
             type=NodeType.SMOOTHED,
@@ -516,7 +542,7 @@ class SmoothingPanel(tk.Frame):
             metadata=new_meta,
             label=f"{parent_node.label} · smooth ({mode})",
             state=NodeState.PROVISIONAL,
-            style=default_spectrum_style(colour),
+            style=new_style,
         )
 
         # Insert op + data, then wire parent → op → child.
