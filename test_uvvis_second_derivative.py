@@ -296,6 +296,15 @@ class TestSecondDerivativePanel(unittest.TestCase):
         self.assertEqual(self._apply_btn_state(), "disabled")
 
     def test_accepted_parent_types_constant(self):
+        # Phase 4x (CS-49) audit pass: SecondDerivativePanel.ACCEPTED_PARENT_TYPES
+        # is intentionally NOT widened. SECOND_DERIVATIVE itself
+        # stays excluded — chained derivatives are physically
+        # meaningful only rarely and amplify noise. PEAK_LIST is
+        # excluded by output-shape mismatch (peak_wavelengths_nm /
+        # peak_absorbances vs the curve schema this op consumes).
+        # User has not flagged. This test pins the audit-time
+        # decision so a future widening must update the rationale
+        # comment too.
         self.assertEqual(
             usd.SecondDerivativePanel.ACCEPTED_PARENT_TYPES,
             (NodeType.UVVIS, NodeType.BASELINE,
