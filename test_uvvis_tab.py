@@ -3434,6 +3434,120 @@ class TestMultiAxisRoutingHelpers(unittest.TestCase):
         self.assertLess(_TERTIARY_AXIS_OFFSET_FRAC, 1.30)
 
 
+class TestResolveYAxisRoleStyleOverride(unittest.TestCase):
+    """Phase 4y (CS-50) — per-style ``y_axis`` override hook.
+
+    Pure-helper coverage for the ``style`` short-circuit prepended
+    to ``_resolve_y_axis_role`` in Phase 4y. The override is the
+    foundation for the CS-50 carry-forward T register entry — a
+    StyleDialog Combobox lets the user pin a node to a specific axis
+    role independently of its NodeType default. The pre-CS-50
+    callers that pass only ``node_type`` (overlay-axis resolvers in
+    ``_redraw``) keep their byte-identical behaviour because
+    ``style`` defaults to ``None``.
+    """
+
+    def test_string_role_override_beats_nodetype_default(self):
+        # The canonical override path: a UVVIS node with
+        # ``style["y_axis"] = "secondary"`` lands on the secondary
+        # axis even though UVVIS defaults to "primary".
+        from uvvis_tab import _resolve_y_axis_role
+        self.assertEqual(
+            _resolve_y_axis_role(NodeType.UVVIS, {"y_axis": "secondary"}),
+            "secondary",
+        )
+
+    def test_override_can_route_uvvis_to_tertiary(self):
+        # Tertiary is wired but unpopulated by the default table
+        # (CS-44 lock). A user-facing override is the first
+        # production path that lands a node there. Pinned so a
+        # future renderer change cannot silently refuse the role.
+        from uvvis_tab import _resolve_y_axis_role
+        self.assertEqual(
+            _resolve_y_axis_role(NodeType.UVVIS, {"y_axis": "tertiary"}),
+            "tertiary",
+        )
+
+    def test_override_can_send_second_derivative_back_to_primary(self):
+        # The "small-magnitude derivative shares parent's scale" case
+        # called out in the carry-forward T register entry — a
+        # SECOND_DERIVATIVE node with ``style["y_axis"] = "primary"``
+        # routes to primary even though the NodeType-default is
+        # "secondary".
+        from uvvis_tab import _resolve_y_axis_role
+        self.assertEqual(
+            _resolve_y_axis_role(
+                NodeType.SECOND_DERIVATIVE, {"y_axis": "primary"},
+            ),
+            "primary",
+        )
+
+    def test_none_override_falls_through_to_nodetype_default(self):
+        # ``None`` is the literal "(default)" Combobox value: a
+        # freshly-created node carries ``style["y_axis"] = None``
+        # and must route by NodeType default.
+        from uvvis_tab import _resolve_y_axis_role
+        self.assertEqual(
+            _resolve_y_axis_role(NodeType.UVVIS, {"y_axis": None}),
+            "primary",
+        )
+        self.assertEqual(
+            _resolve_y_axis_role(
+                NodeType.SECOND_DERIVATIVE, {"y_axis": None},
+            ),
+            "secondary",
+        )
+
+    def test_missing_y_axis_key_falls_through(self):
+        # An empty style dict (or one that pre-dates CS-50 and lacks
+        # the new key) must behave exactly as the no-style path.
+        from uvvis_tab import _resolve_y_axis_role
+        self.assertEqual(
+            _resolve_y_axis_role(NodeType.UVVIS, {}),
+            _resolve_y_axis_role(NodeType.UVVIS),
+        )
+        self.assertEqual(
+            _resolve_y_axis_role(NodeType.SECOND_DERIVATIVE, {"color": "#abc"}),
+            _resolve_y_axis_role(NodeType.SECOND_DERIVATIVE),
+        )
+
+    def test_malformed_override_falls_through(self):
+        # A non-string or unknown-string value (saved by a future
+        # bug or hand-edited project file) must NOT crash the
+        # renderer — the helper falls back to the per-NodeType
+        # default. The CS-44 docstring's "future per-style override
+        # could surface a malformed value" guard lives in
+        # ``get_axis``'s defensive branch, but the helper itself
+        # also rejects malformed values rather than echoing them.
+        from uvvis_tab import _resolve_y_axis_role
+        self.assertEqual(
+            _resolve_y_axis_role(NodeType.UVVIS, {"y_axis": "bogus"}),
+            "primary",
+        )
+        self.assertEqual(
+            _resolve_y_axis_role(NodeType.UVVIS, {"y_axis": 17}),
+            "primary",
+        )
+        self.assertEqual(
+            _resolve_y_axis_role(NodeType.UVVIS, {"y_axis": ""}),
+            "primary",
+        )
+
+    def test_signature_remains_backwards_compatible(self):
+        # The pre-Phase-4y call sites (overlay-axis resolvers in
+        # ``_redraw``) pass only the NodeType. The signature
+        # extension is additive: every NodeType still resolves
+        # without a ``style`` argument.
+        from uvvis_tab import _resolve_y_axis_role
+        for ntype in (NodeType.UVVIS, NodeType.BASELINE,
+                      NodeType.NORMALISED, NodeType.SMOOTHED,
+                      NodeType.PEAK_LIST, NodeType.SECOND_DERIVATIVE):
+            # No-style call returns a string in _AXIS_ROLES — not
+            # an exception — for every renderer NodeType.
+            from uvvis_tab import _AXIS_ROLES
+            self.assertIn(_resolve_y_axis_role(ntype), _AXIS_ROLES)
+
+
 # ---------------------------------------------------------------------------
 # Phase 4x (CS-49) — cross-type parent acceptance, end-to-end
 # ---------------------------------------------------------------------------

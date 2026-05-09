@@ -76,6 +76,26 @@ class TestDefaultSpectrumStyle(unittest.TestCase):
         self.assertTrue(style["in_legend"])
         self.assertFalse(style["fill"])
         self.assertEqual(style["fill_alpha"], 0.08)
+        # Phase 4y (CS-50): the per-style ``y_axis`` override hook
+        # ships defaulted to ``None`` — meaning "follow my NodeType
+        # default in ``_DEFAULT_Y_AXIS_BY_NODETYPE``." A non-None
+        # value (one of the CS-44 axis roles) overrides per-node;
+        # ``None`` is the "don't override" sentinel.
+        self.assertIsNone(style["y_axis"])
+
+    def test_y_axis_default_is_none(self):
+        # A freshly-created spectrum-shaped node must not opt itself
+        # into a hard-coded axis role: the override hook is opt-in
+        # only. Pinning here so a future commit that forgets the
+        # ``None`` default surfaces in CI.
+        style = default_spectrum_style("#1f77b4")
+        self.assertIn("y_axis", style)
+        self.assertIsNone(style["y_axis"])
+
+    def test_y_axis_key_is_in_default_keys_tuple(self):
+        # ``DEFAULT_SPECTRUM_STYLE_KEYS`` is the schema pin every
+        # caller asserts against. Ensure ``y_axis`` is included.
+        self.assertIn("y_axis", DEFAULT_SPECTRUM_STYLE_KEYS)
 
 
 # ---------------------------------------------------------------------------
