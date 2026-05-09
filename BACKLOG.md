@@ -1619,7 +1619,10 @@ subsequent Phase 4 session.**
 | ⏳ | 🟡 | **Colour-blind-safe palette (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4u (step 5 elicitation). Today `node_styles.SPECTRUM_PALETTE` is matplotlib's default tab10 sequence (ten entries, e.g. `#1f77b4` blue / `#d62728` red / `#2ca02c` green) — this palette is NOT optimised for colour-blindness; deuteranopia conflates the red/green pair, protanopia conflates the orange/red pair. The user has flagged that colour choices should be limited to a colour-blind-safe palette. **Lock decision needed:** which palette — Wong / Okabe-Ito 8-colour (`#000000 #E69F00 #56B4E9 #009E73 #F0E442 #0072B2 #D55E00 #CC79A7 #999999`), Tol's vibrant 7-colour, ColorBrewer's qualitative palettes? Wong/Okabe-Ito is the de facto scientific-publication standard. **Affected:** `node_styles.SPECTRUM_PALETTE` (CS-21 is *locked* but USER-FLAGGED change supersedes the lock); the existing `pick_default_color` walk works unchanged; existing graphs with previously-assigned colors are unaffected (style dict is immutable per node). New tests: `TestColorBlindSafePalette` validates the palette under simulated dichromacy (luminance-pair distance check). One-file change in node_styles.py + COMPONENTS.md doc-version bump. Pairs structurally with the future StyleDialog colour picker — the picker should ALSO restrict its swatch choices to the same palette unless the user opts into "show all colours" |
 | ⏳ | 🟢 | **Parallelize heavy-compute paths (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4u (step 5 elicitation). Today every `compute_*` runs synchronously on the Tk event thread — fine for the current set (linear / polynomial / spline / scattering / scattering+offset / rubberband / savgol smoothing / second derivative / peak picking) which all return in tens of milliseconds on typical UV/Vis grids. The expensive cases that motivate parallelism are **future**: SVD on a large multinode dataset, MCR-ALS iteration, MC bootstrap (when added), Apply-to-All across a large dataset (each apply independent — embarrassingly parallel). **Architecture proposal:** introduce `compute_async` companions that return a `concurrent.futures.Future` and a "compute panel busy" UI state; the Tk event loop polls on `<<ComputeDone>>` virtual events. For NumPy-heavy work `concurrent.futures.ProcessPoolExecutor` releases the GIL; for I/O-bound work (file ingest) `ThreadPoolExecutor` is enough. Pairs with the diagnostic-console register entry (long-running ops surface progress). Defer until at least one user-reported "the UI froze for N seconds" — today's compute set doesn't justify the complexity |
 | ⏳ | 🟡 | **`_absorbance_to_y` should not transform SECOND_DERIVATIVE values** | Surfaced Phase 4u while writing the multi-axis tests. Pre-existing bug, not introduced by Phase 4u: when `_y_unit` is `"%T"`, `_absorbance_to_y` clips values to `[-10, 10]` and applies `100·10^(-A)` — this conversion is meaningful for absorbance but corrupts d²A/dλ² values (which are typically `~0.001` and can be negative, so the clip → `100·10^(-A)` mapping produces nonsense). Fix: gate the conversion on the node's NodeType — only UVVIS / BASELINE / NORMALISED / SMOOTHED really live in absorbance space; SECOND_DERIVATIVE always renders as raw d²A/dλ² regardless of the y-unit toggle (the secondary y-axis label already encodes the unit context post-CS-44, so the toggle doesn't need to mutate the values). Touches `uvvis_tab._redraw` per-node loop (pass NodeType into the conversion or branch on it before calling). Test impact: a new `test_second_derivative_values_unchanged_by_percent_t_y_unit` in `TestUVVisTabSecondDerivativeIntegration` |
-| ⏳ | 🟢 | **Per-style `y_axis` override hook + StyleDialog row (CS-44 follow-up)** | Phase 4u Decision 1 deferred the per-style override (`node.style.get("y_axis")`) per the user's "Default only for now is okay" decision. The hook is wired into `_resolve_y_axis_role` as a one-line addition (read style first, fall back to per-NodeType default); the StyleDialog universal-section row is the bigger lift — a new `ttk.Combobox` choosing `"primary" / "secondary" / "tertiary"`, threaded through `_BULK_UNIVERSAL_KEYS`. Useful when a user wants to send a specific SECOND_DERIVATIVE node back to primary (small-magnitude derivatives that share scale with their parent) or send a UVVIS reference spectrum to a third axis. Defer until a user reports needing it |
+| ✅ | 🟢 | **Per-style `y_axis` override hook + StyleDialog row (CS-44 follow-up)** | Phase 4u Decision 1 deferred the per-style override (`node.style.get("y_axis")`) per the user's "Default only for now is okay" decision. The hook is wired into `_resolve_y_axis_role` as a one-line addition (read style first, fall back to per-NodeType default); the StyleDialog universal-section row is the bigger lift — a new `ttk.Combobox` choosing `"primary" / "secondary" / "tertiary"`, threaded through `_BULK_UNIVERSAL_KEYS`. Useful when a user wants to send a specific SECOND_DERIVATIVE node back to primary (small-magnitude derivatives that share scale with their parent) or send a UVVIS reference spectrum to a third axis. Defer until a user reports needing it. **Resolved Phase 4y (CS-50):** `node_styles.default_spectrum_style` adds `style["y_axis"]: str \| None` (default `None` = follow the per-NodeType default; non-None = literal CS-44 axis role overrides per-node); `_resolve_y_axis_role` grows an optional `style: Mapping \| None = None` argument and a one-line short-circuit at the front (override beats default; malformed values fall through). Renderer threads `node.style` at three call sites: per-node main loop, BASELINE-curve dashed overlay (resolver moved INSIDE per-bn body so a BASELINE on "secondary" puts both its main render AND its dashed overlay on the same axis), PEAK_LIST scatter loop. StyleDialog universal section gains a read-only `ttk.Combobox` row labelled "Y axis:" with options `["(default)", "primary", "secondary", "tertiary"]`; "(default)" round-trips to `None`. Decision lock taken: (i) cross-typed Apply auto-inherits parent's effective role on the new node IFF NodeType-defaults differ — `SmoothingPanel._apply` writes `style["y_axis"] = parent_effective_role` for smoothed-of-derivative outputs (closes Phase 4x friction #6); (ii) "(default)" = literal `None` semantics; inheritance is a separate apply-time mechanism that writes a literal role string; (iii) `y_axis` is intentionally absent from `_BULK_UNIVERSAL_KEYS` (parallel to Phase 4d's `visible` / `in_legend` carve-out — bottom ∀ Apply-to-All would too easily collapse derivatives onto primary), but the per-row ∀ button widens its scope to every renderable node (UVVIS / BASELINE / NORMALISED / SMOOTHED / SECOND_DERIVATIVE / PEAK_LIST) via `_on_uvvis_apply_to_all`'s special-case for the key. 35 new tests (7 pure-helper + 2 default-style + 16 StyleDialog Combobox + 4 renderer override + 3 cross-typed inheritance + 3 fan-out-scope). 781 tests, all green. Persistence (CS-46) auto-rides — the new key sits in the existing style-dict round-trip; no manifest schema change |
+| ⏳ | 🟡 | **Y-axis Combobox row appears on non-UVVis StyleDialog instances (Claude-surfaced Phase 4y)** | The CS-50 "Y axis:" row landed in the StyleDialog *universal* section so it appears for every NodeType — XANES / EXAFS / TDDFT / FEFF_PATHS / BXAS_RESULT / DEGLITCHED / AVERAGED — even though only `uvvis_tab._redraw` reads the override today. The persisted `style["y_axis"]` is harmless on non-UVVis nodes (their renderers don't pass it through `_resolve_y_axis_role`), but the user-visible Combobox is a misleading affordance there: changing it does nothing. Two paths: (a) gate the universal-section row by NodeType (only show for UVVis-tab NodeTypes today), tightening once each tab's renderer joins the routing system; (b) leave it universal but tied to the open carry-forward "Lift multi-axis routing to plot_widget.py" entry — once routing lifts, every tab's renderer reads the override and the affordance becomes meaningful. (b) is structurally cleaner; (a) is the cheap stop-gap. Defer until a user reports the affordance as confusing or until the lift register entry lands |
+| ⏳ | 🟢 | **Per-NodeType primary y-axis label for override use case (CS-50 follow-up)** | Surfaced by Claude during Phase 4y. CS-44's `_NON_PRIMARY_Y_LABEL` table is keyed by `(NodeType, x_unit)` and only carries entries for SECOND_DERIVATIVE — the renderer relies on the *NodeType-default* for primary's label (always "Absorbance" / "Transmittance (%)" today). With the CS-50 override hook landed, two minor surprise cases exist: (a) UVVIS overridden to "secondary" leaves the secondary axis unlabelled (no `(UVVIS, x_unit)` entry in the table); (b) SECOND_DERIVATIVE overridden to "primary" keeps the absorbance label, which is wrong for d²A values. Reasonable degradation today (the user explicitly chose the override), but a future polish could introduce a `_PRIMARY_Y_LABEL: dict[(NodeType, x_unit), str]` companion table so primary's label tracks the *first* node landing on it (parallel to the existing non-primary path), or — simpler — fold both into a single `_Y_LABEL_BY_ROLE_FIRST_NODE_TYPE` lookup. Touches `_redraw`'s y-label resolution + a small expansion of `_NON_PRIMARY_Y_LABEL` to cover UVVIS / NORMALISED / etc. on every x-unit. Cross-refs Phase 4u friction #9 (`_absorbance_to_y` corrupts d²A on %T) — both surface "primary axis assumes absorbance values" mistakes. Defer until a user reports actual confusion |
+| ⏳ | 🟢 | **DRY cross-typed-Apply y_axis inheritance helper (CS-50 architectural debt)** | Surfaced by Claude during Phase 4y. The CS-50 inheritance block (set `style["y_axis"]` on a new node when its NodeType-default differs from the parent's effective role) lives inside `SmoothingPanel._apply`, today the only widened cross-type panel under CS-49. If a future panel widens its `ACCEPTED_PARENT_TYPES` cross-type (NormalisationPanel accepting SECOND_DERIVATIVE; SecondDerivativePanel accepting NORMALISED on a non-UVVis x-axis; etc.), each panel's `_apply` would copy-paste the same six-line block. Move it into `node_styles.py` (or a new `axis_inheritance.py`) as `inherit_y_axis_for_cross_typed_apply(parent_node, new_node_type) -> str \| None`; every panel calls it next to its `default_spectrum_style(colour)` call. Cheap one-time refactor; defer until a second cross-typed-Apply path lands so the abstraction has two consumers. Cross-refs the four open audit-held tuples (`NormalisationPanel` / `PeakPickingPanel` / `SecondDerivativePanel`) — the next CS-49-style widening will probably be the trigger |
 | ⏳ | 🟢 | **Hover/status-bar readout for active y-axis (CS-44 follow-up)** | Surfaced Phase 4u step 5. Once two y-axes coexist (CS-44), the matplotlib toolbar's coordinate readout reports primary-axis values only — a user mousing over a SECOND_DERIVATIVE point sees an absorbance number, not a d²A value. Likely shape: bind a `motion_notify_event` on the canvas, walk every populated `_axes_by_role` axis, transform the cursor's display coords into each axis's data coords, and surface the per-axis readout in a dedicated status strip below the toolbar. Cross-refs the diagnostic-console register entry — both add ambient information surfaces. Defer until two-axis use is common enough to motivate the complexity |
 | ⏳ | 🟢 | **Lift multi-axis routing to plot_widget.py + promote `_TERTIARY_AXIS_OFFSET_FRAC` to Plot Settings (CS-44 follow-up)** | Phase 4u Decision 7 kept the multi-axis routing inside `uvvis_tab._redraw` rather than lifting to `plot_widget.py`. This pairs with Q2's user decision to make `_TERTIARY_AXIS_OFFSET_FRAC` tunable later — both follow-ups land naturally in the same phase. Trigger: when a second tab (XANES / EXAFS) needs multi-axis routing, lift `_AXIS_ROLES` + `_DEFAULT_Y_AXIS_BY_NODETYPE` + `_NON_PRIMARY_Y_LABEL` + `_TERTIARY_AXIS_OFFSET_FRAC` + `_resolve_y_axis_role` + `_resolve_non_primary_y_label` + the `get_axis(role)` lazy-creation closure into `plot_widget.py` (or a new `plot_axes.py`). At the same time, surface the tertiary offset as a Plot Settings → Appearance row. Until then, the in-tab home is the right shape — single consumer, no abstraction tax |
 | ⏳ | 🟡 | **Top-bar Open File / Reload buttons belong to TDDFT only, not the app top level (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4t. The very top bar of the app currently shows `Open File` + `Reload` buttons that, in practice, only act on the TDDFT tab — they're not relevant to the UV/Vis tab (which has its own subject-loading paths inside the left pane), the XAS / EXAFS tabs (separate file paths), or the planned Compare tab. Today they're rendered at app top level (in `binah.py` or wherever the chrome lives), giving the user a false signal that they're cross-tab gestures. The user has flagged that they should be removed from the top-level row entirely and either (a) re-rendered inside the TDDFT tab where they belong, OR (b) become tab-context-aware so they only show when the TDDFT tab is active. Lock decision needed: (a) is structurally cleaner (each tab owns its own file ingestion); (b) preserves the existing "always-on top bar" pattern. Touches `binah.py` (top-bar removal) + the TDDFT tab module (button re-render, if path (a) chosen). Pairs with any future tab-chrome refactor — the file-open responsibility per tab is also relevant to the OLIS reader register entry above and to the persistence umbrella's `.ptmg` archive UX (load-project gestures stay app-level; load-instrument-file gestures are per-tab) |
@@ -1932,7 +1935,10 @@ subsequent Phase 4 session.**
    label table, `_TERTIARY_AXIS_OFFSET_FRAC` tunable constant,
    `_axes_by_role` lazy dict in `_redraw`. Per-style override +
    per-role y-limits deferred per Decisions 1 and 4 in the
-   Phase 4u step-2 design lock.
+   Phase 4u step-2 design lock. **Phase 4y note (CS-50):**
+   Decision 1's per-style override hook is now ✅ Resolved
+   (`style["y_axis"]` short-circuit + StyleDialog Combobox row).
+   Decision 4 (per-role y-limit Tk vars) remains deferred.
 
 3. 🟡 **Top-bar Open File / Reload buttons belong to TDDFT
    only, not the app top level (USER-FLAGGED).** The top-bar
@@ -2047,13 +2053,24 @@ subsequent Phase 4 session.**
    The conversion clips + maps `100·10^(-A)` which is meaningless
    for d²A values. Fix: gate the conversion on NodeType. One
    per-node-loop edit + one regression test. **Cross-ref:** see
-   the new register entry.
+   the new register entry. **Phase 4y note (CS-50):** the override
+   hook makes a SECOND_DERIVATIVE-on-primary configuration newly
+   reachable from the StyleDialog UI; before CS-50 the user had
+   to hand-edit a project file's style dict to land the bug. The
+   canonical register entry's priority arguably ticks up post-4y;
+   defer the fix until either a user reports nonsense %T values or
+   the next phase that touches the per-node loop's y-unit branch.
 
-10. 🟢 **Per-style `y_axis` override hook + StyleDialog row.**
+10. ~~🟢 **Per-style `y_axis` override hook + StyleDialog row.**
     Phase 4u Decision 1 deferred this — per-NodeType defaults
     only ship today. Reasonable scope for the same phase that
     needs Decision-2-style "send this UVVIS to the right axis"
-    UX. **Cross-ref:** see the new register entry.
+    UX. **Cross-ref:** see the new register entry.~~ ✅
+    Resolved in Phase 4y (CS-50). Default-None style key +
+    `_resolve_y_axis_role` short-circuit + StyleDialog
+    Combobox row. The canonical register entry above is now
+    ✅; the smoothed-of-derivative misroute that Phase 4x
+    friction #6 made newly reachable is closed too.
 
 11. 🟢 **Plot_widget abstraction lift + hover readout for
     active axis + tertiary offset Plot Settings promotion.** Three
@@ -2347,7 +2364,7 @@ Phase 4 session.**
    already pins the spectrum-first ordering so visual scanning
    is left-to-right consistent.
 
-6. 🟢 **Smoothed-of-derivative output misroutes to the primary
+6. ~~🟢 **Smoothed-of-derivative output misroutes to the primary
    axis (CS-49 + CS-44 interaction, USER-NOTED).** The
    `SMOOTHED` output of "smooth a SECOND_DERIVATIVE" is routed
    by `_DEFAULT_Y_AXIS_BY_NODETYPE[SMOOTHED] == "primary"`
@@ -2358,7 +2375,16 @@ Phase 4 session.**
    friction #10 — Phase 4x makes this misroute newly
    reachable, so T's priority arguably ticks up. User has
    acknowledged that T is the right next session's intent.
-   No new register entry; cross-ref only.
+   No new register entry; cross-ref only.~~ ✅ Resolved in
+   Phase 4y (CS-50). The cross-typed-Apply inheritance hook
+   in `SmoothingPanel._apply` writes
+   `style["y_axis"] = parent_effective_role` on the new
+   SMOOTHED node when (and only when) the parent's effective
+   role differs from SMOOTHED's NodeType-default — so a
+   smoothed-of-derivative output now lands on "secondary"
+   alongside its parent. Pinned by
+   `test_smoothed_of_second_derivative_inherits_secondary` in
+   the new `TestUVVisTabPhase4yCrossTypedInheritance` class.
 
 7. 🟢 **`_BASELINE_ACCEPTED_PARENT_TYPES` is the only
    acceptance tuple still living on `UVVisTab` rather than its
@@ -2383,6 +2409,88 @@ Phase 4 session.**
    right home — when `LEXICON.md` lands, the seed entries
    should include "tuple" alongside the UI terms. Cross-ref
    only; no new register entry.
+
+### Friction points carried forward from Phase 4y
+
+These are concrete obstacles the next Phase 4 session will hit.
+Identified during Phase 4y while landing the per-style `y_axis`
+override hook + StyleDialog Combobox row (CS-50 / carry-forward
+T from Phase 4u Decision 1). Items 1–3 are Claude-surfaced
+during step 5 and carry fresh register entries above. Items 4–6
+are documentation-style notes / cross-refs without new register
+entries. **Do not fix until the relevant subsequent Phase 4
+session.**
+
+1. 🟡 **Y-axis Combobox row appears on non-UVVis StyleDialog
+   instances (Claude-surfaced).** The CS-50 "Y axis:" row
+   landed in the *universal* section so it appears for every
+   NodeType — XANES / EXAFS / TDDFT / FEFF_PATHS / BXAS_RESULT
+   / DEGLITCHED / AVERAGED — even though only `uvvis_tab._redraw`
+   reads the override today. Persisted `style["y_axis"]` is
+   harmless on non-UVVis nodes but the user-visible Combobox
+   is a misleading affordance there. Pairs with the open
+   "Lift multi-axis routing to plot_widget.py" carry-forward —
+   once that lifts, the affordance becomes meaningful for
+   every tab. **Cross-ref:** see the new register entry above.
+
+2. 🟢 **Per-NodeType primary y-axis label gap when override
+   reroutes nodes (Claude-surfaced).** Two minor surprises with
+   the CS-50 hook: (a) UVVIS overridden to "secondary" leaves
+   the secondary axis unlabelled (no `(UVVIS, x_unit)` entry
+   in `_NON_PRIMARY_Y_LABEL`); (b) SECOND_DERIVATIVE overridden
+   to "primary" keeps the absorbance label, which is wrong for
+   d²A values. Reasonable degradation today (the user
+   explicitly chose the override) but a future polish could
+   widen the label table to cover non-default routings. Cross-
+   refs Phase 4u friction #9 (`_absorbance_to_y` corrupts d²A
+   on %T) — both surface "primary axis assumes absorbance
+   values" mistakes. **Cross-ref:** see the new register entry
+   above.
+
+3. 🟢 **DRY cross-typed-Apply y_axis inheritance helper (CS-50
+   architectural debt, Claude-surfaced).** The inheritance
+   block in `SmoothingPanel._apply` (set `style["y_axis"]` on
+   a new node when its NodeType-default differs from the
+   parent's effective role) is the only consumer today.
+   Refactor into `node_styles.inherit_y_axis_for_cross_typed_apply`
+   when a second cross-typed-Apply path lands so the
+   abstraction has two consumers. **Cross-ref:** see the new
+   register entry above.
+
+4. 🟡 **Phase 4u friction #9 (`_absorbance_to_y` corrupts d²A
+   on %T) is now newly reachable from the UI.** Pre-CS-50 the
+   bug required hand-editing a project file's style dict to
+   land a SECOND_DERIVATIVE on primary; post-CS-50 the
+   StyleDialog Combobox makes it a single click. Priority of
+   the canonical Phase 4u friction #9 register entry arguably
+   ticks up; defer the fix until either a user reports
+   nonsense %T values or the next phase that touches the
+   per-node loop's y-unit branch. Cross-ref to **Phase 4u
+   friction #9**; no new register entry — that entry already
+   exists and Phase 4y added a note inline.
+
+5. 🟢 **`_apply_baseline()` tuple return shape isn't pinned
+   in COMPONENTS.md (Claude-surfaced doc-debt).** While
+   writing the Phase 4y baseline-overlay test I tripped on
+   `_apply_baseline()` returning `(op_id, baseline_id)` —
+   the panel-`_apply` shape is consistent across all five
+   panels (NormalisationPanel / SmoothingPanel /
+   PeakPickingPanel / SecondDerivativePanel / inline baseline)
+   but isn't called out in CS-15 / CS-16 / CS-18 / CS-19 /
+   CS-20 docstrings. Minor; fold into the next phase that
+   touches CS-15's docstring or a future "panel apply
+   contract" CS section. No new register entry; cross-ref
+   only.
+
+6. 🟢 **Combobox "(default)" label could be more
+   descriptive (Claude-surfaced polish).** Phase 4y Decision
+   (ii) locked the literal-None semantics; the Combobox label
+   "(default)" is technically accurate but a new user may not
+   immediately understand why their per-NodeType routing
+   choice isn't visible. A future polish could spell it
+   "(default — follow type)" or "follow type default" so the
+   semantics surface in the dropdown. Defer until a usability
+   report. No new register entry; cross-ref only.
 
 ---
 
@@ -2598,7 +2706,7 @@ the resolving phase + commit SHA appended to the row.
 
 ---
 
-*Document version: 1.23 — May 2026*
+*Document version: 1.24 — May 2026*
 *1.1: Known Bugs register added 2026-04-27 after Phase 4b manual testing.*
 *1.2: Phase 4c — baseline correction lands; B-001 / B-003 / B-004
 resolved; Phase 4c friction points logged.*
@@ -2983,4 +3091,52 @@ half). 746 tests, all green (738 + 8 new: 3 in
 TestSmoothingPanel for SECOND_DERIVATIVE acceptance + 5 in
 new TestUVVisTabPhase4xCrossTypeAcceptance for end-to-end
 flows + audit stability + combobox order).*
+*1.24: Phase 4y — per-style `y_axis` override hook + StyleDialog
+Combobox row (CS-50). Closes the carry-forward T from Phase 4u
+Decision 1 (USER-LOCKED "Default only for now is okay"; the
+deferral was the canonical Phase 4u friction #10 register entry,
+now ✅) and Phase 4x friction #6 (smoothed-of-derivative
+misroute, USER-NOTED) in one phase. `node_styles.default_spectrum_style`
+adds `style["y_axis"]: str | None` (default None = follow
+NodeType default; non-None = literal CS-44 axis role overrides
+per-node); `uvvis_tab._resolve_y_axis_role` grows an optional
+`style: Mapping | None = None` argument with a one-line short-
+circuit at the front (override beats default; malformed values
+fall through). Renderer threads `node.style` at three call sites
+(per-node main loop; BASELINE-curve dashed overlay moved INSIDE
+per-bn body so main + overlay land on the same axis; PEAK_LIST
+scatter moved INSIDE per-peak loop). StyleDialog universal
+section gains a read-only `ttk.Combobox` row labelled "Y axis:"
+with options `["(default)", "primary", "secondary", "tertiary"]`;
+"(default)" round-trips to `None`. `_BULK_UNIVERSAL_KEYS`
+intentionally NOT extended (parallel to Phase 4d's `visible` /
+`in_legend` carve-out — bottom ∀ would too easily collapse
+derivatives onto primary); per-row ∀ button widens its scope to
+every renderable node via `_on_uvvis_apply_to_all`'s special-
+case for the key. `SmoothingPanel._apply` writes
+`style["y_axis"] = parent_effective_role` on cross-typed
+outputs (today: smoothed-of-derivative → "secondary"). Decision
+lock taken: (i) cross-typed-Apply auto-inheritance fires IFF
+NodeType-defaults differ; (ii) "(default)" = literal None
+semantics, inheritance is a separate apply-time mechanism; (iii)
+y_axis bulk-fan-out scope = renderable nodes only. Three new
+Claude-surfaced register entries from step 5: 🟡 Y-axis Combobox
+row appears on non-UVVis StyleDialog instances; 🟢 per-NodeType
+primary y-label gap when override reroutes nodes; 🟢 DRY cross-
+typed-Apply y_axis inheritance helper (architectural debt).
+Phase 4y friction logged (six items): 🟡 non-UVVis Combobox
+reach (#1), 🟢 primary y-label gap (#2), 🟢 inheritance helper
+DRY (#3), 🟡 Phase 4u friction #9 priority bump (#4 cross-ref),
+🟢 panel-`_apply` tuple-shape doc-debt (#5), 🟢 "(default)"
+label could be more descriptive (#6). 781 tests, all green
+(746 + 35 new: 7 pure-helper in TestResolveYAxisRoleStyleOverride
++ 2 in TestDefaultSpectrumStyle + 16 in TestStyleDialogYAxisOverride
++ 4 in TestUVVisTabPhase4yYAxisOverride + 3 in
+TestUVVisTabPhase4yCrossTypedInheritance + 3 in
+TestUVVisTabPhase4yApplyToAllScope). The
+`TestUVVisTabTertiaryAxisPath` monkey-patched resolver widened
+to `(node_type, style=None)` in lockstep with the helper
+signature; `test_per_row_buttons_emit_one_call_per_universal_key`
+asserts nine per-row ∀ buttons (was eight) and includes
+`y_axis` in the expected key list.*
 *Supersedes: BACKLOG.md (original)*

@@ -5662,7 +5662,231 @@ schema that isn't in the curve helper.
 
 ---
 
-*Document version: 1.24 — May 2026*
+## CS-50 — Per-style `y_axis` override hook (Phase 4y)
+
+**Source files.** `node_styles.py` (`default_spectrum_style` adds the
+new key); `uvvis_tab.py` (`_resolve_y_axis_role` signature widens;
+three call sites in `_redraw` thread `node.style`;
+`_on_uvvis_apply_to_all` special-cases the key);
+`style_dialog.py` (universal-section Combobox row +
+`_Y_AXIS_OPTIONS` / round-trip helpers + `_UNIVERSAL_DEFAULTS`
+update); `uvvis_smoothing.py` (cross-typed-Apply inheritance
+block in `SmoothingPanel._apply`).
+
+**Purpose.** Close the carry-forward T from Phase 4u Decision 1
+(USER-LOCKED "Default only for now is okay"; the deferral was
+the canonical Phase 4u friction #10 register entry) and Phase 4x
+friction #6 (smoothed-of-derivative misroute, USER-NOTED) in
+one phase. CS-44's per-NodeType routing table covers the
+typical case but cannot express "send THIS specific node to a
+non-default axis" — for example a small-magnitude
+SECOND_DERIVATIVE that shares the parent's amplitude scale
+should land on primary, not secondary. CS-50 adds the per-node
+override on top of CS-44 without changing any of CS-44's locked
+constants.
+
+**Style key.** `style["y_axis"]: str | None`. Default `None`
+means "follow my NodeType default in
+``_DEFAULT_Y_AXIS_BY_NODETYPE``." A non-`None` value (one of
+`_AXIS_ROLES = ("primary", "secondary", "tertiary")`) overrides
+the routing per-node. The key was anticipated in CS-44's
+docstring; Phase 4y ships it. ``DEFAULT_SPECTRUM_STYLE_KEYS``
+widens in lockstep so callers asserting against the schema pin
+catch the addition. Persistence (CS-46) auto-rides — the key
+sits in the existing style-dict round-trip; no manifest schema
+change needed.
+
+**Helper signature (additive widening).**
+
+`_resolve_y_axis_role(node_type: NodeType, style: Mapping |
+None = None) -> str`. The `style` parameter is optional and
+defaults to `None` so every pre-CS-50 caller (overlay-axis
+resolvers that pass only a NodeType) keeps byte-identical
+behaviour. Resolution order:
+
+1. **Per-style override.** If `style is not None` and
+   `style.get("y_axis")` is one of `_AXIS_ROLES`, return it.
+2. **Per-NodeType default.** Look up
+   `_DEFAULT_Y_AXIS_BY_NODETYPE.get(node_type, "primary")`.
+
+Malformed override values (non-string, unknown string, empty
+string, missing key) fall through to the table — the helper
+never returns a value outside `_AXIS_ROLES`.
+
+**Renderer threading.** Three call sites in `_redraw` thread
+the per-node style:
+
+- **Per-node main loop:** `_resolve_y_axis_role(node.type,
+  node.style)`. Default-`None` style preserves pre-CS-50
+  routing.
+- **BASELINE-curve dashed overlay (CS-29):** the resolver call
+  moved INSIDE the per-bn loop body, parameterised by
+  `(bn.type, bn.style)`. Without this move a BASELINE node
+  with a non-default `y_axis` override would render its main
+  curve on the override axis but its dashed overlay on the
+  default — visually broken.
+- **PEAK_LIST scatter loop (CS-19):** the resolver call moved
+  INSIDE the per-peak-node loop, parameterised by
+  `(peak_node.type, peak_node.style)`. Same reason.
+
+The `_axes_by_role` lazy creation closure `get_axis(role)`
+remains unchanged — only its callers' arguments grew.
+
+**StyleDialog Combobox row.** A new row in the universal
+section, between "In legend" and the bottom button row. Layout
+mirrors the surrounding 4-column grid (label · control · spacer
+· ∀). `ttk.Combobox` with `state="readonly"` so the user cannot
+type a malformed role; `<<ComboboxSelected>>` fires the write.
+Options:
+
+```
+("(default)", "primary", "secondary", "tertiary")
+```
+
+with two pure-helper round-trip translators:
+
+- `_y_axis_display_to_value(display: str) -> str | None` —
+  "(default)" → `None`; valid role → role; anything else → `None`
+  (defensive: a malformed Combobox state never lands a bogus
+  role string in a graph node).
+- `_y_axis_value_to_display(value: str | None) -> str` —
+  symmetrical.
+
+`_UNIVERSAL_DEFAULTS["y_axis"] = None` keeps the section
+fallback in sync with `node_styles.default_spectrum_style`.
+`_read_universal_values` includes `"y_axis"` so Apply / Save
+round-trip the override; Cancel reverts to the snapshot.
+
+**Decision lock taken (Phase 4y step 2).**
+
+- (i) **Cross-typed Apply auto-inherits y_axis IFF defaults
+  differ.** When a panel `_apply` would create an output whose
+  NodeType-default differs from the parent's *effective*
+  y_axis (post-override), the new node's `style["y_axis"]` is
+  set to the parent's effective role. Else it is left `None`.
+  Today this fires only inside `SmoothingPanel._apply` (the
+  only widened cross-type panel under CS-49); a SMOOTHED
+  output of a SECOND_DERIVATIVE parent ends up with
+  `style["y_axis"] = "secondary"`. Closes Phase 4x friction #6.
+- (ii) **`(default)` Combobox label = literal `None`.** Selecting
+  "(default)" writes `None` ("follow my NodeType default").
+  Inheritance from parent (Decision (i)) is a separate apply-
+  time mechanism that writes a literal role string into style.
+  The two are orthogonal.
+- (iii) **`y_axis` excluded from `_BULK_UNIVERSAL_KEYS`.**
+  Bottom ∀ Apply-to-All does not fan it (parallel to Phase 4d's
+  `visible` / `in_legend` carve-out — collapsing every
+  derivative onto primary in one click is a footgun). Per-row
+  ∀ button writes the chosen role to **every renderable node**
+  (UVVIS / BASELINE / NORMALISED / SMOOTHED / SECOND_DERIVATIVE
+  / PEAK_LIST), implemented by special-casing `param ==
+  "y_axis"` in `UVVisTab._on_uvvis_apply_to_all` to walk the
+  union; other keys preserve the existing `_spectrum_nodes()`
+  scope so a linewidth ∀ does not silently rewrite annotation
+  overlays.
+
+**Test coverage.**
+
+- `test_node_styles.TestDefaultSpectrumStyle` — 2 new tests
+  (`test_y_axis_default_is_none`,
+  `test_y_axis_key_is_in_default_keys_tuple`); the existing
+  `test_factory_defaults_are_stable` asserts the new
+  `style["y_axis"] is None` default.
+- `test_uvvis_tab.TestResolveYAxisRoleStyleOverride` — 7 pure
+  tests covering the override short-circuit (string role beats
+  default, tertiary reachable, derivative-to-primary, None
+  fall-through, missing-key fall-through, malformed value
+  fall-through, signature backwards compatibility).
+- `test_style_dialog.TestStyleDialogYAxisOverride` — 16
+  integration tests covering Combobox initial state, write-
+  through, Apply / Save / Cancel round-trip, per-row ∀ delegate,
+  external sync, bulk-fan-out exclusion, module-level defaults,
+  the option-list ↔ `_AXIS_ROLES` drift guard, and the round-
+  trip helpers' total-domain behaviour.
+- `test_uvvis_tab.TestUVVisTabPhase4yYAxisOverride` — 4
+  integration tests covering UVVIS-on-secondary,
+  default-preserves-pre-CS-50,
+  SECOND_DERIVATIVE-back-to-primary, BASELINE-overlay-follows-
+  override.
+- `test_uvvis_tab.TestUVVisTabPhase4yCrossTypedInheritance` — 3
+  integration tests covering the auto-inheritance fire-when-
+  defaults-differ rule, the same-default no-fire rule, and the
+  parent's *effective* role (not just NodeType default) driving
+  the decision.
+- `test_uvvis_tab.TestUVVisTabPhase4yApplyToAllScope` — 3
+  integration tests covering the y_axis-fans-to-derivative,
+  y_axis-fans-to-peak-list, and other-keys-preserve-spectrum-
+  only-scope rules.
+
+**Locked invariants.**
+
+- `_resolve_y_axis_role` signature is `(node_type: NodeType,
+  style: Mapping | None = None) -> str`. The `style=None`
+  default keeps pre-CS-50 callers byte-identical. Removing the
+  parameter or making it required would break the overlay
+  call sites that pass only a NodeType.
+- `style["y_axis"]: None` (default) MUST preserve pre-CS-50
+  routing exactly — pinned by
+  `test_uvvis_with_default_renders_on_primary_unchanged`.
+- `_Y_AXIS_OPTIONS` shape MUST equal
+  `("(default)",) + _AXIS_ROLES` — pinned by
+  `test_y_axis_options_match_axis_roles`. If `_AXIS_ROLES` ever
+  grows or shrinks, the Combobox option list must move in
+  lockstep.
+- `_BULK_UNIVERSAL_KEYS` MUST NOT include `y_axis` — pinned by
+  `test_bulk_universal_keys_excludes_y_axis`. Decision (iii)
+  is durable; widening it would land in a fresh phase.
+- `_on_uvvis_apply_to_all` MUST widen its scope when `param ==
+  "y_axis"` — pinned by `test_y_axis_fans_out_to_second_derivative_too`
+  and `test_y_axis_fans_out_to_peak_list_too`.
+- The `SmoothingPanel._apply` inheritance block MUST set
+  `style["y_axis"]` IFF the parent's effective role differs
+  from `_DEFAULT_Y_AXIS_BY_NODETYPE[NodeType.SMOOTHED]` —
+  pinned by the three
+  `TestUVVisTabPhase4yCrossTypedInheritance` tests.
+
+**What changes when this lock relaxes.** The CS-50 lock relaxes
+when (a) a second cross-typed-Apply panel lands (NormalisationPanel
+on SECOND_DERIVATIVE; SecondDerivativePanel on a non-spectrum
+NodeType; etc.) — at that point the inheritance block in
+`SmoothingPanel._apply` should be promoted into a shared helper
+in `node_styles.py` (open carry-forward register entry from
+Phase 4y); (b) the multi-axis routing lifts to `plot_widget.py`
+(open carry-forward) — at that point the `y_axis` Combobox row
+in the StyleDialog universal section becomes meaningful for
+every tab, closing the open Phase 4y friction #1
+("Y-axis Combobox row appears on non-UVVis StyleDialog
+instances"); (c) `_NON_PRIMARY_Y_LABEL` widens to cover non-
+default routings (open Phase 4y register entry on the per-
+NodeType primary y-label gap).
+
+**Implementation notes.**
+
+- The local `from uvvis_tab import _resolve_y_axis_role,
+  _DEFAULT_Y_AXIS_BY_NODETYPE` inside `SmoothingPanel._apply`
+  is intentional: `uvvis_tab` imports `uvvis_smoothing` at
+  module load (`import uvvis_smoothing`), so a top-level
+  reverse import would create a cycle. The deferred import
+  fires only at button-click time — well after module loading.
+- The CS-44 docstring's anticipated signature widening
+  ("`(node_type, style: Mapping | None = None) -> str` —
+  additive only") is now realised. The CS-44 lock note that
+  "the future per-style override could surface a malformed
+  value" is honoured by the helper itself rejecting malformed
+  values rather than echoing them; the `get_axis` defensive
+  fallback for unknown roles also remains in place as a
+  belt-and-braces second guard.
+- Phase 4u friction #9 (`_absorbance_to_y` corrupts d²A on
+  %T) is now newly reachable from the UI: pre-CS-50 a user had
+  to hand-edit a project file's style dict to land a
+  SECOND_DERIVATIVE on primary; post-CS-50 the StyleDialog
+  Combobox makes it a single click. The bug is documented in
+  Phase 4u friction #9; Phase 4y added a priority-bump note
+  inline.
+
+---
+
+*Document version: 1.25 — May 2026*
 *1.1: CS-13 implementation notes added in Phase 4a.*
 *1.2: CS-14 Plot Settings Dialog added in Phase 4b.*
 *1.3: CS-15 UV/Vis Baseline Correction + CS-04 implementation
@@ -6085,5 +6309,45 @@ out a `BaselinePanel` widget). 746 tests, all green
 SECOND_DERIVATIVE acceptance + 5 in new
 TestUVVisTabPhase4xCrossTypeAcceptance for end-to-end flows
 + audit stability + combobox order).*
+*1.25: Phase 4y — per-style `y_axis` override hook + StyleDialog
+Combobox row (CS-50). Closes the carry-forward T from Phase 4u
+Decision 1 (USER-LOCKED "Default only for now is okay"; the
+deferral was the canonical Phase 4u friction #10 register entry,
+now ✅) and Phase 4x friction #6 (smoothed-of-derivative
+misroute, USER-NOTED) in one phase. `node_styles.default_spectrum_style`
+adds `style["y_axis"]: str | None` (default `None` = follow
+NodeType default; non-`None` = literal CS-44 axis role overrides
+per-node); `uvvis_tab._resolve_y_axis_role` grows an optional
+`style: Mapping | None = None` argument with a one-line short-
+circuit at the front. Renderer threads `node.style` at three
+call sites in `_redraw` (per-node main loop; BASELINE-curve
+dashed overlay moved INSIDE per-bn body so main + overlay land
+on the same axis; PEAK_LIST scatter moved INSIDE per-peak loop).
+StyleDialog universal section gains a read-only `ttk.Combobox`
+row labelled "Y axis:" with options `["(default)", "primary",
+"secondary", "tertiary"]`; "(default)" round-trips to `None`.
+`_BULK_UNIVERSAL_KEYS` intentionally NOT extended (parallel to
+Phase 4d's `visible` / `in_legend` carve-out); per-row ∀ button
+widens its scope to every renderable node via
+`_on_uvvis_apply_to_all`'s special-case for the key.
+`SmoothingPanel._apply` writes `style["y_axis"] = parent_effective_role`
+on cross-typed outputs (today: smoothed-of-derivative →
+"secondary") IFF NodeType-defaults differ. Decision lock taken:
+(i) cross-typed-Apply auto-inheritance fires IFF NodeType-
+defaults differ; (ii) "(default)" = literal `None` semantics,
+inheritance is a separate apply-time mechanism; (iii) y_axis
+bulk-fan-out scope = renderable nodes only. CS-44 locks all
+preserved (`_AXIS_ROLES` / `_DEFAULT_Y_AXIS_BY_NODETYPE` /
+`_NON_PRIMARY_Y_LABEL` / `_TERTIARY_AXIS_OFFSET_FRAC` /
+`_resolve_non_primary_y_label` byte-identical;
+`_resolve_y_axis_role` signature widened additively per the
+docstring's anticipated extension). CS-46 manifest schema
+unchanged (the new key auto-rides the existing style-dict
+round-trip). 781 tests, all green (746 + 35 new: 7 pure-helper
+in TestResolveYAxisRoleStyleOverride + 2 in
+TestDefaultSpectrumStyle + 16 in TestStyleDialogYAxisOverride
++ 4 in TestUVVisTabPhase4yYAxisOverride + 3 in
+TestUVVisTabPhase4yCrossTypedInheritance + 3 in
+TestUVVisTabPhase4yApplyToAllScope).*
 *To be updated as Open Questions are resolved and new components
 are specified.*
