@@ -5516,7 +5516,153 @@ require either widening the slot or stacking buttons via grid.
 
 ---
 
-*Document version: 1.23 — May 2026*
+## CS-49 — Cross-type panel parent acceptance widening (Phase 4x)
+
+**Source files.** `uvvis_smoothing.py` (`SmoothingPanel.ACCEPTED_PARENT_TYPES`
+gains `SECOND_DERIVATIVE`); `uvvis_tab.py` (`_BASELINE_ACCEPTED_PARENT_TYPES`
+gains `SMOOTHED`; `_refresh_shared_subjects` walks both spectrum-shaped
+and derivative helpers; `_second_derivative_nodes` docstring rewritten
+to reflect the new contract).
+
+**Purpose.** Close the user-flagged Phase 4w friction #1
+("Cannot do baseline correction from a smoothed spectrum.
+Cannot smooth derivative plots."). Both gaps were panel-side
+parent-type rejection only; the math in each case is
+type-agnostic — every accepted parent carries
+`arrays["wavelength_nm"]` + `arrays["absorbance"]` and the
+solver feeds those arrays in regardless of which op produced
+them. Companion polish: surface SECOND_DERIVATIVE rows in the
+shared subject combobox so the SmoothingPanel widening is
+actually reachable from the UI.
+
+**Tuple widening.**
+| Tuple | Before | After |
+|---|---|---|
+| `UVVisTab._BASELINE_ACCEPTED_PARENT_TYPES` | `(UVVIS, BASELINE)` | `(UVVIS, BASELINE, SMOOTHED)` |
+| `SmoothingPanel.ACCEPTED_PARENT_TYPES` | `(UVVIS, BASELINE, NORMALISED, SMOOTHED)` | `(UVVIS, BASELINE, NORMALISED, SMOOTHED, SECOND_DERIVATIVE)` |
+| `NormalisationPanel.ACCEPTED_PARENT_TYPES` | `(UVVIS, BASELINE, NORMALISED)` | UNCHANGED (audit decision held) |
+| `PeakPickingPanel.ACCEPTED_PARENT_TYPES` | `(UVVIS, BASELINE, NORMALISED, SMOOTHED)` | UNCHANGED (audit decision held) |
+| `SecondDerivativePanel.ACCEPTED_PARENT_TYPES` | `(UVVIS, BASELINE, NORMALISED, SMOOTHED)` | UNCHANGED (audit decision held) |
+
+**Audit decisions held (intentionally NOT widened).**
+- **NormalisationPanel** keeps SMOOTHED + SECOND_DERIVATIVE
+  excluded — existing comment documents "normalisation should
+  run on raw or baseline-corrected curves, before smoothing,
+  so the smooth window matches the canonical amplitude scale."
+  Normalising a derivative would divide by a zero-crossing.
+- **PeakPickingPanel** keeps SECOND_DERIVATIVE excluded — picking
+  peaks of d²A/dλ² conflates absorbance maxima with derivative
+  zero-crossings; PEAK_LIST excluded by output-shape mismatch
+  (`peak_wavelengths_nm` / `peak_absorbances` vs the curve
+  schema).
+- **SecondDerivativePanel** keeps SECOND_DERIVATIVE itself
+  excluded — chained derivatives rarely useful + amplifies
+  noise. PEAK_LIST excluded by shape.
+
+Each unchanged tuple's `test_accepted_parent_types_constant`
+gained an audit-time comment block + remains a hard pin so a
+future widening must update the rationale comment in
+lock-step.
+
+**Combobox surfacing.** `_refresh_shared_subjects` now walks
+`_spectrum_nodes() + _second_derivative_nodes()` (in that
+order: spectrum nodes first, derivatives appended). Order
+pinned by `test_shared_combobox_orders_spectrum_then_derivative`
+in the new `TestUVVisTabPhase4xCrossTypeAcceptance` class.
+
+`_spectrum_nodes` itself is **not** touched. The renderer
+(`_redraw`) iterates the two helpers separately because
+`_DEFAULT_Y_AXIS_BY_NODETYPE[SECOND_DERIVATIVE] == "secondary"`
+under CS-44; concatenating them into `_spectrum_nodes` would
+double-render every derivative.
+
+The `_second_derivative_nodes` docstring was rewritten:
+the historical "panels do not surface SECOND_DERIVATIVE"
+rationale (true pre-Phase 4x) is preserved as a history note
+alongside the still-true "renderer-side double-iteration
+avoidance" reason.
+
+**Decision lock taken (Phase 4x step 2).**
+- (i) **Explicit type-list gate kept.** Rejected the looser
+  "any DataNode with `arrays['wavelength_nm']` +
+  `arrays['absorbance']`" alternative — explicit lists let
+  each panel encode deliberate exclusions (NormalisationPanel's
+  "before smoothing" rationale stays expressible; future
+  per-type behavioural exclusions stay possible).
+- (ii) **y-axis routing of cross-typed outputs deferred to
+  CS-44 by-NodeType routing.** Smoothed-of-derivative output
+  carries `NodeType.SMOOTHED` → routes to "primary" axis
+  (visually misleading for d²A values); the fix lives in the
+  open Phase 4u friction #10 / per-style `y_axis` override
+  hook (carry-forward T), not in this phase. CS-49 adds no
+  parent-aware routing logic.
+- (iii) **Audit pass concluded with two widenings + three
+  held decisions** (per the table above).
+
+**Locks.**
+- `_BASELINE_ACCEPTED_PARENT_TYPES` shape now `(UVVIS,
+  BASELINE, SMOOTHED)` — adding NORMALISED would re-shift the
+  amplitude scale on a normalised parent; deferred until the
+  user requests it.
+- `SmoothingPanel.ACCEPTED_PARENT_TYPES` includes
+  SECOND_DERIVATIVE; PEAK_LIST stays excluded (incompatible
+  array shape).
+- The three audit-held tuples (`NormalisationPanel`,
+  `PeakPickingPanel`, `SecondDerivativePanel`) are pinned by
+  their `test_accepted_parent_types_constant` and the
+  rationale comments — both must move in lock-step on a
+  future widening.
+- `_refresh_shared_subjects` walks `_spectrum_nodes +
+  _second_derivative_nodes` in that order. Both
+  `test_second_derivative_appears_in_shared_subject_list` and
+  `test_shared_combobox_orders_spectrum_then_derivative` pin
+  the contract.
+- The `compute_baseline_curve` helper is type-agnostic and
+  unchanged; it walks `parent.absorbance - child.absorbance`
+  without inspecting NodeType. CS-49 only made a SMOOTHED
+  parent newly reachable; the helper handles it transparently
+  (pinned by
+  `test_baseline_dashed_overlay_recovers_baseline_curve_from_smoothed_parent`).
+
+**What changes when this lock relaxes.** A future widening of
+NormalisationPanel / PeakPickingPanel / SecondDerivativePanel
+must (a) update both the constant and the rationale comment
+on the panel, (b) update the audit-stability test, and (c)
+likely add a new positive-flow test in
+`TestUVVisTabPhase4xCrossTypeAcceptance` documenting the new
+allowed combination. Adding a panel that accepts PEAK_LIST as
+a parent would also need a new render-helper iteration, since
+PEAK_LIST has the `peak_wavelengths_nm` / `peak_absorbances`
+schema that isn't in the curve helper.
+
+**Implementation notes.**
+- The defence-in-depth check inside each panel's `_apply`
+  (e.g. `if parent_node.type not in self.ACCEPTED_PARENT_TYPES:`)
+  automatically widens with the constant — no additional
+  code changes needed in the apply paths.
+- Three pre-existing contract tests in `test_uvvis_tab.py`
+  were rewritten to invert the old "SECOND_DERIVATIVE not in
+  combobox" assertions (the old contract was deliberately
+  pessimistic; CS-49 makes it permissive). Renames:
+  `test_second_derivative_does_not_appear_in_shared_subject_list`
+  → `test_second_derivative_appears_in_shared_subject_list`;
+  `test_second_derivative_node_does_not_appear_in_shared_combobox`
+  → `test_second_derivative_node_appears_in_shared_combobox`;
+  `test_smoothed_subject_disables_normalise_and_baseline_apply`
+  → `test_smoothed_subject_disables_normalise_only` (split:
+  baseline now ENABLES on SMOOTHED, normalise still
+  disables).
+- `_BASELINE_ACCEPTED_PARENT_TYPES` is the only acceptance
+  tuple still living on `UVVisTab` rather than its panel —
+  the inline baseline section was never extracted into a
+  `BaselinePanel` widget. Phase 4k friction #6 documents this
+  drift; Phase 4x reinforces it but doesn't fix it (cheap-
+  correct in-place widening). Resolution belongs to whichever
+  phase extracts the inline section.
+
+---
+
+*Document version: 1.24 — May 2026*
 *1.1: CS-13 implementation notes added in Phase 4a.*
 *1.2: CS-14 Plot Settings Dialog added in Phase 4b.*
 *1.3: CS-15 UV/Vis Baseline Correction + CS-04 implementation
@@ -5899,5 +6045,45 @@ behavioural contract all preserved. 738 tests, all green
 across TestRowToggleColumnAlignment + TestDynamicLabelCap
 Wiring + TestWidestLabelPixelWidth +
 TestUVVisTabSidebarCalibration).*
+*1.24: Phase 4x — cross-type panel parent acceptance widening
+(CS-49). Resolves Phase 4w friction #1 (USER-FLAGGED 🔴 —
+"Cannot do baseline correction from a smoothed spectrum.
+Cannot smooth derivative plots."). Two tuples widened:
+`UVVisTab._BASELINE_ACCEPTED_PARENT_TYPES` adds `SMOOTHED`;
+`SmoothingPanel.ACCEPTED_PARENT_TYPES` adds
+`SECOND_DERIVATIVE`. `_refresh_shared_subjects` now walks
+both `_spectrum_nodes` and `_second_derivative_nodes` so the
+combobox surfaces derivative rows; `_spectrum_nodes` itself
+untouched (renderer iterates the two helpers separately for
+axis-role routing under CS-44). Audit pass result:
+NormalisationPanel / PeakPickingPanel / SecondDerivativePanel
+intentionally NOT widened — existing exclusions are
+deliberate per panel-side comments; user has not flagged.
+Each unchanged tuple is now pinned by an audit-stability
+`test_accepted_parent_types_constant` whose comment must move
+in lock-step with any future widening. Decisions taken: (i)
+explicit type-list gate kept (vs "any DataNode with arrays"
+— preserves per-panel exclusion expressivity); (ii) y-axis
+routing of cross-typed outputs deferred to existing CS-44 —
+smoothed-of-derivative output carries SMOOTHED → routes to
+"primary"; the misroute fix lives in carry-forward T
+(per-style `y_axis` override hook), not Phase 4x. Three
+pre-existing contract tests rewritten to invert old "no
+SECOND_DERIVATIVE in combobox" assertions + split the old
+"SMOOTHED disables both normalise and baseline" into the new
+"normalise-only-disabled" form. Compute helpers
+(`uvvis_baseline.compute`, `uvvis_baseline.compute_baseline_curve`,
+`uvvis_smoothing.compute`) are all type-agnostic and required
+no changes — the CS-49 widening only made new parent-types
+reachable; the math handles them transparently. CS-22 +
+CS-26 + CS-29 + CS-30 + CS-33 + CS-44 + CS-45 + CS-47 +
+CS-48 invariants all preserved. Phase 4k friction #6
+reinforced (the inline baseline tuple still lives on
+UVVisTab — extraction belongs to whichever phase factors
+out a `BaselinePanel` widget). 746 tests, all green
+(738 + 8 new: 3 in TestSmoothingPanel for
+SECOND_DERIVATIVE acceptance + 5 in new
+TestUVVisTabPhase4xCrossTypeAcceptance for end-to-end flows
++ audit stability + combobox order).*
 *To be updated as Open Questions are resolved and new components
 are specified.*

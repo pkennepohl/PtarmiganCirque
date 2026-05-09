@@ -1583,10 +1583,10 @@ subsequent Phase 4 session.**
 | ⏳ | 🟡 | **Interactive normalisation** | Normalise to user-specified wavelength or integration region |
 | ⏳ | 🟡 | **Difference spectra (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4n. Two-input operation node — produces `A_ref - A_sample` (or vice versa) as a provisional DIFFERENCE node. See OQ-004 for multi-input UI design. Likely shape mirrors CS-15 / CS-16 but with two parents instead of one; the shared subject combobox (CS-22) needs a sibling "reference" combobox or a two-pane subject picker. Touches `uvvis_tab.py`, a new `uvvis_difference.py` panel, possibly `nodes.py` (new `NodeType.DIFFERENCE`), and `scan_tree_widget.py` filter |
 | ✅ | 🟡 | **Smoothing** | Savitzky-Golay or moving average; creates provisional SMOOTHED node. Single OperationType.SMOOTH with `params["mode"]` ∈ {"savgol", "moving_avg"} (mirrors CS-15 / CS-16). `SmoothingPanel` co-located in `uvvis_smoothing.py` (Phase 4g; CS-18). `node_styles.default_spectrum_style` extracted as the four-caller threshold sibling commit |
-| ✅ | 🟢 | **Second derivative** | Single-algorithm Savitzky-Golay derivative (`scipy.signal.savgol_filter` with `deriv=2`); no mode discriminator (the savgol routine smooths and differentiates in one pass — naive `np.gradient` would be a footgun mode rather than a useful alternative). Output is a provisional `SECOND_DERIVATIVE` `DataNode` rendered as a curve overlay on the same plot (reuses the `wavelength_nm` / `absorbance` schema; the latter holds d²A/dλ² values). `SecondDerivativePanel` co-located in `uvvis_second_derivative.py` (Phase 4i; CS-20). Chained derivatives intentionally out of scope: `SECOND_DERIVATIVE` is excluded from `_spectrum_nodes` so the locked baseline / normalise / smoothing / peak-picking panels do not surface it as a candidate parent (their parent type checks would silently refuse it) |
+| ✅ | 🟢 | **Second derivative** | Single-algorithm Savitzky-Golay derivative (`scipy.signal.savgol_filter` with `deriv=2`); no mode discriminator (the savgol routine smooths and differentiates in one pass — naive `np.gradient` would be a footgun mode rather than a useful alternative). Output is a provisional `SECOND_DERIVATIVE` `DataNode` rendered as a curve overlay on the same plot (reuses the `wavelength_nm` / `absorbance` schema; the latter holds d²A/dλ² values). `SecondDerivativePanel` co-located in `uvvis_second_derivative.py` (Phase 4i; CS-20). Chained derivatives intentionally out of scope (SecondDerivativePanel excludes SECOND_DERIVATIVE from its own `ACCEPTED_PARENT_TYPES`). **Phase 4x (CS-49) update:** `SECOND_DERIVATIVE` is no longer hidden from the shared subject combobox — `SmoothingPanel.ACCEPTED_PARENT_TYPES` was widened to include it (closes the user-flagged "Cannot smooth derivative plots" Phase 4w friction #1), so `_refresh_shared_subjects` now walks both `_spectrum_nodes` and `_second_derivative_nodes`. The renderer-side separation (the two helpers as distinct iterations for axis-role routing under CS-44) is unchanged. Baseline / normalise / peak-picking still refuse SECOND_DERIVATIVE per audit decision |
 | ⏳ | 🟢 | **Beer-Lambert / concentration** | Use known ε to extract concentration, or fit ε from known concentration |
 | ✅ | 🔴 | **Collapsible left-pane sections (polish session)** | Each of the five operation sections (Baseline / Normalisation / Smoothing / Peak picking / Second derivative) is now wrapped in a clickable `CollapsibleSection` header with a chevron (▶ collapsed, ▼ expanded). **All five sections start collapsed.** State is per-tab Tk `BooleanVar` owned by each section widget; not persisted to project (Phase 8 concern). Paired with the `pick_default_color(graph)` extraction in the same phase — both touched every operation module at once and a single phase unlocked all four (Phase 4c / 4e / 4g / 4h). Resolved Phase 4i friction #1 + #2 + Phase 4g #5 / 4h #5 carry-forwards (Phase 4j; CS-21) |
-| ✅ | 🔴 | **Unify subject combobox across left-pane sections (architectural)** | USER-FLAGGED at end of Phase 4j. Replaced the five per-panel `_subject_cb` widgets with one shared `_shared_subject_cb` at the top of the left pane (always visible, above every CollapsibleSection). Each operation panel exposes `set_subject(node_id)` + `ACCEPTED_PARENT_TYPES`; the host's StringVar trace fans the selection out to all four panels + the inline baseline section. Apply buttons disable when the shared selection isn't a valid parent for the panel's op (e.g. peak_picking accepts UVVIS/BASELINE/NORMALISED/SMOOTHED but not PEAK_LIST or SECOND_DERIVATIVE; baseline accepts UVVIS/BASELINE only). Resolved Phase 4j friction #5 (Phase 4k; CS-22) |
+| ✅ | 🔴 | **Unify subject combobox across left-pane sections (architectural)** | USER-FLAGGED at end of Phase 4j. Replaced the five per-panel `_subject_cb` widgets with one shared `_shared_subject_cb` at the top of the left pane (always visible, above every CollapsibleSection). Each operation panel exposes `set_subject(node_id)` + `ACCEPTED_PARENT_TYPES`; the host's StringVar trace fans the selection out to all four panels + the inline baseline section. Apply buttons disable when the shared selection isn't a valid parent for the panel's op. **Phase 4x (CS-49) widening update:** `_BASELINE_ACCEPTED_PARENT_TYPES` is now `(UVVIS, BASELINE, SMOOTHED)`; `SmoothingPanel.ACCEPTED_PARENT_TYPES` is `(UVVIS, BASELINE, NORMALISED, SMOOTHED, SECOND_DERIVATIVE)`. `NormalisationPanel` (UVVIS, BASELINE, NORMALISED) and `PeakPickingPanel` / `SecondDerivativePanel` (UVVIS, BASELINE, NORMALISED, SMOOTHED) intentionally NOT widened — see CS-49 register entry below. Resolved Phase 4j friction #5 (Phase 4k; CS-22) |
 | ⏳ | 🟡 | **Commit / discard reachable from the left pane after Apply (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4k. **Partially resolved Phase 4q (CS-34)**: every PROVISIONAL ScanTreeWidget row now carries a per-row 🔒 (commit) button between → and ✕, omitted entirely on committed rows (the leftmost-cell 🔒 state indicator already signals committed state). Right-click context menu retained as the fallback gesture. **Still open**: the literal "Accept last / Discard last" button-pair inside the left-pane status area (or under each operation panel's Apply). The single-click commit gesture now lives on the right sidebar with no traversal cost; the left-pane gesture is a convenience layer that targets the most-recently-applied output of each op. Priority dropped from 🔴 to 🟡 because CS-34 satisfies the spirit of the original USER-FLAG (one click to commit after Apply, no right-click) |
 | ✅ | 🔴 | ~~**Per-variant gestures on sweep-group rows (USER-FLAGGED)**~~ | ✅ Resolved in Phase 4q (CS-32). See the canonical entry "Inline expansion + per-variant gestures on sweep-group rows (CS-04 §6.3 follow-through) (USER-FLAGGED)" below — both share the same root and chevron-driven implementation |
 | ⏳ | 🟡 | **Expand all / Collapse all gesture on left pane** | Companion polish for the new collapsible sections (Phase 4j). When a user wants to scan parameter choices across multiple sections (e.g. for a screenshot or to copy parameters from one panel to another) they currently have to click each header individually. Options: a small "▼ All / ▶ All" icon button at the top of the left pane (above the Processing label), or a right-click context menu on any section header with "Expand all" / "Collapse all" entries. Either is a small change — adds a method on `UVVisTab` that walks the five `_{name}_section` attributes and calls `expand()` / `collapse()` on each |
@@ -1648,12 +1648,17 @@ subsequent Phase 4 session.**
 | ⏳ | 🟢 | **Sidecar garbage collection across saves (CS-46 follow-up)** | Phase 4v deferral. Re-saving a project accumulates stale sidecars: when a DataNode's arrays change between saves, the old `<old_hash>.h5` stays in `sidecars/` even after the manifest no longer references it. One-line fix in `save_project`: walk the manifest first (build the live `set(arrays_hash)`), then prune any `sidecars/<hash>.h5` not in that set. Care needed: only prune within the project's own sidecars directory; never touch user files. ~20 LOC + one test. Defer until disk-bloat is observed (typical UV/Vis sidecars are ~3-5 KB; a project with 100 stale entries ≈ 500 KB — not yet alarming) |
 | ⏳ | 🟡 | **`_restore_workflow_payload` only on UVVisTab; XAS / EXAFS / TDDFT need equivalents** | Phase 4v carry-forward. CS-46's load gesture relies on each tab having a `_restore_workflow_payload(TabPayload)` method that swaps graph contents in place. Today only `UVVisTab` ships it because only UV/Vis owns a real `ProjectGraph` after the redesign. When XAS / EXAFS / TDDFT migrate to the node model (Phase 5+), each gains its own ProjectGraph and needs a parallel restore method. The cross-tab refactor register entry above is the natural home: a base `Tab` class with a `restore_payload` virtual method per pane. **Trigger:** the first non-UV/Vis tab migration |
 | ⏳ | 🟢 | **Test efficiency + per-phase metrics tracking (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4v (step 5 elicitation). The user has flagged that test wall-clock is competing with development wall-clock — a Phase 4u or 4v session spends roughly equal time on test writes / runs / fixes as on production code. Two goals: (a) reduce the wall-clock cost without sacrificing coverage; (b) start tracking per-phase metrics so we can see the trend. **Levers for (a):** (i) reuse a single Tk root across test classes (today many integration tests construct + tear down a Tk root, which is ~1-2s each); (ii) consolidate granular pure-module tests where assertions cluster; (iii) skip the slow integration paths in a "fast" CI mode (full suite stays the gold-standard pre-merge gate). **Shape for (b):** every bookkeeping commit ends with a footer block: `tests added: +N`, `LOC delta: +N -M`, `commit count: 5`, `wall-clock estimate: 4h`. Aggregate over five phases ⇒ visible trend. Touches: bookkeeping commit template + the README's session-structure section. **Lock decisions for the implementing session:** (i) is the metrics block in BACKLOG.md per-phase or in a separate `METRICS.md`? (ii) does it auto-generate from `git log` or is it hand-written? (iii) which Tk-fixture refactor lands first (single-root sharing is the biggest win) |
-| ⏳ | 🔴 | **Inter-panel parent-type acceptance gaps — baseline can't run on smoothed; smoothing can't run on second-derivative (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4w (step 5 elicitation). Two concrete gaps in the apply-side `ACCEPTED_PARENT_TYPES` tuples (CS-22): (a) `BaselinePanel` accepts only `(UVVIS, BASELINE)` — applying a baseline to a smoothed spectrum is blocked; (b) `SmoothingPanel` accepts only `(UVVIS, BASELINE, NORMALISED, SMOOTHED)` — smoothing a SECOND_DERIVATIVE node is blocked. Both are legitimate workflows the user has hit (smooth then baseline; smooth a noisy derivative). **Architecture:** widen each panel's `ACCEPTED_PARENT_TYPES` tuple to include the missing types. The CS-22 lock prevents touching `set_subject` signatures, but the tuples themselves are not locked (they get walked at apply time). For the baseline-on-smoothed case the math works as-is — the parent's absorbance array is fed to the existing baseline solver regardless of which op produced it; we just need the panel's parent-type gate to admit the SMOOTHED type. Same shape for the smoothing-of-second-derivative case (Savitzky-Golay does not care that the input is a derivative). **Lock decisions for the implementing session:** (i) does baseline-on-smoothed accept any DataNode with `arrays["wavelength_nm"]` + `arrays["absorbance"]` (looser, simpler) or only the explicitly-listed types? (ii) does the second-derivative output's y-axis routing (`_DEFAULT_Y_AXIS_BY_NODETYPE` → "secondary") cascade onto the smoothed-of-derivative output (probably yes, via inheriting the parent's `y_axis` if the new style key from CS-44 follow-up #10 ships first)? (iii) audit the other panels' tuples at the same time — `NormalisationPanel` and `PeakPickingPanel` likely have parallel gaps. **Affected:** `uvvis_baseline.py` / `uvvis_smoothing.py` / possibly `uvvis_normalise.py` + `uvvis_peak_picking.py` (panel `ACCEPTED_PARENT_TYPES` tuples), tests for each newly-admitted parent path. Cross-refs CS-22 (the shared-subject combobox uses these tuples) and CS-44 (multi-axis routing of the cross-typed outputs) |
+| ✅ | 🔴 | **Inter-panel parent-type acceptance gaps — baseline can't run on smoothed; smoothing can't run on second-derivative (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4w (step 5 elicitation). **Resolved Phase 4x (CS-49):** widened `_BASELINE_ACCEPTED_PARENT_TYPES` on UVVisTab from `(UVVIS, BASELINE)` to `(UVVIS, BASELINE, SMOOTHED)`; widened `SmoothingPanel.ACCEPTED_PARENT_TYPES` from `(UVVIS, BASELINE, NORMALISED, SMOOTHED)` to add `SECOND_DERIVATIVE`. `_refresh_shared_subjects` extended to walk both `_spectrum_nodes()` and `_second_derivative_nodes()` so the derivative rows appear in the shared subject combobox; `_spectrum_nodes` itself untouched (the renderer uses the two helpers separately for axis-role routing). **Decision lock taken:** (i) explicit type-list gate kept (vs "any DataNode with arrays") — preserves the per-panel deliberate-exclusion comments; (ii) y-axis routing of cross-typed outputs deferred to existing CS-44 by-NodeType routing — smoothed-of-derivative output carries `NodeType.SMOOTHED` → routes to "primary"; the inherent misroute (smoothed d²A on the absorbance axis) is the open Phase 4u friction #10 / per-style `y_axis` override hook (carry-forward T), out of scope for 4x; (iii) audit pass result — `NormalisationPanel` / `PeakPickingPanel` / `SecondDerivativePanel` tuples intentionally NOT widened (existing exclusions are deliberate per panel-side comments; user has not flagged); each unchanged tuple is now pinned by an audit-stability `test_accepted_parent_types_constant` that traps a future widening. 8 new tests across `test_uvvis_smoothing.py` (3) + `test_uvvis_tab.py` (5 in new `TestUVVisTabPhase4xCrossTypeAcceptance`); 3 prior contract tests rewritten to invert the old "SECOND_DERIVATIVE not in combobox" assertions. 746 tests, all green |
 | ⏳ | 🟡 | **Configurable secondary-plot pane layout — dock above/below main plot at adjustable fraction (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4w (step 5 elicitation). The CS-44 multi-axis routing puts SECOND_DERIVATIVE on a `twinx()` of the main axes — same canvas, same x-axis, separate y-axis. The user has flagged that for the derivative plot specifically (and any future "secondary" plot of similar character) it would help to optionally render it in a dedicated pane below or above the main plot, at an adjustable height fraction (1/3 of the main plot was suggested as a default). This is a layout-mode toggle, not a routing change. **Architecture proposal (lock pending):** new `_secondary_axis_layout: tk.StringVar` with values `"overlay" | "below" | "above"` and `_secondary_axis_height_frac: tk.DoubleVar` (default 0.33). When `"overlay"` (default — current behaviour) the existing `twinx()` path runs unchanged. When `"below"` / `"above"` the matplotlib Figure swaps to a `gridspec.GridSpec(2, 1, height_ratios=…)` shape with the secondary axes hosted in a separate Axes; the legend merge stays a single legend on the main plot for visual continuity. The two new vars surface in Plot Settings under a new "Secondary axis layout" section. **Lock decisions for the implementing session:** (i) is the layout chosen per-NodeType (so SECOND_DERIVATIVE gets its own dock while a hypothetical fourth-axis-NodeType could overlay) or per-AxisRole (all "secondary" content goes to the same dock)? (ii) does the dock-mode persist in the workflow's `plot_config` block (it's just two new keys) or is it session-only? (iii) does the dock mode survive a `_draw_empty` cycle? **Affected:** `uvvis_tab._redraw` (figure construction switches between `subplots(1,1)` and `subplots(2,1, gridspec_kw={"height_ratios": …})`), `plot_settings_dialog` (new section), `project_io` (two new manifest keys if persisted), tests for each layout mode. Cross-refs CS-44 (the routing system this layout option sits on top of) and the future plot_widget abstraction lift (the layout state is a plot-pane concern that should ride along with the future lift) |
 | ⏳ | 🟡 | **UI lexicon / glossary doc — workflow vs project, sidebar vs sash, etc. (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4w (step 5 elicitation). Phase 4v's persistence work (CS-46) shipped the `.ptmg` file format and changed the menu entries from "Save Project" to "Save Workflow" — but the docs (BACKLOG.md, COMPONENTS.md, the in-app messages) still mix "project" and "workflow" interchangeably, and parallel ambiguity exists for several other UI elements (sidebar/sash/pane; row/cell/cluster; gear/style-dialog). The user has asked for a single canonical lexicon document so terminology stays consistent across Claude sessions and human conversations. **Architecture proposal:** new `LEXICON.md` (or `UI_GLOSSARY.md`) at the repo root, structured as a flat list of canonical terms with definitions. Suggested seed entries: **workflow** (a single `.ptmg` save unit covering all open tabs' graphs + plot defaults; what we used to call "project" pre-CS-46), **project** (deprecated synonym for workflow — kept in the codebase only on internal helper names where renaming would create churn for no gain), **sidebar** (the right-pane host for ScanTreeWidget, including the "Loaded Spectra" header strip), **sash** (the PanedWindow drag handle between two panes), **pane** (a top-level layout region inside a tab — left / centre / right), **row** (one ScanTreeWidget entry corresponding to one DataNode), **cell** (one widget within a row — state, swatch, vis_cb, …; see `_CELL_MIN_PX`), **always-visible cluster** (the cells that survive the responsive collapse — state, vis_cb, row_toggle, label, hist, gear, compare, x), **optional cluster** (the cells that collapse — swatch, leg, ls_canvas), **gear** (the ⚙ button that opens the unified style dialog), **scan-tree** (synonym for sidebar's body widget, ScanTreeWidget), **subject** (the parent DataNode the shared subject combobox routes operations against). **Lock decisions for the implementing session:** (i) where does it live — repo root (alongside BACKLOG / COMPONENTS) or `docs/`? (ii) is it a flat list or hierarchical (categorised by area)? (iii) do we add a CI check that rejects new mentions of deprecated synonyms? Cross-refs every doc touched by Phase 4v's "Save Workflow" rename — those mentions should be audited for "project" leakage at the same time |
 | ⏳ | 🟢 | **Cross-tab sash calibration — extract `_calibrate_sidebar_width` to shared host (CS-47 follow-up)** | Surfaced Phase 4w. CS-47's auto-bump only fires for `UVVisTab` because that's where it was wired; XAS / EXAFS / the future Compare / Simulate tabs each construct their own PanedWindow + ScanTreeWidget combination and would need parallel calibration. The clean path is to lift `_calibrate_sidebar_width` (plus `_SIDEBAR_MAX_CALIBRATED_PX`, plus the cached `_body_paned` / `_sidebar_pane` / `_sidebar_calibrated` triple) into a shared `tab_shell.py` mixin. Pairs perfectly with the existing 🟡 "Refactor uvvis_tab.py — extract host shell" register entry — that refactor's right-pane chrome extraction is the exact home for this method. Defer until the refactor lands |
 | ⏳ | 🟢 | **Re-calibrate sash on first NODE_ADDED after construction (CS-47 follow-up, USER-CONFIRMED)** | Surfaced Phase 4w + user-confirmed. CS-47's `_calibrate_sidebar_width` fires once on `after_idle` after the tab is built, but at that point the graph is empty — `widest_label_pixel_width()` returns 0 and the sash falls through to `_SIDEBAR_MIN_WIDTH_PX = 240`. After the user loads a project (or imports files), longer labels appear but the sash isn't re-bumped (the `_sidebar_calibrated` flag has flipped True). User-acceptable trade-off — predictability beats opportunistic re-bumping for typical workflows — but a simple follow-up: subscribe to `GraphEvent.NODE_ADDED` and clear `_sidebar_calibrated` when the first DataNode appears (one-shot refresh on first content). **Lock decision needed:** does the re-bump fire for every load or only when the *current* widest label exceeds the previously-calibrated target? Defer until the missing re-bump is observed in real use |
 | ⏳ | 🟢 | **Measure actual row overhead instead of static `_label_overhead_px` estimate (CS-47 follow-up)** | Surfaced Phase 4w. `_label_overhead_px` returns a static `sum(_CELL_MIN_PX[c] for c in always_visible_cells) + 30` ≈ 186 px estimate. Real per-row overhead varies with whether the commit (🔒) cell is packed (provisional rows only) and whether optional cells (swatch / leg / ls_canvas) are visible at the current sash width. Drift is bounded at ≤ 30 px (the slack term) so the dynamic label cap is in the right ballpark, but a precise measurement (`row.winfo_reqwidth() - label.winfo_reqwidth()` per row, or sum of `child.winfo_reqwidth()` for all non-label children) would tighten the cap. Cheap polish; defer until either a too-aggressive or too-loose truncation is reported in real use |
+| ⏳ | 🟡 | **Loaded Spectra responsive layout drops the ✕ when the swatch reappears at intermediate widths (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4x (step 5 elicitation). User reproduced: at the minimum sash width the row fits cleanly (lock / vis_cb / label / hist / gear / → / ✕ visible, no swatch); incrementing the sash by a small amount triggers the swatch column to re-appear (per the CS-26 / CS-30 responsive collapse threshold) BUT the ✕ falls off the right edge of the row at the same width — net effect, the user can no longer remove a node from a row that just gained a colour swatch. **Suspected root cause:** the cell-priority order in `_RESPONSIVE_THRESHOLDS_PX` (CS-26) admits the swatch cell at a threshold that overlaps with the dynamic label cap from CS-47's `_label_char_capacity` — the label cap is computed from `canvas_width - _label_overhead_px`, where `_label_overhead_px` is a static estimate that does NOT account for the swatch's width when it returns at the same threshold. The label cap stays generous (it was sized for the swatch-absent state), the label widget refuses to shrink, and the right-side cells (✕ at the very end) get clipped. Also implicates the static `_label_overhead_px` Phase 4w friction #6. **Architecture proposal (lock pending):** (a) thread the optional-cell visibility into `_label_overhead_px` so the cap shrinks the moment the swatch reappears (couples the two helpers — currently independent); (b) OR bump the responsive threshold for swatch reappearance higher so there's always slack for the ✕ at the same width; (c) OR measure actual per-row overhead post-pack (Phase 4w friction #6) and use that as the cap source. Pairs with **Phase 4w friction #6** (measure actual row overhead) and **CS-26 / CS-30 / CS-47 / CS-48** cluster. **Lock decisions:** (i) which of the three architectures lands? (ii) does the cap re-compute on every `_apply_responsive_layout` call (today: yes, on canvas <Configure>) or only when the optional-cell set changes? (iii) does the fix change the threshold values themselves (CS-26 lock relaxation) or only the label-cap derivation? **Affected:** `scan_tree_widget.py` (the `_label_overhead_px` helper, `_apply_responsive_layout`, possibly `_RESPONSIVE_THRESHOLDS_PX` itself if the lock relaxes), tests for the new threshold/label-cap interaction. User has explicitly flagged "tempted to leave it for a little while" — defer until at least one other 🟡 widget-layout entry comes through, or until a regression on a different sash width is reported |
+| ⏳ | 🟡 | **StyleDialog must surface ALL node-table parameters (incl. label rename) + tighten organisation for scale (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4x (step 5 elicitation). Today the per-node StyleDialog (gear icon) covers the universal style schema (`color`, `linestyle`, `linewidth`, `alpha`, `visible`, `in_legend`, `fill`, `fill_alpha`) plus per-NodeType extensions (CS-05 + CS-36 `show_baseline_curve`). The user has flagged that as more parameters land (label rename gesture, plot_kind from the markers register entry, `y_axis` from carry-forward T, etc.), the dialog will become unwieldy without a re-organisation pass. **Architecture proposal (lock pending):** restructure the dialog around grouped sections — Appearance (color / swatch / linestyle / linewidth / alpha), Legend (in_legend, label-rename Entry), Fill (fill / fill_alpha), Per-type (show_baseline_curve, plot_kind, y_axis, …); each group is a `tk.LabelFrame` so the visual grouping is obvious. **First concrete add:** label-rename Entry — today the only path to rename a node is to double-click the row label in the sidebar (CS-33 `_begin_label_edit`); having it inside the StyleDialog mirrors how the user thinks about "node properties" and avoids competing for the gesture's attention. Cross-refs: CS-33 (label-edit machinery), CS-44 follow-up T (per-style `y_axis` row), the markers register entry above (plot_kind / marker / marker_size). **Lock decisions:** (i) does the dialog get a tabbed shape (Appearance / Provenance / Per-type) — pairs with the next register entry below — or stay single-pane with LabelFrame groupings? (ii) does the label-rename Entry surface a validation error inline (e.g. duplicate-label warning) or rely on the existing CS-33 rules? (iii) which existing widgets lift into per-type groupings vs stay universal? **Affected:** `style_dialog.py` (re-layout + new label-rename Entry), tests for the new section grouping + label-rename round-trip. Pairs with C and D below (same window) |
+| ⏳ | 🟡 | **Per-node parameter window: add a Provenance tab (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4x (step 5 elicitation). The right-sidebar's per-row history dropdown (the `▿` chevron next to the label, opens an ad-hoc list of "Op A → Op B → Op C") is intentionally compact — but the user has asked for a more detailed view that lives inside the gear-icon dialog as a second tab. The new tab would show: ancestor walk back to the RAW_FILE / multi-input source, full op params for each step (params dict pretty-printed), timestamps, engine + engine_version, implementation hash (CS-45), status, log excerpts (when populated). **Architecture proposal (lock pending):** convert the StyleDialog to a `ttk.Notebook` shape — Tab 1 "Style" (today's content, possibly re-organised per the previous register entry); Tab 2 "Provenance" (the new view). Reuses the same Toplevel + button row (Apply · ∀ Apply to All · Save · Cancel). The provenance tab is read-only this phase; the "add historical node" gesture lands as the separate register entry below (D). **Lock decisions:** (i) is the provenance tab populated lazily (on-tab-switch) or eagerly (at dialog construction)? (ii) does it scroll vertically as a single column, or render as a tree with expandable nodes? (iii) does it show DISCARDED ancestors (history-style) or filter them? **Affected:** `style_dialog.py` (Notebook restructure), graph-walk helper for the ancestor list (likely a new `ProjectGraph.ancestors_of(node_id)` method), tests for the tab construction + the ancestor walk. Pairs with B above (same dialog) and D below (same tab — D adds a gesture, this entry adds the read-only view) |
+| ⏳ | 🟡 | **"Add to graph" gesture from a node's Provenance tab (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4x (step 5 elicitation). Once C lands (read-only Provenance tab), the user has asked for an "Add to graph" gesture per ancestor — clicking it materialises the historical ancestor as a new live node in the same graph without re-loading from disk. Concrete use case: the user has a SMOOTHED node loaded; they realise they want to compare the smoothed result against the underlying RAW_FILE / UVVIS parent; today the only path is to either (a) un-discard the parent (if it was discarded) or (b) re-load the source file via the LOAD path (which creates a fresh UVVIS DataNode with a different id, breaks the existing graph linkage to the SMOOTHED descendant). The new gesture would walk the ancestor chain, find the requested historical node, flip its `active` flag back to True (if currently inactive) OR clone it as a new live node parented on the same source. **Architecture (lock pending):** (a) does the gesture flip the existing node's `active` flag (cheap; preserves graph identity; couples to the existing CS-22 `_spectrum_nodes` filter), OR clone the node as a new id (preserves the historical node's state but creates a graph-edge fork)? (b) what's the gesture — button per provenance row, right-click, drag-and-drop into the sidebar? (c) does it emit a NODE_ADDED event (clone path) or NODE_STYLE_CHANGED + a re-render trigger (active-flip path)? **Affected:** `style_dialog.py` (the new gesture in the Provenance tab), `graph.py` (a new `restore_ancestor` or similar helper, depending on which architecture lands), `uvvis_tab._refresh_shared_subjects` (re-runs after the gesture so the resurrected node appears in the combobox), tests for both architectures. Pairs with C above (the tab the gesture lives on) AND with the existing 🟡 Trash can register entry (Trash + this gesture overlap conceptually — both surface "previously hidden" nodes) |
+| ⏳ | 🟢 | **Visual cue for derivative entries in the shared subject combobox (CS-49 follow-up)** | Surfaced Phase 4x (Claude). Now that `SECOND_DERIVATIVE` rows mix into the shared combobox alongside the four spectrum-shaped types (`_refresh_shared_subjects` widening), the user has no per-row glyph or grouping divider to tell at a glance "this is a derivative" vs "this is an absorbance-domain spectrum". Cheap polish: prefix derivative entries with a `d² ` glyph in the combobox display key (or insert a `─── d²A/dλ² ───` separator entry between the spectrum block and the derivative block). The latter is more disruptive (changes the value-list semantics — the separator can't be selected); the former is one-line in `_refresh_shared_subjects`. Defer until the user reports actual confusion picking among mixed entries; the audit-stability test `test_shared_combobox_orders_spectrum_then_derivative` already pins the spectrum-first ordering so visual scanning is at least left-to-right consistent |
 
 ### Friction points carried forward from Phase 4r
 
@@ -2175,7 +2180,7 @@ follow-ups Claude flagged, items 7–8 are user-confirmed /
 user-decided alongside the elicitation. **Do not fix until the
 relevant subsequent Phase 4 session.**
 
-1. 🔴 **Inter-panel parent-type acceptance gaps — baseline
+1. ~~🔴 **Inter-panel parent-type acceptance gaps — baseline
    can't run on smoothed; smoothing can't run on
    second-derivative (USER-FLAGGED).** User reported during
    Phase 4w step 5: "Cannot do baseline correction from a
@@ -2186,7 +2191,18 @@ relevant subsequent Phase 4 session.**
    both cases; only the parent-type gate is rejecting.
    **Cross-ref:** see the new register entry above for the
    architecture (widen the tuples; audit the other panels
-   while in there). Workflow-blocking, hence 🔴.
+   while in there). Workflow-blocking, hence 🔴.~~ ✅
+   **Resolved in Phase 4x (CS-49).** `_BASELINE_ACCEPTED_PARENT_TYPES`
+   widened to `(UVVIS, BASELINE, SMOOTHED)`; `SmoothingPanel.ACCEPTED_PARENT_TYPES`
+   widened to add `SECOND_DERIVATIVE`. `_refresh_shared_subjects`
+   walks both `_spectrum_nodes` and `_second_derivative_nodes`
+   so derivative rows surface in the shared combobox.
+   Audit pass result: NormalisationPanel / PeakPickingPanel /
+   SecondDerivativePanel intentionally NOT widened (existing
+   exclusions are deliberate per panel-side comments). Y-axis
+   misroute for smoothed-of-derivative output deferred to the
+   open T (per-style `y_axis` override hook) carry-forward —
+   see Phase 4x friction #1 for the cross-ref.
 
 2. 🟡 **Configurable secondary-plot pane layout — dock above /
    below main plot at adjustable fraction (USER-FLAGGED).**
@@ -2258,6 +2274,115 @@ relevant subsequent Phase 4 session.**
    those thresholds in lock-step. The current floor is the
    cheapest correct choice. Documentation-style; no register
    entry.
+
+### Friction points carried forward from Phase 4x
+
+These are concrete obstacles the next Phase 4 session will hit.
+Identified during Phase 4x while landing the cross-type panel
+parent acceptance widening (CS-49). Items 1–4 are USER-FLAGGED
+ground-up additions captured during step 5's elicitation, all
+recorded here AND as new register entries above. Item 5 is a
+Claude-surfaced 🟢 polish item also recorded as a register entry.
+Items 6–8 are documentation-style notes / cross-refs without
+new register entries. **Do not fix until the relevant subsequent
+Phase 4 session.**
+
+1. 🟡 **Loaded Spectra responsive layout drops the ✕ when the
+   swatch reappears at intermediate widths (USER-FLAGGED).**
+   User reproduced during Phase 4x step 5: minimum sash width
+   fits cleanly (no swatch, ✕ visible); incrementing the sash
+   triggers swatch re-appearance, but ✕ falls off the right
+   edge. Suspected root cause: `_label_overhead_px` (CS-47)
+   doesn't account for the swatch's width when it returns at
+   the same threshold, so the dynamic label cap stays generous
+   and right-side cells get clipped. Pairs with **Phase 4w
+   friction #6** (measure actual row overhead). User has
+   explicitly flagged "tempted to leave it for a little
+   while". **Cross-ref:** see the new register entry above for
+   the architecture (three options for tying label cap to
+   optional-cell visibility).
+
+2. 🟡 **StyleDialog must surface ALL node-table parameters
+   incl. label rename + tighten organisation for scale
+   (USER-FLAGGED).** User has flagged that as more parameters
+   land (label rename, plot_kind from the markers register
+   entry, `y_axis` from carry-forward T), the gear-icon dialog
+   will become unwieldy. Concrete first add: label-rename
+   Entry (today the only path is the sidebar's CS-33
+   double-click `_begin_label_edit`). **Cross-ref:** see the
+   new register entry above. Pairs with friction #3 + #4 below
+   (same window).
+
+3. 🟡 **Per-node parameter window: add a Provenance tab
+   (USER-FLAGGED).** User has asked for a more detailed
+   provenance view than the right-sidebar's per-row history
+   dropdown — second tab inside the StyleDialog, showing
+   ancestor walk back to RAW_FILE / multi-input source, full
+   op params per step, timestamps, engine + version,
+   implementation hash (CS-45), status. **Cross-ref:** see the
+   new register entry above. Pairs with #2 above (same dialog)
+   and #4 below (same tab).
+
+4. 🟡 **"Add to graph" gesture from a node's Provenance tab
+   (USER-FLAGGED).** Once #3 lands, the user has asked for a
+   per-ancestor "Add to graph" gesture that materialises the
+   historical ancestor as a live node without re-loading from
+   disk. Concrete use case: surface a SMOOTHED node's parent
+   UVVIS for side-by-side comparison without breaking the
+   existing graph linkage. **Cross-ref:** see the new register
+   entry above. Pairs with #3 above (same tab) and the open 🟡
+   Trash can register entry (both surface "previously hidden"
+   nodes).
+
+5. 🟢 **Visual cue for derivative entries in the shared
+   subject combobox (CS-49 follow-up).** Surfaced by Claude.
+   Now that SECOND_DERIVATIVE rows mix into the combobox
+   alongside the four spectrum-shaped types, no per-row glyph
+   distinguishes derivative entries from absorbance-domain
+   spectra. Cheap one-liner (`d² ` prefix in
+   `_refresh_shared_subjects`). **Cross-ref:** see the new
+   register entry above. Defer until the user reports actual
+   confusion picking among mixed entries; the audit-stability
+   test `test_shared_combobox_orders_spectrum_then_derivative`
+   already pins the spectrum-first ordering so visual scanning
+   is left-to-right consistent.
+
+6. 🟢 **Smoothed-of-derivative output misroutes to the primary
+   axis (CS-49 + CS-44 interaction, USER-NOTED).** The
+   `SMOOTHED` output of "smooth a SECOND_DERIVATIVE" is routed
+   by `_DEFAULT_Y_AXIS_BY_NODETYPE[SMOOTHED] == "primary"`
+   under CS-44. Visually it stacks on the absorbance axis even
+   though its values are smoothed d²A/dλ². Already covered by
+   the open carry-forward register entry **T (per-style
+   `y_axis` override hook + StyleDialog row)** from Phase 4u
+   friction #10 — Phase 4x makes this misroute newly
+   reachable, so T's priority arguably ticks up. User has
+   acknowledged that T is the right next session's intent.
+   No new register entry; cross-ref only.
+
+7. 🟢 **`_BASELINE_ACCEPTED_PARENT_TYPES` is the only
+   acceptance tuple still living on `UVVisTab` rather than its
+   panel.** The other four panels carry `ACCEPTED_PARENT_TYPES`
+   as a class constant; the inline baseline section's tuple is
+   an instance attribute on the host. The friction note from
+   Phase 4k friction #6 already documents this drift ("when
+   the inline section is extracted into a `BaselinePanel`
+   widget, `_BASELINE_ACCEPTED_PARENT_TYPES` should join the
+   public `ACCEPTED_PARENT_TYPES` API"). Phase 4x widened the
+   inline tuple in place — cheap-correct but reinforces the
+   carry-forward. Cross-ref to **Phase 4k friction #6**; no
+   new register entry.
+
+8. 🟢 **"Tuple" is a Python-ism that leaks into our docs
+   (USER-NOTED, lexicon candidate).** During Phase 4x step 5
+   the user asked for clarification on what "tuple" means
+   (Python: a fixed, ordered sequence in parentheses, vs a
+   list which is mutable; we use it for the ACCEPTED_PARENT_TYPES
+   class-policy that shouldn't change at runtime). The
+   carry-forward **C (UI lexicon doc)** register entry is the
+   right home — when `LEXICON.md` lands, the seed entries
+   should include "tuple" alongside the UI terms. Cross-ref
+   only; no new register entry.
 
 ---
 
@@ -2473,7 +2598,7 @@ the resolving phase + commit SHA appended to the row.
 
 ---
 
-*Document version: 1.22 — May 2026*
+*Document version: 1.23 — May 2026*
 *1.1: Known Bugs register added 2026-04-27 after Phase 4b manual testing.*
 *1.2: Phase 4c — baseline correction lands; B-001 / B-003 / B-004
 resolved; Phase 4c friction points logged.*
@@ -2812,4 +2937,50 @@ Wiring + TestWidestLabelPixelWidth +
 TestUVVisTabSidebarCalibration). The existing
 TestPerNodeBaselineCurveToggle helper updated to recurse into
 the new row_toggle slot; no behavioural test changes.*
+*1.23: Phase 4x — cross-type panel parent acceptance widening
+(CS-49). Resolves Phase 4w friction #1 (USER-FLAGGED 🔴 —
+"Cannot do baseline correction from a smoothed spectrum.
+Cannot smooth derivative plots."). Two tuples widened:
+`UVVisTab._BASELINE_ACCEPTED_PARENT_TYPES` from `(UVVIS,
+BASELINE)` to `(UVVIS, BASELINE, SMOOTHED)`;
+`SmoothingPanel.ACCEPTED_PARENT_TYPES` from `(UVVIS, BASELINE,
+NORMALISED, SMOOTHED)` to add `SECOND_DERIVATIVE`.
+`UVVisTab._refresh_shared_subjects` extended to walk both
+`_spectrum_nodes()` and `_second_derivative_nodes()` so the
+combobox surfaces derivative rows; `_spectrum_nodes` itself
+untouched (the renderer uses both helpers as separate
+iterations for axis-role routing under CS-44). Audit-pass
+result: NormalisationPanel / PeakPickingPanel /
+SecondDerivativePanel intentionally NOT widened — existing
+exclusions are deliberate per panel-side comments; user has
+not flagged. Each unchanged tuple is now pinned by an
+audit-stability `test_accepted_parent_types_constant`.
+Smoothed-of-derivative output's y-axis misroute (carries
+SMOOTHED → "primary" axis under CS-44) deferred to the open
+T (per-style `y_axis` override hook) carry-forward. Four new
+USER-FLAGGED register entries from step 5: 🟡 Loaded Spectra
+responsive layout drops ✕ when swatch reappears at
+intermediate widths (suspected `_label_overhead_px` /
+optional-cell-visibility coupling, pairs with Phase 4w
+friction #6); 🟡 StyleDialog must surface ALL node-table
+parameters incl. label rename + tighten organisation for
+scale; 🟡 Per-node parameter window add a Provenance tab; 🟡
+"Add to graph" gesture from a node's Provenance tab. One new
+🟢 Claude-surfaced CS-49 follow-up: visual cue for derivative
+entries in the shared combobox. Phase 4x friction logged
+(eight items): 🟡 USER-FLAGGED Loaded Spectra responsive
+layout (#1), 🟡 USER-FLAGGED StyleDialog parameter coverage
+(#2), 🟡 USER-FLAGGED Provenance tab (#3), 🟡 USER-FLAGGED
+"Add to graph" gesture (#4), 🟢 derivative combobox visual
+cue (#5), 🟢 USER-NOTED smoothed-of-derivative misroute
+elevation cross-ref (#6, → carry-forward T), 🟢 inline
+baseline tuple drift cross-ref (#7, → Phase 4k friction #6),
+🟢 USER-NOTED tuple terminology lexicon candidate (#8, →
+carry-forward C). Three pre-existing contract tests rewritten
+to match the new behaviour (the "SECOND_DERIVATIVE not in
+combobox" inversion + the SMOOTHED-baseline-now-enabled
+half). 746 tests, all green (738 + 8 new: 3 in
+TestSmoothingPanel for SECOND_DERIVATIVE acceptance + 5 in
+new TestUVVisTabPhase4xCrossTypeAcceptance for end-to-end
+flows + audit stability + combobox order).*
 *Supersedes: BACKLOG.md (original)*
