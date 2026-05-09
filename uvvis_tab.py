@@ -330,13 +330,23 @@ class UVVisTab(tk.Frame):
         schema (``wavelength_nm`` / ``absorbance`` keys, where the
         latter holds d²A/dλ² values) so the renderer plots them with
         the same code path as UVVIS / BASELINE / NORMALISED /
-        SMOOTHED. They live in their own iteration because they are
-        intentionally absent from ``_spectrum_nodes`` — the locked
-        smoothing / baseline / normalise / peak-picking panels'
-        parent type checks reject SECOND_DERIVATIVE, so including it
-        in ``_spectrum_nodes`` would surface a node in those subject
-        comboboxes that those panels would silently refuse on Apply.
-        Chained second derivatives are out of scope this phase.
+        SMOOTHED. They live in their own iteration because the
+        renderer routes them to the secondary y-axis under CS-44
+        (``_DEFAULT_Y_AXIS_BY_NODETYPE[SECOND_DERIVATIVE] ==
+        "secondary"``); concatenating them into ``_spectrum_nodes``
+        would double-render once the renderer iterates both helpers
+        explicitly (see ``_redraw``).
+
+        Phase 4x history note (CS-49): before Phase 4x this helper's
+        existence also served the panel-side "shared combobox does
+        not surface a derivative" contract — the locked smoothing /
+        baseline / normalise / peak-picking panels all rejected
+        SECOND_DERIVATIVE, so surfacing one would silently refuse on
+        Apply. Phase 4x widened ``SmoothingPanel.ACCEPTED_PARENT_TYPES``
+        to include SECOND_DERIVATIVE, and ``_refresh_shared_subjects``
+        now unions both helpers so derivative parents do appear in
+        the combobox. The renderer-side separation (this helper) is
+        unchanged.
         """
         out: List[DataNode] = []
         for node in self._graph.nodes_of_type(NodeType.SECOND_DERIVATIVE,
@@ -714,8 +724,26 @@ class UVVisTab(tk.Frame):
         # disabled when the shared selection isn't a UVVIS / BASELINE
         # parent.
         self._baseline_subject_id: Optional[str] = None
+        # Phase 4x widening (CS-49) — SMOOTHED joins the accepted
+        # set so users can baseline-correct a smoothed spectrum.
+        # Closes the user-flagged Phase 4w friction #1 ("Cannot do
+        # baseline correction from a smoothed spectrum"). The math
+        # is type-agnostic: every accepted parent carries
+        # ``arrays["wavelength_nm"]`` + ``arrays["absorbance"]`` and
+        # the baseline solver feeds those arrays in regardless of
+        # which op produced them. The dashed-overlay helper
+        # (``uvvis_baseline.compute_baseline_curve``) walks
+        # parent.absorbance - child.absorbance, which is also
+        # type-agnostic.
+        #
+        # NORMALISED is intentionally NOT added in this phase —
+        # baseline-after-normalisation re-shifts the chosen
+        # amplitude scale, and the user has not flagged the gap.
+        # Audit-time finding documented in BACKLOG (Phase 4x
+        # friction). PEAK_LIST stays excluded by array-shape
+        # mismatch.
         self._BASELINE_ACCEPTED_PARENT_TYPES: tuple = (
-            NodeType.UVVIS, NodeType.BASELINE,
+            NodeType.UVVIS, NodeType.BASELINE, NodeType.SMOOTHED,
         )
 
         # Baseline mode.
@@ -981,15 +1009,27 @@ class UVVisTab(tk.Frame):
 
         Phase 4k (CS-22): a single combobox at the top of the left
         pane drives every operation panel + the inline baseline
-        section. The host walks ``_spectrum_nodes`` (UVVIS / BASELINE
-        / NORMALISED / SMOOTHED) — the same union-of-all-accepted-
-        parents the per-panel comboboxes used to walk individually.
-        Per-panel ``ACCEPTED_PARENT_TYPES`` then narrows the
-        candidate set inside each Apply gate.
+        section. The host walks the union of every panel's
+        ``ACCEPTED_PARENT_TYPES`` so any candidate parent surfaces
+        in the combobox; per-panel gates then disable the per-panel
+        Apply button when the selected node is not in their
+        accepted set.
+
+        Phase 4x widening (CS-49): SECOND_DERIVATIVE joins the
+        union (SmoothingPanel now accepts derivatives — see
+        ``SmoothingPanel.ACCEPTED_PARENT_TYPES`` for the rationale).
+        We do NOT touch ``_spectrum_nodes`` itself — the renderer
+        uses ``_spectrum_nodes()`` and ``_second_derivative_nodes()``
+        as separate iterations (the second one's NodeType routes
+        to the secondary y-axis under CS-44, and concatenating into
+        ``_spectrum_nodes`` would double-render). Order: spectrum
+        nodes first (UVVIS → BASELINE → NORMALISED → SMOOTHED),
+        then SECOND_DERIVATIVE, so derivative entries cluster at
+        the bottom of the combobox.
         """
         if not hasattr(self, "_shared_subject_cb"):
             return
-        nodes = self._spectrum_nodes()
+        nodes = self._spectrum_nodes() + self._second_derivative_nodes()
         self._shared_subject_map = {}
         items: List[str] = []
         for n in nodes:

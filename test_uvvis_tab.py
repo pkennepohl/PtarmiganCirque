@@ -2075,11 +2075,14 @@ class TestUVVisTabSecondDerivativeIntegration(unittest.TestCase):
                          "secondary axis must not be created when no "
                          "node routes to it")
 
-    def test_second_derivative_does_not_appear_in_shared_subject_list(self):
-        # SECOND_DERIVATIVE is intentionally excluded from
-        # _spectrum_nodes (CS-20): chained derivatives are out of
-        # scope, and the shared subject combobox (CS-22, Phase 4k)
-        # reads that helper.
+    def test_second_derivative_appears_in_shared_subject_list(self):
+        # Phase 4x (CS-49): SECOND_DERIVATIVE now appears in the
+        # shared subject combobox so SmoothingPanel can accept a
+        # derivative as a parent (closes the user-flagged Phase 4w
+        # friction #1 — "Cannot smooth derivative plots").
+        # ``_refresh_shared_subjects`` unions ``_spectrum_nodes()``
+        # and ``_second_derivative_nodes()``; the renderer keeps the
+        # two helpers separate so axis routing stays correct.
         self._add_uvvis("u1")
         self.tab.update_idletasks()
         self._select_first_d2_subject()
@@ -2089,10 +2092,11 @@ class TestUVVisTabSecondDerivativeIntegration(unittest.TestCase):
         items = self.tab._shared_subject_cb.cget("values")
         if isinstance(items, str):
             items = tuple(items.split())
-        self.assertEqual(len(items), 1,
-                         "shared subject list should still list only the "
-                         "parent UVVIS — the new SECOND_DERIVATIVE is not "
-                         "a candidate subject for any further curve op")
+        self.assertEqual(len(items), 2,
+                         "shared subject list should list the parent UVVIS "
+                         "AND the new SECOND_DERIVATIVE — Phase 4x widened "
+                         "SmoothingPanel.ACCEPTED_PARENT_TYPES so the "
+                         "derivative is now a valid parent for smoothing")
 
     def test_second_derivative_status_message_routed_to_toolbar(self):
         # The panel's status_cb is wired to the tab's
@@ -2732,7 +2736,15 @@ class TestUVVisTabSharedSubject(unittest.TestCase):
         self.assertEqual(len(items), 1,
                          "PEAK_LIST must not appear in the shared list")
 
-    def test_second_derivative_node_does_not_appear_in_shared_combobox(self):
+    def test_second_derivative_node_appears_in_shared_combobox(self):
+        # Phase 4x (CS-49): SECOND_DERIVATIVE joins the shared
+        # combobox so SmoothingPanel can accept it as a parent.
+        # See companion test
+        # TestUVVisTabSecondDerivativeIntegration.test_second_derivative_appears_in_shared_subject_list
+        # for the rationale block. Mirrors the prior PEAK_LIST
+        # test: that one stays at len==1 (PEAK_LIST is not in any
+        # panel's ACCEPTED_PARENT_TYPES, deliberately — it's an
+        # output annotation, not a parent).
         self._add_uvvis("u1")
         self.tab.update_idletasks()
         self.tab._second_derivative_panel._apply()
@@ -2740,8 +2752,9 @@ class TestUVVisTabSharedSubject(unittest.TestCase):
         items = self.tab._shared_subject_cb.cget("values")
         if isinstance(items, str):
             items = tuple(items.split())
-        self.assertEqual(len(items), 1,
-                         "SECOND_DERIVATIVE must not appear in the shared list")
+        self.assertEqual(len(items), 2,
+                         "SECOND_DERIVATIVE must appear in the shared list "
+                         "(Phase 4x widening for SmoothingPanel)")
 
     def test_hiding_selected_node_moves_selection(self):
         # Two committed UVVIS nodes; pick u2; flip u2's active flag
@@ -2783,14 +2796,17 @@ class TestUVVisTabSharedSubject(unittest.TestCase):
             str(self.tab._apply_baseline_btn.cget("state")),
             "normal")
 
-    def test_smoothed_subject_disables_normalise_and_baseline_apply(self):
-        # SMOOTHED is *not* in NormalisationPanel.ACCEPTED_PARENT_TYPES
-        # (peak/area normalise should run on raw / baseline-corrected
-        # / already-normalised curves, before smoothing) and *not* in
-        # the inline baseline section's accepted parents (UVVIS /
-        # BASELINE only). Selecting a SMOOTHED subject must disable
-        # both Apply buttons; the smoothing / peak-picking / 2nd-
-        # derivative buttons stay enabled (they accept SMOOTHED).
+    def test_smoothed_subject_disables_normalise_only(self):
+        # Phase 4x (CS-49) split — SMOOTHED is *not* in
+        # NormalisationPanel.ACCEPTED_PARENT_TYPES (peak/area
+        # normalise should run on raw / baseline-corrected /
+        # already-normalised curves, before smoothing). The inline
+        # baseline section was widened to include SMOOTHED in
+        # Phase 4x, closing the user-flagged Phase 4w friction #1
+        # ("Cannot do baseline correction from a smoothed
+        # spectrum"). Selecting a SMOOTHED subject must therefore
+        # disable normalise's Apply but ENABLE baseline's Apply
+        # (along with smoothing / peak-picking / 2nd-derivative).
         self._add_uvvis("u1")
         self.tab.update_idletasks()
         # Materialise a SMOOTHED child of u1 via the smoothing panel.
@@ -2805,11 +2821,16 @@ class TestUVVisTabSharedSubject(unittest.TestCase):
         self.assertEqual(
             str(self.tab._normalisation_panel._apply_btn.cget("state")),
             "disabled",
-            "normalisation does not accept SMOOTHED parents")
+            "normalisation does not accept SMOOTHED parents (audit-time "
+            "decision held in Phase 4x — see test_accepted_parent_types_constant "
+            "in test_uvvis_normalise.py)")
+
+        # Phase 4x widening: baseline now accepts SMOOTHED.
         self.assertEqual(
             str(self.tab._apply_baseline_btn.cget("state")),
-            "disabled",
-            "inline baseline section does not accept SMOOTHED parents")
+            "normal",
+            "Phase 4x (CS-49): inline baseline section now accepts "
+            "SMOOTHED parents — closes Phase 4w friction #1")
 
         # The other three still accept SMOOTHED.
         self.assertEqual(
