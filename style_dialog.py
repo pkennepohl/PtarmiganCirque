@@ -104,6 +104,29 @@ _Y_AXIS_OPTIONS: tuple[str, ...] = (
 )
 
 
+# Phase 4aa: the universal-section "Y axis:" Combobox is only
+# meaningful for NodeTypes that ``uvvis_tab._redraw`` reads through
+# ``_resolve_y_axis_role`` — i.e. the keys of
+# ``uvvis_tab._DEFAULT_Y_AXIS_BY_NODETYPE``. For other NodeTypes
+# (TDDFT / FEFF_PATHS / XANES / EXAFS / DEGLITCHED / AVERAGED /
+# BXAS_RESULT) the override would persist on ``style["y_axis"]`` but
+# their tab's renderer does not consult it, so the Combobox is a
+# misleading affordance — Phase 4y friction #1 (Claude-surfaced).
+#
+# Drift between this set and ``_DEFAULT_Y_AXIS_BY_NODETYPE`` would
+# silently re-introduce that misleading affordance, so
+# ``test_y_axis_visible_node_types_match_routing_table`` pins the
+# two together.
+_Y_AXIS_VISIBLE_NODETYPES: frozenset[NodeType] = frozenset({
+    NodeType.UVVIS,
+    NodeType.BASELINE,
+    NodeType.NORMALISED,
+    NodeType.SMOOTHED,
+    NodeType.PEAK_LIST,
+    NodeType.SECOND_DERIVATIVE,
+})
+
+
 def _y_axis_display_to_value(display: str):
     """Combobox display string → ``style["y_axis"]`` value.
 
