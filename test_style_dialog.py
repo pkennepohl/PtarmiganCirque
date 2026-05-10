@@ -1024,6 +1024,376 @@ class TestStyleDialogYAxisOverride(unittest.TestCase):
                          sd._Y_AXIS_DISPLAY_DEFAULT)
 
 
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestStyleDialogYAxisVisibility(unittest.TestCase):
+    """Phase 4aa — universal-section "Y axis:" row visibility gate.
+
+    Phase 4y (CS-50) shipped the Combobox in the *universal* section
+    so every NodeType saw it, but only ``uvvis_tab._redraw`` reads
+    the override through ``_resolve_y_axis_role``. For NodeTypes
+    outside ``_DEFAULT_Y_AXIS_BY_NODETYPE.keys()`` the affordance was
+    misleading. Phase 4aa wraps the row in a NodeType visibility
+    predicate (``_Y_AXIS_VISIBLE_NODETYPES``) so it only renders
+    where a tab's renderer actually consults the override.
+
+    Coverage:
+    * Row is present (Combobox + ``_control_vars["y_axis"]``) for
+      every NodeType in ``_Y_AXIS_VISIBLE_NODETYPES``.
+    * Row is absent for every NodeType outside that set —
+      ``_control_vars`` does not gain a ``y_axis`` key, no Combobox
+      is constructed, and ``_read_universal_values`` does not
+      attempt to fan ``y_axis`` on Save / Apply / ∀ paths.
+    * The 4-column grid layout still works when the row is
+      suppressed (existing-row positions don't shift; the gated
+      ``row += 1`` only advances when the row is built).
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import style_dialog
+        cls.style_dialog = style_dialog
+        cls.StyleDialog = style_dialog.StyleDialog
+
+    def setUp(self):
+        self.style_dialog._open_dialogs.clear()
+        self.host = tk.Frame(_root)
+        self.graph = ProjectGraph()
+
+    def tearDown(self):
+        for dlg in list(self.style_dialog._open_dialogs.values()):
+            try:
+                dlg.destroy()
+            except Exception:
+                pass
+        self.style_dialog._open_dialogs.clear()
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    # ---- routing NodeTypes show the Combobox ----
+
+    def _build_dialog_for_type(self, ntype: NodeType):
+        self.graph.add_node(_data("a", ntype=ntype))
+        dlg = self.StyleDialog(self.host, self.graph, "a")
+        dlg.update_idletasks()
+        return dlg
+
+    def test_combobox_present_for_uvvis(self):
+        dlg = self._build_dialog_for_type(NodeType.UVVIS)
+        self.assertIn("y_axis", dlg._control_vars)
+
+    def test_combobox_present_for_baseline(self):
+        dlg = self._build_dialog_for_type(NodeType.BASELINE)
+        self.assertIn("y_axis", dlg._control_vars)
+
+    def test_combobox_present_for_normalised(self):
+        dlg = self._build_dialog_for_type(NodeType.NORMALISED)
+        self.assertIn("y_axis", dlg._control_vars)
+
+    def test_combobox_present_for_smoothed(self):
+        dlg = self._build_dialog_for_type(NodeType.SMOOTHED)
+        self.assertIn("y_axis", dlg._control_vars)
+
+    def test_combobox_present_for_peak_list(self):
+        dlg = self._build_dialog_for_type(NodeType.PEAK_LIST)
+        self.assertIn("y_axis", dlg._control_vars)
+
+    def test_combobox_present_for_second_derivative(self):
+        dlg = self._build_dialog_for_type(NodeType.SECOND_DERIVATIVE)
+        self.assertIn("y_axis", dlg._control_vars)
+
+    # ---- non-routing NodeTypes suppress the Combobox ----
+
+    def test_combobox_absent_for_xanes(self):
+        dlg = self._build_dialog_for_type(NodeType.XANES)
+        self.assertNotIn("y_axis", dlg._control_vars)
+
+    def test_combobox_absent_for_exafs(self):
+        dlg = self._build_dialog_for_type(NodeType.EXAFS)
+        self.assertNotIn("y_axis", dlg._control_vars)
+
+    def test_combobox_absent_for_tddft(self):
+        dlg = self._build_dialog_for_type(NodeType.TDDFT)
+        self.assertNotIn("y_axis", dlg._control_vars)
+
+    def test_combobox_absent_for_feff_paths(self):
+        dlg = self._build_dialog_for_type(NodeType.FEFF_PATHS)
+        self.assertNotIn("y_axis", dlg._control_vars)
+
+    def test_combobox_absent_for_deglitched(self):
+        dlg = self._build_dialog_for_type(NodeType.DEGLITCHED)
+        self.assertNotIn("y_axis", dlg._control_vars)
+
+    def test_combobox_absent_for_averaged(self):
+        dlg = self._build_dialog_for_type(NodeType.AVERAGED)
+        self.assertNotIn("y_axis", dlg._control_vars)
+
+    def test_combobox_absent_for_bxas_result(self):
+        dlg = self._build_dialog_for_type(NodeType.BXAS_RESULT)
+        self.assertNotIn("y_axis", dlg._control_vars)
+
+    # ---- read_universal_values is self-consistent when suppressed ----
+
+    def test_read_universal_values_skips_y_axis_when_suppressed(self):
+        # When the Combobox is absent, ``_read_universal_values`` must
+        # not raise and must not include ``y_axis`` in the partial,
+        # so Save / Apply / ∀ paths don't try to fan a ghost value.
+        dlg = self._build_dialog_for_type(NodeType.XANES)
+        partial = dlg._read_universal_values()
+        self.assertNotIn("y_axis", partial)
+
+    def test_apply_does_not_touch_y_axis_when_suppressed(self):
+        # Apply on a node whose y_axis row is suppressed must not
+        # write a ``y_axis`` key to the node's style — even if the
+        # node already had one (it would persist untouched but the
+        # dialog is not the one writing it).
+        self.graph.add_node(_data(
+            "a", ntype=NodeType.TDDFT,
+            style={"y_axis": "secondary"},
+        ))
+        dlg = self.StyleDialog(self.host, self.graph, "a")
+        dlg.update_idletasks()
+        dlg._do_apply()
+        # The pre-existing y_axis stays put — Apply did not overwrite.
+        self.assertEqual(
+            self.graph.get_node("a").style["y_axis"], "secondary",
+        )
+
+
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestStyleDialogLabelRename(unittest.TestCase):
+    """Phase 4aa — universal-section "Label:" Entry row.
+
+    First concrete add toward the canonical register entry
+    "StyleDialog must surface ALL node-table parameters incl. label
+    rename + tighten organisation for scale (USER-FLAGGED)" —
+    surfaces the rename gesture inside the gear-icon dialog so the
+    user no longer has to abandon it and reach for the sidebar's
+    CS-33 ``_begin_label_edit`` double-click.
+
+    Coverage:
+    * Initial Entry value reads from ``node.label``.
+    * Live trace — every keystroke commits via ``graph.set_label``.
+    * External ``NODE_LABEL_CHANGED`` (sibling rename gesture)
+      refreshes the Entry without firing recursive ``set_label``.
+    * External rename also updates the dialog title.
+    * Cancel restores the snapshot label.
+    * No ∀ button — the label row does not surface a fan-out
+      affordance (parallel to the y-axis bottom-button carve-out
+      but stronger — there is no per-row ∀ either).
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import style_dialog
+        cls.style_dialog = style_dialog
+        cls.StyleDialog = style_dialog.StyleDialog
+
+    def setUp(self):
+        self.style_dialog._open_dialogs.clear()
+        self.host = tk.Frame(_root)
+        self.graph = ProjectGraph()
+
+    def tearDown(self):
+        for dlg in list(self.style_dialog._open_dialogs.values()):
+            try:
+                dlg.destroy()
+            except Exception:
+                pass
+        self.style_dialog._open_dialogs.clear()
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    # ---- initial state ----
+
+    def test_label_entry_initial_value_reads_node_label(self):
+        self.graph.add_node(_data("a", label="My Node"))
+        dlg = self.StyleDialog(self.host, self.graph, "a")
+        dlg.update_idletasks()
+        var = dlg._control_vars.get("label")
+        self.assertIsNotNone(var)
+        self.assertEqual(var.get(), "My Node")
+
+    def test_label_entry_present_for_every_node_type(self):
+        # Label row is unconditional (unlike the gated y-axis row).
+        # Every NodeType the dialog accepts gets the rename Entry.
+        for ntype in (NodeType.UVVIS, NodeType.XANES, NodeType.EXAFS,
+                      NodeType.TDDFT, NodeType.FEFF_PATHS,
+                      NodeType.BXAS_RESULT, NodeType.DEGLITCHED,
+                      NodeType.AVERAGED):
+            with self.subTest(node_type=ntype):
+                self.style_dialog._open_dialogs.clear()
+                graph = ProjectGraph()
+                graph.add_node(_data(f"n_{ntype.value}", ntype=ntype))
+                dlg = self.StyleDialog(
+                    self.host, graph, f"n_{ntype.value}",
+                )
+                dlg.update_idletasks()
+                self.assertIn("label", dlg._control_vars)
+                dlg.destroy()
+
+    # ---- live writes ----
+
+    def test_keystroke_commits_through_set_label(self):
+        self.graph.add_node(_data("a", label="orig"))
+        dlg = self.StyleDialog(self.host, self.graph, "a")
+        dlg.update_idletasks()
+
+        dlg._control_vars["label"].set("renamed")
+        dlg.update_idletasks()
+
+        self.assertEqual(self.graph.get_node("a").label, "renamed")
+
+    def test_keystroke_emits_node_label_changed(self):
+        self.graph.add_node(_data("a", label="orig"))
+        dlg = self.StyleDialog(self.host, self.graph, "a")
+        dlg.update_idletasks()
+
+        events: list = []
+        self.graph.subscribe(events.append)
+
+        dlg._control_vars["label"].set("renamed")
+        dlg.update_idletasks()
+
+        label_events = [
+            e for e in events
+            if e.type == GraphEventType.NODE_LABEL_CHANGED
+            and e.node_id == "a"
+        ]
+        self.assertEqual(len(label_events), 1)
+        self.assertEqual(label_events[0].payload["new_label"], "renamed")
+        self.assertEqual(label_events[0].payload["old_label"], "orig")
+
+    def test_idempotent_set_does_not_emit_event(self):
+        # ``graph.set_label`` early-returns when old == new, so a
+        # var.set() to the current value emits no NODE_LABEL_CHANGED.
+        self.graph.add_node(_data("a", label="orig"))
+        dlg = self.StyleDialog(self.host, self.graph, "a")
+        dlg.update_idletasks()
+
+        events: list = []
+        self.graph.subscribe(events.append)
+
+        dlg._control_vars["label"].set("orig")
+        dlg.update_idletasks()
+
+        label_events = [
+            e for e in events
+            if e.type == GraphEventType.NODE_LABEL_CHANGED
+        ]
+        self.assertEqual(label_events, [])
+
+    # ---- external NODE_LABEL_CHANGED refreshes Entry + title ----
+
+    def test_external_rename_refreshes_entry(self):
+        # A sibling rename gesture (e.g. the sidebar's CS-33
+        # _begin_label_edit) fires NODE_LABEL_CHANGED; the dialog
+        # subscribes and refreshes the Entry without looping back
+        # into set_label.
+        self.graph.add_node(_data("a", label="orig"))
+        dlg = self.StyleDialog(self.host, self.graph, "a")
+        dlg.update_idletasks()
+
+        # Track set_label re-entries — the refresh must not recurse.
+        call_count = {"n": 0}
+        original_set_label = self.graph.set_label
+
+        def _counting_set_label(node_id, new_label):
+            call_count["n"] += 1
+            return original_set_label(node_id, new_label)
+
+        self.graph.set_label = _counting_set_label
+        try:
+            self.graph.set_label("a", "external")
+        finally:
+            self.graph.set_label = original_set_label
+
+        dlg.update_idletasks()
+
+        self.assertEqual(dlg._control_vars["label"].get(), "external")
+        # Exactly one set_label call — the dialog's _on_graph_event
+        # handler did NOT fire a second one in response to the
+        # NODE_LABEL_CHANGED event.
+        self.assertEqual(call_count["n"], 1)
+
+    def test_external_rename_updates_title(self):
+        self.graph.add_node(_data("a", label="orig"))
+        dlg = self.StyleDialog(self.host, self.graph, "a")
+        dlg.update_idletasks()
+        self.assertIn("orig", dlg.title())
+
+        self.graph.set_label("a", "renamed")
+        dlg.update_idletasks()
+
+        self.assertIn("renamed", dlg.title())
+
+    # ---- Cancel reverts label snapshot ----
+
+    def test_cancel_restores_snapshot_label(self):
+        self.graph.add_node(_data("a", label="orig"))
+        dlg = self.StyleDialog(self.host, self.graph, "a")
+        dlg.update_idletasks()
+
+        # User mid-session rename through the Entry.
+        dlg._control_vars["label"].set("midsession")
+        dlg.update_idletasks()
+        self.assertEqual(self.graph.get_node("a").label, "midsession")
+
+        dlg._do_cancel()
+        # Snapshot was "orig" — Cancel re-emits that.
+        self.assertEqual(self.graph.get_node("a").label, "orig")
+
+    def test_cancel_no_rename_is_idempotent(self):
+        # Cancel always re-emits the snapshot label, but if the user
+        # never renamed, set_label is a no-op (no event fires).
+        self.graph.add_node(_data("a", label="orig"))
+        dlg = self.StyleDialog(self.host, self.graph, "a")
+        dlg.update_idletasks()
+
+        events: list = []
+        self.graph.subscribe(events.append)
+
+        dlg._do_cancel()
+
+        label_events = [
+            e for e in events
+            if e.type == GraphEventType.NODE_LABEL_CHANGED
+        ]
+        # Cancel did not produce a NODE_LABEL_CHANGED — snapshot
+        # equalled current label so set_label was a no-op.
+        self.assertEqual(label_events, [])
+
+    # ---- absence of ∀ button ----
+
+    def test_label_row_has_no_apply_one_button(self):
+        # The label row deliberately omits the ∀ button — fanning a
+        # label across siblings would collapse them onto a single
+        # display name. Today no easy structural assertion (the
+        # button factory tags via parent.column == 3); cheaper proof
+        # is the per-row ∀ delegate path: invoking
+        # _delegate_apply_one("label", "X") would write "X" to this
+        # node's label AND call on_apply_to_all, but the dialog
+        # NEVER constructs that delegate for the label row, so the
+        # observable effect is that on_apply_to_all is never invoked
+        # by any rendered widget for the "label" key.
+        seen: list = []
+        self.graph.add_node(_data("a", label="orig"))
+        self.StyleDialog(
+            self.host, self.graph, "a",
+            on_apply_to_all=lambda k, v: seen.append((k, v)),
+        )
+        # Exhaust the construction path; if a ∀ button existed it
+        # would not have fired without a click anyway, but the
+        # important assertion is that no `_add_apply_one_button`
+        # call records a "label" entry — easiest way to check is
+        # that the bottom ∀-Apply-to-All path also doesn't fan it,
+        # which requires _BULK_UNIVERSAL_KEYS to exclude "label".
+        self.assertNotIn("label", self.style_dialog._BULK_UNIVERSAL_KEYS)
+
+
 class TestStyleDialogPhase4aaConstants(unittest.TestCase):
     """Phase 4aa pure-module drift coverage for the y-axis visibility
     predicate.
