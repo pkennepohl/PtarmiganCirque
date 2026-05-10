@@ -6037,7 +6037,177 @@ ascending-order convention.
 
 ---
 
-*Document version: 1.26 — May 2026*
+## CS-52 — StyleDialog y-axis visibility predicate + label-rename Entry (Phase 4aa)
+
+**Source files.** `style_dialog.py` (one new module-private
+constant, one gated call site, one new universal-section row, two
+new helpers, one new graph-event branch).
+
+**Purpose.** Two visible deliverables that share the StyleDialog
+universal section:
+
+1. **Y-axis Combobox visibility predicate** — closes Phase 4y
+   friction #1 (Claude-surfaced). The CS-50 "Y axis:" Combobox
+   row landed in the *universal* section so it appeared for every
+   NodeType. Only `uvvis_tab._redraw` reads the override through
+   `_resolve_y_axis_role`, so on TDDFT / FEFF_PATHS / XANES /
+   EXAFS / DEGLITCHED / AVERAGED / BXAS_RESULT the Combobox was a
+   misleading affordance — changing it persisted `style["y_axis"]`
+   harmlessly but the user's tab's renderer never consulted the
+   key. CS-52 wraps the row builder in a NodeType visibility
+   predicate so the affordance only renders where it functions.
+2. **Label-rename Entry** — closes the "first concrete add" half
+   of Phase 4x friction #2 (USER-FLAGGED). Today the only path to
+   rename a node lives in the sidebar's CS-33 `_begin_label_edit`
+   double-click. CS-52 surfaces the rename gesture inside the
+   gear-icon dialog so the user can mutate every node-table
+   parameter from one place. The "tighten organisation for
+   scale" half (LabelFrame groupings, tabbed shape) is deferred —
+   see the Phase 4aa friction section's #1.
+
+**Module-level constant (locked Phase 4aa step 2).**
+- `_Y_AXIS_VISIBLE_NODETYPES: frozenset[NodeType]` — pinned to
+  `frozenset({UVVIS, BASELINE, NORMALISED, SMOOTHED, PEAK_LIST,
+  SECOND_DERIVATIVE})`. The drift test
+  `test_y_axis_visible_node_types_match_routing_table` pins it
+  against `uvvis_tab._DEFAULT_Y_AXIS_BY_NODETYPE.keys()` exactly,
+  so a future widening of the routing table forces the StyleDialog
+  Combobox to surface for the new NodeType (and a future shrinking
+  suppresses it).
+
+**Wire change — y-axis row gate.** The `_build_universal_section`
+call site that builds the Combobox now reads:
+```
+if self._node_type in _Y_AXIS_VISIBLE_NODETYPES:
+    self._build_y_axis_row(sec, row)
+    row += 1
+```
+When the gate is False, no Combobox is constructed,
+`_control_vars` does not gain a `y_axis` key, and
+`_read_universal_values` skips `y_axis` automatically (the
+existing `var = self._control_vars.get(key); if var is None:
+continue` pattern). Save / Apply / per-row ∀ / bottom ∀ Apply-to-
+All paths all stay self-consistent without further changes.
+
+**New universal-section row — "Label:" Entry.** Built by the new
+`_build_label_row` method, inserted at the **top** of the
+universal grid (row 0; existing rows shift down by 1 grid row,
+relative order preserved per the lock-relaxation reading "rows +
+their order stay verbatim"). The Entry binds to a `tk.StringVar`
+master-bound to the dialog (Phase 4j friction #1 defence-in-depth)
+whose `trace_add('write')` callback commits each keystroke through
+the new `_write_label_partial` helper. The label row carries no
+∀ button — fanning one label across siblings would collapse them
+onto a single display name (parallel to but stronger than the
+y-axis bottom-button carve-out).
+
+**New helper — `_write_label_partial(new_label: str) -> None`.**
+Companion to `_write_partial`, but routes via `graph.set_label`
+(label is a top-level `DataNode` slot, not a style key — does NOT
+travel through `set_style`). Shares the `_suspend_writes`
+re-entrancy guard with `_write_partial` so a label keystroke and
+a style write cannot loop into each other. `set_label` is a no-op
+when the value already matches (`graph.set_label`'s early return),
+so idempotent refreshes don't fire spurious events.
+
+**Snapshot extension.** `__init__` now snapshots both
+`node.style` (`self._snapshot`) and `node.label`
+(`self._snapshot_label`). `_do_cancel` re-emits the snapshot
+label first (via `_write_label_partial`) and then the snapshot
+style (via `_write_partial`) so a mid-session rename reverts in
+the same gesture as a mid-session style change.
+
+**Graph-event branch — `NODE_LABEL_CHANGED`.** `_on_graph_event`
+gains a second event-type branch alongside the existing
+`NODE_STYLE_CHANGED` path. When a sibling rename gesture (the
+sidebar's CS-33 `_begin_label_edit`, the rename context-menu
+entry, or another open StyleDialog on the same node) fires
+`NODE_LABEL_CHANGED`, the dialog's `_refresh_label` helper:
+1. Pushes the new label into the Entry's `StringVar` via the
+   `label` refresh closure (under `_suspend_writes=True` so the
+   refresh cannot loop through `set_label`).
+2. Updates the dialog title via `self.title(f"Style — {new_label}")`
+   so the "Style — <label>" header stays truthful mid-session.
+
+**Locks.**
+- `_Y_AXIS_VISIBLE_NODETYPES` content — frozenset value pinned by
+  `test_y_axis_visible_node_types_match_routing_table`. Adding or
+  removing a NodeType requires a corresponding routing-table edit
+  in the same commit; the drift test makes a one-sided change
+  fail.
+- `_Y_AXIS_VISIBLE_NODETYPES` type — frozenset (vs set / tuple /
+  list) pinned by `test_y_axis_visible_node_types_is_frozen`.
+- `_build_y_axis_row` call site — `if self._node_type in
+  _Y_AXIS_VISIBLE_NODETYPES:` predicate. Pinned by the
+  `TestStyleDialogYAxisVisibility` matrix (six routing-NodeType
+  "present" cases + seven non-routing "absent" cases).
+- `_build_label_row` placement at the top of the universal grid
+  (row 0). Pinned indirectly by the lock-relaxation reading "rows
+  + their order stay verbatim" — the tests don't pin row indices,
+  but moving "Label:" elsewhere would require a deliberate
+  decision to break the universal section's relative ordering
+  invariant established in Phase 4d / 4y.
+- `_write_label_partial` signature `(self, new_label: str) ->
+  None`. The integration test
+  `test_external_rename_refreshes_entry` pins the
+  re-entrancy-guard contract (no recursive `set_label` invocation
+  during refresh).
+- `_snapshot_label: str` field exists on every constructed
+  StyleDialog. Pinned by `test_cancel_restores_snapshot_label`.
+- `_on_graph_event`'s two-branch structure — `NODE_STYLE_CHANGED`
+  routes to `_refresh_widgets`; `NODE_LABEL_CHANGED` routes to
+  `_refresh_label`. Pinned by
+  `test_external_rename_refreshes_entry` and
+  `test_external_rename_updates_title`.
+
+**What changes when this lock relaxes.** Adding a new universal-
+section row that needs a NodeType-aware visibility gate follows
+the same pattern: declare a `_<ROW>_VISIBLE_NODETYPES` frozenset
+near the top, pin it with a drift test if it must mirror an
+existing routing/registry table, and gate the row builder's call
+site. The "tighten organisation for scale" follow-up (Phase 4aa
+friction #1) will at minimum group the universal rows under
+`tk.LabelFrame` widgets — that re-org touches every existing row's
+parent argument but should preserve the gate predicate
+unchanged. If the dialog grows a `ttk.Notebook` shape (the open
+lock decision (i) on Phase 4x friction #2's canonical register
+entry), the universal rows move into Tab 1 "Style" and the
+Combobox gate moves with them; the predicate signature does not
+change.
+
+**Implementation notes.**
+- The label-rename Entry uses live-write semantics (every
+  keystroke commits) to match the slider/Combobox convention used
+  by every other universal row and to avoid the "type a label,
+  forget to press Enter, close the dialog, no save" footgun. The
+  CS-33 sidebar gesture commits on Enter / FocusOut instead;
+  consistency between the two rename paths is at the
+  routes-through-`graph.set_label`-with-no-validation layer, not
+  at the keystroke-vs-Enter trigger layer. See Phase 4aa friction
+  #2 for revisit triggers.
+- The label row is unconditional (it appears on every NodeType
+  the dialog accepts), unlike the gated y-axis row. Every
+  `DataNode` carries a `label` slot, so the rename gesture is
+  meaningful for every NodeType — there is no "this NodeType
+  doesn't display labels" case the way there is for y-axis
+  routing.
+- Validation on the Entry is intentionally absent (lock decision
+  (ii) taken Phase 4aa step 2). Empty strings and duplicate
+  labels are accepted — `graph.set_label` itself enforces
+  nothing, and matching that behaviour keeps the dialog Entry and
+  the sidebar gesture consistent. A future "tighten
+  organisation" pass could surface a non-blocking warning
+  (duplicate-label cross-fade or similar) without changing the
+  underlying `set_label` contract.
+- Cancel always re-emits the snapshot label, even when the user
+  never renamed — `set_label` early-returns when old == new so
+  the call is a no-op, but it costs a function dispatch. See
+  Phase 4aa friction #6 for the cosmetic gate-by-inequality
+  follow-up.
+
+---
+
+*Document version: 1.27 — May 2026*
 *1.1: CS-13 implementation notes added in Phase 4a.*
 *1.2: CS-14 Plot Settings Dialog added in Phase 4b.*
 *1.3: CS-15 UV/Vis Baseline Correction + CS-04 implementation
@@ -6500,5 +6670,71 @@ TestDefaultSpectrumStyle + 16 in TestStyleDialogYAxisOverride
 + 4 in TestUVVisTabPhase4yYAxisOverride + 3 in
 TestUVVisTabPhase4yCrossTypedInheritance + 3 in
 TestUVVisTabPhase4yApplyToAllScope).*
+*1.26: Phase 4z — width-aware label-cell overhead helper (CS-51).
+Closes Phase 4x friction #1 (USER-FLAGGED, swatch-reveal label-
+cap drift) and Phase 4w friction #6 (measure actual row overhead)
+for the optional-cell visibility axis. `scan_tree_widget` lifts
+the previously inline cell-vocabulary into module-level constants
+`_ALWAYS_VISIBLE_CELLS` (the seven Phase 4w always-visible cells)
+and `_OVERHEAD_SLACK_PX = 30` (the inter-cell padding slack), and
+adds two pure helpers — `_compute_label_overhead_px(visible_optional_cells)`
+sums the always-visible cells + the named optional cells +
+slack; `_visible_optional_cells_for_width(width_px)` walks
+`_RESPONSIVE_THRESHOLDS_PX` and returns the optional cells
+revealed at the given width (mirrors `_apply_responsive_layout`'s
+reveal predicate exactly so cap and layout cannot drift). The
+`_label_overhead_px(self, width: int | None = None)` widget
+method gains a `width` kwarg; `width=None` returns the no-args
+baseline (byte-equivalent to Phase 4w) for `_calibrate_sidebar_width`'s
+unchanged use, and `_current_label_cap` forwards the canvas width
+so the dynamic cap shrinks the moment any optional cell reappears
+at its CS-26 threshold. CS-26 + CS-47 + CS-48 invariants all
+preserved. 805 tests, all green (781 + 24 new: 19 pure-helper
++ 5 integration). Phase 4z friction list: three 🟢 Claude-
+surfaced polish notes, none promoted to register entries (user-
+accepted at step 5).*
+*1.27: Phase 4aa — StyleDialog y-axis visibility predicate +
+label-rename Entry (CS-52). Closes Phase 4y friction #1 in full
+(Claude-surfaced "Y-axis Combobox row appears on non-UVVis
+StyleDialog instances"; path (a) NodeType-gate landed) and the
+"first concrete add" half of Phase 4x friction #2 (USER-FLAGGED
+"StyleDialog must surface ALL node-table parameters incl. label
+rename"; the LabelFrame re-org + tabs question stays open).
+`style_dialog` adds module-private `_Y_AXIS_VISIBLE_NODETYPES:
+frozenset[NodeType]` mirroring `uvvis_tab._DEFAULT_Y_AXIS_BY_NODETYPE.keys()`
+exactly (UVVIS / BASELINE / NORMALISED / SMOOTHED / PEAK_LIST /
+SECOND_DERIVATIVE), pinned by the drift test
+`test_y_axis_visible_node_types_match_routing_table`.
+`_build_universal_section` wraps the `_build_y_axis_row` call in
+`if self._node_type in _Y_AXIS_VISIBLE_NODETYPES`; on the seven
+non-routing NodeTypes the Combobox is suppressed,
+`_read_universal_values` skips the key automatically, and Save /
+Apply / ∀ paths stay self-consistent. New `_build_label_row`
+inserts a "Label:" Entry at the top of the universal grid (row
+0; existing rows shift down by 1, relative order preserved per
+the lock-relaxation reading); a `trace_add('write')` callback
+commits each keystroke through the new `_write_label_partial`
+helper, which routes via `graph.set_label` (label is a top-level
+DataNode slot, not a style key) under the same `_suspend_writes`
+re-entrancy guard `_write_partial` uses. `__init__` snapshots
+`node.label` alongside `node.style`; `_do_cancel` reverts both.
+`_on_graph_event` gains a `NODE_LABEL_CHANGED` branch that
+refreshes the Entry + the dialog title in place. Lock decisions
+taken Phase 4aa step 2: (i) **defer** the LabelFrame re-org +
+tabbed-shape question — single-pane with Label at top this
+phase, the re-org pairs with Phase 4x friction #3 + #4
+(Provenance tab + "Add to graph") in a future combined intent;
+(ii) **no inline validation** — match CS-33's sidebar gesture
+behaviour; (iii) **no widget lifts** — universal rows preserve
+relative order. CS-50 + CS-44 invariants all preserved
+(`_DEFAULT_Y_AXIS_BY_NODETYPE` / `_resolve_y_axis_role` / `_AXIS_ROLES`
+byte-identical; the gate is purely additive). CS-46 manifest
+unchanged (the visibility predicate lives entirely on the dialog
+side; no new persisted state). 832 tests, all green (805 + 27
+new: 2 pure-module drift in TestStyleDialogPhase4aaConstants + 15
+visibility-matrix in TestStyleDialogYAxisVisibility + 10 label-
+rename in TestStyleDialogLabelRename). Phase 4aa friction list:
+six 🟢 Claude-surfaced polish notes, none promoted to register
+entries (user-accepted at step 5).*
 *To be updated as Open Questions are resolved and new components
 are specified.*
