@@ -67,7 +67,7 @@ from tkinter import colorchooser, ttk
 from typing import Any, Callable
 
 from graph import GraphEvent, GraphEventType, ProjectGraph
-from nodes import DataNode, NodeType
+from nodes import DataNode, NodeState, NodeType, OperationNode
 
 _log = logging.getLogger(__name__)
 
@@ -263,6 +263,171 @@ _CONDITIONAL_DEFAULTS: dict[str, Any] = {
     "component_m2":          True,
     "component_q2":          True,
 }
+
+
+# =====================================================================
+# Phase 4ab (CS-53): Notebook restructure + Provenance tab helpers
+# =====================================================================
+
+# Notebook tab order. Style is the default-active tab on dialog open
+# (preserves the pre-CS-53 UX where clicking the gear icon takes the
+# user straight to style controls); Provenance is the read-only ancestor
+# walk that closes Phase 4x friction #3 (USER-FLAGGED). The pinning test
+# ``test_notebook_tab_order_and_default_selection`` ensures this list
+# stays the source of truth.
+_NOTEBOOK_TAB_TITLES: tuple[str, ...] = ("Style", "Provenance")
+
+
+# Display strings + foreground colours for the per-ancestor state badge
+# in the Provenance tab. DISCARDED ancestors render dimmed (grey
+# foreground) so the user can see at a glance what was previously in
+# the chain — Phase 4ab Decision (iv). PROVISIONAL keeps the default
+# foreground because provisional ancestors are still live (e.g. an
+# in-progress baseline being explored). COMMITTED gets a subtle dark
+# green to signal "locked into the scientific record" without
+# competing visually with the Apply-to-All button.
+_PROVENANCE_STATE_DISPLAY: dict[NodeState, tuple[str, str]] = {
+    NodeState.PROVISIONAL: ("provisional", "#444444"),
+    NodeState.COMMITTED:   ("committed",   "#004400"),
+    NodeState.DISCARDED:   ("discarded",   "#888888"),
+}
+
+
+def _provenance_state_display(state: NodeState) -> tuple[str, str]:
+    """Return ``(display_text, foreground_colour)`` for a NodeState.
+
+    Defensive fallback: a NodeState the table does not know about
+    (would only happen if ``NodeState`` grows a new variant without a
+    matching table entry) renders as the raw enum name with the
+    default grey foreground, so the row is at least visible rather
+    than crashing on a KeyError.
+    """
+    entry = _PROVENANCE_STATE_DISPLAY.get(state)
+    if entry is None:
+        return (str(getattr(state, "name", state)).lower(), "#444444")
+    return entry
+
+
+def _format_provenance_op_params(params: dict | None) -> str:
+    """Pretty-print an OperationNode's params dict for display.
+
+    Multi-line ``key: value`` form, sorted by key for stability across
+    runs (so the test pin is deterministic and screenshots reproduce).
+    Empty / None params returns an empty string so the calling row can
+    render an "(no params)" placeholder rather than an awkward blank.
+
+    Values are rendered via ``repr`` so strings get quoted, floats keep
+    their precision, and nested dicts / lists stay legible. The raw
+    ``repr`` is preferred over a hand-rolled formatter because the
+    Provenance tab is a debugging aid first, not a presentation
+    surface — the user needs to see exactly what got persisted.
+    """
+    if not params:
+        return ""
+    return "\n".join(
+        f"{key}: {value!r}"
+        for key, value in sorted(params.items())
+    )
+
+
+def _format_provenance_node_summary(node) -> dict[str, str]:
+    """Reduce a DataNode or OperationNode to its display fields.
+
+    Returns a flat dict of strings the Provenance tab's per-ancestor
+    block reads. Pure: takes only the node and returns only strings,
+    so it tests cleanly without Tk. The keys are stable contract:
+
+    * ``kind``           — "data" | "op"
+    * ``id``             — the node id (truncated for display layers
+                           if needed; the helper keeps it whole)
+    * ``label``          — display label (DataNode.label or
+                           OperationNode.type.name for ops)
+    * ``type_text``      — "UVVIS" / "BASELINE" / ... for data,
+                           "BASELINE / linear" or just "NORMALISE"
+                           for ops (mode discriminator if present)
+    * ``state_text``     — lower-case state badge text
+    * ``state_colour``   — foreground colour for the badge
+    * ``params_text``    — empty for DataNode; pretty-printed params
+                           for OperationNode
+    * ``hash_text``      — empty for DataNode and ops without a hash;
+                           short hash prefix (first 12 chars) +
+                           "(unregistered)" suffix when prefixed with
+                           the operation_hash sentinel
+    * ``engine_text``    — empty for DataNode; "engine vN" for ops
+    """
+    if isinstance(node, DataNode):
+        state_text, state_colour = _provenance_state_display(node.state)
+        return {
+            "kind":         "data",
+            "id":           str(node.id),
+            "label":        str(node.label),
+            "type_text":    node.type.name,
+            "state_text":   state_text,
+            "state_colour": state_colour,
+            "params_text":  "",
+            "hash_text":    "",
+            "engine_text":  "",
+        }
+    if isinstance(node, OperationNode):
+        state_text, state_colour = _provenance_state_display(node.state)
+        # Mode discriminator is the most common params key that
+        # disambiguates OperationType variants (BASELINE / NORMALISE /
+        # PEAK_PICK all carry one). Surfacing it in the type line
+        # keeps the per-ancestor heading scannable without forcing
+        # the user to expand the params block.
+        type_text = node.type.name
+        mode = node.params.get("mode") if isinstance(node.params, dict) else None
+        if isinstance(mode, str) and mode:
+            type_text = f"{type_text} / {mode}"
+        # Short-prefix the hash for display (full 64 hex chars are
+        # noise in the UI). The "unregistered:" sentinel from
+        # ``operation_hash`` survives truncation only via an explicit
+        # suffix so the user can see at a glance that the hash is a
+        # placeholder rather than a real implementation digest.
+        raw_hash = ""
+        if isinstance(node.metadata, dict):
+            raw_hash = str(node.metadata.get("implementation_hash") or "")
+        hash_text = ""
+        if raw_hash:
+            if raw_hash.startswith("unregistered:"):
+                hash_text = f"{raw_hash[:24]}… (unregistered)"
+            else:
+                hash_text = f"{raw_hash[:12]}…"
+        engine_text = ""
+        if node.engine:
+            engine_text = (
+                f"{node.engine} v{node.engine_version}"
+                if node.engine_version
+                else node.engine
+            )
+        return {
+            "kind":         "op",
+            "id":           str(node.id),
+            "label":        type_text,  # ops have no user-label slot
+            "type_text":    type_text,
+            "state_text":   state_text,
+            "state_colour": state_colour,
+            "params_text":  _format_provenance_op_params(
+                node.params if isinstance(node.params, dict) else {}
+            ),
+            "hash_text":    hash_text,
+            "engine_text":  engine_text,
+        }
+    # Defensive fallback for an unrecognised node shape — the
+    # provenance walk should never produce one (only DataNode +
+    # OperationNode live in ProjectGraph), but a stale cached graph
+    # or future variant should not crash the dialog.
+    return {
+        "kind":         "unknown",
+        "id":           str(getattr(node, "id", "")),
+        "label":        repr(node),
+        "type_text":    type(node).__name__,
+        "state_text":   "",
+        "state_colour": "#444444",
+        "params_text":  "",
+        "hash_text":    "",
+        "engine_text":  "",
+    }
 
 
 # =====================================================================
