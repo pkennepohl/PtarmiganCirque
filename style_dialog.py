@@ -67,7 +67,7 @@ from tkinter import colorchooser, ttk
 from typing import Any, Callable
 
 from graph import GraphEvent, GraphEventType, ProjectGraph
-from nodes import DataNode, NodeType
+from nodes import DataNode, NodeState, NodeType, OperationNode
 
 _log = logging.getLogger(__name__)
 
@@ -266,6 +266,193 @@ _CONDITIONAL_DEFAULTS: dict[str, Any] = {
 
 
 # =====================================================================
+# Phase 4ab (CS-53): Notebook restructure + Provenance tab helpers
+# =====================================================================
+
+# Notebook tab order. Style is the default-active tab on dialog open
+# (preserves the pre-CS-53 UX where clicking the gear icon takes the
+# user straight to style controls); Provenance is the read-only ancestor
+# walk that closes Phase 4x friction #3 (USER-FLAGGED). The pinning test
+# ``test_notebook_tab_order_and_default_selection`` ensures this list
+# stays the source of truth.
+_NOTEBOOK_TAB_TITLES: tuple[str, ...] = ("Style", "Provenance")
+
+
+# Graph events that mutate the Provenance tab's displayed content.
+# Membership table:
+# * ``NODE_LABEL_CHANGED`` — an ancestor (or self) was renamed; the
+#   per-block label header changes.
+# * ``NODE_DISCARDED`` / ``NODE_COMMITTED`` — an ancestor's state
+#   changes; the state badge text + per-block foreground colour
+#   (dimming for DISCARDED) changes.
+# * ``NODE_ADDED`` / ``EDGE_ADDED`` — a new ancestor may have
+#   appeared in the chain; the rebuild re-walks ``provenance_chain``
+#   from scratch.
+# Style events (``NODE_STYLE_CHANGED``) and active-flag events
+# (``NODE_ACTIVE_CHANGED``) don't affect Provenance display, so they
+# don't trigger a rebuild.
+_PROVENANCE_REFRESHING_EVENTS: frozenset = frozenset({
+    GraphEventType.NODE_LABEL_CHANGED,
+    GraphEventType.NODE_DISCARDED,
+    GraphEventType.NODE_COMMITTED,
+    GraphEventType.NODE_ADDED,
+    GraphEventType.EDGE_ADDED,
+})
+
+
+# Display strings + foreground colours for the per-ancestor state badge
+# in the Provenance tab. DISCARDED ancestors render dimmed (grey
+# foreground) so the user can see at a glance what was previously in
+# the chain — Phase 4ab Decision (iv). PROVISIONAL keeps the default
+# foreground because provisional ancestors are still live (e.g. an
+# in-progress baseline being explored). COMMITTED gets a subtle dark
+# green to signal "locked into the scientific record" without
+# competing visually with the Apply-to-All button.
+_PROVENANCE_STATE_DISPLAY: dict[NodeState, tuple[str, str]] = {
+    NodeState.PROVISIONAL: ("provisional", "#444444"),
+    NodeState.COMMITTED:   ("committed",   "#004400"),
+    NodeState.DISCARDED:   ("discarded",   "#888888"),
+}
+
+
+def _provenance_state_display(state: NodeState) -> tuple[str, str]:
+    """Return ``(display_text, foreground_colour)`` for a NodeState.
+
+    Defensive fallback: a NodeState the table does not know about
+    (would only happen if ``NodeState`` grows a new variant without a
+    matching table entry) renders as the raw enum name with the
+    default grey foreground, so the row is at least visible rather
+    than crashing on a KeyError.
+    """
+    entry = _PROVENANCE_STATE_DISPLAY.get(state)
+    if entry is None:
+        return (str(getattr(state, "name", state)).lower(), "#444444")
+    return entry
+
+
+def _format_provenance_op_params(params: dict | None) -> str:
+    """Pretty-print an OperationNode's params dict for display.
+
+    Multi-line ``key: value`` form, sorted by key for stability across
+    runs (so the test pin is deterministic and screenshots reproduce).
+    Empty / None params returns an empty string so the calling row can
+    render an "(no params)" placeholder rather than an awkward blank.
+
+    Values are rendered via ``repr`` so strings get quoted, floats keep
+    their precision, and nested dicts / lists stay legible. The raw
+    ``repr`` is preferred over a hand-rolled formatter because the
+    Provenance tab is a debugging aid first, not a presentation
+    surface — the user needs to see exactly what got persisted.
+    """
+    if not params:
+        return ""
+    return "\n".join(
+        f"{key}: {value!r}"
+        for key, value in sorted(params.items())
+    )
+
+
+def _format_provenance_node_summary(node) -> dict[str, str]:
+    """Reduce a DataNode or OperationNode to its display fields.
+
+    Returns a flat dict of strings the Provenance tab's per-ancestor
+    block reads. Pure: takes only the node and returns only strings,
+    so it tests cleanly without Tk. The keys are stable contract:
+
+    * ``kind``           — "data" | "op"
+    * ``id``             — the node id (truncated for display layers
+                           if needed; the helper keeps it whole)
+    * ``label``          — display label (DataNode.label or
+                           OperationNode.type.name for ops)
+    * ``type_text``      — "UVVIS" / "BASELINE" / ... for data,
+                           "BASELINE / linear" or just "NORMALISE"
+                           for ops (mode discriminator if present)
+    * ``state_text``     — lower-case state badge text
+    * ``state_colour``   — foreground colour for the badge
+    * ``params_text``    — empty for DataNode; pretty-printed params
+                           for OperationNode
+    * ``hash_text``      — empty for DataNode and ops without a hash;
+                           short hash prefix (first 12 chars) +
+                           "(unregistered)" suffix when prefixed with
+                           the operation_hash sentinel
+    * ``engine_text``    — empty for DataNode; "engine vN" for ops
+    """
+    if isinstance(node, DataNode):
+        state_text, state_colour = _provenance_state_display(node.state)
+        return {
+            "kind":         "data",
+            "id":           str(node.id),
+            "label":        str(node.label),
+            "type_text":    node.type.name,
+            "state_text":   state_text,
+            "state_colour": state_colour,
+            "params_text":  "",
+            "hash_text":    "",
+            "engine_text":  "",
+        }
+    if isinstance(node, OperationNode):
+        state_text, state_colour = _provenance_state_display(node.state)
+        # Mode discriminator is the most common params key that
+        # disambiguates OperationType variants (BASELINE / NORMALISE /
+        # PEAK_PICK all carry one). Surfacing it in the type line
+        # keeps the per-ancestor heading scannable without forcing
+        # the user to expand the params block.
+        type_text = node.type.name
+        mode = node.params.get("mode") if isinstance(node.params, dict) else None
+        if isinstance(mode, str) and mode:
+            type_text = f"{type_text} / {mode}"
+        # Short-prefix the hash for display (full 64 hex chars are
+        # noise in the UI). The "unregistered:" sentinel from
+        # ``operation_hash`` survives truncation only via an explicit
+        # suffix so the user can see at a glance that the hash is a
+        # placeholder rather than a real implementation digest.
+        raw_hash = ""
+        if isinstance(node.metadata, dict):
+            raw_hash = str(node.metadata.get("implementation_hash") or "")
+        hash_text = ""
+        if raw_hash:
+            if raw_hash.startswith("unregistered:"):
+                hash_text = f"{raw_hash[:24]}… (unregistered)"
+            else:
+                hash_text = f"{raw_hash[:12]}…"
+        engine_text = ""
+        if node.engine:
+            engine_text = (
+                f"{node.engine} v{node.engine_version}"
+                if node.engine_version
+                else node.engine
+            )
+        return {
+            "kind":         "op",
+            "id":           str(node.id),
+            "label":        type_text,  # ops have no user-label slot
+            "type_text":    type_text,
+            "state_text":   state_text,
+            "state_colour": state_colour,
+            "params_text":  _format_provenance_op_params(
+                node.params if isinstance(node.params, dict) else {}
+            ),
+            "hash_text":    hash_text,
+            "engine_text":  engine_text,
+        }
+    # Defensive fallback for an unrecognised node shape — the
+    # provenance walk should never produce one (only DataNode +
+    # OperationNode live in ProjectGraph), but a stale cached graph
+    # or future variant should not crash the dialog.
+    return {
+        "kind":         "unknown",
+        "id":           str(getattr(node, "id", "")),
+        "label":        repr(node),
+        "type_text":    type(node).__name__,
+        "state_text":   "",
+        "state_colour": "#444444",
+        "params_text":  "",
+        "hash_text":    "",
+        "engine_text":  "",
+    }
+
+
+# =====================================================================
 # Module-level factory
 # =====================================================================
 
@@ -386,18 +573,35 @@ class StyleDialog(tk.Toplevel):
     # ------------------------------------------------------------
 
     def _build_body(self, node: DataNode) -> None:
-        """Build the universal section followed by any conditional sections.
+        """Build the Notebook with Style + Provenance tabs.
 
-        Conditional sections are looked up in ``_SECTIONS_BY_TYPE`` and
-        added via ``_build_section_<name>`` methods. Hidden sections
-        consume no vertical space — they simply aren't created.
+        Phase 4ab (CS-53): the dialog body is a ``ttk.Notebook`` —
+        Tab 1 "Style" hosts the universal + conditional sections that
+        existed before the restructure (the rows + their relative
+        ordering preserved verbatim, per the CS-52 lock relaxation);
+        Tab 2 "Provenance" is the read-only ancestor walk that closes
+        Phase 4x friction #3. Style is the default-active tab on
+        dialog open (Decision (vii)) so the existing UX is unchanged
+        for users who never click into Provenance. The bottom button
+        row is built separately by ``__init__`` and packs onto the
+        Toplevel directly, so it stays visible regardless of which
+        Notebook tab is active (Decision (v)).
         """
-        body = tk.Frame(self, padx=12, pady=8)
+        body = tk.Frame(self)
         body.pack(fill=tk.BOTH, expand=True)
         self._body = body
 
+        notebook = ttk.Notebook(body)
+        notebook.pack(fill=tk.BOTH, expand=True, padx=8, pady=4)
+        self._notebook = notebook
+
+        # ── Tab 1: Style ─────────────────────────────────────────────
+        style_tab = tk.Frame(notebook, padx=12, pady=8)
+        notebook.add(style_tab, text=_NOTEBOOK_TAB_TITLES[0])
+        self._style_tab = style_tab
+
         # Universal section (no LabelFrame; renders flush at the top).
-        self._build_universal_section(body, node)
+        self._build_universal_section(style_tab, node)
 
         # Conditional sections: one tk.LabelFrame per section, each
         # preceded by a horizontal separator. Hidden sections (those
@@ -413,17 +617,30 @@ class StyleDialog(tk.Toplevel):
                     name, self._node_id,
                 )
                 continue
-            ttk.Separator(body, orient=tk.HORIZONTAL).pack(
+            ttk.Separator(style_tab, orient=tk.HORIZONTAL).pack(
                 fill=tk.X, pady=(8, 4),
             )
             frame = tk.LabelFrame(
-                body,
+                style_tab,
                 text=_SECTION_TITLES.get(name, name),
                 padx=8, pady=4,
             )
             frame.pack(fill=tk.X)
             frame.columnconfigure(1, weight=1)
             builder(frame, node)
+
+        # ── Tab 2: Provenance ────────────────────────────────────────
+        provenance_tab = tk.Frame(notebook)
+        notebook.add(provenance_tab, text=_NOTEBOOK_TAB_TITLES[1])
+        self._provenance_tab = provenance_tab
+        self._build_provenance_tab(provenance_tab)
+
+        # Default-active tab: Style. Without an explicit select,
+        # ``ttk.Notebook`` selects the first added tab anyway, but
+        # making the choice explicit pins it against a future "add a
+        # tab in front of Style" refactor that would silently change
+        # the default.
+        notebook.select(style_tab)
 
     def _build_universal_section(
         self, parent: tk.Widget, node: DataNode,
@@ -1103,20 +1320,36 @@ class StyleDialog(tk.Toplevel):
     def _on_graph_event(self, event: GraphEvent) -> None:
         """Refresh widgets when an external source mutates this node.
 
-        Ignores events for other nodes and events the dialog itself
-        triggered (``_suspend_writes`` is True throughout the
-        ``_write_partial`` / ``_write_label_partial`` body, including
-        the synchronous notify dispatch).
+        Ignores events the dialog itself triggered
+        (``_suspend_writes`` is True throughout the ``_write_partial``
+        / ``_write_label_partial`` body, including the synchronous
+        notify dispatch).
 
-        Phase 4aa: also handles ``NODE_LABEL_CHANGED`` so a sibling
-        rename gesture (sidebar's CS-33 ``_begin_label_edit``, the
-        rename context-menu entry, or another open StyleDialog on
-        the same node) refreshes our Entry and updates the dialog
-        title in place.
+        Phase 4aa: handles ``NODE_LABEL_CHANGED`` for the dialog's
+        own node so a sibling rename gesture (sidebar's CS-33
+        ``_begin_label_edit``, the rename context-menu entry, or
+        another open StyleDialog on the same node) refreshes our
+        Entry and updates the dialog title in place.
+
+        Phase 4ab (CS-53): also rebuilds the Provenance tab on any
+        event that mutates the displayed ancestor walk —
+        ``NODE_LABEL_CHANGED`` (an ancestor was renamed),
+        ``NODE_DISCARDED`` / ``NODE_COMMITTED`` (state badge +
+        dimming changes), ``NODE_ADDED`` / ``EDGE_ADDED`` (the chain
+        may have grown). The rebuild runs for events on ANY node
+        because any of those changes could affect an ancestor in our
+        chain; the rebuild itself is cheap (graph BFS bounded by
+        graph size + a few-dozen widgets). The ``_suspend_writes``
+        guard still suppresses self-triggered rebuilds: during a
+        keystroke-driven label rename the bottom-of-chain block in
+        Provenance is briefly stale, which is a deliberate trade-off
+        to avoid rebuilding the tab once per keystroke.
         """
-        if event.node_id != self._node_id:
-            return
         if self._suspend_writes:
+            return
+        if event.type in _PROVENANCE_REFRESHING_EVENTS:
+            self._refresh_provenance()
+        if event.node_id != self._node_id:
             return
         if event.type == GraphEventType.NODE_STYLE_CHANGED:
             new_style = event.payload.get("new_style") or {}
@@ -1171,6 +1404,156 @@ class StyleDialog(tk.Toplevel):
                     )
         finally:
             self._suspend_writes = False
+
+    # ------------------------------------------------------------
+    # Phase 4ab (CS-53): Provenance tab
+    # ------------------------------------------------------------
+
+    def _build_provenance_tab(self, parent: tk.Widget) -> None:
+        """Build the read-only ancestor walk in the Provenance tab.
+
+        Decision (ii): eager construction at __init__. Decision (iii):
+        a single scrolling column hosted in a Canvas + Scrollbar pair
+        with an inner Frame for the per-ancestor blocks. The Canvas
+        gives us native vertical scrolling without a third-party
+        widget; the inner Frame's ``<Configure>`` event keeps the
+        Canvas's scrollregion synced as content height changes.
+
+        The blocks themselves are rendered by
+        ``_render_provenance_blocks`` so the same code path can fire
+        from ``_refresh_provenance`` after a graph event.
+        """
+        canvas = tk.Canvas(parent, highlightthickness=0)
+        scroll = ttk.Scrollbar(
+            parent, orient=tk.VERTICAL, command=canvas.yview,
+        )
+        canvas.configure(yscrollcommand=scroll.set)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scroll.pack(side=tk.RIGHT, fill=tk.Y)
+
+        inner = tk.Frame(canvas)
+        canvas.create_window((0, 0), window=inner, anchor="nw")
+
+        def _on_inner_config(_event=None, _c=canvas):
+            try:
+                _c.configure(scrollregion=_c.bbox("all"))
+            except tk.TclError:
+                pass
+        inner.bind("<Configure>", _on_inner_config)
+
+        self._provenance_canvas = canvas
+        self._provenance_inner = inner
+
+        self._render_provenance_blocks(inner)
+
+    def _render_provenance_blocks(self, container: tk.Widget) -> None:
+        """Render one block per ancestor in topological order.
+
+        Each block is a ``tk.Frame`` containing a header row (label ·
+        type · state badge) and, for OperationNodes, a body block
+        with params + engine + implementation hash. DataNodes have no
+        body block — their identifying information fits in the header
+        row.
+
+        DISCARDED ancestors render with the dimmed grey foreground
+        colour from ``_provenance_state_display`` (Decision (iv)) so
+        the user can see at a glance what was previously in the chain
+        without filtering them out.
+        """
+        try:
+            chain = self._graph.provenance_chain(self._node_id)
+        except KeyError:
+            chain = []
+
+        if not chain:
+            tk.Label(
+                container, text="(no ancestors)", padx=12, pady=8,
+                fg="#888888",
+            ).pack(anchor="w")
+            return
+
+        for idx, ancestor in enumerate(chain):
+            summary = _format_provenance_node_summary(ancestor)
+            block = tk.Frame(container, padx=12, pady=6)
+            block.pack(fill=tk.X, anchor="w")
+
+            # ── Header: label · [type] · · state ─────────────────
+            header = tk.Frame(block)
+            header.pack(fill=tk.X, anchor="w")
+            tk.Label(
+                header, text=summary["label"], font=("", 10, "bold"),
+                fg=summary["state_colour"],
+            ).pack(side=tk.LEFT)
+            # For data nodes, show the NodeType after the label since
+            # the label is user-set and the type is metadata. For ops
+            # the label IS the type (with mode discriminator), so a
+            # second type row would be redundant.
+            if summary["kind"] == "data" and summary["type_text"]:
+                tk.Label(
+                    header, text=f"  [{summary['type_text']}]",
+                    font=("", 9), fg="#666666",
+                ).pack(side=tk.LEFT)
+            if summary["state_text"]:
+                tk.Label(
+                    header, text=f"  · {summary['state_text']}",
+                    font=("", 9), fg=summary["state_colour"],
+                ).pack(side=tk.LEFT)
+
+            # ── Body: params + engine + hash (OperationNodes only) ─
+            if summary["kind"] == "op":
+                body_lines: list[str] = []
+                params_text = summary["params_text"]
+                body_lines.append(params_text or "(no params)")
+                if summary["engine_text"]:
+                    body_lines.append(
+                        f"engine: {summary['engine_text']}"
+                    )
+                if summary["hash_text"]:
+                    body_lines.append(
+                        f"hash:   {summary['hash_text']}"
+                    )
+                tk.Label(
+                    block, text="\n".join(body_lines),
+                    justify=tk.LEFT, font=("Courier", 8),
+                    fg=summary["state_colour"], anchor="w",
+                ).pack(fill=tk.X, padx=(16, 0), anchor="w")
+
+            # ── Separator between blocks (not after the last) ─────
+            if idx < len(chain) - 1:
+                ttk.Separator(
+                    container, orient=tk.HORIZONTAL,
+                ).pack(fill=tk.X, pady=4, padx=12)
+
+    def _refresh_provenance(self) -> None:
+        """Rebuild the Provenance tab content from scratch.
+
+        Cheap: the ancestor walk is bounded by graph size and the
+        widget tree is small. Called from ``_on_graph_event`` for any
+        event in ``_PROVENANCE_REFRESHING_EVENTS``. The rebuild
+        writes nothing to the graph, so it can run with the
+        ``_suspend_writes`` guard at any value — but the caller still
+        gates it on the guard to skip rebuilds during the dialog's
+        own keystroke-driven label rename (cheap performance trade,
+        accepted in Phase 4ab).
+
+        Idempotent: a second call after a destroyed inner Frame is a
+        no-op; a stale ``_provenance_inner`` from a partially
+        constructed dialog (during ``__init__`` before the tab is
+        built) is also skipped.
+        """
+        inner = getattr(self, "_provenance_inner", None)
+        if inner is None:
+            return
+        try:
+            for child in list(inner.winfo_children()):
+                try:
+                    child.destroy()
+                except tk.TclError:
+                    pass
+            self._render_provenance_blocks(inner)
+        except tk.TclError:
+            # Dialog tearing down; refresh is a no-op.
+            return
 
     # ------------------------------------------------------------
     # Lifecycle

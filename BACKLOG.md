@@ -1658,9 +1658,9 @@ subsequent Phase 4 session.**
 | ⏳ | 🟢 | **Re-calibrate sash on first NODE_ADDED after construction (CS-47 follow-up, USER-CONFIRMED)** | Surfaced Phase 4w + user-confirmed. CS-47's `_calibrate_sidebar_width` fires once on `after_idle` after the tab is built, but at that point the graph is empty — `widest_label_pixel_width()` returns 0 and the sash falls through to `_SIDEBAR_MIN_WIDTH_PX = 240`. After the user loads a project (or imports files), longer labels appear but the sash isn't re-bumped (the `_sidebar_calibrated` flag has flipped True). User-acceptable trade-off — predictability beats opportunistic re-bumping for typical workflows — but a simple follow-up: subscribe to `GraphEvent.NODE_ADDED` and clear `_sidebar_calibrated` when the first DataNode appears (one-shot refresh on first content). **Lock decision needed:** does the re-bump fire for every load or only when the *current* widest label exceeds the previously-calibrated target? Defer until the missing re-bump is observed in real use |
 | ✅ | 🟢 | ~~**Measure actual row overhead instead of static `_label_overhead_px` estimate (CS-47 follow-up)**~~ ✅ Resolved in Phase 4z (CS-51). The width-aware `_label_overhead_px(width=…)` path now sums `_CELL_MIN_PX[c]` for the always-visible cells PLUS the optional cells revealed at `width` per `_RESPONSIVE_THRESHOLDS_PX`, eliminating the static-estimate drift for the optional-cell axis (the dominant source of error). The commit-cell (🔒, provisional only) drift remains as ≤ 22 px noise, but per-cell-vocabulary truth replaces the post-pack `winfo_reqwidth()` measurement that this entry originally proposed — same goal, simpler implementation, no Tk geometry coupling. Spirit honoured. |
 | ✅ | 🟡 | ~~**Loaded Spectra responsive layout drops the ✕ when the swatch reappears at intermediate widths (USER-FLAGGED)**~~ ✅ Resolved in Phase 4z (CS-51). Architecture (a) landed: `_label_overhead_px(width=…)` is now width-aware and sums the optional cells revealed at the current canvas width per CS-26's `_RESPONSIVE_THRESHOLDS_PX`. `_current_label_cap` forwards the canvas width into it, so the dynamic label cap shrinks the moment the swatch reappears at 240 px. CS-26 thresholds + `_label_char_capacity` signature unchanged (decision (iii) — no threshold-value relaxation). Cap recompute lifecycle unchanged (decision (ii) — every `_apply_responsive_layout` call). Calibration site unchanged (no-args path is byte-equivalent to Phase 4w). Pinned by `TestComputeLabelOverheadPx` / `TestVisibleOptionalCellsForWidth` / `TestLabelOverheadPxWidthAware` (19 pure tests) + `TestDynamicLabelCapWiringPhase4z` (5 integration tests). |
-| ⏳ | 🟡 | **StyleDialog must surface ALL node-table parameters (incl. label rename) + tighten organisation for scale (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4x (step 5 elicitation). Today the per-node StyleDialog (gear icon) covers the universal style schema (`color`, `linestyle`, `linewidth`, `alpha`, `visible`, `in_legend`, `fill`, `fill_alpha`) plus per-NodeType extensions (CS-05 + CS-36 `show_baseline_curve`). The user has flagged that as more parameters land (label rename gesture, plot_kind from the markers register entry, `y_axis` from carry-forward T, etc.), the dialog will become unwieldy without a re-organisation pass. **Architecture proposal (lock pending):** restructure the dialog around grouped sections — Appearance (color / swatch / linestyle / linewidth / alpha), Legend (in_legend, label-rename Entry), Fill (fill / fill_alpha), Per-type (show_baseline_curve, plot_kind, y_axis, …); each group is a `tk.LabelFrame` so the visual grouping is obvious. **First concrete add:** label-rename Entry — today the only path to rename a node is to double-click the row label in the sidebar (CS-33 `_begin_label_edit`); having it inside the StyleDialog mirrors how the user thinks about "node properties" and avoids competing for the gesture's attention. Cross-refs: CS-33 (label-edit machinery), CS-44 follow-up T (per-style `y_axis` row), the markers register entry above (plot_kind / marker / marker_size). **Lock decisions:** (i) does the dialog get a tabbed shape (Appearance / Provenance / Per-type) — pairs with the next register entry below — or stay single-pane with LabelFrame groupings? (ii) does the label-rename Entry surface a validation error inline (e.g. duplicate-label warning) or rely on the existing CS-33 rules? (iii) which existing widgets lift into per-type groupings vs stay universal? **Affected:** `style_dialog.py` (re-layout + new label-rename Entry), tests for the new section grouping + label-rename round-trip. Pairs with C and D below (same window). **Phase 4aa partial (CS-52):** the **first concrete add** (label-rename Entry) landed in the universal section at the top of the grid — `_build_label_row` builds a `tk.Entry` bound to a `StringVar` whose `trace_add('write')` callback commits each keystroke through the new `_write_label_partial` helper, which routes via `graph.set_label` (label is a top-level DataNode slot, not a style key). Lock decisions taken for the partial: (i) **deferred** — single-pane with the new "Label:" row at the top of the existing universal grid; the LabelFrame re-org + tabbed-shape question stays open and pairs with C and D below in a future combined intent; (ii) **no inline validation** — match CS-33's sidebar gesture, accept any string; (iii) **no widget lifts** — all existing universal rows preserve their relative order (the lock-relaxation reading of "rows + their order stay verbatim"). Companion plumbing: `_snapshot_label` mirrors the existing style snapshot; `_do_cancel` restores both; `_on_graph_event` handles `NODE_LABEL_CHANGED` for sibling-rename refresh + dialog-title update. 10 new integration tests (`TestStyleDialogLabelRename`). **Carry-forward:** the LabelFrame groupings + tabs question (lock decision (i) above) + the rest of the parameter-coverage list (plot_kind from the markers register entry; future per-NodeType rows). |
-| ⏳ | 🟡 | **Per-node parameter window: add a Provenance tab (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4x (step 5 elicitation). The right-sidebar's per-row history dropdown (the `▿` chevron next to the label, opens an ad-hoc list of "Op A → Op B → Op C") is intentionally compact — but the user has asked for a more detailed view that lives inside the gear-icon dialog as a second tab. The new tab would show: ancestor walk back to the RAW_FILE / multi-input source, full op params for each step (params dict pretty-printed), timestamps, engine + engine_version, implementation hash (CS-45), status, log excerpts (when populated). **Architecture proposal (lock pending):** convert the StyleDialog to a `ttk.Notebook` shape — Tab 1 "Style" (today's content, possibly re-organised per the previous register entry); Tab 2 "Provenance" (the new view). Reuses the same Toplevel + button row (Apply · ∀ Apply to All · Save · Cancel). The provenance tab is read-only this phase; the "add historical node" gesture lands as the separate register entry below (D). **Lock decisions:** (i) is the provenance tab populated lazily (on-tab-switch) or eagerly (at dialog construction)? (ii) does it scroll vertically as a single column, or render as a tree with expandable nodes? (iii) does it show DISCARDED ancestors (history-style) or filter them? **Affected:** `style_dialog.py` (Notebook restructure), graph-walk helper for the ancestor list (likely a new `ProjectGraph.ancestors_of(node_id)` method), tests for the tab construction + the ancestor walk. Pairs with B above (same dialog) and D below (same tab — D adds a gesture, this entry adds the read-only view) |
-| ⏳ | 🟡 | **"Add to graph" gesture from a node's Provenance tab (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4x (step 5 elicitation). Once C lands (read-only Provenance tab), the user has asked for an "Add to graph" gesture per ancestor — clicking it materialises the historical ancestor as a new live node in the same graph without re-loading from disk. Concrete use case: the user has a SMOOTHED node loaded; they realise they want to compare the smoothed result against the underlying RAW_FILE / UVVIS parent; today the only path is to either (a) un-discard the parent (if it was discarded) or (b) re-load the source file via the LOAD path (which creates a fresh UVVIS DataNode with a different id, breaks the existing graph linkage to the SMOOTHED descendant). The new gesture would walk the ancestor chain, find the requested historical node, flip its `active` flag back to True (if currently inactive) OR clone it as a new live node parented on the same source. **Architecture (lock pending):** (a) does the gesture flip the existing node's `active` flag (cheap; preserves graph identity; couples to the existing CS-22 `_spectrum_nodes` filter), OR clone the node as a new id (preserves the historical node's state but creates a graph-edge fork)? (b) what's the gesture — button per provenance row, right-click, drag-and-drop into the sidebar? (c) does it emit a NODE_ADDED event (clone path) or NODE_STYLE_CHANGED + a re-render trigger (active-flip path)? **Affected:** `style_dialog.py` (the new gesture in the Provenance tab), `graph.py` (a new `restore_ancestor` or similar helper, depending on which architecture lands), `uvvis_tab._refresh_shared_subjects` (re-runs after the gesture so the resurrected node appears in the combobox), tests for both architectures. Pairs with C above (the tab the gesture lives on) AND with the existing 🟡 Trash can register entry (Trash + this gesture overlap conceptually — both surface "previously hidden" nodes) |
+| ⏳ | 🟡 | **StyleDialog must surface ALL node-table parameters (incl. label rename) + tighten organisation for scale (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4x (step 5 elicitation). Today the per-node StyleDialog (gear icon) covers the universal style schema (`color`, `linestyle`, `linewidth`, `alpha`, `visible`, `in_legend`, `fill`, `fill_alpha`) plus per-NodeType extensions (CS-05 + CS-36 `show_baseline_curve`). The user has flagged that as more parameters land (label rename gesture, plot_kind from the markers register entry, `y_axis` from carry-forward T, etc.), the dialog will become unwieldy without a re-organisation pass. **Architecture proposal (lock pending):** restructure the dialog around grouped sections — Appearance (color / swatch / linestyle / linewidth / alpha), Legend (in_legend, label-rename Entry), Fill (fill / fill_alpha), Per-type (show_baseline_curve, plot_kind, y_axis, …); each group is a `tk.LabelFrame` so the visual grouping is obvious. **First concrete add:** label-rename Entry — today the only path to rename a node is to double-click the row label in the sidebar (CS-33 `_begin_label_edit`); having it inside the StyleDialog mirrors how the user thinks about "node properties" and avoids competing for the gesture's attention. Cross-refs: CS-33 (label-edit machinery), CS-44 follow-up T (per-style `y_axis` row), the markers register entry above (plot_kind / marker / marker_size). **Lock decisions:** (i) does the dialog get a tabbed shape (Appearance / Provenance / Per-type) — pairs with the next register entry below — or stay single-pane with LabelFrame groupings? (ii) does the label-rename Entry surface a validation error inline (e.g. duplicate-label warning) or rely on the existing CS-33 rules? (iii) which existing widgets lift into per-type groupings vs stay universal? **Affected:** `style_dialog.py` (re-layout + new label-rename Entry), tests for the new section grouping + label-rename round-trip. Pairs with C and D below (same window). **Phase 4aa partial (CS-52):** the **first concrete add** (label-rename Entry) landed in the universal section at the top of the grid — `_build_label_row` builds a `tk.Entry` bound to a `StringVar` whose `trace_add('write')` callback commits each keystroke through the new `_write_label_partial` helper, which routes via `graph.set_label` (label is a top-level DataNode slot, not a style key). Lock decisions taken for the partial: (i) **deferred** — single-pane with the new "Label:" row at the top of the existing universal grid; the LabelFrame re-org + tabbed-shape question stays open and pairs with C and D below in a future combined intent; (ii) **no inline validation** — match CS-33's sidebar gesture, accept any string; (iii) **no widget lifts** — all existing universal rows preserve their relative order (the lock-relaxation reading of "rows + their order stay verbatim"). Companion plumbing: `_snapshot_label` mirrors the existing style snapshot; `_do_cancel` restores both; `_on_graph_event` handles `NODE_LABEL_CHANGED` for sibling-rename refresh + dialog-title update. 10 new integration tests (`TestStyleDialogLabelRename`). **Carry-forward:** the LabelFrame groupings + tabs question (lock decision (i) above) + the rest of the parameter-coverage list (plot_kind from the markers register entry; future per-NodeType rows). **Phase 4ab partial (CS-53):** lock decision (i) **closed — tabbed shape**. The dialog body is now a `ttk.Notebook` with Tab 1 "Style" hosting today's universal + conditional sections verbatim (rows + relative ordering preserved per the CS-52 lock relaxation; only the parent widget changed) and Tab 2 "Provenance" (closes friction #3 below — see the ✅ next entry). Bottom Apply / ∀ / Save / Cancel row stays outside the Notebook so it's visible regardless of which tab is active. The LabelFrame groupings half of the original entry stays ⏳ — the universal rows could grow Identity / Appearance / Legend / Fill / Per-type LabelFrames inside Tab 1 once more parameters land (plot_kind from the markers entry, future per-NodeType rows). Lock decision (ii) and (iii) of the original entry remain as-is (no inline validation; no widget lifts). **Carry-forward narrowed to:** the LabelFrame groupings pass + the rest of the parameter-coverage list. |
+| ✅ | 🟡 | ~~**Per-node parameter window: add a Provenance tab (USER-FLAGGED)**~~ ✅ Resolved in Phase 4ab (CS-53). The dialog body is now a `ttk.Notebook`; Tab 2 "Provenance" walks `graph.provenance_chain(self._node_id)` and renders one block per ancestor (header: bold label · type · state badge; body for OperationNodes: pretty-printed sorted params, engine + version, 12-char-prefix truncated implementation hash with the `unregistered:` sentinel preserved through truncation). DISCARDED ancestors render unfiltered with dimmed grey foreground (`#888888`) per Phase 4ab Decision (iv) — the tab is a history view; filtering DISCARDED would defeat the point and pre-empt the "Add to graph" gesture (next entry below). Provenance content is eager-built at `__init__` (Decision (ii)); single scrolling column hosted in a `tk.Canvas` + `ttk.Scrollbar` pair (Decision (iii)). Read-only this phase — bottom button row scopes to the Style tab only. Graph-event refresh fires on `NODE_LABEL_CHANGED / NODE_DISCARDED / NODE_COMMITTED / NODE_ADDED / EDGE_ADDED` (`_PROVENANCE_REFRESHING_EVENTS` frozenset), gated by the existing `_suspend_writes` guard so the dialog's own keystroke-driven label rename does NOT rebuild Provenance per keystroke (perf trade-off; bottom-of-chain block briefly stale during typing). 24 new integration tests (`TestStyleDialogPhase4abNotebook` + `TestStyleDialogPhase4abProvenanceTab`) + 22 pure-helper tests (`TestStyleDialogPhase4abHelpers`). Reused `graph.provenance_chain` rather than introducing the originally proposed `ProjectGraph.ancestors_of` — same return shape, no `graph.py` change. Pairs with the next entry below (the "Add to graph" gesture is now unblocked since the Provenance tab is the surface it lives on). | USER-FLAGGED at end of Phase 4x (step 5 elicitation). The right-sidebar's per-row history dropdown (the `▿` chevron next to the label, opens an ad-hoc list of "Op A → Op B → Op C") is intentionally compact — but the user has asked for a more detailed view that lives inside the gear-icon dialog as a second tab. The new tab would show: ancestor walk back to the RAW_FILE / multi-input source, full op params for each step (params dict pretty-printed), timestamps, engine + engine_version, implementation hash (CS-45), status, log excerpts (when populated). **Architecture proposal (lock pending):** convert the StyleDialog to a `ttk.Notebook` shape — Tab 1 "Style" (today's content, possibly re-organised per the previous register entry); Tab 2 "Provenance" (the new view). Reuses the same Toplevel + button row (Apply · ∀ Apply to All · Save · Cancel). The provenance tab is read-only this phase; the "add historical node" gesture lands as the separate register entry below (D). **Lock decisions:** (i) is the provenance tab populated lazily (on-tab-switch) or eagerly (at dialog construction)? (ii) does it scroll vertically as a single column, or render as a tree with expandable nodes? (iii) does it show DISCARDED ancestors (history-style) or filter them? **Affected:** `style_dialog.py` (Notebook restructure), graph-walk helper for the ancestor list (likely a new `ProjectGraph.ancestors_of(node_id)` method), tests for the tab construction + the ancestor walk. Pairs with B above (same dialog) and D below (same tab — D adds a gesture, this entry adds the read-only view) |
+| ⏳ | 🟡 | **"Add to graph" gesture from a node's Provenance tab (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4x (step 5 elicitation). Once C lands (read-only Provenance tab), the user has asked for an "Add to graph" gesture per ancestor — clicking it materialises the historical ancestor as a new live node in the same graph without re-loading from disk. Concrete use case: the user has a SMOOTHED node loaded; they realise they want to compare the smoothed result against the underlying RAW_FILE / UVVIS parent; today the only path is to either (a) un-discard the parent (if it was discarded) or (b) re-load the source file via the LOAD path (which creates a fresh UVVIS DataNode with a different id, breaks the existing graph linkage to the SMOOTHED descendant). The new gesture would walk the ancestor chain, find the requested historical node, flip its `active` flag back to True (if currently inactive) OR clone it as a new live node parented on the same source. **Architecture (lock pending):** (a) does the gesture flip the existing node's `active` flag (cheap; preserves graph identity; couples to the existing CS-22 `_spectrum_nodes` filter), OR clone the node as a new id (preserves the historical node's state but creates a graph-edge fork)? (b) what's the gesture — button per provenance row, right-click, drag-and-drop into the sidebar? (c) does it emit a NODE_ADDED event (clone path) or NODE_STYLE_CHANGED + a re-render trigger (active-flip path)? **Affected:** `style_dialog.py` (the new gesture in the Provenance tab), `graph.py` (a new `restore_ancestor` or similar helper, depending on which architecture lands), `uvvis_tab._refresh_shared_subjects` (re-runs after the gesture so the resurrected node appears in the combobox), tests for both architectures. Pairs with C above (the tab the gesture lives on) AND with the existing 🟡 Trash can register entry (Trash + this gesture overlap conceptually — both surface "previously hidden" nodes). **Phase 4ab unblocks:** the Provenance tab landed (CS-53; entry above marked ✅), so this register entry is now actionable. The tab's per-ancestor block already carries the structural slot (header + body Frame) where a per-row "Add to graph" button would naturally fit — bottom-right of each block, parented to the same Frame the body Label uses. Decision (a) (active-flip vs clone) and Decision (c) (which graph event to emit) still need locking when the implementing session opens. |
 | ⏳ | 🟢 | **Visual cue for derivative entries in the shared subject combobox (CS-49 follow-up)** | Surfaced Phase 4x (Claude). Now that `SECOND_DERIVATIVE` rows mix into the shared combobox alongside the four spectrum-shaped types (`_refresh_shared_subjects` widening), the user has no per-row glyph or grouping divider to tell at a glance "this is a derivative" vs "this is an absorbance-domain spectrum". Cheap polish: prefix derivative entries with a `d² ` glyph in the combobox display key (or insert a `─── d²A/dλ² ───` separator entry between the spectrum block and the derivative block). The latter is more disruptive (changes the value-list semantics — the separator can't be selected); the former is one-line in `_refresh_shared_subjects`. Defer until the user reports actual confusion picking among mixed entries; the audit-stability test `test_shared_combobox_orders_spectrum_then_derivative` already pins the spectrum-first ordering so visual scanning is at least left-to-right consistent |
 
 ### Friction points carried forward from Phase 4r
@@ -2347,9 +2347,16 @@ Phase 4 session.**
    Entry shipped (CS-52, see register entry); the LabelFrame
    re-org + tabbed-shape lock question (decision (i)) stays
    open as the carry-forward — the canonical entry above is
-   still ⏳, narrower in scope.
+   still ⏳, narrower in scope. ~~**Phase 4ab partial (CS-53):**
+   the tabbed-shape half of decision (i) closed — the dialog
+   body is now a `ttk.Notebook` with Tab 1 "Style" hosting
+   today's universal + conditional sections verbatim and
+   Tab 2 "Provenance" hosting the read-only ancestor walk
+   (closes friction #3 below). The LabelFrame groupings
+   half stays open; cross-ref carry-forward narrowed in the
+   register entry above.~~
 
-3. 🟡 **Per-node parameter window: add a Provenance tab
+3. ~~🟡 **Per-node parameter window: add a Provenance tab
    (USER-FLAGGED).** User has asked for a more detailed
    provenance view than the right-sidebar's per-row history
    dropdown — second tab inside the StyleDialog, showing
@@ -2357,7 +2364,13 @@ Phase 4 session.**
    op params per step, timestamps, engine + version,
    implementation hash (CS-45), status. **Cross-ref:** see the
    new register entry above. Pairs with #2 above (same dialog)
-   and #4 below (same tab).
+   and #4 below (same tab).~~ ✅ Resolved in Phase 4ab (CS-53).
+   Tab 2 "Provenance" lands as a Canvas + Scrollbar pair with
+   one block per ancestor; DISCARDED ancestors render dimmed
+   grey (#888888) rather than filtered (Decision (iv)). Eager
+   construction at `__init__`; refreshes on the five
+   `_PROVENANCE_REFRESHING_EVENTS` graph events. 24 integration
+   tests + 22 pure-helper tests pinning the contract.
 
 4. 🟡 **"Add to graph" gesture from a node's Provenance tab
    (USER-FLAGGED).** Once #3 lands, the user has asked for a
@@ -2368,7 +2381,12 @@ Phase 4 session.**
    existing graph linkage. **Cross-ref:** see the new register
    entry above. Pairs with #3 above (same tab) and the open 🟡
    Trash can register entry (both surface "previously hidden"
-   nodes).
+   nodes). **Phase 4ab unblocks:** #3 landed; this entry is now
+   actionable — the per-ancestor block already has a structural
+   slot (parented to the same Frame the body Label uses) where
+   the new button fits cleanly. Lock decisions (a) active-flip
+   vs clone and (c) which graph event still need taking when
+   the implementing session opens.
 
 5. 🟢 **Visual cue for derivative entries in the shared
    subject combobox (CS-49 follow-up).** Surfaced by Claude.
@@ -2569,6 +2587,98 @@ Phase 4 session.**
    the residual portion of the now-✅ Phase 4w friction #6
    that wasn't addressed by the per-cell-vocabulary path.
 
+### Friction points carried forward from Phase 4ab
+
+These are concrete obstacles the next Phase 4 session will hit.
+Identified during Phase 4ab while landing the StyleDialog
+Notebook restructure + Provenance tab (CS-53) — closing
+Phase 4x friction #3 (USER-FLAGGED) in full and the
+tabbed-shape half of Phase 4x friction #2's lock decision (i).
+All six items below are Claude-surfaced 🟢 polish notes flagged
+during step 5; the user invoked `/loop continue Phase 4ab` as
+the step 5 answer (no new items elicited). **Do not fix until
+the relevant subsequent Phase 4 session.**
+
+1. 🟢 **Mouse-wheel scrolling not bound to the Provenance Canvas
+   (Claude-surfaced).** Standard tkinter Canvas+Scrollbar pattern
+   — wheel events do not auto-route to the Canvas's `yview_scroll`.
+   The user has to drag the scrollbar manually for long ancestor
+   chains (or has no scrolling at all if their input device lacks
+   a draggable scrollbar surface). Cheap one-liner fix in
+   `_build_provenance_tab`: `canvas.bind_all("<MouseWheel>", lambda
+   e: canvas.yview_scroll(int(-1*(e.delta/120)), "units"))`. The
+   `bind_all` vs `bind` decision matters — `bind_all` lets the
+   wheel scroll regardless of widget focus, but it also captures
+   wheel events anywhere in the dialog (including over the Style
+   tab's sliders, where wheel events should change slider value).
+   A safer scoped binding is `canvas.bind("<Enter>", _bind_wheel)`
+   + `canvas.bind("<Leave>", _unbind_wheel)`. Defer until the user
+   actually hits a long enough chain to need it.
+
+2. 🟢 **Implementation hash truncated to 12 chars with no way to
+   see the full digest (Claude-surfaced).** A user investigating
+   a project-load hash mismatch warning needs the full 64-char
+   sha256 to compare against persisted manifests, but the
+   Provenance tab only shows the prefix. Cheap polish: hover
+   tooltip via `tooltip.Tooltip` (CS-42) showing the full hash;
+   click-to-copy via `dlg.clipboard_clear() + clipboard_append`.
+   Defer until the user reports a real verification workflow
+   that needs the full digest.
+
+3. 🟢 **OperationNode block does not show parent input_ids
+   (Claude-surfaced).** For multi-input ops (AVERAGE / DIFFERENCE)
+   the visual association of "which two parents combined into
+   this op" is implicit in the topo sort — the user has to count
+   blocks above the op and trust the order. Adding a `parents:
+   [id-a, id-b]` line to the body block would make multi-input
+   forks obvious. The block already has the structural slot (the
+   Courier body Label). Defer until AVERAGE / DIFFERENCE op land
+   and the user actually sees a multi-input fork in their
+   workflow — current single-parent chains don't motivate the
+   change.
+
+4. 🟢 **Self-keystroke rename leaves the Provenance bottom-of-
+   chain block stale during typing (Claude-surfaced).** The
+   `_on_graph_event` `_suspend_writes` guard skips
+   `_refresh_provenance` for events the dialog itself fires; the
+   trade-off accepted in Phase 4ab is "stale display during
+   typing" over "rebuild Provenance on every keystroke". A user
+   who notices might be confused. A cheap targeted fix lives in
+   `_refresh_label`: after pushing the new label into the Entry
+   (under `_suspend_writes=True`), also call `_refresh_provenance`
+   directly so the bottom-of-chain block updates without the full
+   guard-bypass. This special-cases the dialog's own node label
+   without affecting the keystroke perf trade for everything else.
+   Defer until a user reports the staleness as confusing.
+
+5. 🟢 **Provenance refresh fires for graph events on any node,
+   not just ancestors of the dialog's own node (Claude-surfaced).**
+   For a graph with many disjoint chains the dialog rebuilds its
+   tab on label changes / state changes / node adds for nodes
+   that aren't even in the displayed walk. Per-rebuild cost is
+   small (BFS bounded by graph size; widget tree of a few dozen
+   widgets), so this hasn't been observed as a problem. Cheap
+   optimisation: cache the ancestor-id set at construction time
+   in `self._ancestor_ids: frozenset[str]`, refresh it inside
+   `_render_provenance_blocks` after each rebuild, and gate the
+   refresh in `_on_graph_event` on `event.node_id in
+   self._ancestor_ids`. Defer until measurable.
+
+6. 🟢 **No "as of" / "last updated" indicator on the Provenance
+   tab (Claude-surfaced).** If a project loads via `restore_workflow_payload`
+   (CS-46) or a graph mutates while the dialog is closed,
+   Provenance content updates only when the dialog re-opens. No
+   visible cue tells the user "this view was last refreshed at
+   HH:MM:SS" — they have to trust that the rebuild fired on
+   `GRAPH_LOADED` (it doesn't currently — that event is not in
+   `_PROVENANCE_REFRESHING_EVENTS`). Two-part fix when this
+   matters: (a) add `GRAPH_LOADED` to the refreshing-events set;
+   (b) add a small "as of HH:MM:SS" Label below the per-ancestor
+   blocks. Defer until persistence-driven workflows surface the
+   inconsistency in real use.
+
+---
+
 ### Friction points carried forward from Phase 4aa
 
 These are concrete obstacles the next Phase 4 session will hit.
@@ -2581,7 +2691,7 @@ new register entries (the user explicitly accepted no new items
 at step 5). **Do not fix until the relevant subsequent Phase 4
 session.**
 
-1. 🟢 **"Tighten organisation for scale" half of Phase 4x
+1. ~~🟢 **"Tighten organisation for scale" half of Phase 4x
    friction #2 stays open (Claude-surfaced).** Phase 4aa
    landed only the "first concrete add" — the label-rename
    Entry. The LabelFrame re-org pass (Appearance / Legend /
@@ -2593,7 +2703,15 @@ session.**
    + "Add to graph" gesture) in a future intent — all three
    live in the same window and the tabbed-shape question is
    the natural pivot. **Cross-ref:** Phase 4x friction #2 + #3
-   + #4 canonical register entries above.
+   + #4 canonical register entries above.~~ ✅ Partly resolved
+   in Phase 4ab (CS-53). The tabbed-shape half of lock
+   decision (i) closed — `ttk.Notebook` with Style + Provenance
+   tabs landed (closes Phase 4x friction #3 in full). The
+   LabelFrame groupings half is still ⏳ but is no longer
+   coupled to the pivot question — the Notebook restructure is
+   independent of any future Identity / Appearance / Legend /
+   Fill grouping pass. Carry-forward narrowed; canonical entry
+   above (Phase 4x friction #2) carries the remaining scope.
 
 2. 🟢 **Live-trace label commits = `NODE_LABEL_CHANGED` per
    keystroke (Claude-surfaced).** The Phase 4aa label-rename
@@ -2869,7 +2987,7 @@ the resolving phase + commit SHA appended to the row.
 
 ---
 
-*Document version: 1.26 — May 2026*
+*Document version: 1.27 — May 2026*
 *1.1: Known Bugs register added 2026-04-27 after Phase 4b manual testing.*
 *1.2: Phase 4c — baseline correction lands; B-001 / B-003 / B-004
 resolved; Phase 4c friction points logged.*
@@ -3371,4 +3489,54 @@ open; Cancel always re-emits snapshot label. 832 tests, all
 green (805 + 27 new: 2 in TestStyleDialogPhase4aaConstants + 15
 in TestStyleDialogYAxisVisibility + 10 in
 TestStyleDialogLabelRename).*
+*1.27: Phase 4ab — StyleDialog Notebook restructure + Provenance
+tab (CS-53). Closes Phase 4x friction #3 (USER-FLAGGED "Per-node
+parameter window: add a Provenance tab") in full plus the
+"tabbed shape" half of Phase 4x friction #2's lock decision (i).
+Dialog body becomes a `ttk.Notebook` with Tab 1 "Style" hosting
+today's universal + conditional sections verbatim (rows + relative
+ordering preserved per the CS-52 lock relaxation; only the parent
+widget changes) and Tab 2 "Provenance" hosting the read-only
+ancestor walk. Bottom Apply / ∀ / Save / Cancel row stays outside
+the Notebook so it's visible regardless of which tab is active.
+Three new module-level constants — `_NOTEBOOK_TAB_TITLES` (tuple
+locking tab order); `_PROVENANCE_STATE_DISPLAY` (NodeState →
+display text + foreground colour with DISCARDED dimmed grey
+#888888); `_PROVENANCE_REFRESHING_EVENTS` (the five graph-event
+types that mutate the displayed walk: NODE_LABEL_CHANGED /
+NODE_DISCARDED / NODE_COMMITTED / NODE_ADDED / EDGE_ADDED). Three
+new pure helpers (`_provenance_state_display`,
+`_format_provenance_op_params`, `_format_provenance_node_summary`)
+reduce graph nodes to display strings — Tk-free, fully unit-
+tested. Provenance tab uses a Canvas + Scrollbar pair with an
+inner Frame; eager construction at `__init__` (Decision (ii));
+single scrolling column (Decision (iii)). Each per-ancestor block
+carries a header (bold label · type · state badge) plus, for
+OperationNodes, a Courier body block with pretty-printed sorted
+params, engine + version, and a 12-char-prefix truncated
+implementation hash; the `unregistered:` sentinel from CS-45
+survives truncation as an explicit suffix marker. DISCARDED
+ancestors render unfiltered with the dimmed foreground (Decision
+(iv)). `_on_graph_event` restructured to run a Provenance rebuild
+before the existing same-node early-return; the `_suspend_writes`
+guard still gates BOTH halves so the dialog's own keystroke-driven
+label rename does NOT rebuild Provenance per keystroke (perf
+trade-off; bottom-of-chain block briefly stale during typing).
+`graph.provenance_chain` reused as the ancestor walk source — no
+`graph.py` change. Phase 4x friction #3 register entry marked ✅;
+Phase 4x friction #4 ("Add to graph" gesture) now unblocked;
+Phase 4x friction #2 register entry's "tabbed shape" half closed,
+LabelFrame groupings half stays carry-forward. Phase 4aa friction
+#1 marked ~~struck through~~ ✅ Partly resolved (the tabbed-shape
+half — LabelFrame groupings half stays carry-forward, narrowed in
+scope). Six new Claude-surfaced 🟢 friction items captured at
+step 5 without new register entries (user invoked /loop continue
+as the step 5 answer): mouse-wheel scrolling not bound to
+Provenance Canvas; implementation hash truncation opaque; op-node
+parents not shown; self-keystroke leaves bottom-of-chain stale;
+refresh fires for any node not just ancestors; no "as of"
+indicator. 878 tests, all green (832 + 46 new: 22 pure-module
+helpers in `TestStyleDialogPhase4abHelpers` + 9 Notebook structure
+in `TestStyleDialogPhase4abNotebook` + 15 Provenance tab in
+`TestStyleDialogPhase4abProvenanceTab`).*
 *Supersedes: BACKLOG.md (original)*
