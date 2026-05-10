@@ -1437,5 +1437,277 @@ class TestStyleDialogPhase4aaConstants(unittest.TestCase):
         )
 
 
+class TestStyleDialogPhase4abHelpers(unittest.TestCase):
+    """Phase 4ab pure-module helper coverage (Notebook restructure +
+    Provenance tab).
+
+    Not Tk-gated — the helpers operate on plain dataclasses and return
+    strings + dicts, so they test cleanly in any environment that can
+    import the project. This class pins the contract the integration
+    tests downstream rely on.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import style_dialog
+        from nodes import (
+            DataNode, NodeState, NodeType, OperationNode, OperationType,
+        )
+        cls.sd = style_dialog
+        cls.DataNode = DataNode
+        cls.NodeState = NodeState
+        cls.NodeType = NodeType
+        cls.OperationNode = OperationNode
+        cls.OperationType = OperationType
+
+    # ---- _NOTEBOOK_TAB_TITLES ------------------------------------------
+
+    def test_notebook_tab_titles_shape(self):
+        # Pin the exact tuple — Style first (default-active) and
+        # Provenance second per Phase 4ab Decision (vii). Reordering
+        # would change the default tab on dialog open, regressing UX.
+        self.assertEqual(
+            self.sd._NOTEBOOK_TAB_TITLES, ("Style", "Provenance"),
+        )
+
+    def test_notebook_tab_titles_is_tuple(self):
+        # Pin the type so a future "convert to list" refactor must be
+        # deliberate (mutating tab order at runtime is a footgun).
+        self.assertIsInstance(self.sd._NOTEBOOK_TAB_TITLES, tuple)
+
+    # ---- _provenance_state_display -------------------------------------
+
+    def test_state_display_table_covers_every_state(self):
+        # Every NodeState variant must have a table entry; the
+        # defensive fallback is for forward-compat only and should
+        # never fire today. This pin catches a future "add a new
+        # NodeState" without a matching display entry.
+        for state in self.NodeState:
+            self.assertIn(state, self.sd._PROVENANCE_STATE_DISPLAY)
+
+    def test_state_display_provisional(self):
+        text, colour = self.sd._provenance_state_display(
+            self.NodeState.PROVISIONAL,
+        )
+        self.assertEqual(text, "provisional")
+        self.assertEqual(colour, "#444444")
+
+    def test_state_display_committed(self):
+        text, colour = self.sd._provenance_state_display(
+            self.NodeState.COMMITTED,
+        )
+        self.assertEqual(text, "committed")
+        # Dark green for committed — visually distinct from
+        # provisional/discarded without competing with the ∀
+        # Apply-to-All button's bright green.
+        self.assertEqual(colour, "#004400")
+
+    def test_state_display_discarded_is_dimmed(self):
+        text, colour = self.sd._provenance_state_display(
+            self.NodeState.DISCARDED,
+        )
+        self.assertEqual(text, "discarded")
+        # Phase 4ab Decision (iv): DISCARDED renders dimmed grey so
+        # the user sees what was previously in the chain at a glance.
+        self.assertEqual(colour, "#888888")
+
+    def test_state_display_unknown_falls_back(self):
+        # Defensive fallback: an enum-like object whose name is not
+        # in the table should not crash. Use a sentinel that mimics
+        # the NodeState contract (.name attribute) without belonging
+        # to the enum.
+        class _FakeState:
+            name = "FUTURE"
+        text, colour = self.sd._provenance_state_display(_FakeState())
+        # Lower-cased name + default grey foreground.
+        self.assertEqual(text, "future")
+        self.assertEqual(colour, "#444444")
+
+    # ---- _format_provenance_op_params ----------------------------------
+
+    def test_format_op_params_empty_returns_blank(self):
+        # Blank string lets the caller render an "(no params)"
+        # placeholder rather than an awkward empty Frame.
+        self.assertEqual(self.sd._format_provenance_op_params({}), "")
+        self.assertEqual(self.sd._format_provenance_op_params(None), "")
+
+    def test_format_op_params_sorted_by_key(self):
+        # Sorted-by-key for deterministic output across runs (matters
+        # for the test pin and for reproducible screenshots).
+        out = self.sd._format_provenance_op_params(
+            {"zeta": 1, "alpha": 2, "mode": "linear"},
+        )
+        lines = out.split("\n")
+        self.assertEqual(lines[0], "alpha: 2")
+        self.assertEqual(lines[1], "mode: 'linear'")
+        self.assertEqual(lines[2], "zeta: 1")
+
+    def test_format_op_params_uses_repr_for_strings(self):
+        # repr(value) is preferred over str(value) so strings get
+        # quoted (distinguishing the literal "5" from the int 5).
+        out = self.sd._format_provenance_op_params({"key": "value"})
+        self.assertEqual(out, "key: 'value'")
+
+    def test_format_op_params_handles_nested_structures(self):
+        # Nested dicts / lists pass through repr so the user sees
+        # exactly what got persisted.
+        out = self.sd._format_provenance_op_params(
+            {"window": [3, 5, 7], "fit": {"a": 1.0}},
+        )
+        self.assertIn("window: [3, 5, 7]", out)
+        self.assertIn("fit: {'a': 1.0}", out)
+
+    # ---- _format_provenance_node_summary: DataNode ---------------------
+
+    def _data(self, **kwargs):
+        return self.DataNode(
+            id=kwargs.get("id", "dnode-1"),
+            type=kwargs.get("type", self.NodeType.UVVIS),
+            arrays={},
+            metadata={},
+            label=kwargs.get("label", "Sample-A"),
+            state=kwargs.get("state", self.NodeState.PROVISIONAL),
+        )
+
+    def test_summary_data_node_basic(self):
+        out = self.sd._format_provenance_node_summary(
+            self._data(id="abc", label="Sample-A",
+                       type=self.NodeType.UVVIS),
+        )
+        self.assertEqual(out["kind"], "data")
+        self.assertEqual(out["id"], "abc")
+        self.assertEqual(out["label"], "Sample-A")
+        self.assertEqual(out["type_text"], "UVVIS")
+        self.assertEqual(out["state_text"], "provisional")
+        self.assertEqual(out["state_colour"], "#444444")
+        self.assertEqual(out["params_text"], "")
+        self.assertEqual(out["hash_text"], "")
+        self.assertEqual(out["engine_text"], "")
+
+    def test_summary_data_node_committed_uses_committed_colour(self):
+        out = self.sd._format_provenance_node_summary(
+            self._data(state=self.NodeState.COMMITTED),
+        )
+        self.assertEqual(out["state_text"], "committed")
+        self.assertEqual(out["state_colour"], "#004400")
+
+    def test_summary_data_node_discarded_is_dimmed(self):
+        out = self.sd._format_provenance_node_summary(
+            self._data(state=self.NodeState.DISCARDED),
+        )
+        # Phase 4ab Decision (iv) — DISCARDED ancestors still render
+        # but with the dimmed grey foreground.
+        self.assertEqual(out["state_text"], "discarded")
+        self.assertEqual(out["state_colour"], "#888888")
+
+    # ---- _format_provenance_node_summary: OperationNode ----------------
+
+    def _op(self, **kwargs):
+        return self.OperationNode(
+            id=kwargs.get("id", "op-1"),
+            type=kwargs.get("type", self.OperationType.NORMALISE),
+            engine=kwargs.get("engine", "ptarmigan"),
+            engine_version=kwargs.get("engine_version", "1.0"),
+            params=kwargs.get("params", {}),
+            input_ids=kwargs.get("input_ids", []),
+            output_ids=kwargs.get("output_ids", []),
+            state=kwargs.get("state", self.NodeState.PROVISIONAL),
+            metadata=kwargs.get("metadata", {}),
+        )
+
+    def test_summary_op_node_basic(self):
+        out = self.sd._format_provenance_node_summary(
+            self._op(
+                id="op-x",
+                type=self.OperationType.NORMALISE,
+                engine="ptarmigan",
+                engine_version="1.2",
+                params={"mode": "peak"},
+            ),
+        )
+        self.assertEqual(out["kind"], "op")
+        self.assertEqual(out["id"], "op-x")
+        # type_text folds the params["mode"] discriminator in.
+        self.assertEqual(out["type_text"], "NORMALISE / peak")
+        # OperationNode has no user-label slot; label tracks type.
+        self.assertEqual(out["label"], "NORMALISE / peak")
+        self.assertEqual(out["state_text"], "provisional")
+        self.assertEqual(out["params_text"], "mode: 'peak'")
+        self.assertEqual(out["engine_text"], "ptarmigan v1.2")
+
+    def test_summary_op_node_no_mode_keeps_bare_type(self):
+        # Op types without a "mode" discriminator (LOAD, AVERAGE, …)
+        # render with the bare enum name — no trailing "/".
+        out = self.sd._format_provenance_node_summary(
+            self._op(type=self.OperationType.LOAD, params={}),
+        )
+        self.assertEqual(out["type_text"], "LOAD")
+        self.assertEqual(out["params_text"], "")
+
+    def test_summary_op_node_implementation_hash_truncated(self):
+        # Real implementation_hash strings are 64 hex chars (sha256);
+        # the helper truncates to a 12-char prefix + ellipsis so the
+        # UI doesn't get swallowed by the hash. Pinning the prefix
+        # length pins the display contract.
+        long_hash = "a" * 64
+        out = self.sd._format_provenance_node_summary(
+            self._op(metadata={"implementation_hash": long_hash}),
+        )
+        # 12-char prefix + "…" suffix.
+        self.assertEqual(out["hash_text"], "a" * 12 + "…")
+
+    def test_summary_op_node_unregistered_hash_keeps_marker(self):
+        # The "unregistered:" sentinel from operation_hash.py must
+        # survive truncation visibly so the user can tell at a glance
+        # the hash is a placeholder rather than a real digest.
+        sentinel = "unregistered:NORMALISE/" + "a" * 16
+        out = self.sd._format_provenance_node_summary(
+            self._op(metadata={"implementation_hash": sentinel}),
+        )
+        # 24-char prefix + "… (unregistered)" suffix.
+        self.assertTrue(
+            out["hash_text"].endswith(" (unregistered)"),
+            f"unregistered marker missing: {out['hash_text']!r}",
+        )
+        self.assertTrue(out["hash_text"].startswith(sentinel[:24]))
+
+    def test_summary_op_node_no_hash_renders_blank(self):
+        # OperationNodes whose metadata lacks implementation_hash
+        # (legacy projects, in-flight ops) render with no hash row —
+        # the integration tab uses the empty string as the "hide
+        # this row" signal.
+        out = self.sd._format_provenance_node_summary(
+            self._op(metadata={}),
+        )
+        self.assertEqual(out["hash_text"], "")
+
+    def test_summary_op_node_no_engine_version(self):
+        # An op with engine but no engine_version renders just the
+        # engine name (no trailing " v").
+        out = self.sd._format_provenance_node_summary(
+            self._op(engine="larch", engine_version=""),
+        )
+        self.assertEqual(out["engine_text"], "larch")
+
+    def test_summary_op_node_no_engine_renders_blank(self):
+        out = self.sd._format_provenance_node_summary(
+            self._op(engine="", engine_version=""),
+        )
+        self.assertEqual(out["engine_text"], "")
+
+    def test_summary_unknown_object_does_not_crash(self):
+        # Defensive fallback for a future node variant or a stale
+        # cached graph. The helper must not raise; it returns the
+        # repr() in the label slot so the user sees *something*.
+        class _Stranger:
+            id = "stranger-1"
+            def __repr__(self):
+                return "<Stranger>"
+        out = self.sd._format_provenance_node_summary(_Stranger())
+        self.assertEqual(out["kind"], "unknown")
+        self.assertEqual(out["id"], "stranger-1")
+        self.assertEqual(out["label"], "<Stranger>")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
