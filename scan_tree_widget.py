@@ -212,17 +212,15 @@ _LABEL_MAX_CHARS: int = 32
 _LABEL_CHAR_FLOOR: int = 8
 _LABEL_CHAR_CEIL: int = 64
 
-# Phase 4r (CS-35): visual nesting indent for sweep-group members
-# rendered inline below an expanded leader (CS-32). The leader row
-# is packed flush at ``padx=2``; member rows are packed at
-# ``padx=(2 + _SWEEP_MEMBER_INDENT_PX, 2)`` so the user sees that
-# the variants belong to the group above. One indent step is enough
-# to distinguish the relationship without crowding the row content
-# (each member is itself a full-chrome row with its own ``[~]``
-# / ``☑`` / label / right-side button cluster). The indent is a
-# pack-arg pass-through and does not change ``_expanded_sweep_groups``
-# or ``_toggle_sweep_group`` — CS-32's flip-and-rebuild contract is
-# preserved.
+# Phase 4r (CS-35): visual nesting indent for member rows that render
+# below a parent / group leader. Phase 4ac (CS-54) removed the
+# automatic sweep-grouping of PROVISIONAL siblings (CS-32) — every
+# DataNode now renders as its own standalone row regardless of
+# whether siblings share an op_type. The constant + ``indent_px``
+# kwarg on ``_build_node_row`` survive Phase 4ac because Phase 4ad's
+# user-driven ``NODE_GROUP`` container (deferred register entry) will
+# reuse the same pack-arg pass-through to nest its members under the
+# group row.
 _SWEEP_MEMBER_INDENT_PX: int = 16
 
 
@@ -385,34 +383,6 @@ def _make_predicate(node_filter: NodeFilter) -> Callable[[DataNode], bool]:
 
 
 # =====================================================================
-# Sweep group detection
-# =====================================================================
-
-def _datanode_parents(
-    graph: ProjectGraph, node_id: str,
-) -> list[str]:
-    """Return DataNode ancestor ids reachable through any OperationNode hops.
-
-    A DataNode's *graph* parents are the OperationNodes that produced
-    it. Walk one hop further up to reach the input DataNodes. For
-    sweep grouping we care about which input DataNodes a candidate
-    derived from, not which operation produced it.
-    """
-    direct_parents = graph.parents_of(node_id)
-    out: list[str] = []
-    for pid in direct_parents:
-        node = graph.get_node(pid)
-        if isinstance(node, DataNode):
-            out.append(pid)
-        elif isinstance(node, OperationNode):
-            for grandparent in graph.parents_of(pid):
-                gp_node = graph.get_node(grandparent)
-                if isinstance(gp_node, DataNode):
-                    out.append(grandparent)
-    return out
-
-
-# =====================================================================
 # Widget
 # =====================================================================
 
@@ -452,27 +422,10 @@ class ScanTreeWidget(tk.Frame):
         # View state.
         self._show_hidden = tk.BooleanVar(value=False)
         self._expanded_history: set[str] = set()
-        # Sweep groups whose members render inline below the leader row
-        # (Phase 4q CS-32). Keyed by parent DataNode id, mirroring
-        # ``_sweep_groups``. Persists across rebuilds — a graph event
-        # that triggers a full rebuild does not collapse the user's
-        # current expansion state. Entries auto-evict when the group
-        # dissolves: ``_compute_sweep_groups`` only returns groups
-        # with ≥2 members, so committing or discarding a member down
-        # to 1 makes the parent_id absent from the next rebuild's
-        # ``_sweep_groups`` dict and the chevron disappears with the
-        # leader row. Stale entries in this set become harmless no-ops.
-        self._expanded_sweep_groups: set[str] = set()
         # node_id → tk.Frame for the row (top-level, not history sub-frame).
         self._row_frames: dict[str, tk.Frame] = {}
         # node_id → tk.Frame for the history sub-frame (if expanded).
         self._history_frames: dict[str, tk.Frame] = {}
-        # Sweep group key (parent DataNode id) → list of member ids.
-        # Recomputed every full rebuild.
-        self._sweep_groups: dict[str, list[str]] = {}
-        # Set of node ids currently rendered as the *leader* of a sweep
-        # group (to avoid creating a separate row for the same node).
-        self._sweep_leaders: set[str] = set()
         # Per-row optional controls indexed by node id, used by the
         # responsive layout helper (B-002 + Phase 4n CS-26). Each
         # entry maps a name ("swatch", "leg", "ls_canvas") to the
@@ -629,37 +582,6 @@ class ScanTreeWidget(tk.Frame):
             out.append(node)
         return out
 
-    def _compute_sweep_groups(
-        self, candidates: Sequence[DataNode],
-    ) -> tuple[dict[str, list[str]], set[str]]:
-        """Identify sweep groups among the visible candidates.
-
-        A sweep group is 2+ PROVISIONAL DataNodes that share a single
-        DataNode parent. Returns ``({parent_id: [member_ids]},
-        {ids that are members of any group})``. The member set is
-        used to suppress per-row entries for grouped nodes; the
-        leader (lexicographically smallest id, for determinism)
-        renders the group row.
-        """
-        cand_ids = {n.id for n in candidates}
-        # Map each candidate's "data parent" to that candidate.
-        by_parent: dict[str, list[str]] = {}
-        for n in candidates:
-            if n.state != NodeState.PROVISIONAL:
-                continue
-            parents = _datanode_parents(self._graph, n.id)
-            for pid in parents:
-                by_parent.setdefault(pid, []).append(n.id)
-
-        groups: dict[str, list[str]] = {}
-        members: set[str] = set()
-        for pid, kids in by_parent.items():
-            kids_visible = [k for k in kids if k in cand_ids]
-            if len(kids_visible) >= 2:
-                groups[pid] = sorted(kids_visible)
-                members.update(kids_visible)
-        return groups, members
-
     # ------------------------------------------------------------
     # Rebuild
     # ------------------------------------------------------------
@@ -668,9 +590,8 @@ class ScanTreeWidget(tk.Frame):
         """Tear down and recreate every row from the current graph.
 
         Cheaper paths exist (insert one row, remove one row) but a
-        full rebuild keeps sweep grouping coherent and is fast enough
-        for the dataset counts this widget is designed for (tens, not
-        thousands).
+        full rebuild is fast enough for the dataset counts this
+        widget is designed for (tens, not thousands).
         """
         for child in list(self._rows_frame.winfo_children()):
             child.destroy()
@@ -678,54 +599,8 @@ class ScanTreeWidget(tk.Frame):
         self._history_frames.clear()
         self._optional_row_widgets.clear()
 
-        candidates = self._candidate_nodes()
-        self._sweep_groups, self._sweep_leaders = (
-            self._compute_sweep_groups(candidates)
-        )
-
-        rendered_for_group: set[str] = set()
-        for node in candidates:
-            if node.id in self._sweep_leaders:
-                # Each group renders exactly once, on its first member.
-                # Identify the group this id belongs to.
-                group_key = self._group_key_of(node.id)
-                if group_key in rendered_for_group:
-                    continue
-                rendered_for_group.add(group_key)
-                self._build_sweep_row(group_key)
-                # Phase 4q (CS-32): if this group is expanded, render
-                # each member inline below the leader as a full-chrome
-                # row. The members route through ``_build_node_row``
-                # → ``_populate_node_row`` so they pick up the
-                # provisional-row 🔒 commit button (CS-34) plus every
-                # other regular row affordance. Order matches
-                # ``_compute_sweep_groups``'s ``sorted(...)`` for
-                # determinism.
-                if group_key in self._expanded_sweep_groups:
-                    for member_id in self._sweep_groups.get(group_key, []):
-                        try:
-                            member_node = self._graph.get_node(member_id)
-                        except KeyError:
-                            continue
-                        if isinstance(member_node, DataNode):
-                            # Phase 4r (CS-35): visual nesting under the
-                            # leader. Each member is still a full-chrome
-                            # row; only the row frame's left padding
-                            # shifts.
-                            self._build_node_row(
-                                member_node,
-                                indent_px=_SWEEP_MEMBER_INDENT_PX,
-                            )
-            else:
-                self._build_node_row(node)
-
-    def _group_key_of(self, node_id: str) -> str:
-        """Return the parent DataNode id that defines this node's group."""
-        for parent_id, members in self._sweep_groups.items():
-            if node_id in members:
-                return parent_id
-        # Defensive default — shouldn't reach here when called via _rebuild.
-        return node_id
+        for node in self._candidate_nodes():
+            self._build_node_row(node)
 
     # ------------------------------------------------------------
     # Per-row construction
@@ -1288,104 +1163,6 @@ class ScanTreeWidget(tk.Frame):
                     pass
 
     # ------------------------------------------------------------
-    # Sweep group row
-    # ------------------------------------------------------------
-
-    def _build_sweep_row(self, parent_id: str) -> None:
-        """Build a single collapsed row for a sweep group.
-
-        Phase 4q (CS-32) added the chevron expand toggle. The row
-        shows ``▸`` (collapsed) or ``▾`` (expanded), parent label,
-        variant count, and the bulk-discard ``✕all`` gesture. When
-        expanded, ``_rebuild`` renders each member inline below this
-        leader row as a full-chrome row (re-using
-        ``_populate_node_row``), so per-variant commit / discard /
-        style is reachable without leaving the right sidebar.
-        Expansion state lives in ``self._expanded_sweep_groups``
-        keyed by parent_id, and survives every rebuild.
-        """
-        members = self._sweep_groups.get(parent_id, [])
-        if not members:
-            return
-
-        row = tk.Frame(self._rows_frame)
-        row.pack(side="top", fill="x", padx=2, pady=1)
-        # Reuse the leader's row frame for refresh dispatch.
-        leader_id = members[0]
-        self._row_frames[leader_id] = row
-
-        try:
-            parent_node = self._graph.get_node(parent_id)
-            parent_label_full = (parent_node.label
-                                 if isinstance(parent_node, DataNode)
-                                 else parent_id)
-        except KeyError:
-            parent_label_full = parent_id
-
-        # Chevron toggle (replaces the previous ``⋯`` state Label).
-        # Click flips the parent_id's presence in
-        # ``_expanded_sweep_groups`` and triggers a rebuild — that's
-        # the same path every state mutation uses, and it keeps
-        # member-row construction in one place
-        # (``_rebuild``), avoiding duplicated logic between the
-        # initial render and the toggle.
-        is_expanded = parent_id in self._expanded_sweep_groups
-        chevron_text = "▾" if is_expanded else "▸"
-        chevron_btn = tk.Button(
-            row, text=chevron_text, width=2,
-            relief=tk.FLAT, cursor="hand2",
-            command=lambda pid=parent_id: self._toggle_sweep_group(pid),
-        )
-        chevron_btn.pack(side="left")
-
-        # Parent label is also subject to truncation — same long-chain
-        # problem as regular rows (Phase 4q CS-33 / Phase 4p friction
-        # #3). Tooltip carries the full text only when truncation
-        # actually cut it. Phase 4w (CS-47) reads the cap from the
-        # current canvas width like the regular-row path does.
-        cap = self._current_label_cap()
-        truncated = _truncate_label(parent_label_full, max_chars=cap)
-        leader_text = (
-            f"{truncated} "
-            f"· sweep ({len(members)} variants)"
-        )
-        leader_lbl = tk.Label(row, text=leader_text, anchor="w")
-        leader_lbl.pack(side="left", fill="x", expand=True, padx=(2, 4))
-        if truncated != parent_label_full:
-            Tooltip(
-                leader_lbl,
-                f"{parent_label_full} · sweep ({len(members)} variants)",
-            )
-
-        tk.Button(
-            row, text="✕all", relief=tk.FLAT, cursor="hand2",
-            command=lambda ids=tuple(members): self._discard_many(ids),
-        ).pack(side="right", padx=(2, 0))
-
-    def _toggle_sweep_group(self, parent_id: str) -> None:
-        """Flip a sweep group's expansion state and rebuild.
-
-        Phase 4q (CS-32). Membership in ``_expanded_sweep_groups``
-        determines whether ``_rebuild`` renders the group's members
-        inline. Toggling routes through ``_rebuild`` rather than
-        an in-place edit so the chevron glyph + member rows are
-        kept consistent without separate update paths.
-        """
-        if parent_id in self._expanded_sweep_groups:
-            self._expanded_sweep_groups.discard(parent_id)
-        else:
-            self._expanded_sweep_groups.add(parent_id)
-        self._rebuild()
-
-    def _discard_many(self, node_ids: Iterable[str]) -> None:
-        for nid in node_ids:
-            try:
-                self._graph.discard_node(nid)
-            except (KeyError, ValueError):
-                # Sibling already discarded or removed: ignore.
-                continue
-
-    # ------------------------------------------------------------
     # Linestyle canvas
     # ------------------------------------------------------------
 
@@ -1815,12 +1592,6 @@ class ScanTreeWidget(tk.Frame):
             self._rebuild()
             return
         if not isinstance(node, DataNode):
-            return
-        # If this id is part of a sweep group leader row, the row
-        # holds aggregate content, not per-node — easier to rebuild.
-        if any(node_id in members
-               for members in self._sweep_groups.values()):
-            self._rebuild()
             return
         self._populate_node_row(row, node)
 
