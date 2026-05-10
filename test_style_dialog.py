@@ -1437,6 +1437,613 @@ class TestStyleDialogPhase4aaConstants(unittest.TestCase):
         )
 
 
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestStyleDialogPhase4abNotebook(unittest.TestCase):
+    """Phase 4ab — Notebook restructure (CS-53).
+
+    Pins the Notebook shape introduced when wrapping the universal +
+    conditional sections in a ``ttk.Notebook`` Tab 1 "Style" alongside
+    a new Tab 2 "Provenance". The shape is the lock relaxation
+    granted to CS-52 by Phase 4ab; the existing universal-section
+    rows + their relative ordering must continue to be reachable
+    through the Style tab.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import style_dialog
+        cls.style_dialog = style_dialog
+        cls.StyleDialog = style_dialog.StyleDialog
+
+    def setUp(self):
+        self.style_dialog._open_dialogs.clear()
+        self.host = tk.Frame(_root)
+        self.graph = ProjectGraph()
+
+    def tearDown(self):
+        for dlg in list(self.style_dialog._open_dialogs.values()):
+            try:
+                dlg.destroy()
+            except Exception:
+                pass
+        self.style_dialog._open_dialogs.clear()
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    def _open(self, ntype: NodeType = NodeType.UVVIS):
+        self.graph.add_node(_data("a", ntype))
+        dlg = self.StyleDialog(self.host, self.graph, "a")
+        dlg.update_idletasks()
+        return dlg
+
+    # ---- Notebook structure ----
+
+    def test_dialog_has_notebook_with_two_tabs(self):
+        dlg = self._open()
+        from tkinter import ttk
+        self.assertIsInstance(dlg._notebook, ttk.Notebook)
+        # Two tabs: Style + Provenance.
+        tabs = dlg._notebook.tabs()
+        self.assertEqual(len(tabs), 2)
+
+    def test_notebook_tab_titles_match_constant(self):
+        dlg = self._open()
+        titles = [
+            dlg._notebook.tab(t, "text") for t in dlg._notebook.tabs()
+        ]
+        self.assertEqual(
+            tuple(titles), self.style_dialog._NOTEBOOK_TAB_TITLES,
+        )
+
+    def test_style_tab_is_default_active(self):
+        # Phase 4ab Decision (vii): clicking the gear icon takes the
+        # user straight to Style controls — Provenance is opt-in.
+        dlg = self._open()
+        active = dlg._notebook.tab(dlg._notebook.select(), "text")
+        self.assertEqual(active, "Style")
+
+    def test_style_tab_hosts_universal_section_widgets(self):
+        # The universal-section rows must be reachable via the Style
+        # tab. _control_vars["color"] etc. are populated by the
+        # universal section builder — finding them confirms the
+        # builder ran against style_tab.
+        dlg = self._open()
+        for key in ("color", "linestyle", "linewidth", "alpha",
+                    "fill", "fill_alpha", "visible", "in_legend",
+                    "label"):
+            self.assertIn(key, dlg._control_vars)
+
+    def test_universal_section_rows_descend_from_style_tab(self):
+        # Walk the Style tab subtree and assert at least one widget
+        # carrying a known "Line style:" label is present. The
+        # recursive walk pattern matches the pre-CS-53
+        # _section_titles helper used by TestStyleDialogConditionalSections.
+        dlg = self._open()
+        seen_texts: list[str] = []
+        def walk(w):
+            for c in w.winfo_children():
+                if isinstance(c, tk.Label):
+                    try:
+                        seen_texts.append(c.cget("text"))
+                    except tk.TclError:
+                        pass
+                walk(c)
+        walk(dlg._style_tab)
+        # The "Line style:" label is a stable identifier of the
+        # universal section being built into the Style tab.
+        self.assertIn("Line style:", seen_texts)
+        # The "Label:" row from CS-52 is also there.
+        self.assertIn("Label:", seen_texts)
+
+    def test_conditional_sections_descend_from_style_tab(self):
+        # XANES gets a "Markers" LabelFrame; that LabelFrame must be
+        # under the Style tab, not the Provenance tab.
+        self.graph.add_node(_data("a", NodeType.XANES))
+        dlg = self.StyleDialog(self.host, self.graph, "a")
+        dlg.update_idletasks()
+
+        def find_markers_under(root):
+            for c in root.winfo_children():
+                if (isinstance(c, tk.LabelFrame)
+                        and c.cget("text") == "Markers"):
+                    return c
+                found = find_markers_under(c)
+                if found is not None:
+                    return found
+            return None
+
+        # Markers is reachable from style_tab.
+        self.assertIsNotNone(find_markers_under(dlg._style_tab))
+        # But NOT from provenance_tab.
+        self.assertIsNone(find_markers_under(dlg._provenance_tab))
+
+    def test_button_row_outside_notebook(self):
+        # The bottom Apply/∀/Save/Cancel row must remain a direct
+        # child of the Toplevel so it's visible regardless of which
+        # tab is active (Decision (v)). Walk dlg.winfo_children() —
+        # the row's container packs onto self.
+        dlg = self._open()
+        # _apply_btn lives somewhere in the dialog; its parent must
+        # NOT be a descendant of the Notebook.
+        notebook_descendants: set[int] = set()
+        def collect(w):
+            notebook_descendants.add(id(w))
+            for c in w.winfo_children():
+                collect(c)
+        collect(dlg._notebook)
+        self.assertNotIn(
+            id(dlg._apply_btn.master), notebook_descendants,
+            "Bottom button row must not live inside the Notebook",
+        )
+
+    # ---- Existing CS-05 behaviour preserved (regression) ----
+
+    def test_external_set_style_still_refreshes_widgets(self):
+        # Regression: NODE_STYLE_CHANGED on the dialog's own node
+        # still refreshes the universal-section controls after the
+        # Notebook restructure.
+        self.graph.add_node(_data("a", style={"linewidth": 1.0}))
+        dlg = self.StyleDialog(self.host, self.graph, "a")
+        dlg.update_idletasks()
+
+        self.graph.set_style("a", {"linewidth": 3.5})
+        dlg.update_idletasks()
+
+        self.assertAlmostEqual(
+            dlg._control_vars["linewidth"].get(), 3.5,
+        )
+
+    def test_cancel_still_reverts_label_and_style(self):
+        # Regression for CS-52 + CS-05 — Cancel must still revert
+        # both the label snapshot and the style snapshot after the
+        # Notebook restructure.
+        self.graph.add_node(_data(
+            "a", style={"linewidth": 1.0, "color": "#ff0000"},
+            label="initial",
+        ))
+        dlg = self.StyleDialog(self.host, self.graph, "a")
+        dlg.update_idletasks()
+
+        # Mutate both via the dialog.
+        dlg._control_vars["linewidth"].set(4.5)
+        dlg._control_vars["label"].set("renamed")
+        dlg.update_idletasks()
+
+        self.assertAlmostEqual(
+            self.graph.get_node("a").style["linewidth"], 4.5,
+        )
+        self.assertEqual(self.graph.get_node("a").label, "renamed")
+
+        dlg._do_cancel()
+
+        # Both reverted.
+        node = self.graph.get_node("a")
+        self.assertAlmostEqual(node.style["linewidth"], 1.0)
+        self.assertEqual(node.label, "initial")
+
+
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestStyleDialogPhase4abProvenanceTab(unittest.TestCase):
+    """Phase 4ab — Provenance tab content + graph-event refresh.
+
+    Closes the user-flagged Phase 4x friction #3 register entry
+    "Per-node parameter window: add a Provenance tab". The tab is
+    read-only this phase — the "Add to graph" gesture (Phase 4x
+    friction #4) is a separate register entry that depends on this
+    one landing first.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import style_dialog
+        from nodes import OperationNode, OperationType
+        cls.style_dialog = style_dialog
+        cls.StyleDialog = style_dialog.StyleDialog
+        cls.OperationNode = OperationNode
+        cls.OperationType = OperationType
+
+    def setUp(self):
+        self.style_dialog._open_dialogs.clear()
+        self.host = tk.Frame(_root)
+        self.graph = ProjectGraph()
+
+    def tearDown(self):
+        for dlg in list(self.style_dialog._open_dialogs.values()):
+            try:
+                dlg.destroy()
+            except Exception:
+                pass
+        self.style_dialog._open_dialogs.clear()
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    @staticmethod
+    def _all_text_labels(root) -> list[str]:
+        out: list[str] = []
+        def walk(w):
+            for c in w.winfo_children():
+                if isinstance(c, tk.Label):
+                    try:
+                        out.append(c.cget("text"))
+                    except tk.TclError:
+                        pass
+                walk(c)
+        walk(root)
+        return out
+
+    @staticmethod
+    def _label_fg_pairs(root) -> list[tuple[str, str]]:
+        out: list[tuple[str, str]] = []
+        def walk(w):
+            for c in w.winfo_children():
+                if isinstance(c, tk.Label):
+                    try:
+                        out.append((c.cget("text"), c.cget("fg")))
+                    except tk.TclError:
+                        pass
+                walk(c)
+        walk(root)
+        return out
+
+    def _data(self, nid, ntype=NodeType.UVVIS,
+              state=NodeState.PROVISIONAL, label=None):
+        return DataNode(
+            id=nid, type=ntype,
+            arrays={"x": np.arange(3)}, metadata={},
+            label=label or nid, state=state,
+        )
+
+    def _op(self, nid, op_type, params=None, engine="ptarmigan",
+            engine_version="1.0", state=NodeState.PROVISIONAL,
+            metadata=None, input_ids=None, output_ids=None):
+        return self.OperationNode(
+            id=nid, type=op_type, engine=engine,
+            engine_version=engine_version,
+            params=params or {},
+            input_ids=input_ids or [],
+            output_ids=output_ids or [],
+            state=state,
+            metadata=metadata or {},
+        )
+
+    # ---- Provenance tab structure ----
+
+    def test_provenance_tab_canvas_exists(self):
+        self.graph.add_node(self._data("a"))
+        dlg = self.StyleDialog(self.host, self.graph, "a")
+        dlg.update_idletasks()
+        # Canvas + inner Frame attributes set by _build_provenance_tab.
+        self.assertIsInstance(dlg._provenance_canvas, tk.Canvas)
+        self.assertIsInstance(dlg._provenance_inner, tk.Frame)
+
+    def test_single_node_chain_renders_one_block(self):
+        # A node with no parents has a one-element provenance chain
+        # (just itself). The Provenance tab renders one block.
+        self.graph.add_node(self._data("a", label="Alpha"))
+        dlg = self.StyleDialog(self.host, self.graph, "a")
+        dlg.update_idletasks()
+        labels = self._all_text_labels(dlg._provenance_inner)
+        # "Alpha" label appears in the rendered chain.
+        self.assertTrue(
+            any("Alpha" in t for t in labels),
+            f"Alpha not in rendered labels: {labels}",
+        )
+
+    def test_chain_renders_in_topological_order(self):
+        # Build: raw -> op_norm -> normalised
+        # provenance_chain ordering: raw, op_norm, normalised.
+        self.graph.add_node(self._data(
+            "raw", NodeType.RAW_FILE, label="RawFile",
+        ))
+        self.graph.add_node(self._op(
+            "op-1", self.OperationType.NORMALISE,
+            params={"mode": "peak"}, input_ids=["raw"],
+            output_ids=["norm"],
+        ))
+        self.graph.add_node(self._data(
+            "norm", NodeType.NORMALISED, label="Normalised",
+        ))
+        self.graph.add_edge("raw", "op-1")
+        self.graph.add_edge("op-1", "norm")
+
+        dlg = self.StyleDialog(self.host, self.graph, "norm")
+        dlg.update_idletasks()
+        labels = self._all_text_labels(dlg._provenance_inner)
+        joined = " | ".join(labels)
+        # Order: RawFile precedes NORMALISE, NORMALISE precedes
+        # Normalised in the rendered text.
+        i_raw = joined.find("RawFile")
+        i_op = joined.find("NORMALISE")
+        i_norm = joined.find("Normalised")
+        self.assertGreaterEqual(i_raw, 0)
+        self.assertGreaterEqual(i_op, i_raw)
+        self.assertGreaterEqual(i_norm, i_op)
+
+    def test_op_node_block_shows_params_and_engine(self):
+        self.graph.add_node(self._data("raw", NodeType.RAW_FILE))
+        self.graph.add_node(self._op(
+            "op-1", self.OperationType.NORMALISE,
+            params={"mode": "peak", "lo": 250.0},
+            engine="ptarmigan", engine_version="1.4",
+            input_ids=["raw"], output_ids=["norm"],
+        ))
+        self.graph.add_node(self._data("norm", NodeType.NORMALISED))
+        self.graph.add_edge("raw", "op-1")
+        self.graph.add_edge("op-1", "norm")
+
+        dlg = self.StyleDialog(self.host, self.graph, "norm")
+        dlg.update_idletasks()
+        labels_text = " | ".join(
+            self._all_text_labels(dlg._provenance_inner),
+        )
+        # Params line shows mode + lo.
+        self.assertIn("mode: 'peak'", labels_text)
+        self.assertIn("lo: 250.0", labels_text)
+        # Engine line shows engine + version.
+        self.assertIn("ptarmigan v1.4", labels_text)
+
+    def test_op_node_with_no_params_shows_placeholder(self):
+        self.graph.add_node(self._data("raw", NodeType.RAW_FILE))
+        self.graph.add_node(self._op(
+            "op-1", self.OperationType.LOAD,
+            params={}, input_ids=[], output_ids=["raw"],
+        ))
+        self.graph.add_edge("op-1", "raw")
+        dlg = self.StyleDialog(self.host, self.graph, "raw")
+        dlg.update_idletasks()
+        labels_text = " | ".join(
+            self._all_text_labels(dlg._provenance_inner),
+        )
+        self.assertIn("(no params)", labels_text)
+
+    def test_op_node_block_shows_truncated_hash(self):
+        long_hash = "f" * 64
+        self.graph.add_node(self._data("raw", NodeType.RAW_FILE))
+        self.graph.add_node(self._op(
+            "op-1", self.OperationType.NORMALISE,
+            params={"mode": "peak"}, input_ids=["raw"],
+            output_ids=["norm"],
+            metadata={"implementation_hash": long_hash},
+        ))
+        self.graph.add_node(self._data("norm", NodeType.NORMALISED))
+        self.graph.add_edge("raw", "op-1")
+        self.graph.add_edge("op-1", "norm")
+
+        dlg = self.StyleDialog(self.host, self.graph, "norm")
+        dlg.update_idletasks()
+        labels_text = " | ".join(
+            self._all_text_labels(dlg._provenance_inner),
+        )
+        # 12-char prefix + ellipsis appears in the hash row.
+        self.assertIn("f" * 12 + "…", labels_text)
+        # Full 64-char hash does NOT appear (truncated for display).
+        self.assertNotIn("f" * 64, labels_text)
+
+    # ---- DISCARDED dimming (Decision (iv)) ----
+
+    def test_discarded_ancestor_renders_dimmed(self):
+        # Ancestor with state=DISCARDED renders with the dimmed grey
+        # foreground colour from _PROVENANCE_STATE_DISPLAY.
+        self.graph.add_node(self._data(
+            "raw", NodeType.RAW_FILE, label="DiscardedRaw",
+            state=NodeState.DISCARDED,
+        ))
+        self.graph.add_node(self._data("norm", NodeType.NORMALISED))
+        self.graph.add_edge("raw", "norm")
+
+        dlg = self.StyleDialog(self.host, self.graph, "norm")
+        dlg.update_idletasks()
+        pairs = self._label_fg_pairs(dlg._provenance_inner)
+        # Find the DiscardedRaw header label and check its fg.
+        discarded_pair = next(
+            (p for p in pairs if p[0] == "DiscardedRaw"),
+            None,
+        )
+        self.assertIsNotNone(
+            discarded_pair,
+            f"DiscardedRaw not rendered: {pairs}",
+        )
+        # Phase 4ab Decision (iv) — DISCARDED is grey #888888.
+        self.assertEqual(discarded_pair[1], "#888888")
+
+    def test_discarded_state_badge_text_present(self):
+        self.graph.add_node(self._data(
+            "raw", NodeType.RAW_FILE,
+            state=NodeState.DISCARDED,
+        ))
+        dlg = self.StyleDialog(self.host, self.graph, "raw")
+        dlg.update_idletasks()
+        labels_text = " | ".join(
+            self._all_text_labels(dlg._provenance_inner),
+        )
+        self.assertIn("discarded", labels_text)
+
+    # ---- Graph-event refresh ----
+
+    def test_label_change_refreshes_provenance(self):
+        # An ancestor rename refreshes the Provenance tab so the new
+        # label appears in the rendered block.
+        self.graph.add_node(self._data(
+            "raw", NodeType.RAW_FILE, label="OriginalName",
+        ))
+        self.graph.add_node(self._data("norm", NodeType.NORMALISED))
+        self.graph.add_edge("raw", "norm")
+
+        dlg = self.StyleDialog(self.host, self.graph, "norm")
+        dlg.update_idletasks()
+        # Initial render shows "OriginalName".
+        before = " | ".join(
+            self._all_text_labels(dlg._provenance_inner),
+        )
+        self.assertIn("OriginalName", before)
+
+        # Rename the ancestor (sibling gesture from another open
+        # dialog or the sidebar).
+        self.graph.set_label("raw", "RenamedAncestor")
+        dlg.update_idletasks()
+
+        after = " | ".join(
+            self._all_text_labels(dlg._provenance_inner),
+        )
+        self.assertIn("RenamedAncestor", after)
+        self.assertNotIn("OriginalName", after)
+
+    def test_discard_ancestor_refreshes_dimming(self):
+        # Discarding an ancestor flips its state and the per-block
+        # foreground from PROVISIONAL grey to DISCARDED grey
+        # (#444444 → #888888).
+        self.graph.add_node(self._data(
+            "raw", NodeType.RAW_FILE, label="WillBeDiscarded",
+        ))
+        self.graph.add_node(self._data("norm", NodeType.NORMALISED))
+        self.graph.add_edge("raw", "norm")
+
+        dlg = self.StyleDialog(self.host, self.graph, "norm")
+        dlg.update_idletasks()
+
+        # Initial: raw is PROVISIONAL → fg #444444.
+        pairs_before = self._label_fg_pairs(dlg._provenance_inner)
+        before_pair = next(
+            (p for p in pairs_before if p[0] == "WillBeDiscarded"),
+            None,
+        )
+        self.assertIsNotNone(before_pair)
+        self.assertEqual(before_pair[1], "#444444")
+
+        # Discard.
+        self.graph.discard_node("raw")
+        dlg.update_idletasks()
+
+        # After: same label, fg now #888888.
+        pairs_after = self._label_fg_pairs(dlg._provenance_inner)
+        after_pair = next(
+            (p for p in pairs_after if p[0] == "WillBeDiscarded"),
+            None,
+        )
+        self.assertIsNotNone(after_pair)
+        self.assertEqual(after_pair[1], "#888888")
+
+    def test_commit_ancestor_refreshes_state_badge(self):
+        # Committing an ancestor flips its state and refreshes the
+        # state badge text from "provisional" to "committed".
+        self.graph.add_node(self._data("raw", NodeType.RAW_FILE))
+        self.graph.add_node(self._data("norm", NodeType.NORMALISED))
+        self.graph.add_edge("raw", "norm")
+
+        dlg = self.StyleDialog(self.host, self.graph, "norm")
+        dlg.update_idletasks()
+
+        text_before = " | ".join(
+            self._all_text_labels(dlg._provenance_inner),
+        )
+        self.assertIn("provisional", text_before)
+
+        self.graph.commit_node("raw")
+        dlg.update_idletasks()
+
+        text_after = " | ".join(
+            self._all_text_labels(dlg._provenance_inner),
+        )
+        self.assertIn("committed", text_after)
+
+    def test_style_change_does_not_refresh_provenance(self):
+        # NODE_STYLE_CHANGED is intentionally absent from
+        # _PROVENANCE_REFRESHING_EVENTS — Provenance does not show
+        # styles, so a style change is wasted work. Spy on
+        # _refresh_provenance and confirm it isn't called.
+        self.graph.add_node(self._data("a"))
+        dlg = self.StyleDialog(self.host, self.graph, "a")
+        dlg.update_idletasks()
+
+        called = [0]
+        original = dlg._refresh_provenance
+        def spy():
+            called[0] += 1
+            original()
+        dlg._refresh_provenance = spy
+
+        # External style change.
+        self.graph.set_style("a", {"linewidth": 4.0})
+        dlg.update_idletasks()
+
+        self.assertEqual(
+            called[0], 0,
+            "NODE_STYLE_CHANGED must not trigger a Provenance "
+            "rebuild",
+        )
+
+    def test_self_keystroke_rename_skips_provenance_rebuild(self):
+        # The dialog's own _write_label_partial sets _suspend_writes,
+        # so the resulting NODE_LABEL_CHANGED is ignored by the
+        # handler — no Provenance rebuild during the dialog's own
+        # typing session (perf trade-off accepted in Phase 4ab).
+        self.graph.add_node(self._data("a", label="start"))
+        dlg = self.StyleDialog(self.host, self.graph, "a")
+        dlg.update_idletasks()
+
+        called = [0]
+        original = dlg._refresh_provenance
+        def spy():
+            called[0] += 1
+            original()
+        dlg._refresh_provenance = spy
+
+        # Simulate a keystroke through the Label entry.
+        dlg._control_vars["label"].set("typed")
+        dlg.update_idletasks()
+
+        self.assertEqual(
+            called[0], 0,
+            "Self-write through _write_label_partial must not "
+            "rebuild Provenance",
+        )
+
+    def test_external_rename_does_rebuild_provenance(self):
+        # By contrast: an EXTERNAL rename (sibling dialog / sidebar)
+        # triggers a Provenance rebuild. Pinning the contrast with
+        # the test above so the perf-trade gate's both halves stay
+        # honoured.
+        self.graph.add_node(self._data("a", label="start"))
+        dlg = self.StyleDialog(self.host, self.graph, "a")
+        dlg.update_idletasks()
+
+        called = [0]
+        original = dlg._refresh_provenance
+        def spy():
+            called[0] += 1
+            original()
+        dlg._refresh_provenance = spy
+
+        # External rename — _suspend_writes is False on this dialog.
+        self.graph.set_label("a", "external-rename")
+        dlg.update_idletasks()
+
+        self.assertGreaterEqual(
+            called[0], 1,
+            "External NODE_LABEL_CHANGED must trigger a Provenance "
+            "rebuild",
+        )
+
+    def test_provenance_refreshing_events_membership(self):
+        # Pin the membership table — drift would silently change
+        # which graph mutations refresh the Provenance tab.
+        from graph import GraphEventType
+        self.assertEqual(
+            self.style_dialog._PROVENANCE_REFRESHING_EVENTS,
+            frozenset({
+                GraphEventType.NODE_LABEL_CHANGED,
+                GraphEventType.NODE_DISCARDED,
+                GraphEventType.NODE_COMMITTED,
+                GraphEventType.NODE_ADDED,
+                GraphEventType.EDGE_ADDED,
+            }),
+        )
+
+
 class TestStyleDialogPhase4abHelpers(unittest.TestCase):
     """Phase 4ab pure-module helper coverage (Notebook restructure +
     Provenance tab).
