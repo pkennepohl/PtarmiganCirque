@@ -3487,6 +3487,15 @@ are preserved.
 
 ## CS-31 — Suppress identical re-applies (Phase 4p)
 
+> **⚠️ Reverted in Phase 4ac (CS-54).** This section documents the
+> historical CS-31 contract; the implementation was removed in
+> Phase 4ac after the user flagged its dedup gate as workflow-
+> blocking. `ProjectGraph.find_provisional_op_with_params` no
+> longer exists; every UV/Vis apply site now creates a fresh node
+> on identical-param re-applies. See CS-54 below for the removal
+> rationale + the carry-forward Phase 4ad intent (user-driven
+> `NodeType.NODE_GROUP` container).
+
 Architecturally, the right-side ScanTreeWidget collapses two or
 more PROVISIONAL DataNode siblings sharing one parent into a
 single sweep-group leader row (CS-04 §6.3). The
@@ -3598,6 +3607,18 @@ remains ⏳ as the obvious primary intent for the next phase.
 ---
 
 ## CS-32 — Sweep group inline expansion (Phase 4q)
+
+> **⚠️ Reverted in Phase 4ac (CS-54).** This section documents the
+> historical CS-32 contract; the implementation was removed in
+> Phase 4ac alongside CS-31. The auto-grouping rule ("≥2
+> PROVISIONAL siblings sharing one DataNode parent") collapsed
+> nodes the user wanted to act on; CS-54 drops it entirely so
+> identical re-applies render as standalone full-chrome rows.
+> The replacement — user-driven `NodeType.NODE_GROUP` containers
+> + a "Combine selected → Group" gesture — is the carry-forward
+> Phase 4ad intent. CS-35's `_SWEEP_MEMBER_INDENT_PX` constant +
+> `_build_node_row(indent_px=0)` kwarg signature survive Phase 4ac
+> for Phase 4ad reuse.
 
 CS-04 §6.3 sketched "Expanding shows all variants ranked by
 fit metric" but the Phase 2 implementation only delivered the
@@ -6447,7 +6468,147 @@ phase") explicitly.
 
 ---
 
-*Document version: 1.28 — May 2026*
+## CS-54 — Drop CS-31 dedup + CS-32 sweep auto-grouping (Phase 4ac)
+
+**Source files.** `graph.py` (one method removed); `scan_tree_widget.py`
+(one module-level helper removed, three fields removed from
+`__init__`, one method body simplified, six methods removed, one
+guard removed from `_refresh_row`); `uvvis_tab.py` +
+`uvvis_normalise.py` + `uvvis_smoothing.py` + `uvvis_peak_picking.py` +
+`uvvis_second_derivative.py` (one short-circuit + one status-message
+branch removed per file).
+
+**Purpose.** Closes parts (a) + (b) of the USER-FLAGGED Phase 4v
+friction #1 register entry — *"Drop CS-31 'no duplicate apply'
+check + introduce user-driven node groups"*. The user flagged the
+existing behaviour as workflow-blocking: CS-31's dedup gate
+(Phase 4p) silently refused to create a new node when the user
+re-applied the same operation with the same parameters, and
+CS-32's sweep auto-grouping (Phase 4q) collapsed every PROVISIONAL
+sibling sharing one (parent, op_type) into a single leader row
+with a chevron expand toggle. Together, the two contracts hid
+nodes the user wanted to act on. CS-54 removes both. Part (c) of
+the original architecture — the user-driven `NodeType.NODE_GROUP`
+container — is the carry-forward Phase 4ad intent.
+
+**Architecture.** Two orthogonal removals, both data-shape changes:
+
+1. **`graph.py`.** `ProjectGraph.find_provisional_op_with_params`
+   — the inverse of `_compute_sweep_groups`'s grouping rule —
+   removed. The five UV/Vis apply sites (`uvvis_tab._apply_baseline`,
+   `NormalisationPanel._apply`, `SmoothingPanel._apply`,
+   `PeakPickingPanel._apply`, `SecondDerivativePanel._apply`) lose
+   the `existing = self._graph.find_provisional_op_with_params(...)`
+   short-circuit + the matching `if existing is not None:` branch
+   that wrote a status message and returned `None`. Apply now
+   always proceeds to `compute()` and creates a fresh
+   OperationNode + child DataNode regardless of param-equality.
+   The companion error/validation paths (parameter parse errors,
+   parent-node sanity checks, post-compute messageboxes) stay
+   unchanged — only the dedup gate moves.
+2. **`scan_tree_widget.py`.** Removed: the module-level helper
+   `_datanode_parents`; the fields `_expanded_sweep_groups: set[str]`,
+   `_sweep_groups: dict[str, list[str]]`, `_sweep_leaders: set[str]`
+   from `__init__`; the methods `_compute_sweep_groups`,
+   `_group_key_of`, `_build_sweep_row`, `_toggle_sweep_group`,
+   `_discard_many` (the bulk-discard helper that only the sweep-
+   leader row's `✕all` button called); the `if any(node_id in
+   members for members in self._sweep_groups.values()):` guard in
+   `_refresh_row`. `_rebuild` simplifies to a straight iteration
+   over `_candidate_nodes()` → `_build_node_row(node)` for every
+   candidate. Identical PROVISIONAL siblings sharing one DataNode
+   parent now render as N standalone full-chrome rows.
+
+**CS-35 lock survives.** The module-level constant
+`_SWEEP_MEMBER_INDENT_PX = 16` and the `indent_px: int = 0` kwarg
+on `_build_node_row` are deliberately preserved — Phase 4ad's
+user-driven `NODE_GROUP` container will reuse them for group-
+member visual nesting. The single call site that passed
+`indent_px=_SWEEP_MEMBER_INDENT_PX` (in the now-removed expanded-
+sweep render branch of `_rebuild`) goes away; the kwarg's default-
+zero use stays correct for every standalone row.
+
+**Decision lock taken.** Mechanical removal rather than stub.
+Rationale: Phase 4ad's group container will be a different data
+shape (an explicit `NodeType.NODE_GROUP` DataNode with member ids,
+not a synthetic parent_id leader row). Keeping CS-32's `_sweep_*`
+machinery dormant would be lock-list weight without future-fit —
+none of the dormant fields would shape Phase 4ad's data model.
+The constant + kwarg survive on a different bet (the indent
+*shape* — pack-arg pass-through with a fixed pixel offset — is
+likely to be reused even if the container data model is fresh).
+
+**Lock relaxations recorded by this section.**
+
+* **CS-31 lock relaxes.** `find_provisional_op_with_params` removed;
+  the canonical CS-31 register entry above is now struck through
+  (✅→reverted). The match contract (full dict equality on params
+  + first-match-wins ordering + `state == PROVISIONAL` filter) is
+  no longer pinned anywhere — Phase 4ad's group implementation is
+  free to introduce its own equivalence rules (or none) without
+  the CS-31 contract carrying through.
+* **CS-32 lock relaxes.** `_expanded_sweep_groups`, `_sweep_groups`,
+  `_sweep_leaders`, `_compute_sweep_groups`, `_build_sweep_row`,
+  `_toggle_sweep_group` all removed. The "≥2 PROVISIONAL siblings
+  sharing one DataNode parent" auto-grouping rule is gone — Phase
+  4ad's group construction is user-driven, not auto-detected. The
+  chevron `▸/▾` glyph + the leader-row `✕all` bulk-discard gesture
+  + the `_group_key_of` lookup are also gone; Phase 4ad's group
+  row will introduce its own expansion glyph, its own bulk
+  gesture (likely "Ungroup" rather than "Discard all"), and its
+  own membership lookup keyed by group-node id rather than
+  parent-node id.
+* **CS-35 lock partially survives.** The constant +
+  `_build_node_row(indent_px=0)` kwarg signature stay verbatim;
+  the call site that passed the constant goes away. Phase 4ad's
+  group-member render branch is the next planned consumer.
+
+**Tests pinning the removal.**
+
+* Pure-module: `TestFindProvisionalOpWithParamsRemoved` (1 test,
+  in `test_graph.py`) — `hasattr(g, "find_provisional_op_with_params")`
+  is False on a fresh `ProjectGraph`.
+* Pure-module: `TestSweepGroupRemovalPhase4ac` (4 tests, in
+  `test_scan_tree_widget.py`) — each provisional sibling owns its
+  own row; no chevron glyphs anywhere; the four removed fields
+  + five removed methods all return False from `hasattr`.
+* Pure-module: `TestStandaloneRowDefaultPaddingPhase4ac` (2 tests)
+  — standalone rows pack at default `padx=2`; two-variant graphs
+  no longer indent any row.
+* Pure-module: `TestSweepMemberIndentConstant` extended (3 tests
+  total) — constant survives at 16; `_build_node_row(indent_px=0)`
+  kwarg signature pinned via `inspect.signature`.
+* Per-panel integration tests (5 files, 1 test per file)
+  — `test_apply_*_identical_re_apply_creates_new_sibling`: identical
+  re-apply creates two ops + two data nodes; no "already applied"
+  status spam fires.
+* The 5 `test_apply_*_with_different_params_creates_new_node`
+  tests stay verbatim — the "different params" path was always
+  the same (create a new node), so no inversion is needed there.
+
+**Net delta on the test suite.** 864 tests (down from 878 — 14
+removed, 9 new pin tests added). The removal:
+
+* `TestFindProvisionalOpWithParams` — 12 tests removed, 1 added
+* `TestSweepGroupInlineExpansion` — 6 tests removed, 4 added
+* `TestExpandedSweepGroupsField` — 1 test removed, 0 added
+* `TestSweepGroupNestedIndent` — 5 tests removed, 2 added
+* `TestSweepMemberIndentConstant` — 0 tests removed, 1 added
+* Per-panel suppress tests (5 files) — inverted in place; no count
+  change
+
+**Carry-forward.** Phase 4ad — `NodeType.NODE_GROUP` (or
+`USER_GROUP`) + the user-driven "Combine selected → Group"
+gesture. Lock decisions still pending: gesture style (context-
+menu / left-pane button / drag-and-drop), nested groups, where
+the "Ungroup" gesture lives, and whether Phase 4ad reuses
+`_SWEEP_MEMBER_INDENT_PX` or picks a fresh indent. The Phase 4v
+friction #1 canonical register entry in BACKLOG.md (now ✅ for
+parts a + b, ⏳ for part c) is the home for those decisions.
+
+---
+
+*Document version: 1.29 — May 2026*
 *1.1: CS-13 implementation notes added in Phase 4a.*
 *1.2: CS-14 Plot Settings Dialog added in Phase 4b.*
 *1.3: CS-15 UV/Vis Baseline Correction + CS-04 implementation
@@ -6976,6 +7137,30 @@ visibility-matrix in TestStyleDialogYAxisVisibility + 10 label-
 rename in TestStyleDialogLabelRename). Phase 4aa friction list:
 six 🟢 Claude-surfaced polish notes, none promoted to register
 entries (user-accepted at step 5).*
+*1.29: Phase 4ac — drop CS-31 dedup gate + drop CS-32 sweep auto-
+grouping (CS-54). Closes parts (a) + (b) of the USER-FLAGGED
+Phase 4v friction #1 register entry; defers part (c)
+(NodeType.NODE_GROUP + user-driven "Combine selected → Group"
+gesture) to Phase 4ad. `find_provisional_op_with_params` removed
+from `graph.py`; the dedup short-circuit removed from all five
+UV/Vis apply sites; `_compute_sweep_groups`, `_build_sweep_row`,
+`_toggle_sweep_group`, `_expanded_sweep_groups`, `_sweep_groups`,
+`_sweep_leaders`, `_group_key_of`, `_discard_many`,
+`_datanode_parents` all removed from `scan_tree_widget.py`.
+Identical re-applies now create fresh standalone PROVISIONAL
+siblings. CS-31 + CS-32 register entries above are now struck
+through (✅→reverted). CS-35 lock survives (the
+`_SWEEP_MEMBER_INDENT_PX = 16` constant + the
+`_build_node_row(indent_px=0)` kwarg signature stay verbatim for
+Phase 4ad reuse). 864 tests, all green (878 − 14 removed + 9 new
+pin tests added; per-panel suppress-tests inverted in place).
+Phase 4ac friction list: six items (1 USER-FLAGGED y-axis label
+routing bug bumped 🟢 → 🔴 from Phase 4y friction #2; 2
+USER-FLAGGED Plot Settings additions — configurable grid colour
++ default-inward ticks; 3 Claude-surfaced 🟢 polish notes covering
+Phase 4ad's NODE_GROUP carry-forward, the dormant
+`_SWEEP_MEMBER_INDENT_PX` constant, and the no-cue-for-N-identical-
+siblings polish).*
 *1.28: Phase 4ab — StyleDialog Notebook restructure + Provenance
 tab (CS-53). Closes Phase 4x friction #3 (USER-FLAGGED "Per-node
 parameter window: add a Provenance tab") in full plus the

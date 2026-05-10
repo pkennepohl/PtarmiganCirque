@@ -526,9 +526,9 @@ class TestPeakPickingPanel(unittest.TestCase):
         self.panel.set_subject(out_id)
         self.assertEqual(self._apply_btn_state(), "disabled")
 
-    # ---- Phase 4p (CS-31): suppress identical re-applies ------------
+    # ---- Phase 4ac (CS-54): identical re-apply creates a new sibling ----
 
-    def test_apply_suppresses_identical_re_apply(self):
+    def test_apply_identical_re_apply_creates_new_sibling(self):
         messages: list[str] = []
         self.panel.destroy()
         self.panel = pp.PeakPickingPanel(
@@ -547,10 +547,14 @@ class TestPeakPickingPanel(unittest.TestCase):
         messages.clear()
 
         second = self.panel._apply()
-        self.assertIsNone(second)
-        self.assertEqual(len(self.graph.nodes), n_after_first)
-        self.assertEqual(len(messages), 1)
-        self.assertIn("already applied", messages[0])
+        self.assertIsNotNone(
+            second, "identical re-apply must NOT be blocked",
+        )
+        self.assertEqual(len(self.graph.nodes), n_after_first + 2)
+        self.assertFalse(
+            any("already" in m for m in messages),
+            f"unexpected dedup status spam: {messages!r}",
+        )
 
     def test_apply_with_different_params_creates_new_node(self):
         self._add_uvvis("u1")

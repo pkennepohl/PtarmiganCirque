@@ -428,20 +428,6 @@ class NormalisationPanel(tk.Frame):
         # the remaining keys are the mode-specific sub-schema (CS-16).
         op_params = {"mode": mode, **params}
 
-        # Phase 4p (CS-31): suppress identical re-applies. See
-        # ProjectGraph.find_provisional_op_with_params docstring.
-        existing = self._graph.find_provisional_op_with_params(
-            subject_id, OperationType.NORMALISE, op_params,
-        )
-        if existing is not None:
-            if self._status_cb is not None:
-                self._status_cb(
-                    f"Normalisation ({mode}) with these parameters "
-                    f"already applied to {parent_node.label} — no "
-                    f"new node created."
-                )
-            return None
-
         wl = parent_node.arrays["wavelength_nm"]
         absorb = parent_node.arrays["absorbance"]
         try:

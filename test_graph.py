@@ -672,172 +672,29 @@ class TestNormalisedNodeLifecycle(unittest.TestCase):
         self.assertEqual(norms[0].id, "norm")
 
 
-class TestFindProvisionalOpWithParams(unittest.TestCase):
-    """Phase 4p (CS-31) — duplicate-apply detector.
+class TestFindProvisionalOpWithParamsRemoved(unittest.TestCase):
+    """Phase 4ac (CS-54) — CS-31's dedup helper is gone.
 
-    The helper underpins the "suppress identical re-applies" status
-    message at every UV/Vis apply site: when a user clicks Apply
-    twice with the same params, the second click finds the first
-    PROVISIONAL OperationNode via this query and bails out instead
-    of creating a sibling that would collapse into a bogus sweep.
+    The Phase 4p / CS-31 ``find_provisional_op_with_params`` helper
+    was the data-shape of the "no duplicate apply" gate. Phase 4ac
+    drops the gate at every apply site (USER-FLAGGED Phase 4v
+    friction #1), so the helper has no consumers and is removed.
+
+    This pin traps a future regression that would re-introduce the
+    helper — if the user's workflow problem (re-applying a process
+    you tweaked once is blocked) recurs, it should fail in a way
+    that lights this test up rather than silently re-blocking
+    legitimate re-applies.
     """
 
-    @staticmethod
-    def _wire_baseline(
-        g: ProjectGraph, op_id: str, params: dict,
-        state: NodeState = NodeState.PROVISIONAL,
-        parent_id: str = "parent",
-    ) -> str:
-        op = _op(op_id, OperationType.BASELINE,
-                 inputs=[parent_id], outputs=[op_id + "_out"],
-                 state=state)
-        op.params = dict(params)
-        out = _data(op_id + "_out", NodeType.BASELINE, state=state)
-        g.add_node(op)
-        g.add_node(out)
-        g.add_edge(parent_id, op_id)
-        g.add_edge(op_id, op_id + "_out")
-        return op_id
-
-    def setUp(self):
-        self.g = ProjectGraph()
-        self.g.add_node(_data("parent", NodeType.UVVIS,
-                              state=NodeState.COMMITTED))
-
-    def test_returns_id_of_matching_provisional(self):
-        params = {"mode": "linear", "anchor1_nm": 200.0, "anchor2_nm": 800.0}
-        self._wire_baseline(self.g, "op1", params)
-        match = self.g.find_provisional_op_with_params(
-            "parent", OperationType.BASELINE, params,
+    def test_helper_no_longer_exists_on_project_graph(self):
+        g = ProjectGraph()
+        self.assertFalse(
+            hasattr(g, "find_provisional_op_with_params"),
+            "Phase 4ac dropped CS-31's duplicate-apply gate — the "
+            "helper must not be re-introduced without re-opening "
+            "the user-flagged Phase 4v friction #1 register entry."
         )
-        self.assertEqual(match, "op1")
-
-    def test_returns_none_when_no_op_exists(self):
-        params = {"mode": "linear", "anchor1_nm": 200.0, "anchor2_nm": 800.0}
-        match = self.g.find_provisional_op_with_params(
-            "parent", OperationType.BASELINE, params,
-        )
-        self.assertIsNone(match)
-
-    def test_returns_none_when_params_differ(self):
-        self._wire_baseline(
-            self.g, "op1",
-            {"mode": "linear", "anchor1_nm": 200.0, "anchor2_nm": 800.0},
-        )
-        # Different anchor1.
-        match = self.g.find_provisional_op_with_params(
-            "parent", OperationType.BASELINE,
-            {"mode": "linear", "anchor1_nm": 250.0, "anchor2_nm": 800.0},
-        )
-        self.assertIsNone(match)
-
-    def test_returns_none_when_op_is_committed(self):
-        params = {"mode": "linear", "anchor1_nm": 200.0, "anchor2_nm": 800.0}
-        self._wire_baseline(
-            self.g, "op1", params, state=NodeState.COMMITTED,
-        )
-        match = self.g.find_provisional_op_with_params(
-            "parent", OperationType.BASELINE, params,
-        )
-        self.assertIsNone(match)
-
-    def test_returns_none_when_op_is_discarded(self):
-        params = {"mode": "linear", "anchor1_nm": 200.0, "anchor2_nm": 800.0}
-        self._wire_baseline(
-            self.g, "op1", params, state=NodeState.DISCARDED,
-        )
-        match = self.g.find_provisional_op_with_params(
-            "parent", OperationType.BASELINE, params,
-        )
-        self.assertIsNone(match)
-
-    def test_returns_none_when_op_type_differs(self):
-        # An identical-params NORMALISE op does NOT match a query for
-        # BASELINE — each apply site checks its own op type.
-        op = _op("op1", OperationType.NORMALISE,
-                 inputs=["parent"], outputs=["op1_out"],
-                 state=NodeState.PROVISIONAL)
-        op.params = {"mode": "peak", "peak_lo_nm": 200.0, "peak_hi_nm": 800.0}
-        self.g.add_node(op)
-        self.g.add_node(_data("op1_out", NodeType.NORMALISED,
-                              state=NodeState.PROVISIONAL))
-        self.g.add_edge("parent", "op1")
-        self.g.add_edge("op1", "op1_out")
-        match = self.g.find_provisional_op_with_params(
-            "parent", OperationType.BASELINE,
-            {"mode": "peak", "peak_lo_nm": 200.0, "peak_hi_nm": 800.0},
-        )
-        self.assertIsNone(match)
-
-    def test_returns_none_when_parent_differs(self):
-        # Same params on a different parent must NOT match — the
-        # detector is scoped to one (parent, op_type) pair.
-        self.g.add_node(_data("other_parent", NodeType.UVVIS,
-                              state=NodeState.COMMITTED))
-        params = {"mode": "linear", "anchor1_nm": 200.0, "anchor2_nm": 800.0}
-        self._wire_baseline(
-            self.g, "op1", params, parent_id="other_parent",
-        )
-        match = self.g.find_provisional_op_with_params(
-            "parent", OperationType.BASELINE, params,
-        )
-        self.assertIsNone(match)
-
-    def test_first_match_wins_in_insertion_order(self):
-        # If two PROVISIONAL siblings somehow share the same params
-        # (not the path the detector is meant to prevent — they'd
-        # already be a sweep group on the right side), the helper
-        # returns the FIRST one in dict insertion order so callers
-        # surface a deterministic id in the status message.
-        params = {"mode": "linear", "anchor1_nm": 200.0, "anchor2_nm": 800.0}
-        self._wire_baseline(self.g, "op1", params)
-        self._wire_baseline(self.g, "op2", params)
-        match = self.g.find_provisional_op_with_params(
-            "parent", OperationType.BASELINE, params,
-        )
-        self.assertEqual(match, "op1")
-
-    def test_dict_value_order_does_not_affect_equality(self):
-        # Python dict equality is order-insensitive, so callers do
-        # not need to canonicalise key order. Sanity-check that
-        # behaviour via the helper.
-        self._wire_baseline(
-            self.g, "op1",
-            {"mode": "linear", "anchor1_nm": 200.0, "anchor2_nm": 800.0},
-        )
-        match = self.g.find_provisional_op_with_params(
-            "parent", OperationType.BASELINE,
-            # Same content, different insertion order.
-            {"anchor2_nm": 800.0, "mode": "linear", "anchor1_nm": 200.0},
-        )
-        self.assertEqual(match, "op1")
-
-    def test_list_param_values_compared_element_wise(self):
-        # PEAK_PICK manual mode stashes a list of wavelengths in
-        # params; equality must be element-wise (Python's ==).
-        op = _op("op1", OperationType.PEAK_PICK,
-                 inputs=["parent"], outputs=["op1_out"],
-                 state=NodeState.PROVISIONAL)
-        op.params = {"mode": "manual", "wavelengths_nm": [350.0, 420.0]}
-        self.g.add_node(op)
-        self.g.add_node(_data("op1_out", NodeType.PEAK_LIST,
-                              state=NodeState.PROVISIONAL))
-        self.g.add_edge("parent", "op1")
-        self.g.add_edge("op1", "op1_out")
-
-        # Same list contents → match.
-        match = self.g.find_provisional_op_with_params(
-            "parent", OperationType.PEAK_PICK,
-            {"mode": "manual", "wavelengths_nm": [350.0, 420.0]},
-        )
-        self.assertEqual(match, "op1")
-
-        # Different list contents → no match.
-        no_match = self.g.find_provisional_op_with_params(
-            "parent", OperationType.PEAK_PICK,
-            {"mode": "manual", "wavelengths_nm": [350.0, 421.0]},
-        )
-        self.assertIsNone(no_match)
 
 
 if __name__ == "__main__":

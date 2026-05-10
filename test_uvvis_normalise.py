@@ -507,15 +507,14 @@ class TestNormalisationPanel(unittest.TestCase):
         self.panel.set_subject(out_id)
         self.assertEqual(self._apply_btn_state(), "normal")
 
-    # ---- Phase 4p (CS-31): suppress identical re-applies ------------
+    # ---- Phase 4ac (CS-54): identical re-apply creates a new sibling ----
 
-    def test_apply_suppresses_identical_re_apply(self):
-        # Apply once with peak/400/600 → one op + one data node.
-        # Apply again with the SAME params → no new nodes, status
-        # callback receives the duplicate-apply message.
+    def test_apply_identical_re_apply_creates_new_sibling(self):
+        # Phase 4ac (CS-54) dropped CS-31's dedup gate. Apply twice
+        # with the same peak/400/600 params → two ops + two data
+        # nodes. No status spam — the "already applied" branch is
+        # gone with the gate.
         messages: list[str] = []
-        # The setUp panel does not have a status_cb; rebuild with one
-        # so the test can inspect the message shape.
         self.panel.destroy()
         self.panel = un.NormalisationPanel(
             self.host, self.graph, status_cb=messages.append,
@@ -533,14 +532,18 @@ class TestNormalisationPanel(unittest.TestCase):
         messages.clear()
 
         second = self.panel._apply()
-        self.assertIsNone(second, "identical re-apply must return None")
-        self.assertEqual(
-            len(self.graph.nodes), n_after_first,
-            "identical re-apply must NOT add any nodes",
+        self.assertIsNotNone(
+            second, "identical re-apply must NOT be blocked",
         )
-        self.assertEqual(len(messages), 1)
-        self.assertIn("already applied", messages[0])
-        self.assertIn("u1", messages[0])
+        self.assertEqual(
+            len(self.graph.nodes), n_after_first + 2,
+            "identical re-apply must add one op + one data node",
+        )
+        # No "already applied" status callback fires.
+        self.assertFalse(
+            any("already" in m for m in messages),
+            f"unexpected dedup status spam: {messages!r}",
+        )
 
     def test_apply_with_different_params_creates_new_node(self):
         # The dedup gate is param-keyed: changing a single param
