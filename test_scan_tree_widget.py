@@ -277,13 +277,16 @@ class TestScanTreeWidget(unittest.TestCase):
         widget.update_idletasks()
         self.assertNotIn("a", widget._row_frames)
 
-    # ----------- sweep group collapsing -----------
+    # ----------- standalone rendering of provisional siblings -----------
 
-    def test_sweep_group_collapses_two_provisional_siblings(self):
+    def test_provisional_siblings_render_as_standalone_rows(self):
         # parent (committed) → op → variant_a (prov), variant_b (prov)
-        # The two variants share a single DataNode parent (after
-        # walking back through the OperationNode), so they collapse
-        # into one sweep-group row.
+        # Phase 4ac (CS-54) dropped the auto-grouping of PROVISIONAL
+        # siblings sharing one DataNode parent (CS-32). Each sibling
+        # now renders as its own full-chrome row so the user can
+        # commit / discard / re-style each variant individually
+        # without expanding a chevron — this is the user-flagged
+        # workflow the auto-grouping was hiding.
         graph = ProjectGraph()
         graph.add_node(
             _data("p", NodeType.UVVIS, state=NodeState.COMMITTED),
@@ -301,12 +304,19 @@ class TestScanTreeWidget(unittest.TestCase):
         )
         widget.update_idletasks()
 
-        # The leader (lex-smallest id, "a") owns the group row;
-        # "b" should NOT have its own row entry.
+        # Both variants own their own row.
         self.assertIn("a", widget._row_frames)
-        self.assertNotIn("b", widget._row_frames)
-        self.assertIn("p", widget._sweep_groups)
-        self.assertEqual(set(widget._sweep_groups["p"]), {"a", "b"})
+        self.assertIn("b", widget._row_frames)
+        # The auto-grouping fields are gone — re-introducing them
+        # without re-opening the user-flagged register entry would
+        # silently put us back where Phase 4ac started.
+        self.assertFalse(
+            hasattr(widget, "_sweep_groups"),
+            "Phase 4ac (CS-54) dropped CS-32's auto-grouping; the "
+            "_sweep_groups field must not be re-introduced."
+        )
+        self.assertFalse(hasattr(widget, "_sweep_leaders"))
+        self.assertFalse(hasattr(widget, "_expanded_sweep_groups"))
 
     # ----------- subscription teardown -----------
 
@@ -1520,13 +1530,15 @@ class TestScanTreeWidgetExportMenu(unittest.TestCase):
 
 
 @unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
-class TestSweepGroupInlineExpansion(unittest.TestCase):
-    """Phase 4q (CS-32) — chevron toggle + per-variant inline rows.
+class TestSweepGroupRemovalPhase4ac(unittest.TestCase):
+    """Phase 4ac (CS-54) — CS-32's auto-grouping is removed.
 
-    Builds a parent committed node + an op + two provisional siblings
-    (the canonical 2-variant sweep group). Asserts the chevron toggle
-    behaviour, persistent expansion state, full-chrome member rows,
-    and group dissolution when a member commits.
+    Builds the canonical "2-variant sweep" graph (parent committed
+    → op → two provisional siblings) and asserts every surviving
+    provisional sibling renders as its own standalone full-chrome
+    row instead of collapsing into a leader-row + chevron pair.
+    Pins the field-removal contract so a future re-introduction of
+    auto-grouping fails loudly rather than silently re-hiding nodes.
     """
 
     @classmethod
@@ -1545,8 +1557,7 @@ class TestSweepGroupInlineExpansion(unittest.TestCase):
         except Exception:
             pass
 
-    def _build_two_variant_group(self) -> "ScanTreeWidget":  # type: ignore[name-defined]
-        # Parent (committed) → op → variant_a (prov), variant_b (prov)
+    def _build_two_variant_graph(self) -> "ScanTreeWidget":  # type: ignore[name-defined]
         self.graph.add_node(
             _data("p", NodeType.UVVIS, state=NodeState.COMMITTED),
         )
@@ -1563,120 +1574,55 @@ class TestSweepGroupInlineExpansion(unittest.TestCase):
         widget.update_idletasks()
         return widget
 
-    def _leader_row_chevron(self, widget: "ScanTreeWidget"):  # type: ignore[name-defined]
-        """Return the chevron Button on the sweep leader row, or None.
-
-        Walks the entire ``_rows_frame`` tree because when a group
-        expands, ``_row_frames[leader_id]`` is overwritten by the
-        member row that shares the leader's id (the lex-smallest
-        member). The chevron is unique (no other row carries
-        ``▸``/``▾``), so the walk reliably finds the leader row.
-        """
-        for row in widget._rows_frame.winfo_children():
-            for child in row.winfo_children():
-                if isinstance(child, tk.Button):
-                    txt = child.cget("text")
-                    if txt in ("▸", "▾"):
-                        return child
-        return None
-
-    # ----------- chevron rendering on the leader row -----------
-
-    def test_collapsed_leader_row_renders_chevron_right(self):
-        # Default state is collapsed; chevron must read "▸" and there
-        # must be no member rows (only the leader is in _row_frames).
-        widget = self._build_two_variant_group()
-        chevron = self._leader_row_chevron(widget)
-        self.assertIsNotNone(chevron, "chevron Button missing on leader row")
-        self.assertEqual(chevron.cget("text"), "▸")
-        # Only the leader id ("a") is keyed in _row_frames; "b"
-        # remains absent until expansion.
-        self.assertIn("a", widget._row_frames)
-        self.assertNotIn("b", widget._row_frames)
-
-    def test_chevron_click_toggles_to_expanded(self):
-        widget = self._build_two_variant_group()
-        chevron = self._leader_row_chevron(widget)
-        self.assertIsNotNone(chevron)
-
-        chevron.invoke()
-        widget.update_idletasks()
-
-        # Expansion set populated, chevron flipped, both members
-        # have rows in _row_frames.
-        self.assertIn("p", widget._expanded_sweep_groups)
+    def test_each_provisional_sibling_owns_its_own_row(self):
+        widget = self._build_two_variant_graph()
+        # Both siblings render as standalone rows — no leader / member
+        # split, no chevron, no auto-grouping.
         self.assertIn("a", widget._row_frames)
         self.assertIn("b", widget._row_frames)
-        new_chevron = self._leader_row_chevron(widget)
-        self.assertIsNotNone(new_chevron)
-        self.assertEqual(new_chevron.cget("text"), "▾")
 
-    def test_second_chevron_click_collapses(self):
-        widget = self._build_two_variant_group()
-        widget._toggle_sweep_group("p")  # expand
-        widget.update_idletasks()
-        widget._toggle_sweep_group("p")  # collapse
-        widget.update_idletasks()
-
-        self.assertNotIn("p", widget._expanded_sweep_groups)
-        self.assertNotIn("b", widget._row_frames)
-
-    def test_expansion_state_survives_rebuild(self):
-        # A graph event triggers a full _rebuild; the expansion set
-        # is the source of truth and must be preserved.
-        widget = self._build_two_variant_group()
-        widget._toggle_sweep_group("p")
-        self.assertIn("p", widget._expanded_sweep_groups)
-
-        widget._rebuild()
-        widget.update_idletasks()
-
-        self.assertIn("p", widget._expanded_sweep_groups)
-        self.assertIn("b", widget._row_frames)
-
-    # ----------- member rows have full chrome -----------
-
-    def test_expanded_member_row_carries_commit_button(self):
-        # Each member is provisional, so each member row must carry
-        # the new 🔒 commit Button (CS-34 — provisional rows only).
-        widget = self._build_two_variant_group()
-        widget._toggle_sweep_group("p")
-        widget.update_idletasks()
-
-        member_row = widget._row_frames["b"]
-        commit_btns = [
-            w for w in member_row.winfo_children()
-            if isinstance(w, tk.Button) and w.cget("text") == "🔒"
-        ]
-        self.assertEqual(
-            len(commit_btns), 1,
-            "expanded member row must show exactly one 🔒 commit button",
-        )
-
-    # ----------- group dissolves when a member commits -----------
-
-    def test_committing_one_member_dissolves_group(self):
-        # With only two members, committing one drops the group below
-        # the 2-member threshold. The chevron + leader row disappear;
-        # the surviving provisional member renders as a normal row.
-        widget = self._build_two_variant_group()
-        widget._toggle_sweep_group("p")
-        widget.update_idletasks()
-
-        self.graph.commit_node("a")
-        widget.update_idletasks()
-
-        # Group is gone from _sweep_groups.
-        self.assertNotIn("p", widget._sweep_groups)
-        # Both nodes are now standalone rows (committed "a" + the
-        # surviving provisional "b"). The chevron is gone — search
-        # the entire rows_frame and confirm.
-        all_chevrons = [
+    def test_no_chevron_glyphs_anywhere_on_the_rows_frame(self):
+        widget = self._build_two_variant_graph()
+        chevrons = [
             w for row in widget._rows_frame.winfo_children()
             for w in row.winfo_children()
             if isinstance(w, tk.Button) and w.cget("text") in ("▸", "▾")
         ]
-        self.assertEqual(all_chevrons, [])
+        self.assertEqual(
+            chevrons, [],
+            "Phase 4ac removed CS-32's chevron expand toggle; no "
+            "leader-row chevron must appear in the rows frame."
+        )
+
+    def test_auto_grouping_fields_do_not_exist(self):
+        # Trap a future CS-32-style field re-introduction. The
+        # USER-FLAGGED workflow Phase 4ac fixes (re-applying a
+        # tweaked process) depends on these staying gone.
+        widget = self._build_two_variant_graph()
+        for attr in (
+            "_sweep_groups",
+            "_sweep_leaders",
+            "_expanded_sweep_groups",
+        ):
+            self.assertFalse(
+                hasattr(widget, attr),
+                f"{attr} must not be re-introduced — Phase 4v "
+                f"friction #1 register entry is the gate.",
+            )
+
+    def test_sweep_grouping_methods_do_not_exist(self):
+        widget = self._build_two_variant_graph()
+        for attr in (
+            "_compute_sweep_groups",
+            "_build_sweep_row",
+            "_toggle_sweep_group",
+            "_group_key_of",
+            "_discard_many",
+        ):
+            self.assertFalse(
+                hasattr(widget, attr),
+                f"{attr} must not be re-introduced.",
+            )
 
 
 @unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
@@ -2320,36 +2266,6 @@ class TestTooltip(unittest.TestCase):
         tip._hide()
         tip._hide()
         self.assertIsNone(tip._tip)
-
-
-@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
-class TestExpandedSweepGroupsField(unittest.TestCase):
-    """Phase 4q (CS-32) — sweep-group expansion state field.
-
-    Construction-only check: the field must exist as an empty set on
-    a fresh widget so callers can mutate it without a None-check.
-    Mirrors how ``_expanded_history`` is exposed.
-    """
-
-    def setUp(self) -> None:
-        self.host = tk.Frame(_root)
-        self.host.pack()
-        self.graph = ProjectGraph()
-
-    def tearDown(self) -> None:
-        try:
-            self.host.destroy()
-        except Exception:
-            pass
-
-    def test_initial_state_is_empty_set(self):
-        from scan_tree_widget import ScanTreeWidget
-        _, cb = _redraw_calls()
-        widget = ScanTreeWidget(
-            self.host, self.graph, [NodeType.UVVIS], cb,
-        )
-        self.assertEqual(widget._expanded_sweep_groups, set())
-        self.assertIsInstance(widget._expanded_sweep_groups, set)
 
 
 @unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
@@ -3044,27 +2960,22 @@ class TestWidestLabelPixelWidth(unittest.TestCase):
 
 
 @unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
-class TestSweepGroupNestedIndent(unittest.TestCase):
-    """Phase 4r (CS-35) — sweep-group expanded members visual nesting.
+class TestStandaloneRowDefaultPaddingPhase4ac(unittest.TestCase):
+    """Phase 4ac (CS-54) — standalone rows pack at the default padding.
 
-    Builds the canonical 2-variant sweep group (parent, op, two
-    provisional siblings), then asserts:
-
-    * a non-grouped row uses the original padx=2 left/right;
-    * an expanded sweep-group member row uses
-      ``padx=(2 + _SWEEP_MEMBER_INDENT_PX, 2)``;
-    * collapsing the group rebuilds with the original padding for
-      the now-leader-only path (and removes the member rows
-      entirely).
+    Phase 4r (CS-35)'s ``_SWEEP_MEMBER_INDENT_PX`` was wired into the
+    auto-grouped sweep-leader's expanded-member render branch; that
+    branch is gone in 4ac. The constant + the ``indent_px`` kwarg on
+    ``_build_node_row`` survive (Phase 4ad's user-driven NODE_GROUP
+    container will reuse them), but the default-zero call site is now
+    every regular row. Pin the standalone-row padding so a future
+    re-introduction of indented siblings is a deliberate decision.
     """
 
     @classmethod
     def setUpClass(cls):
-        from scan_tree_widget import (
-            ScanTreeWidget, _SWEEP_MEMBER_INDENT_PX,
-        )
+        from scan_tree_widget import ScanTreeWidget
         cls.ScanTreeWidget = ScanTreeWidget
-        cls.INDENT = _SWEEP_MEMBER_INDENT_PX
 
     def setUp(self) -> None:
         self.host = tk.Frame(_root)
@@ -3077,25 +2988,7 @@ class TestSweepGroupNestedIndent(unittest.TestCase):
         except Exception:
             pass
 
-    def _build_two_variant_group(self):
-        self.graph.add_node(
-            _data("p", NodeType.UVVIS, state=NodeState.COMMITTED),
-        )
-        self.graph.add_node(_op("op_sweep"))
-        self.graph.add_node(_data("a", NodeType.UVVIS))
-        self.graph.add_node(_data("b", NodeType.UVVIS))
-        self.graph.add_edge("p", "op_sweep")
-        self.graph.add_edge("op_sweep", "a")
-        self.graph.add_edge("op_sweep", "b")
-        _, cb = _redraw_calls()
-        widget = self.ScanTreeWidget(
-            self.host, self.graph, [NodeType.UVVIS], cb,
-        )
-        widget.update_idletasks()
-        return widget
-
     def test_standalone_row_has_no_indent(self):
-        # A regular non-grouped row keeps the original 2 px padding.
         # Tk collapses an equal-sided tuple to a single int, so
         # ``padx=(2, 2)`` reads back as ``2`` from pack_info — accept
         # either form.
@@ -3110,66 +3003,42 @@ class TestSweepGroupNestedIndent(unittest.TestCase):
         info = widget._row_frames["solo"].pack_info()
         self.assertIn(info["padx"], (2, (2, 2)))
 
-    def test_expanded_member_row_is_indented(self):
-        widget = self._build_two_variant_group()
-        widget._toggle_sweep_group("p")
-        widget.update_idletasks()
-
-        # Both members render as nested rows. The ``a`` row's
-        # _row_frames key is the lex-smallest member's id (per
-        # CS-32) — it shares the leader row id; ``b`` is the
-        # cleaner check because it has a dedicated frame.
-        member_b = widget._row_frames["b"]
-        self.assertEqual(
-            member_b.pack_info()["padx"],
-            (2 + self.INDENT, 2),
+    def test_two_provisional_siblings_both_pack_at_default_padding(self):
+        # Phase 4ac drops the auto-grouped expanded-member branch.
+        # Each PROVISIONAL sibling renders at the regular padding;
+        # neither carries the CS-35 indent because no group leader
+        # exists to nest under.
+        self.graph.add_node(
+            _data("p", NodeType.UVVIS, state=NodeState.COMMITTED),
         )
-
-    def test_indent_uses_module_constant(self):
-        # The exact left padding must derive from
-        # _SWEEP_MEMBER_INDENT_PX so a future restyle through that
-        # constant propagates without a local override.
-        widget = self._build_two_variant_group()
-        widget._toggle_sweep_group("p")
+        self.graph.add_node(_op("op_sweep"))
+        self.graph.add_node(_data("a", NodeType.UVVIS))
+        self.graph.add_node(_data("b", NodeType.UVVIS))
+        self.graph.add_edge("p", "op_sweep")
+        self.graph.add_edge("op_sweep", "a")
+        self.graph.add_edge("op_sweep", "b")
+        _, cb = _redraw_calls()
+        widget = self.ScanTreeWidget(
+            self.host, self.graph, [NodeType.UVVIS], cb,
+        )
         widget.update_idletasks()
-
-        left, right = widget._row_frames["b"].pack_info()["padx"]
-        self.assertEqual(left - 2, self.INDENT)
-        self.assertEqual(right, 2)
-
-    def test_collapsing_removes_indented_member_rows(self):
-        widget = self._build_two_variant_group()
-        widget._toggle_sweep_group("p")
-        widget.update_idletasks()
-        widget._toggle_sweep_group("p")
-        widget.update_idletasks()
-
-        # Member ``b`` is no longer in _row_frames once collapsed.
-        self.assertNotIn("b", widget._row_frames)
-
-    def test_re_expand_re_applies_indent(self):
-        # Round-trip: expand, collapse, expand again. The indent
-        # must be re-applied on the second expansion.
-        widget = self._build_two_variant_group()
-        widget._toggle_sweep_group("p")
-        widget.update_idletasks()
-        widget._toggle_sweep_group("p")
-        widget.update_idletasks()
-        widget._toggle_sweep_group("p")
-        widget.update_idletasks()
-
-        info = widget._row_frames["b"].pack_info()
-        self.assertEqual(info["padx"], (2 + self.INDENT, 2))
+        for nid in ("a", "b"):
+            info = widget._row_frames[nid].pack_info()
+            self.assertIn(
+                info["padx"], (2, (2, 2)),
+                f"row {nid!r} must pack at the default padding "
+                "now that CS-32 auto-grouping is gone",
+            )
 
 
 class TestSweepMemberIndentConstant(unittest.TestCase):
     """Phase 4r (CS-35) — sweep-member indent module constant.
 
-    Pure-module: no Tk root required. The constant participates in
-    every sweep-group rebuild's pack-call args so it has to be a
-    positive int. The exact value (16 px) is asserted so a future
-    style change is forced through a deliberate decision rather than
-    sliding silently.
+    Pure-module: no Tk root required. The constant survives Phase 4ac
+    because Phase 4ad's user-driven NODE_GROUP container (deferred
+    register entry) will reuse it for group-member visual nesting.
+    The exact value (16 px) is asserted so a future restyle is forced
+    through a deliberate decision rather than sliding silently.
     """
 
     def test_constant_is_positive_int(self):
@@ -3185,6 +3054,17 @@ class TestSweepMemberIndentConstant(unittest.TestCase):
         # COMPONENTS register entry; do not change the constant in
         # isolation.
         self.assertEqual(_SWEEP_MEMBER_INDENT_PX, 16)
+
+    def test_build_node_row_kwarg_signature_preserved(self):
+        # CS-35 lock: the ``indent_px`` kwarg must remain on
+        # ``_build_node_row`` so Phase 4ad's user-driven NODE_GROUP
+        # container can pass the constant through without re-opening
+        # the signature.
+        import inspect
+        from scan_tree_widget import ScanTreeWidget
+        sig = inspect.signature(ScanTreeWidget._build_node_row)
+        self.assertIn("indent_px", sig.parameters)
+        self.assertEqual(sig.parameters["indent_px"].default, 0)
 
 
 class TestShowBaselineCurveStyleKeyDefault(unittest.TestCase):
