@@ -1214,26 +1214,6 @@ class UVVisTab(tk.Frame):
         # sub-schema documented in CS-15.
         op_params = {"mode": mode, **params}
 
-        # Phase 4p (CS-31): suppress identical re-applies. If a
-        # PROVISIONAL BASELINE OperationNode already exists on this
-        # parent with these exact params, surface a status message
-        # instead of creating a duplicate sibling that the right-
-        # side ScanTreeWidget would collapse into a bogus sweep
-        # group. Computed BEFORE compute() so the dedup decision
-        # does not depend on the (deterministic) baseline-curve
-        # arithmetic.
-        existing = self._graph.find_provisional_op_with_params(
-            subject_id, OperationType.BASELINE, op_params,
-        )
-        if existing is not None:
-            self._status_lbl.config(
-                text=f"Baseline ({mode}) with these parameters already "
-                     f"applied to {parent_node.label} — no new node "
-                     f"created.",
-                fg="#7a4a00",
-            )
-            return None
-
         wl = parent_node.arrays["wavelength_nm"]
         absorb = parent_node.arrays["absorbance"]
         try:

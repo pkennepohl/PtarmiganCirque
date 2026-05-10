@@ -358,20 +358,6 @@ class SecondDerivativePanel(tk.Frame):
         # re-running compute() against the same parent).
         op_params = dict(params)
 
-        # Phase 4p (CS-31): suppress identical re-applies. See
-        # ProjectGraph.find_provisional_op_with_params docstring.
-        existing = self._graph.find_provisional_op_with_params(
-            subject_id, OperationType.SECOND_DERIVATIVE, op_params,
-        )
-        if existing is not None:
-            if self._status_cb is not None:
-                self._status_cb(
-                    f"Second derivative with these parameters already "
-                    f"applied to {parent_node.label} — no new node "
-                    f"created."
-                )
-            return None
-
         wl = parent_node.arrays["wavelength_nm"]
         absorb = parent_node.arrays["absorbance"]
         try:
