@@ -1024,5 +1024,48 @@ class TestStyleDialogYAxisOverride(unittest.TestCase):
                          sd._Y_AXIS_DISPLAY_DEFAULT)
 
 
+class TestStyleDialogPhase4aaConstants(unittest.TestCase):
+    """Phase 4aa pure-module drift coverage for the y-axis visibility
+    predicate.
+
+    Not Tk-gated — the constant is module-level data, the assertions
+    run in any environment that can import the project. The test
+    pins ``_Y_AXIS_VISIBLE_NODETYPES`` against
+    ``uvvis_tab._DEFAULT_Y_AXIS_BY_NODETYPE.keys()`` so adding a new
+    routed NodeType in the routing table forces the StyleDialog
+    Combobox to surface for it (and removing one suppresses it).
+    Without the pin, the two could drift and the universal-section
+    affordance Phase 4aa was meant to gate would silently re-appear
+    on whichever NodeType drifted out of sync.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import style_dialog
+        import uvvis_tab
+        cls.style_dialog = style_dialog
+        cls.uvvis_tab = uvvis_tab
+
+    def test_y_axis_visible_node_types_match_routing_table(self):
+        # The two sets must be exactly equal — every NodeType the
+        # routing table knows about must show the Combobox; no
+        # NodeType may show it without an entry in the routing table
+        # (otherwise the override would persist on a node whose tab
+        # cannot consult it).
+        self.assertEqual(
+            self.style_dialog._Y_AXIS_VISIBLE_NODETYPES,
+            frozenset(self.uvvis_tab._DEFAULT_Y_AXIS_BY_NODETYPE.keys()),
+        )
+
+    def test_y_axis_visible_node_types_is_frozen(self):
+        # frozenset is the documented type — pin so a future "convert
+        # to set / list / tuple" refactor would force a deliberate
+        # decision about mutability rather than silently allowing
+        # runtime mutation of the gate predicate.
+        self.assertIsInstance(
+            self.style_dialog._Y_AXIS_VISIBLE_NODETYPES, frozenset,
+        )
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
