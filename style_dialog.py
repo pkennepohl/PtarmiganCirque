@@ -336,6 +336,13 @@ class StyleDialog(tk.Toplevel):
 
         # Snapshot for Cancel revert.
         self._snapshot: dict[str, Any] = copy.deepcopy(node.style)
+        # Phase 4aa: snapshot the label too so Cancel reverts a
+        # mid-session rename. ``label`` is a top-level DataNode slot
+        # (not a style key), so it travels through ``graph.set_label``
+        # rather than ``set_style``; the snapshot lives next to the
+        # style snapshot so ``_do_cancel`` can restore both in one
+        # pass without a second source of truth.
+        self._snapshot_label: str = node.label
 
         # Re-entrancy guard. Set to True while we are in the middle
         # of writing through ``set_style`` (so the resulting
@@ -430,6 +437,21 @@ class StyleDialog(tk.Toplevel):
         sec.columnconfigure(1, weight=1)
 
         row = 0
+
+        # ── Label (rename Entry) ──────────────────────────────────
+        # Phase 4aa: surfaces the rename gesture inside the dialog so
+        # the user no longer has to abandon the gear icon and reach
+        # for the sidebar's CS-33 ``_begin_label_edit`` double-click
+        # path. Live trace — every keystroke commits via
+        # ``graph.set_label`` (mirrors the slider/Combobox live-write
+        # model used by the other universal rows; avoids the "type a
+        # label, forget to press Enter, close the dialog, no save"
+        # footgun). No ∀ button: fanning one label across siblings
+        # would collapse them onto a single display name and is
+        # nonsensical (parallel to the y_axis bottom-button carve-out
+        # but stronger — there is no per-row ∀ either).
+        self._build_label_row(sec, row)
+        row += 1
 
         # ── Line style ────────────────────────────────────────────
         ls_var = tk.StringVar(value=self._style_get("linestyle"))
@@ -548,8 +570,69 @@ class StyleDialog(tk.Toplevel):
         # role string. Other tabs (XANES / EXAFS / Compare) ignore
         # the key today; only ``uvvis_tab._redraw`` reads it via
         # ``_resolve_y_axis_role(node.type, node.style)``.
-        self._build_y_axis_row(sec, row)
-        row += 1
+        #
+        # Phase 4aa (CS-52): the Combobox is only meaningful for
+        # NodeTypes whose tab consults the override —
+        # ``_Y_AXIS_VISIBLE_NODETYPES`` mirrors
+        # ``uvvis_tab._DEFAULT_Y_AXIS_BY_NODETYPE`` exactly. For other
+        # NodeTypes (TDDFT / FEFF_PATHS / XANES / EXAFS / DEGLITCHED
+        # / AVERAGED / BXAS_RESULT) the row is suppressed: the
+        # Combobox would be a misleading affordance there, and a
+        # persisted override on those NodeTypes would have no
+        # effect. ``_read_universal_values`` skips the key
+        # automatically when the var isn't in ``_control_vars``, so
+        # the Save / Apply / ∀ paths stay self-consistent.
+        if self._node_type in _Y_AXIS_VISIBLE_NODETYPES:
+            self._build_y_axis_row(sec, row)
+            row += 1
+
+    def _build_label_row(self, parent: tk.Widget, row: int) -> None:
+        """Entry row for renaming the node (Phase 4aa).
+
+        Mirrors the live-write convention every other universal row
+        uses: a ``StringVar`` with a ``trace_add('write')`` that
+        commits on each keystroke through ``_write_label_partial``,
+        which routes via ``graph.set_label`` (label is a top-level
+        DataNode slot, not a style key — does NOT travel through
+        ``set_style``). The same ``_suspend_writes`` re-entrancy
+        guard the style path uses prevents an external
+        ``NODE_LABEL_CHANGED`` event from triggering a recursive
+        write-back when the dialog refreshes the Entry in response.
+
+        Layout uses the 4-column grid the rest of the universal
+        section uses (label · control · spacer · ∀) but with no ∀
+        button — fanning one label across siblings would collapse
+        them onto a single display name. The Entry spans columns
+        1–3 so it has the same horizontal stretch as the line-style
+        radio strip below it.
+        """
+        try:
+            node = self._graph.get_node(self._node_id)
+            current = node.label if isinstance(node, DataNode) else ""
+        except KeyError:
+            current = ""
+
+        # Pass ``master`` explicitly so the StringVar binds to the
+        # dialog's Tk interpreter — same Phase 4j friction #1
+        # defence the sidebar's ``_begin_label_edit`` carries.
+        var = tk.StringVar(master=self, value=current)
+        self._control_vars["label"] = var
+
+        tk.Label(parent, text="Label:", font=("", 9, "bold")).grid(
+            row=row, column=0, sticky="w", pady=(0, 4),
+        )
+        entry = tk.Entry(parent, textvariable=var)
+        entry.grid(
+            row=row, column=1, columnspan=3, sticky="ew", padx=(4, 0),
+        )
+
+        def _on_var_write(*_, v=var):
+            self._write_label_partial(str(v.get()))
+        var.trace_add("write", _on_var_write)
+
+        def _refresh(value, _v=var):
+            _v.set(str(value))
+        self._control_refresh["label"] = _refresh
 
     def _build_y_axis_row(self, parent: tk.Widget, row: int) -> None:
         """Combobox row for the per-style ``y_axis`` override (CS-50).
@@ -898,7 +981,18 @@ class StyleDialog(tk.Toplevel):
         that were absent from the snapshot remain on the node. This
         matches the existing UV/Vis dialog and is documented in CS-05
         Implementation notes.
+
+        Phase 4aa: also restores the label snapshot via
+        ``graph.set_label`` so a mid-session rename in the dialog's
+        Entry reverts. Order matters only loosely (label and style
+        events are independent), but we restore the label first so
+        the user-visible name flips back before the per-row controls
+        do, matching the visual flow of ``_build_label_row`` placing
+        the Entry at the top of the section. ``set_label`` is a
+        no-op when the value already matches, so the call is safe
+        when the user never renamed.
         """
+        self._write_label_partial(self._snapshot_label)
         if self._snapshot:
             self._write_partial(dict(self._snapshot))
         self.destroy()
@@ -972,26 +1066,94 @@ class StyleDialog(tk.Toplevel):
         finally:
             self._suspend_writes = False
 
+    def _write_label_partial(self, new_label: str) -> None:
+        """Send a label rename through ``graph.set_label`` once, with guard.
+
+        Phase 4aa companion to ``_write_partial`` (which handles
+        ``style`` partials through ``set_style``). Labels are a
+        top-level ``DataNode`` slot, not a style key, so the dialog
+        needs a separate write path; the re-entrancy guard is shared
+        so a label keystroke and a style write can't loop into each
+        other. ``set_label`` is a no-op when the value matches, so
+        idempotent refreshes don't fire spurious events.
+
+        No validation here — the sidebar's CS-33 ``_begin_label_edit``
+        gesture also delegates straight to ``set_label`` without
+        enforcement, and matching its behaviour keeps the two rename
+        affordances consistent (the user can do anything via either
+        path that they could via the other).
+        """
+        if self._suspend_writes:
+            return
+        self._suspend_writes = True
+        try:
+            self._graph.set_label(self._node_id, new_label)
+        except (KeyError, TypeError, ValueError):
+            _log.warning(
+                "style_dialog: set_label failed for node %r label %r",
+                self._node_id, new_label, exc_info=True,
+            )
+        finally:
+            self._suspend_writes = False
+
     # ------------------------------------------------------------
     # Graph event subscriber
     # ------------------------------------------------------------
 
     def _on_graph_event(self, event: GraphEvent) -> None:
-        """Refresh widgets when an external source mutates this node's style.
+        """Refresh widgets when an external source mutates this node.
 
         Ignores events for other nodes and events the dialog itself
         triggered (``_suspend_writes`` is True throughout the
-        ``_write_partial`` body, including the synchronous notify
-        dispatch).
+        ``_write_partial`` / ``_write_label_partial`` body, including
+        the synchronous notify dispatch).
+
+        Phase 4aa: also handles ``NODE_LABEL_CHANGED`` so a sibling
+        rename gesture (sidebar's CS-33 ``_begin_label_edit``, the
+        rename context-menu entry, or another open StyleDialog on
+        the same node) refreshes our Entry and updates the dialog
+        title in place.
         """
         if event.node_id != self._node_id:
             return
-        if event.type != GraphEventType.NODE_STYLE_CHANGED:
-            return
         if self._suspend_writes:
             return
-        new_style = event.payload.get("new_style") or {}
-        self._refresh_widgets(new_style)
+        if event.type == GraphEventType.NODE_STYLE_CHANGED:
+            new_style = event.payload.get("new_style") or {}
+            self._refresh_widgets(new_style)
+            return
+        if event.type == GraphEventType.NODE_LABEL_CHANGED:
+            new_label = event.payload.get("new_label", "")
+            self._refresh_label(str(new_label))
+            return
+
+    def _refresh_label(self, new_label: str) -> None:
+        """Push an external label change into the Entry + dialog title.
+
+        Re-uses the ``label`` refresh closure registered by
+        ``_build_label_row`` so the same ``_suspend_writes`` guard
+        that protects style refreshes also covers label refreshes.
+        Updating the dialog title keeps the "Style — <label>" header
+        truthful mid-session (the title is set once in ``__init__``
+        from the initial label).
+        """
+        self._suspend_writes = True
+        try:
+            refresher = self._control_refresh.get("label")
+            if refresher is not None:
+                try:
+                    refresher(new_label)
+                except Exception:
+                    _log.warning(
+                        "style_dialog: label refresher raised "
+                        "(node %r)", self._node_id, exc_info=True,
+                    )
+            try:
+                self.title(f"Style — {new_label}")
+            except tk.TclError:
+                pass
+        finally:
+            self._suspend_writes = False
 
     def _refresh_widgets(self, new_style: dict[str, Any]) -> None:
         """Push graph-side values into widgets without firing write-backs."""
