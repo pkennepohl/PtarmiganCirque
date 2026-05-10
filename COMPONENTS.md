@@ -6207,7 +6207,247 @@ change.
 
 ---
 
-*Document version: 1.27 — May 2026*
+## CS-53 — StyleDialog Notebook restructure + Provenance tab (Phase 4ab)
+
+**Source files.** `style_dialog.py` (one module-level frozenset of
+graph-event types, one constants tuple for tab titles, one new
+state-display dict, three new pure helpers, one restructured body
+builder, one new tab builder, one new render helper, one new
+refresh method, one extended graph-event handler).
+
+**Purpose.** Two visible deliverables that share the StyleDialog
+shell and close the user-flagged Phase 4x friction #3 in full plus
+the "tabbed shape" lock decision (i) of Phase 4x friction #2:
+
+1. **`ttk.Notebook` body** — closes the Phase 4x friction #2 lock
+   decision (i). The single-pane vs tabbed-shape question has been
+   open since Phase 4aa shipped the label-rename Entry; CS-53
+   commits to **tabbed**. Tab 1 "Style" hosts the existing
+   universal + conditional sections verbatim (rows + relative
+   ordering preserved per the CS-52 lock relaxation; only the
+   parent widget changed). Tab 2 "Provenance" is the read-only
+   ancestor walk. The bottom Apply / ∀ / Save / Cancel row stays
+   outside the Notebook so it's visible regardless of which tab is
+   active. Phase 4x friction #2's "tighten organisation for scale"
+   half (LabelFrame groupings) stays carry-forward — it's
+   independent of the Notebook restructure and pairs naturally
+   with future per-type sections.
+2. **Provenance tab** — closes Phase 4x friction #3 (USER-FLAGGED)
+   in full. The right-sidebar's per-row history dropdown (the `▿`
+   chevron) is intentionally compact; CS-53 surfaces a more
+   detailed view inside the gear-icon dialog: ancestor walk back
+   to the RAW_FILE / multi-input source, pretty-printed op params,
+   engine + version, implementation hash (CS-45 with sentinel
+   marker preserved through truncation), state badge with
+   per-state foreground colour. Read-only this phase — the "Add to
+   graph" gesture (Phase 4x friction #4) is a separate register
+   entry that depends on this one.
+
+**Module-level constants (locked Phase 4ab step 2).**
+- `_NOTEBOOK_TAB_TITLES: tuple[str, ...] = ("Style", "Provenance")`.
+  Tab order is Style first (default-active on dialog open,
+  preserves the pre-CS-53 UX) and Provenance second. Reordering
+  would change the default tab on dialog open. Pinned by
+  `test_notebook_tab_titles_shape` + `test_notebook_tab_titles_is_tuple`.
+- `_PROVENANCE_STATE_DISPLAY: dict[NodeState, tuple[str, str]]`.
+  Maps each NodeState to `(display_text, foreground_colour)` —
+  PROVISIONAL `("provisional", "#444444")`, COMMITTED
+  `("committed", "#004400")`, DISCARDED `("discarded", "#888888")`.
+  DISCARDED renders dimmed grey per Phase 4ab Decision (iv); the
+  table covers every NodeState variant (pinned by
+  `test_state_display_table_covers_every_state` so adding a new
+  state forces a matching display entry).
+- `_PROVENANCE_REFRESHING_EVENTS: frozenset` — the five graph
+  event types that mutate the displayed ancestor walk
+  (`NODE_LABEL_CHANGED`, `NODE_DISCARDED`, `NODE_COMMITTED`,
+  `NODE_ADDED`, `EDGE_ADDED`). Membership pinned by
+  `test_provenance_refreshing_events_membership` so a future
+  expansion (e.g. the dialog grows to display style on ancestors)
+  must explicitly grow the set rather than silently widening
+  through `_on_graph_event`.
+
+**Pure helpers (Tk-free, fully unit-tested).**
+- `_provenance_state_display(state) -> (display_text, fg_colour)` —
+  defensive wrapper around `_PROVENANCE_STATE_DISPLAY`. Falls
+  back to `(state.name.lower(), "#444444")` for any state the
+  table does not know about (forward-compat against future
+  NodeState variants).
+- `_format_provenance_op_params(params) -> str` — sorted-by-key
+  multi-line `key: repr(value)` pretty-printer. Empty / None
+  returns blank string so the caller can render an "(no params)"
+  placeholder. Stable output across runs (sorted keys) makes both
+  the test pin and reproducible screenshots trivial.
+- `_format_provenance_node_summary(node) -> dict[str, str]` —
+  reduces a DataNode or OperationNode to a flat dict of display
+  strings. Op-node summaries fold `params["mode"]` discriminator
+  into `type_text` (so `BASELINE` becomes `BASELINE / linear` for
+  the linear-mode variant); implementation hash gets a 12-char
+  prefix + ellipsis for display, with explicit "(unregistered)"
+  suffix when the hash is the operation_hash sentinel. Defensive
+  fallback for non-{DataNode, OperationNode} input — never fires
+  in practice (only those two classes live in `ProjectGraph`) but
+  keeps the dialog resilient against stale caches.
+
+**Body restructure — `_build_body`.** The body Frame now hosts a
+`ttk.Notebook` instead of the universal + conditional sections
+directly. Tab 1 "Style" (a `tk.Frame` with `padx=12, pady=8`)
+hosts the universal + conditional sections; Tab 2 "Provenance"
+(a `tk.Frame`) hosts the Canvas + Scrollbar pair. The Notebook
+calls `notebook.select(style_tab)` explicitly so the default-
+active tab is pinned even if a future "add a tab in front of
+Style" refactor reorders the children.
+
+**New attributes on the dialog instance.**
+- `self._notebook: ttk.Notebook` — the tab host.
+- `self._style_tab: tk.Frame` — Tab 1 content frame.
+- `self._provenance_tab: tk.Frame` — Tab 2 content frame.
+- `self._provenance_canvas: tk.Canvas` — vertical scrolling host.
+- `self._provenance_inner: tk.Frame` — child of the canvas; the
+  per-ancestor blocks live here.
+- `self._body` (existing) — now points at the Frame containing
+  the Notebook (was the Frame containing the sections directly).
+  No external code reads `self._body`, so the meaning shift is
+  internal-only.
+
+**Provenance tab build — `_build_provenance_tab(parent)`.** Eager
+construction at `__init__` (Decision (ii)). Creates a Canvas +
+Scrollbar pair packed onto the tab frame; an inner Frame is
+embedded via `canvas.create_window((0, 0), …, anchor="nw")`. The
+inner Frame's `<Configure>` event refreshes the canvas's
+`scrollregion` so vertical scrolling works as content height
+changes. Then delegates to `_render_provenance_blocks(inner)`.
+
+**Provenance content render — `_render_provenance_blocks(container)`.**
+Walks `graph.provenance_chain(self._node_id)` (existing helper —
+no `graph.py` change needed; the original register entry's
+proposed `ancestors_of` would return the same list). For each
+ancestor in topological order:
+- A `tk.Frame` block with `padx=12, pady=6` packed `fill=X`.
+- Header row: bold label · type tag (DataNodes only) · separator
+  + state badge. Foreground colour comes from
+  `_provenance_state_display(node.state)`; DISCARDED ancestors
+  render dimmed.
+- Body block (OperationNodes only): pretty-printed params
+  (`(no params)` placeholder when empty), engine + version line,
+  truncated implementation hash. Body uses `font=("Courier", 8)`
+  for params alignment.
+- A `ttk.Separator` between blocks (not after the last).
+- Empty chain: shows `(no ancestors)` placeholder.
+
+**Refresh — `_refresh_provenance()`.** Destroys the inner Frame's
+children and re-renders from scratch. Cheap: ancestor walk is
+bounded by graph size; widget tree is small. Idempotent — runs
+on a destroyed inner Frame as a no-op (try/except around the
+destroy + render). Defends against partial construction (the
+attribute may not exist yet during the call — no-op).
+
+**Graph-event extension — `_on_graph_event`.** Restructured to
+run Provenance refresh BEFORE the existing same-node early
+return, but AFTER the `_suspend_writes` guard:
+```
+if self._suspend_writes:
+    return
+if event.type in _PROVENANCE_REFRESHING_EVENTS:
+    self._refresh_provenance()
+if event.node_id != self._node_id:
+    return
+# existing branches: NODE_STYLE_CHANGED, NODE_LABEL_CHANGED
+```
+The Provenance rebuild fires on any node's qualifying event (any
+ancestor in any chain might be affected); the style + label
+refresh paths still gate on the dialog's own node id. The
+`_suspend_writes` gate covers both — the dialog's own keystroke-
+driven label rename does NOT rebuild Provenance per keystroke
+(deliberate perf trade-off; bottom-of-chain block is briefly
+stale during a typing session, refreshes on the next external
+event or a dialog re-open).
+
+**Locks.**
+- `_NOTEBOOK_TAB_TITLES` content + tuple type. Reordering would
+  change the default-active tab on dialog open. Pinned by
+  `test_notebook_tab_titles_shape` + `test_notebook_tab_titles_is_tuple`.
+- `_PROVENANCE_STATE_DISPLAY` covers every `NodeState` variant
+  with the documented `(text, colour)` pairs. Pinned by
+  `test_state_display_table_covers_every_state` +
+  `test_state_display_provisional` +
+  `test_state_display_committed` +
+  `test_state_display_discarded_is_dimmed`.
+- `_PROVENANCE_REFRESHING_EVENTS` membership = exact five-element
+  frozenset above. Drift would silently widen or narrow which
+  graph mutations refresh the Provenance tab. Pinned by
+  `test_provenance_refreshing_events_membership`.
+- `_format_provenance_op_params` sorted-by-key contract. Pinned
+  by `test_format_op_params_sorted_by_key`.
+- `_format_provenance_node_summary` flat-dict keys (`kind`, `id`,
+  `label`, `type_text`, `state_text`, `state_colour`,
+  `params_text`, `hash_text`, `engine_text`). Implementation
+  hash 12-char prefix + ellipsis pinned by
+  `test_summary_op_node_implementation_hash_truncated`. The
+  unregistered: sentinel survives truncation as a 24-char prefix
+  + " (unregistered)" suffix, pinned by
+  `test_summary_op_node_unregistered_hash_keeps_marker`.
+- `_build_provenance_tab` creates the Canvas + Frame pair as
+  named attributes. Pinned by
+  `test_provenance_tab_canvas_exists`.
+- `_render_provenance_blocks` topological order (root → self).
+  Pinned by `test_chain_renders_in_topological_order`.
+- DISCARDED ancestors render with foreground `#888888`. Pinned
+  by `test_discarded_ancestor_renders_dimmed`.
+- Bottom button row stays outside the Notebook (visible
+  regardless of active tab). Pinned by
+  `test_button_row_outside_notebook`.
+- `notebook.select(style_tab)` — Style is the default-active tab
+  on dialog open. Pinned by `test_style_tab_is_default_active`.
+- The graph-event handler's three-stage structure
+  (`_suspend_writes` early-return → Provenance refresh →
+  same-node early-return → style/label branches) is pinned by
+  the contrast pair
+  `test_self_keystroke_rename_skips_provenance_rebuild` (gates on
+  guard) +
+  `test_external_rename_does_rebuild_provenance` (refreshes when
+  guard is False) — both halves of the perf trade-off stay
+  honoured.
+
+**What changes when this lock relaxes.** The "tighten organisation
+for scale" half of Phase 4x friction #2 (LabelFrame groupings or
+per-type sub-tabs inside Tab 1 "Style") is the natural next
+relaxation: the universal section's existing rows + the new
+"Label:" row + the gated "Y axis:" row keep their relative
+ordering, only the parent widget changes (matching the CS-52 lock
+relaxation pattern). The "Add to graph" gesture (Phase 4x
+friction #4) extends the Provenance tab with a per-ancestor
+button that materialises a discarded ancestor as a live node;
+this would add a write path inside the Provenance tab and
+require revisiting Decision (v) ("Provenance is read-only this
+phase") explicitly.
+
+**Implementation notes.**
+- `graph.provenance_chain` was reused rather than introducing a
+  new `ProjectGraph.ancestors_of` helper as the original register
+  entry suggested. The two return the same topological-sorted
+  list (ancestors + self in order); reusing the existing helper
+  avoids a `graph.py` change and keeps the test surface narrow.
+- Self-keystroke rename leaves the Provenance bottom-of-chain
+  block stale until the next external event or dialog re-open.
+  The cost of a per-keystroke Provenance rebuild was deemed
+  higher than the cost of stale display during typing. See
+  Phase 4ab friction list for the revisit-trigger.
+- Mouse-wheel scrolling is NOT bound to the Provenance Canvas
+  this phase. Standard tkinter Canvas+Scrollbar pattern — wheel
+  events do not auto-route. The user has to drag the scrollbar
+  manually for long ancestor chains. See Phase 4ab friction list
+  for the cheap fix.
+- The Provenance refresh fires for graph events on any node, not
+  just ancestors of the dialog's own node. Wasted work for graphs
+  with many disjoint chains; the per-rebuild cost is small enough
+  (BFS bounded by graph size) that this hasn't been observed as a
+  problem. Cheap optimisation for a future session: cache the
+  ancestor set at construction; gate the refresh on
+  `event.node_id in ancestor_set`.
+
+---
+
+*Document version: 1.28 — May 2026*
 *1.1: CS-13 implementation notes added in Phase 4a.*
 *1.2: CS-14 Plot Settings Dialog added in Phase 4b.*
 *1.3: CS-15 UV/Vis Baseline Correction + CS-04 implementation
@@ -6736,5 +6976,51 @@ visibility-matrix in TestStyleDialogYAxisVisibility + 10 label-
 rename in TestStyleDialogLabelRename). Phase 4aa friction list:
 six 🟢 Claude-surfaced polish notes, none promoted to register
 entries (user-accepted at step 5).*
+*1.28: Phase 4ab — StyleDialog Notebook restructure + Provenance
+tab (CS-53). Closes Phase 4x friction #3 (USER-FLAGGED "Per-node
+parameter window: add a Provenance tab") in full plus the
+"tabbed shape" lock decision (i) of Phase 4x friction #2
+(USER-FLAGGED "StyleDialog must surface ALL node-table
+parameters … + tighten organisation for scale"). The dialog body
+becomes a `ttk.Notebook` with Tab 1 "Style" hosting the existing
+universal + conditional sections verbatim (rows + relative
+ordering preserved per the CS-52 lock relaxation; only the parent
+widget changes) and Tab 2 "Provenance" hosting the read-only
+ancestor walk. Bottom Apply / ∀ Apply to All / Save / Cancel row
+stays outside the Notebook so it's visible regardless of which
+tab is active. New module-level constants: `_NOTEBOOK_TAB_TITLES`
+(tuple, locks tab order); `_PROVENANCE_STATE_DISPLAY` (NodeState →
+display text + foreground colour, with DISCARDED dimmed grey
+#888888); `_PROVENANCE_REFRESHING_EVENTS` (the five graph-event
+types that mutate the displayed walk —
+NODE_LABEL_CHANGED / NODE_DISCARDED / NODE_COMMITTED /
+NODE_ADDED / EDGE_ADDED). Three new pure helpers
+(`_provenance_state_display`, `_format_provenance_op_params`,
+`_format_provenance_node_summary`) reduce graph nodes to display
+strings — Tk-free, fully unit-tested. The Provenance tab uses a
+Canvas + Scrollbar pair with an inner Frame for the per-ancestor
+blocks; eager construction at `__init__` (Decision (ii)). Each
+block carries a header (label · type · state badge) plus, for
+OperationNodes, a Courier body block with pretty-printed params,
+engine + version, and a 12-char-prefix truncated implementation
+hash. The "(unregistered)" sentinel from `operation_hash` survives
+truncation as an explicit suffix marker. DISCARDED ancestors
+render unfiltered with the dimmed foreground colour (Decision
+(iv)). `_on_graph_event` restructured to run a Provenance rebuild
+before the existing same-node early-return; the
+`_suspend_writes` guard still gates BOTH halves so the dialog's
+own keystroke-driven label rename does NOT rebuild Provenance per
+keystroke (perf trade-off accepted in Phase 4ab; bottom-of-chain
+block is briefly stale during typing). `graph.provenance_chain`
+reused as the ancestor walk source; no `graph.py` change needed.
+CS-52 invariants all preserved (`_Y_AXIS_VISIBLE_NODETYPES`,
+`_build_label_row`, `_write_label_partial`, `_snapshot_label`,
+`_do_cancel` revert order — all byte-identical). CS-50 + CS-44 +
+CS-46 unaffected. 878 tests, all green (832 + 46 new: 22
+pure-module helpers in `TestStyleDialogPhase4abHelpers` + 9
+Notebook structure in `TestStyleDialogPhase4abNotebook` + 15
+Provenance tab in `TestStyleDialogPhase4abProvenanceTab`).
+Phase 4ab friction list: TBD — populated by step 5 + step 6 of
+the bookkeeping commit.*
 *To be updated as Open Questions are resolved and new components
 are specified.*
