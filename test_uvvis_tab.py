@@ -1201,13 +1201,14 @@ class TestUVVisTabBaseline(unittest.TestCase):
         self.assertEqual(len(items_after), 2,
                          "subject list should now include the BASELINE node")
 
-    # ---- Phase 4p (CS-31): suppress identical re-applies ------------
+    # ---- Phase 4ac (CS-54): identical re-apply creates a new sibling ----
 
-    def test_apply_baseline_suppresses_identical_re_apply(self):
-        # Two clicks with identical params produce one BASELINE node,
-        # not two. The right-side ScanTreeWidget would otherwise group
-        # them into a bogus "sweep (2 variants)" leader row even though
-        # nothing actually swept.
+    def test_apply_baseline_identical_re_apply_creates_new_sibling(self):
+        # Phase 4ac (CS-54) dropped CS-31's dedup gate. Two clicks
+        # with identical params now produce TWO PROVISIONAL BASELINE
+        # OperationNodes, each owning a fresh DataNode child. This
+        # is the workflow the user flagged: re-applying a process
+        # you tweaked once must not be silently blocked.
         self._add_uvvis("u1")
         items = self.tab._shared_subject_cb.cget("values")
         if isinstance(items, str):
@@ -1222,13 +1223,16 @@ class TestUVVisTabBaseline(unittest.TestCase):
         n_after_first = len(self.graph.nodes)
 
         second = self.tab._apply_baseline()
-        self.assertIsNone(second, "identical re-apply must return None")
-        self.assertEqual(
-            len(self.graph.nodes), n_after_first,
-            "identical re-apply must NOT add any nodes",
+        self.assertIsNotNone(
+            second, "identical re-apply must NOT be blocked",
         )
-        # Status label gets the duplicate-apply message.
-        self.assertIn(
+        self.assertEqual(
+            len(self.graph.nodes), n_after_first + 2,
+            "identical re-apply must add one op + one data node",
+        )
+        # No "already applied" status spam — the dedup status branch
+        # is gone with the gate.
+        self.assertNotIn(
             "already", str(self.tab._status_lbl.cget("text")),
         )
 
