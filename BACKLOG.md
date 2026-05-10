@@ -1620,7 +1620,7 @@ subsequent Phase 4 session.**
 | ⏳ | 🟢 | **Parallelize heavy-compute paths (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4u (step 5 elicitation). Today every `compute_*` runs synchronously on the Tk event thread — fine for the current set (linear / polynomial / spline / scattering / scattering+offset / rubberband / savgol smoothing / second derivative / peak picking) which all return in tens of milliseconds on typical UV/Vis grids. The expensive cases that motivate parallelism are **future**: SVD on a large multinode dataset, MCR-ALS iteration, MC bootstrap (when added), Apply-to-All across a large dataset (each apply independent — embarrassingly parallel). **Architecture proposal:** introduce `compute_async` companions that return a `concurrent.futures.Future` and a "compute panel busy" UI state; the Tk event loop polls on `<<ComputeDone>>` virtual events. For NumPy-heavy work `concurrent.futures.ProcessPoolExecutor` releases the GIL; for I/O-bound work (file ingest) `ThreadPoolExecutor` is enough. Pairs with the diagnostic-console register entry (long-running ops surface progress). Defer until at least one user-reported "the UI froze for N seconds" — today's compute set doesn't justify the complexity |
 | ⏳ | 🟡 | **`_absorbance_to_y` should not transform SECOND_DERIVATIVE values** | Surfaced Phase 4u while writing the multi-axis tests. Pre-existing bug, not introduced by Phase 4u: when `_y_unit` is `"%T"`, `_absorbance_to_y` clips values to `[-10, 10]` and applies `100·10^(-A)` — this conversion is meaningful for absorbance but corrupts d²A/dλ² values (which are typically `~0.001` and can be negative, so the clip → `100·10^(-A)` mapping produces nonsense). Fix: gate the conversion on the node's NodeType — only UVVIS / BASELINE / NORMALISED / SMOOTHED really live in absorbance space; SECOND_DERIVATIVE always renders as raw d²A/dλ² regardless of the y-unit toggle (the secondary y-axis label already encodes the unit context post-CS-44, so the toggle doesn't need to mutate the values). Touches `uvvis_tab._redraw` per-node loop (pass NodeType into the conversion or branch on it before calling). Test impact: a new `test_second_derivative_values_unchanged_by_percent_t_y_unit` in `TestUVVisTabSecondDerivativeIntegration` |
 | ✅ | 🟢 | **Per-style `y_axis` override hook + StyleDialog row (CS-44 follow-up)** | Phase 4u Decision 1 deferred the per-style override (`node.style.get("y_axis")`) per the user's "Default only for now is okay" decision. The hook is wired into `_resolve_y_axis_role` as a one-line addition (read style first, fall back to per-NodeType default); the StyleDialog universal-section row is the bigger lift — a new `ttk.Combobox` choosing `"primary" / "secondary" / "tertiary"`, threaded through `_BULK_UNIVERSAL_KEYS`. Useful when a user wants to send a specific SECOND_DERIVATIVE node back to primary (small-magnitude derivatives that share scale with their parent) or send a UVVIS reference spectrum to a third axis. Defer until a user reports needing it. **Resolved Phase 4y (CS-50):** `node_styles.default_spectrum_style` adds `style["y_axis"]: str \| None` (default `None` = follow the per-NodeType default; non-None = literal CS-44 axis role overrides per-node); `_resolve_y_axis_role` grows an optional `style: Mapping \| None = None` argument and a one-line short-circuit at the front (override beats default; malformed values fall through). Renderer threads `node.style` at three call sites: per-node main loop, BASELINE-curve dashed overlay (resolver moved INSIDE per-bn body so a BASELINE on "secondary" puts both its main render AND its dashed overlay on the same axis), PEAK_LIST scatter loop. StyleDialog universal section gains a read-only `ttk.Combobox` row labelled "Y axis:" with options `["(default)", "primary", "secondary", "tertiary"]`; "(default)" round-trips to `None`. Decision lock taken: (i) cross-typed Apply auto-inherits parent's effective role on the new node IFF NodeType-defaults differ — `SmoothingPanel._apply` writes `style["y_axis"] = parent_effective_role` for smoothed-of-derivative outputs (closes Phase 4x friction #6); (ii) "(default)" = literal `None` semantics; inheritance is a separate apply-time mechanism that writes a literal role string; (iii) `y_axis` is intentionally absent from `_BULK_UNIVERSAL_KEYS` (parallel to Phase 4d's `visible` / `in_legend` carve-out — bottom ∀ Apply-to-All would too easily collapse derivatives onto primary), but the per-row ∀ button widens its scope to every renderable node (UVVIS / BASELINE / NORMALISED / SMOOTHED / SECOND_DERIVATIVE / PEAK_LIST) via `_on_uvvis_apply_to_all`'s special-case for the key. 35 new tests (7 pure-helper + 2 default-style + 16 StyleDialog Combobox + 4 renderer override + 3 cross-typed inheritance + 3 fan-out-scope). 781 tests, all green. Persistence (CS-46) auto-rides — the new key sits in the existing style-dict round-trip; no manifest schema change |
-| ⏳ | 🟡 | **Y-axis Combobox row appears on non-UVVis StyleDialog instances (Claude-surfaced Phase 4y)** | The CS-50 "Y axis:" row landed in the StyleDialog *universal* section so it appears for every NodeType — XANES / EXAFS / TDDFT / FEFF_PATHS / BXAS_RESULT / DEGLITCHED / AVERAGED — even though only `uvvis_tab._redraw` reads the override today. The persisted `style["y_axis"]` is harmless on non-UVVis nodes (their renderers don't pass it through `_resolve_y_axis_role`), but the user-visible Combobox is a misleading affordance there: changing it does nothing. Two paths: (a) gate the universal-section row by NodeType (only show for UVVis-tab NodeTypes today), tightening once each tab's renderer joins the routing system; (b) leave it universal but tied to the open carry-forward "Lift multi-axis routing to plot_widget.py" entry — once routing lifts, every tab's renderer reads the override and the affordance becomes meaningful. (b) is structurally cleaner; (a) is the cheap stop-gap. Defer until a user reports the affordance as confusing or until the lift register entry lands |
+| ✅ | 🟡 | ~~**Y-axis Combobox row appears on non-UVVis StyleDialog instances (Claude-surfaced Phase 4y)**~~ ✅ Resolved in Phase 4aa (CS-52). Path (a) (NodeType-gate the row) landed: the new module-private `_Y_AXIS_VISIBLE_NODETYPES: frozenset[NodeType]` mirrors `uvvis_tab._DEFAULT_Y_AXIS_BY_NODETYPE.keys()` exactly (UVVIS / BASELINE / NORMALISED / SMOOTHED / PEAK_LIST / SECOND_DERIVATIVE), and `_build_universal_section` wraps the `_build_y_axis_row` call in `if self._node_type in _Y_AXIS_VISIBLE_NODETYPES`. For TDDFT / FEFF_PATHS / XANES / EXAFS / DEGLITCHED / AVERAGED / BXAS_RESULT the Combobox is now suppressed — the affordance no longer appears where it would be a no-op. `_read_universal_values` skips the key automatically when its var isn't in `_control_vars`, so Save / Apply / ∀ paths stay self-consistent. The drift test `test_y_axis_visible_node_types_match_routing_table` pins the gate against the routing table so a future widening of `_DEFAULT_Y_AXIS_BY_NODETYPE` (when path (b) — the multi-axis-routing lift to `plot_widget.py` — eventually lands) cannot silently reintroduce the misleading affordance. 15 new integration tests (six routing-NodeType "present" cases + seven non-routing "absent" cases + two self-consistency cases) plus 2 pure-module drift tests. |
 | ⏳ | 🟢 | **Per-NodeType primary y-axis label for override use case (CS-50 follow-up)** | Surfaced by Claude during Phase 4y. CS-44's `_NON_PRIMARY_Y_LABEL` table is keyed by `(NodeType, x_unit)` and only carries entries for SECOND_DERIVATIVE — the renderer relies on the *NodeType-default* for primary's label (always "Absorbance" / "Transmittance (%)" today). With the CS-50 override hook landed, two minor surprise cases exist: (a) UVVIS overridden to "secondary" leaves the secondary axis unlabelled (no `(UVVIS, x_unit)` entry in the table); (b) SECOND_DERIVATIVE overridden to "primary" keeps the absorbance label, which is wrong for d²A values. Reasonable degradation today (the user explicitly chose the override), but a future polish could introduce a `_PRIMARY_Y_LABEL: dict[(NodeType, x_unit), str]` companion table so primary's label tracks the *first* node landing on it (parallel to the existing non-primary path), or — simpler — fold both into a single `_Y_LABEL_BY_ROLE_FIRST_NODE_TYPE` lookup. Touches `_redraw`'s y-label resolution + a small expansion of `_NON_PRIMARY_Y_LABEL` to cover UVVIS / NORMALISED / etc. on every x-unit. Cross-refs Phase 4u friction #9 (`_absorbance_to_y` corrupts d²A on %T) — both surface "primary axis assumes absorbance values" mistakes. Defer until a user reports actual confusion |
 | ⏳ | 🟢 | **DRY cross-typed-Apply y_axis inheritance helper (CS-50 architectural debt)** | Surfaced by Claude during Phase 4y. The CS-50 inheritance block (set `style["y_axis"]` on a new node when its NodeType-default differs from the parent's effective role) lives inside `SmoothingPanel._apply`, today the only widened cross-type panel under CS-49. If a future panel widens its `ACCEPTED_PARENT_TYPES` cross-type (NormalisationPanel accepting SECOND_DERIVATIVE; SecondDerivativePanel accepting NORMALISED on a non-UVVis x-axis; etc.), each panel's `_apply` would copy-paste the same six-line block. Move it into `node_styles.py` (or a new `axis_inheritance.py`) as `inherit_y_axis_for_cross_typed_apply(parent_node, new_node_type) -> str \| None`; every panel calls it next to its `default_spectrum_style(colour)` call. Cheap one-time refactor; defer until a second cross-typed-Apply path lands so the abstraction has two consumers. Cross-refs the four open audit-held tuples (`NormalisationPanel` / `PeakPickingPanel` / `SecondDerivativePanel`) — the next CS-49-style widening will probably be the trigger |
 | ⏳ | 🟢 | **Hover/status-bar readout for active y-axis (CS-44 follow-up)** | Surfaced Phase 4u step 5. Once two y-axes coexist (CS-44), the matplotlib toolbar's coordinate readout reports primary-axis values only — a user mousing over a SECOND_DERIVATIVE point sees an absorbance number, not a d²A value. Likely shape: bind a `motion_notify_event` on the canvas, walk every populated `_axes_by_role` axis, transform the cursor's display coords into each axis's data coords, and surface the per-axis readout in a dedicated status strip below the toolbar. Cross-refs the diagnostic-console register entry — both add ambient information surfaces. Defer until two-axis use is common enough to motivate the complexity |
@@ -1658,7 +1658,7 @@ subsequent Phase 4 session.**
 | ⏳ | 🟢 | **Re-calibrate sash on first NODE_ADDED after construction (CS-47 follow-up, USER-CONFIRMED)** | Surfaced Phase 4w + user-confirmed. CS-47's `_calibrate_sidebar_width` fires once on `after_idle` after the tab is built, but at that point the graph is empty — `widest_label_pixel_width()` returns 0 and the sash falls through to `_SIDEBAR_MIN_WIDTH_PX = 240`. After the user loads a project (or imports files), longer labels appear but the sash isn't re-bumped (the `_sidebar_calibrated` flag has flipped True). User-acceptable trade-off — predictability beats opportunistic re-bumping for typical workflows — but a simple follow-up: subscribe to `GraphEvent.NODE_ADDED` and clear `_sidebar_calibrated` when the first DataNode appears (one-shot refresh on first content). **Lock decision needed:** does the re-bump fire for every load or only when the *current* widest label exceeds the previously-calibrated target? Defer until the missing re-bump is observed in real use |
 | ✅ | 🟢 | ~~**Measure actual row overhead instead of static `_label_overhead_px` estimate (CS-47 follow-up)**~~ ✅ Resolved in Phase 4z (CS-51). The width-aware `_label_overhead_px(width=…)` path now sums `_CELL_MIN_PX[c]` for the always-visible cells PLUS the optional cells revealed at `width` per `_RESPONSIVE_THRESHOLDS_PX`, eliminating the static-estimate drift for the optional-cell axis (the dominant source of error). The commit-cell (🔒, provisional only) drift remains as ≤ 22 px noise, but per-cell-vocabulary truth replaces the post-pack `winfo_reqwidth()` measurement that this entry originally proposed — same goal, simpler implementation, no Tk geometry coupling. Spirit honoured. |
 | ✅ | 🟡 | ~~**Loaded Spectra responsive layout drops the ✕ when the swatch reappears at intermediate widths (USER-FLAGGED)**~~ ✅ Resolved in Phase 4z (CS-51). Architecture (a) landed: `_label_overhead_px(width=…)` is now width-aware and sums the optional cells revealed at the current canvas width per CS-26's `_RESPONSIVE_THRESHOLDS_PX`. `_current_label_cap` forwards the canvas width into it, so the dynamic label cap shrinks the moment the swatch reappears at 240 px. CS-26 thresholds + `_label_char_capacity` signature unchanged (decision (iii) — no threshold-value relaxation). Cap recompute lifecycle unchanged (decision (ii) — every `_apply_responsive_layout` call). Calibration site unchanged (no-args path is byte-equivalent to Phase 4w). Pinned by `TestComputeLabelOverheadPx` / `TestVisibleOptionalCellsForWidth` / `TestLabelOverheadPxWidthAware` (19 pure tests) + `TestDynamicLabelCapWiringPhase4z` (5 integration tests). |
-| ⏳ | 🟡 | **StyleDialog must surface ALL node-table parameters (incl. label rename) + tighten organisation for scale (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4x (step 5 elicitation). Today the per-node StyleDialog (gear icon) covers the universal style schema (`color`, `linestyle`, `linewidth`, `alpha`, `visible`, `in_legend`, `fill`, `fill_alpha`) plus per-NodeType extensions (CS-05 + CS-36 `show_baseline_curve`). The user has flagged that as more parameters land (label rename gesture, plot_kind from the markers register entry, `y_axis` from carry-forward T, etc.), the dialog will become unwieldy without a re-organisation pass. **Architecture proposal (lock pending):** restructure the dialog around grouped sections — Appearance (color / swatch / linestyle / linewidth / alpha), Legend (in_legend, label-rename Entry), Fill (fill / fill_alpha), Per-type (show_baseline_curve, plot_kind, y_axis, …); each group is a `tk.LabelFrame` so the visual grouping is obvious. **First concrete add:** label-rename Entry — today the only path to rename a node is to double-click the row label in the sidebar (CS-33 `_begin_label_edit`); having it inside the StyleDialog mirrors how the user thinks about "node properties" and avoids competing for the gesture's attention. Cross-refs: CS-33 (label-edit machinery), CS-44 follow-up T (per-style `y_axis` row), the markers register entry above (plot_kind / marker / marker_size). **Lock decisions:** (i) does the dialog get a tabbed shape (Appearance / Provenance / Per-type) — pairs with the next register entry below — or stay single-pane with LabelFrame groupings? (ii) does the label-rename Entry surface a validation error inline (e.g. duplicate-label warning) or rely on the existing CS-33 rules? (iii) which existing widgets lift into per-type groupings vs stay universal? **Affected:** `style_dialog.py` (re-layout + new label-rename Entry), tests for the new section grouping + label-rename round-trip. Pairs with C and D below (same window) |
+| ⏳ | 🟡 | **StyleDialog must surface ALL node-table parameters (incl. label rename) + tighten organisation for scale (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4x (step 5 elicitation). Today the per-node StyleDialog (gear icon) covers the universal style schema (`color`, `linestyle`, `linewidth`, `alpha`, `visible`, `in_legend`, `fill`, `fill_alpha`) plus per-NodeType extensions (CS-05 + CS-36 `show_baseline_curve`). The user has flagged that as more parameters land (label rename gesture, plot_kind from the markers register entry, `y_axis` from carry-forward T, etc.), the dialog will become unwieldy without a re-organisation pass. **Architecture proposal (lock pending):** restructure the dialog around grouped sections — Appearance (color / swatch / linestyle / linewidth / alpha), Legend (in_legend, label-rename Entry), Fill (fill / fill_alpha), Per-type (show_baseline_curve, plot_kind, y_axis, …); each group is a `tk.LabelFrame` so the visual grouping is obvious. **First concrete add:** label-rename Entry — today the only path to rename a node is to double-click the row label in the sidebar (CS-33 `_begin_label_edit`); having it inside the StyleDialog mirrors how the user thinks about "node properties" and avoids competing for the gesture's attention. Cross-refs: CS-33 (label-edit machinery), CS-44 follow-up T (per-style `y_axis` row), the markers register entry above (plot_kind / marker / marker_size). **Lock decisions:** (i) does the dialog get a tabbed shape (Appearance / Provenance / Per-type) — pairs with the next register entry below — or stay single-pane with LabelFrame groupings? (ii) does the label-rename Entry surface a validation error inline (e.g. duplicate-label warning) or rely on the existing CS-33 rules? (iii) which existing widgets lift into per-type groupings vs stay universal? **Affected:** `style_dialog.py` (re-layout + new label-rename Entry), tests for the new section grouping + label-rename round-trip. Pairs with C and D below (same window). **Phase 4aa partial (CS-52):** the **first concrete add** (label-rename Entry) landed in the universal section at the top of the grid — `_build_label_row` builds a `tk.Entry` bound to a `StringVar` whose `trace_add('write')` callback commits each keystroke through the new `_write_label_partial` helper, which routes via `graph.set_label` (label is a top-level DataNode slot, not a style key). Lock decisions taken for the partial: (i) **deferred** — single-pane with the new "Label:" row at the top of the existing universal grid; the LabelFrame re-org + tabbed-shape question stays open and pairs with C and D below in a future combined intent; (ii) **no inline validation** — match CS-33's sidebar gesture, accept any string; (iii) **no widget lifts** — all existing universal rows preserve their relative order (the lock-relaxation reading of "rows + their order stay verbatim"). Companion plumbing: `_snapshot_label` mirrors the existing style snapshot; `_do_cancel` restores both; `_on_graph_event` handles `NODE_LABEL_CHANGED` for sibling-rename refresh + dialog-title update. 10 new integration tests (`TestStyleDialogLabelRename`). **Carry-forward:** the LabelFrame groupings + tabs question (lock decision (i) above) + the rest of the parameter-coverage list (plot_kind from the markers register entry; future per-NodeType rows). |
 | ⏳ | 🟡 | **Per-node parameter window: add a Provenance tab (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4x (step 5 elicitation). The right-sidebar's per-row history dropdown (the `▿` chevron next to the label, opens an ad-hoc list of "Op A → Op B → Op C") is intentionally compact — but the user has asked for a more detailed view that lives inside the gear-icon dialog as a second tab. The new tab would show: ancestor walk back to the RAW_FILE / multi-input source, full op params for each step (params dict pretty-printed), timestamps, engine + engine_version, implementation hash (CS-45), status, log excerpts (when populated). **Architecture proposal (lock pending):** convert the StyleDialog to a `ttk.Notebook` shape — Tab 1 "Style" (today's content, possibly re-organised per the previous register entry); Tab 2 "Provenance" (the new view). Reuses the same Toplevel + button row (Apply · ∀ Apply to All · Save · Cancel). The provenance tab is read-only this phase; the "add historical node" gesture lands as the separate register entry below (D). **Lock decisions:** (i) is the provenance tab populated lazily (on-tab-switch) or eagerly (at dialog construction)? (ii) does it scroll vertically as a single column, or render as a tree with expandable nodes? (iii) does it show DISCARDED ancestors (history-style) or filter them? **Affected:** `style_dialog.py` (Notebook restructure), graph-walk helper for the ancestor list (likely a new `ProjectGraph.ancestors_of(node_id)` method), tests for the tab construction + the ancestor walk. Pairs with B above (same dialog) and D below (same tab — D adds a gesture, this entry adds the read-only view) |
 | ⏳ | 🟡 | **"Add to graph" gesture from a node's Provenance tab (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4x (step 5 elicitation). Once C lands (read-only Provenance tab), the user has asked for an "Add to graph" gesture per ancestor — clicking it materialises the historical ancestor as a new live node in the same graph without re-loading from disk. Concrete use case: the user has a SMOOTHED node loaded; they realise they want to compare the smoothed result against the underlying RAW_FILE / UVVIS parent; today the only path is to either (a) un-discard the parent (if it was discarded) or (b) re-load the source file via the LOAD path (which creates a fresh UVVIS DataNode with a different id, breaks the existing graph linkage to the SMOOTHED descendant). The new gesture would walk the ancestor chain, find the requested historical node, flip its `active` flag back to True (if currently inactive) OR clone it as a new live node parented on the same source. **Architecture (lock pending):** (a) does the gesture flip the existing node's `active` flag (cheap; preserves graph identity; couples to the existing CS-22 `_spectrum_nodes` filter), OR clone the node as a new id (preserves the historical node's state but creates a graph-edge fork)? (b) what's the gesture — button per provenance row, right-click, drag-and-drop into the sidebar? (c) does it emit a NODE_ADDED event (clone path) or NODE_STYLE_CHANGED + a re-render trigger (active-flip path)? **Affected:** `style_dialog.py` (the new gesture in the Provenance tab), `graph.py` (a new `restore_ancestor` or similar helper, depending on which architecture lands), `uvvis_tab._refresh_shared_subjects` (re-runs after the gesture so the resurrected node appears in the combobox), tests for both architectures. Pairs with C above (the tab the gesture lives on) AND with the existing 🟡 Trash can register entry (Trash + this gesture overlap conceptually — both surface "previously hidden" nodes) |
 | ⏳ | 🟢 | **Visual cue for derivative entries in the shared subject combobox (CS-49 follow-up)** | Surfaced Phase 4x (Claude). Now that `SECOND_DERIVATIVE` rows mix into the shared combobox alongside the four spectrum-shaped types (`_refresh_shared_subjects` widening), the user has no per-row glyph or grouping divider to tell at a glance "this is a derivative" vs "this is an absorbance-domain spectrum". Cheap polish: prefix derivative entries with a `d² ` glyph in the combobox display key (or insert a `─── d²A/dλ² ───` separator entry between the spectrum block and the derivative block). The latter is more disruptive (changes the value-list semantics — the separator can't be selected); the former is one-line in `_refresh_shared_subjects`. Defer until the user reports actual confusion picking among mixed entries; the audit-stability test `test_shared_combobox_orders_spectrum_then_derivative` already pins the spectrum-first ordering so visual scanning is at least left-to-right consistent |
@@ -2343,7 +2343,11 @@ Phase 4 session.**
    Entry (today the only path is the sidebar's CS-33
    double-click `_begin_label_edit`). **Cross-ref:** see the
    new register entry above. Pairs with friction #3 + #4 below
-   (same window).
+   (same window). **Phase 4aa partial:** the label-rename
+   Entry shipped (CS-52, see register entry); the LabelFrame
+   re-org + tabbed-shape lock question (decision (i)) stays
+   open as the carry-forward — the canonical entry above is
+   still ⏳, narrower in scope.
 
 3. 🟡 **Per-node parameter window: add a Provenance tab
    (USER-FLAGGED).** User has asked for a more detailed
@@ -2436,7 +2440,7 @@ are documentation-style notes / cross-refs without new register
 entries. **Do not fix until the relevant subsequent Phase 4
 session.**
 
-1. 🟡 **Y-axis Combobox row appears on non-UVVis StyleDialog
+1. ~~🟡 **Y-axis Combobox row appears on non-UVVis StyleDialog
    instances (Claude-surfaced).** The CS-50 "Y axis:" row
    landed in the *universal* section so it appears for every
    NodeType — XANES / EXAFS / TDDFT / FEFF_PATHS / BXAS_RESULT
@@ -2446,7 +2450,14 @@ session.**
    is a misleading affordance there. Pairs with the open
    "Lift multi-axis routing to plot_widget.py" carry-forward —
    once that lifts, the affordance becomes meaningful for
-   every tab. **Cross-ref:** see the new register entry above.
+   every tab. **Cross-ref:** see the new register entry above.~~
+   ✅ Resolved in Phase 4aa (CS-52). Path (a) (NodeType-gate)
+   landed: `_Y_AXIS_VISIBLE_NODETYPES` mirrors the routing
+   table exactly; the row is now suppressed on the seven
+   non-routing NodeTypes. Drift test
+   `test_y_axis_visible_node_types_match_routing_table` pins
+   the gate so a future routing-table widening cannot
+   silently reintroduce the misleading affordance.
 
 2. 🟢 **Per-NodeType primary y-axis label gap when override
    reroutes nodes (Claude-surfaced).** Two minor surprises with
@@ -2557,6 +2568,92 @@ Phase 4 session.**
    tight or too-loose truncation surfaces in real use. Closes
    the residual portion of the now-✅ Phase 4w friction #6
    that wasn't addressed by the per-cell-vocabulary path.
+
+### Friction points carried forward from Phase 4aa
+
+These are concrete obstacles the next Phase 4 session will hit.
+Identified during Phase 4aa while landing the StyleDialog y-axis
+visibility predicate + label-rename Entry (CS-52) — closing
+Phase 4y friction #1 in full and the "first concrete add" half of
+Phase 4x friction #2 (USER-FLAGGED). All six items below are
+Claude-surfaced 🟢 polish notes flagged during step 5; none have
+new register entries (the user explicitly accepted no new items
+at step 5). **Do not fix until the relevant subsequent Phase 4
+session.**
+
+1. 🟢 **"Tighten organisation for scale" half of Phase 4x
+   friction #2 stays open (Claude-surfaced).** Phase 4aa
+   landed only the "first concrete add" — the label-rename
+   Entry. The LabelFrame re-org pass (Appearance / Legend /
+   Fill / Per-type groupings) and the open lock decision (i)
+   on tabbed shape vs single-pane are deferred. The canonical
+   Phase 4x friction #2 register entry stays ⏳ with an inline
+   "Phase 4aa partial" note; will likely combine with the
+   Phase 4x friction #3 + #4 register entries (Provenance tab
+   + "Add to graph" gesture) in a future intent — all three
+   live in the same window and the tabbed-shape question is
+   the natural pivot. **Cross-ref:** Phase 4x friction #2 + #3
+   + #4 canonical register entries above.
+
+2. 🟢 **Live-trace label commits = `NODE_LABEL_CHANGED` per
+   keystroke (Claude-surfaced).** The Phase 4aa label-rename
+   Entry uses `trace_add('write')` so every keystroke commits
+   through `graph.set_label`, firing one event per character.
+   Sliders behave the same way under the universal-section
+   live-write convention (every drag-tick fires
+   `NODE_STYLE_CHANGED`), so the convention is established —
+   but for a longer label string the volume is more
+   intentional. Could add a debounce (e.g. commit-after-200ms-
+   idle) or commit-on-blur if the noise becomes a problem.
+   Phase 4aa accepted the trade as deliberate (avoids the
+   "type, forget Enter, close, no save" footgun); revisit if
+   a user reports event-bus noise during typing.
+
+3. 🟢 **Two rename gestures coexist — sidebar's CS-33 double-
+   click + StyleDialog "Label:" Entry (Claude-surfaced).**
+   Both gestures route through `graph.set_label`, so
+   round-trip behaviour is identical (no validation, accept
+   any string). Two paths to the same change is cheap UX
+   debt; a future "tighten organisation" pass might prune the
+   sidebar gesture if the dialog Entry feels first-class.
+   Today both are first-class; cross-ref to Phase 4x friction
+   #2 (the same canonical register entry that motivated the
+   Entry).
+
+4. 🟢 **`_Y_AXIS_VISIBLE_NODETYPES` is structurally coupled to
+   `_DEFAULT_Y_AXIS_BY_NODETYPE` (Claude-surfaced doc-debt).**
+   The two sets are literally identical today (the drift test
+   pins them). A future cleanup could replace the explicit
+   constant with `frozenset(uvvis_tab._DEFAULT_Y_AXIS_BY_NODETYPE.keys())`
+   computed at import time, eliminating the constant + the
+   drift test in one pass. Trade-off: the explicit constant
+   is greppable + fast-fails on drift via the pinning test;
+   the computed expression adds an import-time `uvvis_tab`
+   dependency to `style_dialog.py`. Stuck with explicit +
+   drift-test for now. No register entry.
+
+5. 🟢 **Phase 4y friction #2 (per-NodeType primary y-axis
+   label gap) is now narrower in scope but still open
+   (Claude-surfaced cross-ref).** With the Phase 4aa
+   visibility gate, the override Combobox is only reachable
+   for the six routing NodeTypes — but the friction's two
+   cases (UVVIS overridden to "secondary" leaves the
+   secondary axis unlabelled; SECOND_DERIVATIVE overridden to
+   "primary" keeps the absorbance label, wrong for d²A
+   values) still apply. Phase 4aa did not touch
+   `_NON_PRIMARY_Y_LABEL`. **Cross-ref:** Phase 4y friction
+   #2 canonical register entry "Per-NodeType primary y-axis
+   label for override use case" stays open; no new register
+   entry.
+
+6. 🟢 **Cancel always re-emits the snapshot label (Claude-
+   surfaced).** `_do_cancel` calls
+   `_write_label_partial(self._snapshot_label)`
+   unconditionally; `set_label` early-returns when old==new
+   so the call is a no-op when the user never renamed, but
+   it costs a function dispatch on every Cancel. Cheap to
+   gate behind an inequality check; not worth the diff for
+   cosmetic gain. No register entry.
 
 ---
 
@@ -2772,7 +2869,7 @@ the resolving phase + commit SHA appended to the row.
 
 ---
 
-*Document version: 1.25 — May 2026*
+*Document version: 1.26 — May 2026*
 *1.1: Known Bugs register added 2026-04-27 after Phase 4b manual testing.*
 *1.2: Phase 4c — baseline correction lands; B-001 / B-003 / B-004
 resolved; Phase 4c friction points logged.*
@@ -3235,4 +3332,43 @@ heuristic constant. 805 tests, all green (781 + 24 new: 7 in
 TestComputeLabelOverheadPx + 7 in TestVisibleOptionalCellsForWidth
 + 5 in TestLabelOverheadPxWidthAware + 5 in
 TestDynamicLabelCapWiringPhase4z).*
+*1.26: Phase 4aa — StyleDialog y-axis visibility predicate +
+label-rename Entry (CS-52). Closes Phase 4y friction #1 in full
+(Claude-surfaced "Y-axis Combobox row appears on non-UVVis
+StyleDialog instances") and the "first concrete add" half of
+Phase 4x friction #2 (USER-FLAGGED "StyleDialog must surface ALL
+node-table parameters incl. label rename"). New module-private
+`_Y_AXIS_VISIBLE_NODETYPES: frozenset[NodeType]` mirrors
+`uvvis_tab._DEFAULT_Y_AXIS_BY_NODETYPE.keys()` exactly; the
+universal-section `_build_y_axis_row` call is gated by
+`if self._node_type in _Y_AXIS_VISIBLE_NODETYPES`, suppressing the
+Combobox on the seven non-routing NodeTypes (TDDFT / FEFF_PATHS /
+XANES / EXAFS / DEGLITCHED / AVERAGED / BXAS_RESULT) where it was
+a misleading affordance. Drift test pins the gate to the routing
+table so a future routing-table widening cannot silently re-
+introduce the affordance. New "Label:" Entry at the top of the
+universal grid; live `trace_add('write')` callback commits each
+keystroke through the new `_write_label_partial` helper, which
+routes via `graph.set_label` (label is a top-level DataNode slot,
+not a style key) under the same `_suspend_writes` re-entrancy
+guard `_write_partial` uses. `__init__` snapshots `node.label`;
+`_do_cancel` reverts both label and style. `_on_graph_event`
+gains a `NODE_LABEL_CHANGED` branch that refreshes the Entry +
+the dialog title in place (sibling rename gestures from the
+sidebar's CS-33 path or another open dialog flow through the
+same path). Lock decisions taken: (i) DEFER — single-pane with
+"Label:" at top this phase; LabelFrame re-org + tabbed-shape
+question pairs with Phase 4x friction #3 + #4 (Provenance tab +
+"Add to graph" gesture) in a future combined intent; (ii) NO
+inline validation — match CS-33's sidebar gesture behaviour;
+(iii) NO widget lifts — universal rows preserve relative order.
+Six new Claude-surfaced 🟢 friction items captured at step 5
+without new register entries: tighten-organisation half stays
+open; live-trace per-keystroke event volume; two rename gestures
+coexist; `_Y_AXIS_VISIBLE_NODETYPES` structurally coupled to
+routing table; Phase 4y friction #2 narrower in scope but still
+open; Cancel always re-emits snapshot label. 832 tests, all
+green (805 + 27 new: 2 in TestStyleDialogPhase4aaConstants + 15
+in TestStyleDialogYAxisVisibility + 10 in
+TestStyleDialogLabelRename).*
 *Supersedes: BACKLOG.md (original)*
