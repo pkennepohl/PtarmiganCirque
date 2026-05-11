@@ -1901,8 +1901,13 @@ class UVVisTab(tk.Frame):
             # routes the node to that axis regardless of its NodeType.
             role = _resolve_y_axis_role(node.type, node.style)
             target = get_axis(role)
-            if role != "primary":
-                first_node_type_per_role.setdefault(role, node.type)
+            # Phase 4ad (CS-55): track the first NodeType to land on
+            # *every* role, including primary. The label-resolution
+            # walk below reads this map to label each populated axis
+            # by its first node's NodeType — fixing the Phase 4ac
+            # friction #1 bug where the renderer hard-coded primary's
+            # ylabel from y-unit only.
+            first_node_type_per_role.setdefault(role, node.type)
             style  = node.style
             colour = style.get("color", "#333333")
             wl     = node.arrays["wavelength_nm"]
@@ -2029,7 +2034,6 @@ class UVVisTab(tk.Frame):
         auto_xlabels = {"nm":   "Wavelength (nm)",
                         "cm-1": "Wavenumber (cm⁻¹)",
                         "eV":   "Energy (eV)"}
-        auto_ylabels = {"A": "Absorbance", "%T": "Transmittance (%)"}
 
         xlabel_mode = cfg.get("xlabel_mode", "auto")
         xlabel_text = (auto_xlabels.get(unit, unit)
@@ -2041,31 +2045,42 @@ class UVVisTab(tk.Frame):
             fontweight=("bold" if cfg.get("xlabel_font_bold", True) else "normal"),
         )
 
-        ylabel_mode = cfg.get("ylabel_mode", "auto")
-        ylabel_text = (auto_ylabels.get(self._y_unit.get(), "")
-                       if ylabel_mode == "auto"
-                       else cfg.get("ylabel_text", ""))
-        ax.set_ylabel(
-            ylabel_text,
-            fontsize=cfg.get("ylabel_font_size", 10),
-            fontweight=("bold" if cfg.get("ylabel_font_bold", True) else "normal"),
-        )
+        # Phase 4ad (CS-55): the renderer routes the y-axis label
+        # through ``_resolve_y_axis_label`` once per populated role.
+        # The first NodeType to land on each role drives the label;
+        # absorbance-space NodeTypes (UVVIS / BASELINE / NORMALISED /
+        # SMOOTHED / PEAK_LIST) label by y-unit, derivatives by
+        # x-unit. ``ylabel_mode = "custom"`` is a primary-only
+        # affordance — when set, the user's text wins for primary and
+        # the loop below skips primary. Non-primary roles always use
+        # the auto path. Roles whose first NodeType has no registered
+        # label go unlabelled rather than guessing — strictly better
+        # than the pre-Phase-4ad behaviour, which hard-coded primary's
+        # ylabel from y-unit even when primary held a derivative or
+        # was empty entirely.
+        ylabel_mode      = cfg.get("ylabel_mode", "auto")
+        ylabel_font_size = cfg.get("ylabel_font_size", 10)
+        ylabel_bold      = cfg.get("ylabel_font_bold", True)
+        ylabel_fontweight = "bold" if ylabel_bold else "normal"
+        y_unit = self._y_unit.get()
 
-        # Phase 4u (CS-44): label each populated non-primary role
-        # from the (NodeType, x_unit) → label table. The first node
-        # type to land on a given role determines the role's label.
-        # Roles whose first NodeType has no registered label go
-        # unlabelled rather than picking a guess.
+        if ylabel_mode == "custom":
+            ax.set_ylabel(
+                cfg.get("ylabel_text", ""),
+                fontsize=ylabel_font_size,
+                fontweight=ylabel_fontweight,
+            )
+
         for role, first_ntype in first_node_type_per_role.items():
-            non_primary_label = _resolve_non_primary_y_label(first_ntype, unit)
-            if non_primary_label is None:
+            if role == "primary" and ylabel_mode == "custom":
+                continue
+            label_text = _resolve_y_axis_label(first_ntype, unit, y_unit)
+            if label_text is None:
                 continue
             self._axes_by_role[role].set_ylabel(
-                non_primary_label,
-                fontsize=cfg.get("ylabel_font_size", 10),
-                fontweight=(
-                    "bold" if cfg.get("ylabel_font_bold", True) else "normal"
-                ),
+                label_text,
+                fontsize=ylabel_font_size,
+                fontweight=ylabel_fontweight,
             )
 
         # Title: "auto" has no UV/Vis-derivable default so it falls
