@@ -422,6 +422,17 @@ class ScanTreeWidget(tk.Frame):
         # View state.
         self._show_hidden = tk.BooleanVar(value=False)
         self._expanded_history: set[str] = set()
+        # CS-57 (Phase 4af): user-driven NODE_GROUP selection model
+        # and chevron-expansion state. ``_selected_node_ids`` is the
+        # set of row ids the user has clicked to select (toggled on
+        # <ButtonRelease-1> rather than <Button-1> so a double-click
+        # rename gesture nets out to zero-toggle and leaves selection
+        # state unchanged). ``_expanded_groups`` controls whether a
+        # NODE_GROUP renders its members inline below the group row;
+        # collapsed by default so groups stay one row tall until the
+        # user explicitly drills in.
+        self._selected_node_ids: set[str] = set()
+        self._expanded_groups: set[str] = set()
         # node_id → tk.Frame for the row (top-level, not history sub-frame).
         self._row_frames: dict[str, tk.Frame] = {}
         # node_id → tk.Frame for the history sub-frame (if expanded).
@@ -508,6 +519,24 @@ class ScanTreeWidget(tk.Frame):
             command=self._rebuild,
         ).pack(side="left", padx=4, pady=2)
 
+        # CS-57 (Phase 4af): "Group selected" footer button. Sits on
+        # the right of the footer so it's discoverable without
+        # competing with the "Show hidden" toggle on the left.
+        # Enabled iff ``_selected_node_ids`` has ≥2 entries AND none
+        # of them is already in a group AND none of them is itself a
+        # NODE_GROUP. The state refresh runs on every selection
+        # toggle (via ``_toggle_row_selection``) and after every
+        # rebuild (via ``_rebuild``); see ``_refresh_group_button_state``
+        # for the predicate. The companion context-menu entry
+        # ("Group selected (N)") is enabled by the same predicate.
+        self._group_btn = tk.Button(
+            self._footer,
+            text="Group selected",
+            state="disabled",
+            command=self._group_selected,
+        )
+        self._group_btn.pack(side="right", padx=4, pady=2)
+
     # ------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------
@@ -567,17 +596,50 @@ class ScanTreeWidget(tk.Frame):
         ``node_filter`` predicate; respects ``active`` unless
         "Show hidden" is on. Returns insertion order — the dict is
         stable in 3.7+ so this gives deterministic ordering.
+
+        CS-57 (Phase 4af): NODE_GROUP rows pass the predicate by a
+        side door — the ``node_filter`` predicate is set per-tab
+        (e.g. UV/Vis allows only UVVIS-shaped types) and would
+        otherwise exclude groups. Groups are always allowed through
+        regardless of the predicate so the user's organisational
+        layer survives across tabs that share the same widget. Group
+        MEMBERS are excluded from the top-level list — they render
+        only under their expanded group row (CS-57 visual nesting
+        invariant); top-level rendering would double-render the
+        member and break the visual containment.
         """
         show_hidden = bool(self._show_hidden.get())
+
+        # CS-57: collect the set of node ids that belong to any
+        # active group, so they can be hidden from the flat top-level
+        # listing. ``ProjectGraph.group_of`` does this per-node-id
+        # but at O(N_groups) per call; building the set once is the
+        # rebuild-cost optimisation.
+        grouped_member_ids: set[str] = set()
+        for node in self._graph.nodes.values():
+            if (isinstance(node, DataNode)
+                    and node.type == NodeType.NODE_GROUP
+                    and node.state != NodeState.DISCARDED):
+                grouped_member_ids.update(
+                    node.metadata.get("member_ids", ())
+                )
+
         out: list[DataNode] = []
         for node in self._graph.nodes.values():
             if not isinstance(node, DataNode):
                 continue
             if node.state == NodeState.DISCARDED:
                 continue
-            if not self._predicate(node):
+            # CS-57: NODE_GROUP always passes the predicate (it's a
+            # view-layer aggregation, not a tab-specific data type).
+            is_group = node.type == NodeType.NODE_GROUP
+            if not is_group and not self._predicate(node):
                 continue
             if not node.active and not show_hidden:
+                continue
+            if node.id in grouped_member_ids:
+                # Render only under the expanded group, not at top
+                # level — see _rebuild's NODE_GROUP branch.
                 continue
             out.append(node)
         return out
@@ -592,6 +654,14 @@ class ScanTreeWidget(tk.Frame):
         Cheaper paths exist (insert one row, remove one row) but a
         full rebuild is fast enough for the dataset counts this
         widget is designed for (tens, not thousands).
+
+        CS-57 (Phase 4af): rebuild also prunes stale view state
+        (selection ids and expanded-group ids whose nodes are now
+        gone or DISCARDED) and refreshes the footer "Group selected"
+        button's enabled state. Pruning here means the auto-dissolve
+        cascade from ``ProjectGraph.discard_node`` does not leave
+        ghost ids in either set after the NODE_DISCARDED event
+        rebuilds the widget.
         """
         for child in list(self._rows_frame.winfo_children()):
             child.destroy()
@@ -599,8 +669,56 @@ class ScanTreeWidget(tk.Frame):
         self._history_frames.clear()
         self._optional_row_widgets.clear()
 
+        # CS-57: prune stale view state. A node is "stale" if it's
+        # been removed from the graph entirely or transitioned to
+        # DISCARDED. Either way it must not stay in the selection or
+        # the expanded-groups set, or a re-add (via undo, recovery,
+        # or test reuse of an id) would silently inherit the prior
+        # selection.
+        for sid in list(self._selected_node_ids):
+            if sid not in self._graph.nodes or (
+                self._graph.nodes[sid].state == NodeState.DISCARDED
+            ):
+                self._selected_node_ids.discard(sid)
+        for gid in list(self._expanded_groups):
+            if gid not in self._graph.nodes or (
+                self._graph.nodes[gid].state == NodeState.DISCARDED
+            ):
+                self._expanded_groups.discard(gid)
+
         for node in self._candidate_nodes():
-            self._build_node_row(node)
+            if node.type == NodeType.NODE_GROUP:
+                self._build_group_row(node)
+                if node.id in self._expanded_groups:
+                    # Render each member with the visual nesting
+                    # indent so the chevron-expanded group reads as
+                    # a containment region rather than four flat
+                    # siblings. Members whose ids are no longer
+                    # present in the graph (or transitioned to
+                    # DISCARDED) are silently skipped — the
+                    # ProjectGraph auto-dissolve cascade keeps the
+                    # invariant that a NODE_GROUP has ≥2 active
+                    # members, but a defensive skip costs nothing.
+                    for mid in node.metadata.get("member_ids", ()):
+                        if mid not in self._graph.nodes:
+                            continue
+                        member = self._graph.nodes[mid]
+                        if not isinstance(member, DataNode):
+                            continue
+                        if member.state == NodeState.DISCARDED:
+                            continue
+                        if not member.active and not bool(
+                            self._show_hidden.get()
+                        ):
+                            continue
+                        self._build_node_row(
+                            member,
+                            indent_px=_SWEEP_MEMBER_INDENT_PX,
+                        )
+            else:
+                self._build_node_row(node)
+
+        self._refresh_group_button_state()
 
     # ------------------------------------------------------------
     # Per-row construction
@@ -849,11 +967,25 @@ class ScanTreeWidget(tk.Frame):
         leg_btn.pack(side="right", padx=(2, 0))
 
         # Right-click context menu (any row, including label area).
+        # CS-57 (Phase 4af): <ButtonRelease-1> on the same widgets
+        # toggles selection. ButtonRelease (not Button) so a
+        # double-click rename fires Release twice and nets out to
+        # zero toggle — see ``_toggle_row_selection`` docstring.
         for w in (row, label, state_lbl):
             w.bind(
                 "<Button-3>",
                 lambda e, nid=node.id: self._show_context_menu(e, nid),
             )
+            w.bind(
+                "<ButtonRelease-1>",
+                lambda _e, nid=node.id: self._toggle_row_selection(nid),
+                add="+",
+            )
+
+        # CS-57: paint the selection highlight if this node is
+        # currently selected. Reads ``_selected_node_ids`` set by the
+        # user's prior click (or empty if this is a fresh rebuild).
+        self._apply_row_selection_visual(node.id)
 
         # Track optional controls so the responsive collapse logic can
         # find them by name (B-002, Phase 4d; thresholds extended in
@@ -897,6 +1029,230 @@ class ScanTreeWidget(tk.Frame):
         # Re-attach history sub-frame if currently expanded.
         if node.id in self._expanded_history:
             self._render_history(node.id)
+
+    # ------------------------------------------------------------
+    # Group rows (CS-57, Phase 4af)
+    # ------------------------------------------------------------
+
+    _SELECTION_BG: str = "#cce4ff"
+
+    def _build_group_row(self, node: DataNode) -> None:
+        """Render a NODE_GROUP container row.
+
+        Group rows are a parallel rendering pipeline to
+        ``_populate_node_row``: they carry a chevron toggle, the
+        group label (renameable via double-click), a member-count
+        badge, and an inline ✕ that dissolves the group (members
+        return to top-level rendering, the group itself transitions
+        to DISCARDED — see ``ProjectGraph.dissolve_group``). Groups
+        do NOT participate in the responsive layout helper or the
+        per-row style-cell vocabulary; ``_optional_row_widgets`` is
+        not populated for group rows so
+        ``_apply_responsive_layout`` skips them.
+
+        Selection toggle and right-click context-menu bindings
+        mirror the data-row pattern so the gesture vocabulary stays
+        coherent ("Group selected" requires the group's own row to
+        be selectable for bulk operations like "Ungroup all
+        selected", a future polish).
+        """
+        row = tk.Frame(self._rows_frame)
+        row.pack(fill="x", padx=2, pady=1)
+        self._row_frames[node.id] = row
+
+        is_expanded = node.id in self._expanded_groups
+
+        # Chevron — ▾ when expanded, ▸ when collapsed.
+        chevron_btn = tk.Button(
+            row, text=("▾" if is_expanded else "▸"),
+            relief=tk.FLAT, cursor="hand2", width=2,
+            command=lambda nid=node.id: self._toggle_group_expansion(nid),
+        )
+        chevron_btn.pack(side="left")
+        Tooltip(chevron_btn, "Expand / collapse group")
+
+        # Label — group name + (N members) badge.
+        member_count = sum(
+            1 for mid in node.metadata.get("member_ids", ())
+            if mid in self._graph.nodes
+            and self._graph.nodes[mid].state != NodeState.DISCARDED
+        )
+        suffix = f"  ({member_count} members)"
+        cap = self._current_label_cap()
+        # Reserve space for the suffix so truncation cuts the user
+        # label, not the count badge.
+        label_cap = max(_LABEL_CHAR_FLOOR, cap - len(suffix))
+        display_text = _truncate_label(node.label, max_chars=label_cap) + suffix
+        label = tk.Label(row, text=display_text, anchor="w")
+        label.pack(side="left", fill="x", expand=True, padx=(2, 4))
+        # Hover tooltip with full label when truncation cuts it.
+        Tooltip(
+            label,
+            node.label if display_text != node.label + suffix else "",
+        )
+        label.bind(
+            "<Double-Button-1>",
+            lambda _e, nid=node.id, lbl=label, frm=row:
+                self._begin_label_edit(nid, lbl, frm),
+        )
+
+        # Inline ✕ — dissolves the group. Tooltip distinguishes it
+        # from a member-row ✕ ("Discard"); both glyphs are the same
+        # but the semantics differ (members → discard; group →
+        # ungroup).
+        x_btn = tk.Button(
+            row, text="✕", relief=tk.FLAT, cursor="hand2",
+            command=lambda nid=node.id: self._safely(
+                self._graph.dissolve_group, nid),
+        )
+        x_btn.pack(side="right", padx=(2, 0))
+        Tooltip(x_btn, "Ungroup (dissolve; members are kept)")
+
+        # Selection toggle + right-click context menu — same
+        # bindings the data row uses (see _populate_node_row), so
+        # group rows feel identical to data rows under the cursor.
+        for w in (row, label):
+            w.bind(
+                "<Button-3>",
+                lambda e, nid=node.id: self._show_context_menu(e, nid),
+            )
+            w.bind(
+                "<ButtonRelease-1>",
+                lambda _e, nid=node.id: self._toggle_row_selection(nid),
+                add="+",
+            )
+
+        self._apply_row_selection_visual(node.id)
+
+    def _toggle_group_expansion(self, group_id: str) -> None:
+        """Flip a group's expanded state and rebuild.
+
+        The expanded set is small (one entry per drilled-in group)
+        so a full rebuild is cheap and avoids subtle invalidations
+        from the per-row helpers.
+        """
+        if group_id in self._expanded_groups:
+            self._expanded_groups.discard(group_id)
+        else:
+            self._expanded_groups.add(group_id)
+        self._rebuild()
+
+    # ------------------------------------------------------------
+    # Selection & footer-button helpers (CS-57)
+    # ------------------------------------------------------------
+
+    def _toggle_row_selection(self, node_id: str) -> None:
+        """Flip selection for ``node_id`` and refresh the footer button.
+
+        Bound to ``<ButtonRelease-1>`` rather than ``<Button-1>`` so
+        a double-click rename gesture fires Release twice and nets
+        out to a zero-toggle (Tk event order: Button-1 →
+        ButtonRelease-1 → Double-Button-1 → ButtonRelease-1; the
+        two Release events toggle and untoggle, leaving the row in
+        its prior selection state). The single-click path runs only
+        the first Release and toggles once.
+        """
+        if node_id in self._selected_node_ids:
+            self._selected_node_ids.discard(node_id)
+        else:
+            self._selected_node_ids.add(node_id)
+        self._apply_row_selection_visual(node_id)
+        self._refresh_group_button_state()
+
+    def _apply_row_selection_visual(self, node_id: str) -> None:
+        """Paint or clear the selection highlight on a row's label.
+
+        Reads ``_selected_node_ids`` to decide. Selected rows get a
+        light-blue background on the label widget; unselected rows
+        inherit the parent Frame's background (the system default).
+        Silently no-ops if the row isn't currently realised (e.g.
+        called for a node that was discarded between event firing
+        and this method running).
+        """
+        row = self._row_frames.get(node_id)
+        if row is None:
+            return
+        selected = node_id in self._selected_node_ids
+        parent_bg = row.cget("bg")
+        new_bg = self._SELECTION_BG if selected else parent_bg
+        # Tint every Label child whose 'anchor' is "w" — that's the
+        # main label widget by convention (CS-04 §6.1). The state
+        # 🔒/⋯ Label uses default anchor and stays system-coloured.
+        for child in row.winfo_children():
+            if isinstance(child, tk.Label) and child.cget("anchor") == "w":
+                child.config(bg=new_bg)
+
+    def _refresh_group_button_state(self) -> None:
+        """Enable or disable the footer "Group selected" button.
+
+        Enabled iff:
+          * ≥2 nodes are currently selected,
+          * none of them is itself a NODE_GROUP (groups don't nest),
+          * none of them already belongs to another active group
+            (single-membership invariant; create_group would raise),
+          * all of them exist in the graph and are not DISCARDED.
+
+        The check mirrors the validation inside
+        ``ProjectGraph.create_group`` so the UI never offers a
+        gesture that would raise. Called from
+        ``_toggle_row_selection`` and at the end of ``_rebuild``.
+        """
+        # Defensive: the button may not exist yet if this is called
+        # during ``__init__`` before ``_build_chrome`` finishes.
+        btn = getattr(self, "_group_btn", None)
+        if btn is None:
+            return
+        ok = self._can_group_selection()
+        btn.config(state=("normal" if ok else "disabled"))
+
+    def _can_group_selection(self) -> bool:
+        """True iff the current selection is a legal create_group call."""
+        if len(self._selected_node_ids) < 2:
+            return False
+        for sid in self._selected_node_ids:
+            if sid not in self._graph.nodes:
+                return False
+            node = self._graph.nodes[sid]
+            if not isinstance(node, DataNode):
+                return False
+            if node.state == NodeState.DISCARDED:
+                return False
+            if node.type == NodeType.NODE_GROUP:
+                return False
+            if self._graph.group_of(sid) is not None:
+                return False
+        return True
+
+    def _group_selected(self) -> None:
+        """Footer-button action: form a NODE_GROUP from the selection.
+
+        Reads ``_selected_node_ids`` in *insertion order* (which Tk
+        sets don't preserve; the workaround is to sort by the
+        graph's node insertion order so the group's member_ids
+        list is deterministic across runs) and calls
+        ``ProjectGraph.create_group``. Clears the selection on
+        success — the user's next gesture starts from a clean
+        slate. ``_safely`` swallows the ValueError if the
+        predicate races a discard between button-enable and click.
+        """
+        if not self._can_group_selection():
+            return
+        # Deterministic order: walk the graph's insertion order and
+        # pick out the selected ids. Without this, member_ids would
+        # follow Python set iteration which depends on hash + insert
+        # history.
+        ordered = [
+            nid for nid in self._graph.nodes.keys()
+            if nid in self._selected_node_ids
+        ]
+        try:
+            self._graph.create_group(ordered)
+        except (KeyError, ValueError, TypeError):
+            return
+        self._selected_node_ids.clear()
+        # The NODE_ADDED event from create_group will trigger a
+        # rebuild via _on_graph_event, which also refreshes the
+        # button state and re-paints the selection visual.
 
     # ------------------------------------------------------------
     # Label measurement (Phase 4w CS-47)
@@ -1453,6 +1809,16 @@ class ScanTreeWidget(tk.Frame):
         if not isinstance(node, DataNode):
             return
 
+        # CS-57 (Phase 4af): NODE_GROUP rows get a simplified menu
+        # — Commit / Discard / Send-to-Compare / Export / Hide do
+        # not apply to a view-layer aggregation. Rename and Ungroup
+        # are the only sensible actions; Expand/Collapse is the
+        # chevron's job but a menu entry mirrors the gesture for
+        # users who reach for right-click first.
+        if node.type == NodeType.NODE_GROUP:
+            self._show_group_context_menu(event, node_id)
+            return
+
         menu = tk.Menu(self, tearoff=0)
         is_prov = node.state == NodeState.PROVISIONAL
         is_committed = node.state == NodeState.COMMITTED
@@ -1517,7 +1883,56 @@ class ScanTreeWidget(tk.Frame):
             label="Duplicate",
             command=lambda nid=node_id: self._duplicate_node(nid),
         )
+        # CS-57: "Group selected" mirrors the footer button. The
+        # menu entry uses the count of selected ids in its label
+        # ("Group selected (3)") so the user can confirm at a glance
+        # how many rows the action will combine. If the user right-
+        # clicked a row that is NOT in the current selection, this
+        # entry stays disabled — the menu always acts on the
+        # selection, never on the clicked-but-unselected target.
+        n_selected = len(self._selected_node_ids)
+        group_ok = (
+            self._can_group_selection()
+            and node_id in self._selected_node_ids
+        )
+        menu.add_separator()
+        menu.add_command(
+            label=f"Group selected ({n_selected})",
+            state=("normal" if group_ok else "disabled"),
+            command=self._group_selected,
+        )
 
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+
+    def _show_group_context_menu(
+        self, event: tk.Event, group_id: str,
+    ) -> None:
+        """Simplified context menu for NODE_GROUP rows (CS-57).
+
+        Lifecycle and Send-to-Compare actions do not apply to a
+        view-layer aggregation, so the menu carries only Rename,
+        Expand/Collapse, and Ungroup. Ungroup dispatches to
+        ``ProjectGraph.dissolve_group``.
+        """
+        menu = tk.Menu(self, tearoff=0)
+        is_expanded = group_id in self._expanded_groups
+        menu.add_command(
+            label="Rename",
+            command=lambda nid=group_id: self._begin_rename_via_menu(nid),
+        )
+        menu.add_command(
+            label=("Collapse" if is_expanded else "Expand"),
+            command=lambda nid=group_id: self._toggle_group_expansion(nid),
+        )
+        menu.add_separator()
+        menu.add_command(
+            label="Ungroup",
+            command=lambda nid=group_id: self._safely(
+                self._graph.dissolve_group, nid),
+        )
         try:
             menu.tk_popup(event.x_root, event.y_root)
         finally:
@@ -1592,6 +2007,15 @@ class ScanTreeWidget(tk.Frame):
             self._rebuild()
             return
         if not isinstance(node, DataNode):
+            return
+        # CS-57 (Phase 4af): NODE_GROUP rows have a different cell
+        # layout (chevron / label / ✕) from data rows, so the
+        # ``_populate_node_row`` repaint path would build the wrong
+        # chrome. Fall back to a full rebuild for group label
+        # changes — group renames are rare and a rebuild keeps the
+        # member-count suffix in sync with the current graph state.
+        if node.type == NodeType.NODE_GROUP:
+            self._rebuild()
             return
         self._populate_node_row(row, node)
 
