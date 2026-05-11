@@ -697,5 +697,253 @@ class TestFindProvisionalOpWithParamsRemoved(unittest.TestCase):
         )
 
 
+class TestNodeGroupOps(unittest.TestCase):
+    """CS-57 (Phase 4af) — user-driven NODE_GROUP container.
+
+    Pins the create_group / dissolve_group / group_of API + the
+    auto-dissolve cascade inside discard_node. The invariants
+    locked here are the lock-list anchors for every downstream
+    consumer (ScanTreeWidget's group row rendering, project_io's
+    round-trip path, future bulk operations on grouped nodes).
+    """
+
+    def _three_uvvis(self) -> ProjectGraph:
+        g = ProjectGraph()
+        for nid in ("a", "b", "c"):
+            g.add_node(_data(nid, ntype=NodeType.UVVIS))
+        return g
+
+    # ---- create_group --------------------------------------------
+
+    def test_create_group_happy_path_returns_new_id(self):
+        g = self._three_uvvis()
+        gid = g.create_group(["a", "b"])
+        self.assertIn(gid, g.nodes)
+        group = g.get_node(gid)
+        self.assertIsInstance(group, DataNode)
+        self.assertEqual(group.type, NodeType.NODE_GROUP)
+        self.assertEqual(group.state, NodeState.PROVISIONAL)
+        self.assertEqual(group.metadata["member_ids"], ["a", "b"])
+        self.assertEqual(group.arrays, {})
+
+    def test_create_group_auto_labels_when_label_omitted(self):
+        g = self._three_uvvis()
+        gid1 = g.create_group(["a", "b"])
+        # Add two more nodes so we can form a second group.
+        g.add_node(_data("d", ntype=NodeType.UVVIS))
+        g.add_node(_data("e", ntype=NodeType.UVVIS))
+        gid2 = g.create_group(["d", "e"])
+        self.assertEqual(g.get_node(gid1).label, "Group 1")
+        self.assertEqual(g.get_node(gid2).label, "Group 2")
+
+    def test_create_group_respects_user_label(self):
+        g = self._three_uvvis()
+        gid = g.create_group(["a", "b"], label="my Ni²⁺ aquo series")
+        self.assertEqual(g.get_node(gid).label, "my Ni²⁺ aquo series")
+
+    def test_create_group_emits_node_added_event(self):
+        g = self._three_uvvis()
+        events: list[GraphEvent] = []
+        g.subscribe(events.append)
+        gid = g.create_group(["a", "b"])
+        # NODE_ADDED is the only event from create_group itself.
+        added = [e for e in events if e.type == GraphEventType.NODE_ADDED]
+        self.assertEqual(len(added), 1)
+        self.assertEqual(added[0].node_id, gid)
+
+    def test_create_group_rejects_fewer_than_two_members(self):
+        g = self._three_uvvis()
+        with self.assertRaises(ValueError):
+            g.create_group(["a"])
+        with self.assertRaises(ValueError):
+            g.create_group([])
+
+    def test_create_group_rejects_duplicate_member_ids(self):
+        g = self._three_uvvis()
+        with self.assertRaises(ValueError):
+            g.create_group(["a", "a"])
+
+    def test_create_group_rejects_unknown_member_id(self):
+        g = self._three_uvvis()
+        with self.assertRaises(KeyError):
+            g.create_group(["a", "z"])
+
+    def test_create_group_rejects_operationnode_member(self):
+        g = self._three_uvvis()
+        g.add_node(_op("op_x", otype=OperationType.NORMALISE))
+        with self.assertRaises(TypeError):
+            g.create_group(["a", "op_x"])
+
+    def test_create_group_rejects_node_group_member_flat_only(self):
+        # Flat-only invariant: NODE_GROUP cannot be a member of
+        # another NODE_GROUP.
+        g = self._three_uvvis()
+        inner_gid = g.create_group(["a", "b"])
+        g.add_node(_data("d", ntype=NodeType.UVVIS))
+        g.add_node(_data("e", ntype=NodeType.UVVIS))
+        with self.assertRaises(ValueError):
+            g.create_group([inner_gid, "d"])
+        # And rejecting the nested group should not have mutated
+        # the graph or left a partial group.
+        groups = [n for n in g.nodes.values()
+                  if isinstance(n, DataNode)
+                  and n.type == NodeType.NODE_GROUP]
+        self.assertEqual(len(groups), 1)
+
+    def test_create_group_rejects_discarded_member(self):
+        g = self._three_uvvis()
+        g.discard_node("a")
+        with self.assertRaises(ValueError):
+            g.create_group(["a", "b"])
+
+    def test_create_group_rejects_already_grouped_member(self):
+        # Single-membership invariant.
+        g = self._three_uvvis()
+        g.add_node(_data("d", ntype=NodeType.UVVIS))
+        g.create_group(["a", "b"])
+        with self.assertRaises(ValueError):
+            g.create_group(["b", "d"])
+
+    # ---- group_of -----------------------------------------------
+
+    def test_group_of_returns_active_group_id(self):
+        g = self._three_uvvis()
+        gid = g.create_group(["a", "b"])
+        self.assertEqual(g.group_of("a"), gid)
+        self.assertEqual(g.group_of("b"), gid)
+
+    def test_group_of_returns_none_for_ungrouped_node(self):
+        g = self._three_uvvis()
+        g.create_group(["a", "b"])
+        self.assertIsNone(g.group_of("c"))
+
+    def test_group_of_returns_none_for_unknown_id(self):
+        g = self._three_uvvis()
+        self.assertIsNone(g.group_of("nope"))
+
+    def test_group_of_ignores_discarded_groups(self):
+        g = self._three_uvvis()
+        gid = g.create_group(["a", "b"])
+        g.dissolve_group(gid)
+        # 'a' was a member of a now-discarded group → no active
+        # group claims it.
+        self.assertIsNone(g.group_of("a"))
+
+    # ---- dissolve_group ------------------------------------------
+
+    def test_dissolve_group_marks_group_discarded(self):
+        g = self._three_uvvis()
+        gid = g.create_group(["a", "b"])
+        g.dissolve_group(gid)
+        self.assertEqual(g.get_node(gid).state, NodeState.DISCARDED)
+
+    def test_dissolve_group_leaves_members_intact(self):
+        # Dissolving the group must NOT discard the members.
+        g = self._three_uvvis()
+        gid = g.create_group(["a", "b"])
+        g.dissolve_group(gid)
+        self.assertEqual(g.get_node("a").state, NodeState.PROVISIONAL)
+        self.assertEqual(g.get_node("b").state, NodeState.PROVISIONAL)
+        self.assertTrue(g.get_node("a").active)
+        self.assertTrue(g.get_node("b").active)
+
+    def test_dissolve_group_emits_node_discarded_for_group_only(self):
+        g = self._three_uvvis()
+        gid = g.create_group(["a", "b"])
+        events: list[GraphEvent] = []
+        g.subscribe(events.append)
+        g.dissolve_group(gid)
+        discarded = [e for e in events
+                     if e.type == GraphEventType.NODE_DISCARDED]
+        self.assertEqual(len(discarded), 1)
+        self.assertEqual(discarded[0].node_id, gid)
+
+    def test_dissolve_group_rejects_non_group(self):
+        g = self._three_uvvis()
+        with self.assertRaises(TypeError):
+            g.dissolve_group("a")  # UVVIS, not NODE_GROUP
+
+    def test_dissolve_group_rejects_operationnode(self):
+        g = self._three_uvvis()
+        g.add_node(_op("op_x", otype=OperationType.NORMALISE))
+        with self.assertRaises(TypeError):
+            g.dissolve_group("op_x")
+
+    def test_dissolve_group_rejects_unknown_id(self):
+        g = self._three_uvvis()
+        with self.assertRaises(KeyError):
+            g.dissolve_group("nope")
+
+    def test_dissolve_group_rejects_already_discarded_group(self):
+        # Already-DISCARDED → ValueError via discard_node.
+        g = self._three_uvvis()
+        gid = g.create_group(["a", "b"])
+        g.dissolve_group(gid)
+        with self.assertRaises(ValueError):
+            g.dissolve_group(gid)
+
+    # ---- auto-dissolve cascade ----------------------------------
+
+    def test_auto_dissolve_when_group_falls_below_two_active_members(self):
+        # 2-member group: discarding one member triggers cascade.
+        g = self._three_uvvis()
+        gid = g.create_group(["a", "b"])
+        g.discard_node("a")
+        self.assertEqual(g.get_node(gid).state, NodeState.DISCARDED)
+        # 'b' is still active (cascade discards the group, not the
+        # remaining member).
+        self.assertEqual(g.get_node("b").state, NodeState.PROVISIONAL)
+
+    def test_auto_dissolve_does_not_fire_above_two_active_members(self):
+        # 3-member group: discarding one leaves 2 active members,
+        # group survives.
+        g = self._three_uvvis()
+        gid = g.create_group(["a", "b", "c"])
+        g.discard_node("a")
+        self.assertEqual(g.get_node(gid).state, NodeState.PROVISIONAL)
+        self.assertEqual(g.group_of("b"), gid)
+        self.assertEqual(g.group_of("c"), gid)
+
+    def test_auto_dissolve_fires_on_second_discard_of_3_member_group(self):
+        # Sequential discards walk the group down past the
+        # threshold.
+        g = self._three_uvvis()
+        gid = g.create_group(["a", "b", "c"])
+        g.discard_node("a")
+        self.assertEqual(g.get_node(gid).state, NodeState.PROVISIONAL)
+        g.discard_node("b")
+        self.assertEqual(g.get_node(gid).state, NodeState.DISCARDED)
+        self.assertEqual(g.get_node("c").state, NodeState.PROVISIONAL)
+
+    def test_auto_dissolve_emits_two_node_discarded_events(self):
+        # Member-discard event fires first, then the cascade-
+        # discard event for the group. Subscribers see both in
+        # order.
+        g = self._three_uvvis()
+        gid = g.create_group(["a", "b"])
+        events: list[GraphEvent] = []
+        g.subscribe(events.append)
+        g.discard_node("a")
+        discarded = [e for e in events
+                     if e.type == GraphEventType.NODE_DISCARDED]
+        self.assertEqual(len(discarded), 2)
+        self.assertEqual(discarded[0].node_id, "a")
+        self.assertEqual(discarded[1].node_id, gid)
+
+    def test_auto_dissolve_cascade_bounded_at_one_level(self):
+        # Discarding a group itself does not trigger another
+        # cascade (flat-only invariant: groups never nest).
+        g = self._three_uvvis()
+        gid = g.create_group(["a", "b"])
+        events: list[GraphEvent] = []
+        g.subscribe(events.append)
+        g.dissolve_group(gid)
+        discarded = [e for e in events
+                     if e.type == GraphEventType.NODE_DISCARDED]
+        # Exactly one event: the group's own.
+        self.assertEqual(len(discarded), 1)
+        self.assertEqual(discarded[0].node_id, gid)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
