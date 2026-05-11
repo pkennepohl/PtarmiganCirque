@@ -2182,11 +2182,16 @@ class UVVisTab(tk.Frame):
         # Grid is drawn on primary only — gridlines from twin axes
         # would visually compete with the primary's grid. The grid
         # colour reads through the CS-56 ``grid_color`` key with the
-        # matplotlib-standard light grey as the fallback.
+        # matplotlib-standard light grey as the fallback. ``zorder=0``
+        # is hard-coded (Phase 4ah) so gridlines paint BEHIND data
+        # lines — matplotlib's default grid zorder (2.5) is above the
+        # line collection's (2.0) and produces visually distracting
+        # cross-hatching on dense overlays.
         if cfg.get("grid", True):
             ax.grid(
                 True, linestyle=":", alpha=0.4,
                 color=cfg.get("grid_color", "#b0b0b0"),
+                zorder=0,
             )
         else:
             ax.grid(False)

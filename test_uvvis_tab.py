@@ -2733,6 +2733,85 @@ class TestUVVisTabAppearancePhase4ae(unittest.TestCase):
 
 
 @unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestUVVisTabGridZOrderPhase4ah(unittest.TestCase):
+    """Phase 4ah — grid renders BEHIND data lines, not in front.
+
+    matplotlib's default grid zorder (2.5) sits above the default line
+    zorder (2.0), so without an explicit override the dotted gridlines
+    cross-hatch the rendered spectra. ``uvvis_tab._redraw`` now passes
+    ``zorder=0`` on the ``ax.grid(...)`` call. Pin the invariant via
+    the rendered Line2D objects so a future re-arrangement of the
+    grid call (e.g. relocating to a per-axis loop) cannot silently
+    regress.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from uvvis_tab import UVVisTab
+        cls.UVVisTab = UVVisTab
+
+    def setUp(self):
+        self.host = tk.Frame(_root)
+        self.host.pack()
+        self.graph = ProjectGraph()
+        self.tab = self.UVVisTab(self.host, graph=self.graph)
+
+    def tearDown(self):
+        try:
+            self.tab.destroy()
+        except Exception:
+            pass
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    def _add_uvvis(self, nid: str = "u1") -> str:
+        wl = np.linspace(200.0, 800.0, 601)
+        absorb = np.exp(-((wl - 500.0) / 50.0) ** 2) + 0.05
+        self.graph.add_node(DataNode(
+            id=nid, type=NodeType.UVVIS,
+            arrays={"wavelength_nm": wl, "absorbance": absorb},
+            metadata={"source_file": "syn"},
+            label=nid, state=NodeState.COMMITTED,
+            style={"color": "#1f77b4", "linestyle": "solid",
+                   "linewidth": 1.5, "alpha": 0.9, "visible": True,
+                   "in_legend": True, "fill": False, "fill_alpha": 0.08},
+        ))
+        return nid
+
+    def test_grid_renders_behind_data_lines(self):
+        # Render a single spectrum and confirm every gridline's zorder
+        # is strictly less than every data-line zorder. This is the
+        # render-correctness invariant Phase 4ah locked.
+        self._add_uvvis()
+        self.tab._redraw()
+        ax = self.tab._ax
+        grid_lines = ax.get_xgridlines() + ax.get_ygridlines()
+        data_lines = ax.get_lines()
+        self.assertTrue(grid_lines, "expected gridlines on primary axis")
+        self.assertTrue(data_lines, "expected at least one data line")
+        max_grid_z = max(g.get_zorder() for g in grid_lines)
+        min_data_z = min(d.get_zorder() for d in data_lines)
+        self.assertLess(
+            max_grid_z, min_data_z,
+            f"grid zorder {max_grid_z} not below data zorder {min_data_z}",
+        )
+
+    def test_grid_zorder_is_zero(self):
+        # Anchor on the literal value the renderer passes. Decoupled
+        # from matplotlib's default-zorder choices in case those shift
+        # in a future release.
+        self._add_uvvis()
+        self.tab._redraw()
+        ax = self.tab._ax
+        grid_lines = ax.get_xgridlines() + ax.get_ygridlines()
+        self.assertTrue(grid_lines)
+        for g in grid_lines:
+            self.assertEqual(g.get_zorder(), 0)
+
+
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
 class TestUVVisTabExportIntegration(unittest.TestCase):
     """Phase 4f, CS-17 — Export… dialog flow.
 
