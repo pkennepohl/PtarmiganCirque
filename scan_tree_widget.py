@@ -512,12 +512,21 @@ class ScanTreeWidget(tk.Frame):
         # Bottom controls.
         self._footer = tk.Frame(self)
         self._footer.pack(side="bottom", fill="x")
-        tk.Checkbutton(
+        # Phase 4ah: track the Checkbutton as an attribute so _rebuild
+        # can flip its state. The toggle is disabled when no hidden
+        # rows would be revealed — without the gate the user clicks a
+        # responsive-looking control whose only effect is silent. If
+        # the toggle is currently ON and the last hidden row is
+        # discarded, we leave it ON and disable it (no silent flip to
+        # OFF); the disabled state is itself the affordance that the
+        # toggle has nothing to act on.
+        self._show_hidden_btn = tk.Checkbutton(
             self._footer,
             text="Show hidden",
             variable=self._show_hidden,
             command=self._rebuild,
-        ).pack(side="left", padx=4, pady=2)
+        )
+        self._show_hidden_btn.pack(side="left", padx=4, pady=2)
 
         # CS-57 (Phase 4af): "Group selected" footer button. Sits on
         # the right of the footer so it's discoverable without
@@ -720,6 +729,7 @@ class ScanTreeWidget(tk.Frame):
                 self._build_node_row(node)
 
         self._refresh_group_button_state()
+        self._refresh_show_hidden_button_state()
 
     # ------------------------------------------------------------
     # Per-row construction
@@ -1231,6 +1241,54 @@ class ScanTreeWidget(tk.Frame):
             )
         else:
             btn.config(state="disabled", text="Group selected")
+
+    def _has_hidden_rows(self) -> bool:
+        """Return True iff ≥1 currently-hidden row exists in the view.
+
+        A row counts as "hidden" iff it is a non-DISCARDED DataNode
+        with ``active=False`` that the tab predicate accepts (or it
+        is itself a NODE_GROUP, which always passes the predicate
+        per CS-57 visual-layer invariant).
+
+        Phase 4ah: includes hidden group members regardless of
+        whether their parent group is currently expanded. Rationale:
+        if a member is currently hidden, the toggle becomes relevant
+        the moment the user expands its group, so we don't want the
+        toggle's enabled state to whiplash between disabled and
+        enabled as the user expands and collapses groups.
+        """
+        for node in self._graph.nodes.values():
+            if not isinstance(node, DataNode):
+                continue
+            if node.state == NodeState.DISCARDED:
+                continue
+            if node.active:
+                continue
+            if node.type == NodeType.NODE_GROUP:
+                return True
+            if self._predicate(node):
+                return True
+        return False
+
+    def _refresh_show_hidden_button_state(self) -> None:
+        """Disable the 'Show hidden' toggle when no hidden rows exist.
+
+        Phase 4ah. Without this gate the toggle reads as responsive
+        but produces no visible change on a fresh workflow (where no
+        nodes are hidden), giving a false-affordance signal.
+
+        Cascade: if the toggle is currently ON and the last hidden
+        row is discarded, the toggle stays ON and becomes disabled.
+        We never silently flip ``_show_hidden`` to False — the
+        disabled state is itself the affordance that the toggle has
+        nothing to act on.
+        """
+        btn = getattr(self, "_show_hidden_btn", None)
+        if btn is None:
+            return
+        btn.config(
+            state="normal" if self._has_hidden_rows() else "disabled"
+        )
 
     def _classify_selection(self) -> dict:
         """Classify ``_selected_node_ids`` into a single gesture verdict.
