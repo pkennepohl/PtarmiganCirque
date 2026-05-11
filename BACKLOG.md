@@ -1624,7 +1624,7 @@ subsequent Phase 4 session.**
 | ⏳ | 🟡 | **`_absorbance_to_y` should not transform SECOND_DERIVATIVE values** | Surfaced Phase 4u while writing the multi-axis tests. Pre-existing bug, not introduced by Phase 4u: when `_y_unit` is `"%T"`, `_absorbance_to_y` clips values to `[-10, 10]` and applies `100·10^(-A)` — this conversion is meaningful for absorbance but corrupts d²A/dλ² values (which are typically `~0.001` and can be negative, so the clip → `100·10^(-A)` mapping produces nonsense). Fix: gate the conversion on the node's NodeType — only UVVIS / BASELINE / NORMALISED / SMOOTHED really live in absorbance space; SECOND_DERIVATIVE always renders as raw d²A/dλ² regardless of the y-unit toggle (the secondary y-axis label already encodes the unit context post-CS-44, so the toggle doesn't need to mutate the values). Touches `uvvis_tab._redraw` per-node loop (pass NodeType into the conversion or branch on it before calling). Test impact: a new `test_second_derivative_values_unchanged_by_percent_t_y_unit` in `TestUVVisTabSecondDerivativeIntegration` |
 | ✅ | 🟢 | **Per-style `y_axis` override hook + StyleDialog row (CS-44 follow-up)** | Phase 4u Decision 1 deferred the per-style override (`node.style.get("y_axis")`) per the user's "Default only for now is okay" decision. The hook is wired into `_resolve_y_axis_role` as a one-line addition (read style first, fall back to per-NodeType default); the StyleDialog universal-section row is the bigger lift — a new `ttk.Combobox` choosing `"primary" / "secondary" / "tertiary"`, threaded through `_BULK_UNIVERSAL_KEYS`. Useful when a user wants to send a specific SECOND_DERIVATIVE node back to primary (small-magnitude derivatives that share scale with their parent) or send a UVVIS reference spectrum to a third axis. Defer until a user reports needing it. **Resolved Phase 4y (CS-50):** `node_styles.default_spectrum_style` adds `style["y_axis"]: str \| None` (default `None` = follow the per-NodeType default; non-None = literal CS-44 axis role overrides per-node); `_resolve_y_axis_role` grows an optional `style: Mapping \| None = None` argument and a one-line short-circuit at the front (override beats default; malformed values fall through). Renderer threads `node.style` at three call sites: per-node main loop, BASELINE-curve dashed overlay (resolver moved INSIDE per-bn body so a BASELINE on "secondary" puts both its main render AND its dashed overlay on the same axis), PEAK_LIST scatter loop. StyleDialog universal section gains a read-only `ttk.Combobox` row labelled "Y axis:" with options `["(default)", "primary", "secondary", "tertiary"]`; "(default)" round-trips to `None`. Decision lock taken: (i) cross-typed Apply auto-inherits parent's effective role on the new node IFF NodeType-defaults differ — `SmoothingPanel._apply` writes `style["y_axis"] = parent_effective_role` for smoothed-of-derivative outputs (closes Phase 4x friction #6); (ii) "(default)" = literal `None` semantics; inheritance is a separate apply-time mechanism that writes a literal role string; (iii) `y_axis` is intentionally absent from `_BULK_UNIVERSAL_KEYS` (parallel to Phase 4d's `visible` / `in_legend` carve-out — bottom ∀ Apply-to-All would too easily collapse derivatives onto primary), but the per-row ∀ button widens its scope to every renderable node (UVVIS / BASELINE / NORMALISED / SMOOTHED / SECOND_DERIVATIVE / PEAK_LIST) via `_on_uvvis_apply_to_all`'s special-case for the key. 35 new tests (7 pure-helper + 2 default-style + 16 StyleDialog Combobox + 4 renderer override + 3 cross-typed inheritance + 3 fan-out-scope). 781 tests, all green. Persistence (CS-46) auto-rides — the new key sits in the existing style-dict round-trip; no manifest schema change |
 | ✅ | 🟡 | ~~**Y-axis Combobox row appears on non-UVVis StyleDialog instances (Claude-surfaced Phase 4y)**~~ ✅ Resolved in Phase 4aa (CS-52). Path (a) (NodeType-gate the row) landed: the new module-private `_Y_AXIS_VISIBLE_NODETYPES: frozenset[NodeType]` mirrors `uvvis_tab._DEFAULT_Y_AXIS_BY_NODETYPE.keys()` exactly (UVVIS / BASELINE / NORMALISED / SMOOTHED / PEAK_LIST / SECOND_DERIVATIVE), and `_build_universal_section` wraps the `_build_y_axis_row` call in `if self._node_type in _Y_AXIS_VISIBLE_NODETYPES`. For TDDFT / FEFF_PATHS / XANES / EXAFS / DEGLITCHED / AVERAGED / BXAS_RESULT the Combobox is now suppressed — the affordance no longer appears where it would be a no-op. `_read_universal_values` skips the key automatically when its var isn't in `_control_vars`, so Save / Apply / ∀ paths stay self-consistent. The drift test `test_y_axis_visible_node_types_match_routing_table` pins the gate against the routing table so a future widening of `_DEFAULT_Y_AXIS_BY_NODETYPE` (when path (b) — the multi-axis-routing lift to `plot_widget.py` — eventually lands) cannot silently reintroduce the misleading affordance. 15 new integration tests (six routing-NodeType "present" cases + seven non-routing "absent" cases + two self-consistency cases) plus 2 pure-module drift tests. |
-| ⏳ | 🔴 | **Y-axis label routing follows axis side, not axis role — wrong / missing labels when primary/secondary roles are swapped (USER-FLAGGED, bumped 🟢 → 🔴 in Phase 4ac)** | Originally surfaced by Claude during Phase 4y as 🟢 polish. **Bumped to 🔴 USER-FLAGGED at end of Phase 4ac (step 5 elicitation):** the user reproduced the bug end-to-end — placing Absorbance on the secondary axis and a derivative on the primary axis leaves the Absorbance label rendered on the *left* axis (because the renderer's primary-axis label is hard-coded to "Absorbance / Transmittance (%)") and the right axis appears unlabelled. Symmetrically, a SECOND_DERIVATIVE overridden to "primary" keeps the absorbance label even though the values plotted are d²A. Architecturally: CS-44's `_NON_PRIMARY_Y_LABEL` table is keyed by `(NodeType, x_unit)` and only carries entries for SECOND_DERIVATIVE; the renderer relies on the NodeType-default for the primary label (always "Absorbance" / "Transmittance (%)" today). With the CS-50 override hook landed, the table no longer covers every reachable role × NodeType combination, hence the missing-label and wrong-label visible failures. **Architecture proposal (lock pending):** option (a) introduce a `_PRIMARY_Y_LABEL: dict[(NodeType, x_unit), str]` companion table that mirrors `_NON_PRIMARY_Y_LABEL` so primary's label tracks the *first* node landing on it (CS-44 lock relaxes for both label tables); option (b) fold both into a single `_Y_LABEL_BY_ROLE_FIRST_NODE_TYPE: dict[(NodeType, x_unit), str]` lookup that the renderer reads per role from the role's first node; option (c) keep the two tables separate but widen `_NON_PRIMARY_Y_LABEL` to cover UVVIS / NORMALISED / SMOOTHED / BASELINE / PEAK_LIST on every x-unit AND build a parallel primary-side widening. **Affected:** `uvvis_tab.py` (`_redraw`'s y-label resolution + the new label table), tests pinning each role's label for every NodeType × x_unit combination. Cross-refs Phase 4u friction #9 (`_absorbance_to_y` corrupts d²A on %T) — both surface "primary axis assumes absorbance values" mistakes that pre-date the CS-50 override path |
+| ✅ | 🔴 | **Y-axis label routing follows axis side, not axis role — wrong / missing labels when primary/secondary roles are swapped (USER-FLAGGED, bumped 🟢 → 🔴 in Phase 4ac)** | Originally surfaced by Claude during Phase 4y as 🟢 polish. **Bumped to 🔴 USER-FLAGGED at end of Phase 4ac (step 5 elicitation):** the user reproduced the bug end-to-end — placing Absorbance on the secondary axis and a derivative on the primary axis leaves the Absorbance label rendered on the *left* axis (because the renderer's primary-axis label is hard-coded to "Absorbance / Transmittance (%)") and the right axis appears unlabelled. Symmetrically, a SECOND_DERIVATIVE overridden to "primary" keeps the absorbance label even though the values plotted are d²A. Architecturally: CS-44's `_NON_PRIMARY_Y_LABEL` table is keyed by `(NodeType, x_unit)` and only carries entries for SECOND_DERIVATIVE; the renderer relies on the NodeType-default for the primary label (always "Absorbance" / "Transmittance (%)" today). With the CS-50 override hook landed, the table no longer covers every reachable role × NodeType combination, hence the missing-label and wrong-label visible failures. **Architecture proposal (lock pending):** option (a) introduce a `_PRIMARY_Y_LABEL: dict[(NodeType, x_unit), str]` companion table that mirrors `_NON_PRIMARY_Y_LABEL` so primary's label tracks the *first* node landing on it (CS-44 lock relaxes for both label tables); option (b) fold both into a single `_Y_LABEL_BY_ROLE_FIRST_NODE_TYPE: dict[(NodeType, x_unit), str]` lookup that the renderer reads per role from the role's first node; option (c) keep the two tables separate but widen `_NON_PRIMARY_Y_LABEL` to cover UVVIS / NORMALISED / SMOOTHED / BASELINE / PEAK_LIST on every x-unit AND build a parallel primary-side widening. **Affected:** `uvvis_tab.py` (`_redraw`'s y-label resolution + the new label table), tests pinning each role's label for every NodeType × x_unit combination. Cross-refs Phase 4u friction #9 (`_absorbance_to_y` corrupts d²A on %T) — both surface "primary axis assumes absorbance values" mistakes that pre-date the CS-50 override path. **Resolved Phase 4ad (CS-55):** option (b) variant landed — labels are role-agnostic, dimensionalised by NodeType class instead. New `_ABSORBANCE_SPACE_NODETYPES: frozenset[NodeType]` covering UVVIS / BASELINE / NORMALISED / SMOOTHED / PEAK_LIST + `_ABSORBANCE_Y_LABEL: dict[str, str]` mapping y-unit ("A" / "%T") to label, both module-level in `uvvis_tab`. New pure helper `_resolve_y_axis_label(node_type, x_unit, y_unit) -> Optional[str]`: absorbance-space NodeTypes label by y-unit (independent of x-unit and role); derivative-space NodeTypes fall through to the existing CS-44 `_NON_PRIMARY_Y_LABEL` table (which now feeds both primary and non-primary roles). Renderer in `_redraw` widens `first_node_type_per_role.setdefault` to record primary too (drop the `if role != "primary":` guard), drops the hardcoded `auto_ylabels = {"A": …}` inline lookup for primary, and walks every populated role through the helper. `ylabel_mode = "custom"` still wins for primary (user-text affordance remains primary-only); non-primary always auto. Default routing (UVVIS-only) is byte-identical pre/post — the common case is unchanged. **Lock decision taken:** option (b) variant over (a) and (c) — single helper keyed on NodeType class rather than two parallel tables, because the dimensionality of variability is NodeType nature (absorbance-space vs derivative-space), not axis role. (c) was rejected (two parallel tables would drift); (a) was rejected (mirroring `_NON_PRIMARY_Y_LABEL` for absorbance-space would force y-unit-keyed entries that contradict its `(NodeType, x_unit)` key shape). CS-44 invariants all preserved (`_NON_PRIMARY_Y_LABEL` content + `_resolve_non_primary_y_label` signature byte-identical; the new helper layers on top). 18 new tests (9 pure-module in `TestYAxisLabelResolution`: frozenset membership, drift guard against `_DEFAULT_Y_AXIS_BY_NODETYPE`, dict shape, absorbance-space y-unit invariance across x-units, derivative x-unit invariance across y-units, three `None`-return cases for unknown units / unrouted NodeTypes, backward-compat with CS-44 helper; 9 integration in `TestYAxisLabelRoleSwap`: default-routing preservation, y-unit flip, UVVIS-on-secondary case A, UVVIS-on-secondary %T flip, d²A-on-primary with parent visible, d²A alone on primary, full user-reported scenario, custom-mode wins, x-unit-aware secondary derivative). 882 tests, all green. |
 | ⏳ | 🟢 | **DRY cross-typed-Apply y_axis inheritance helper (CS-50 architectural debt)** | Surfaced by Claude during Phase 4y. The CS-50 inheritance block (set `style["y_axis"]` on a new node when its NodeType-default differs from the parent's effective role) lives inside `SmoothingPanel._apply`, today the only widened cross-type panel under CS-49. If a future panel widens its `ACCEPTED_PARENT_TYPES` cross-type (NormalisationPanel accepting SECOND_DERIVATIVE; SecondDerivativePanel accepting NORMALISED on a non-UVVis x-axis; etc.), each panel's `_apply` would copy-paste the same six-line block. Move it into `node_styles.py` (or a new `axis_inheritance.py`) as `inherit_y_axis_for_cross_typed_apply(parent_node, new_node_type) -> str \| None`; every panel calls it next to its `default_spectrum_style(colour)` call. Cheap one-time refactor; defer until a second cross-typed-Apply path lands so the abstraction has two consumers. Cross-refs the four open audit-held tuples (`NormalisationPanel` / `PeakPickingPanel` / `SecondDerivativePanel`) — the next CS-49-style widening will probably be the trigger |
 | ⏳ | 🟢 | **Hover/status-bar readout for active y-axis (CS-44 follow-up)** | Surfaced Phase 4u step 5. Once two y-axes coexist (CS-44), the matplotlib toolbar's coordinate readout reports primary-axis values only — a user mousing over a SECOND_DERIVATIVE point sees an absorbance number, not a d²A value. Likely shape: bind a `motion_notify_event` on the canvas, walk every populated `_axes_by_role` axis, transform the cursor's display coords into each axis's data coords, and surface the per-axis readout in a dedicated status strip below the toolbar. Cross-refs the diagnostic-console register entry — both add ambient information surfaces. Defer until two-axis use is common enough to motivate the complexity |
 | ⏳ | 🟢 | **Lift multi-axis routing to plot_widget.py + promote `_TERTIARY_AXIS_OFFSET_FRAC` to Plot Settings (CS-44 follow-up)** | Phase 4u Decision 7 kept the multi-axis routing inside `uvvis_tab._redraw` rather than lifting to `plot_widget.py`. This pairs with Q2's user decision to make `_TERTIARY_AXIS_OFFSET_FRAC` tunable later — both follow-ups land naturally in the same phase. Trigger: when a second tab (XANES / EXAFS) needs multi-axis routing, lift `_AXIS_ROLES` + `_DEFAULT_Y_AXIS_BY_NODETYPE` + `_NON_PRIMARY_Y_LABEL` + `_TERTIARY_AXIS_OFFSET_FRAC` + `_resolve_y_axis_role` + `_resolve_non_primary_y_label` + the `get_axis(role)` lazy-creation closure into `plot_widget.py` (or a new `plot_axes.py`). At the same time, surface the tertiary offset as a Plot Settings → Appearance row. Until then, the in-tab home is the right shape — single consumer, no abstraction tax |
@@ -2486,7 +2486,7 @@ session.**
    the gate so a future routing-table widening cannot
    silently reintroduce the misleading affordance.
 
-2. 🟢 **Per-NodeType primary y-axis label gap when override
+2. ~~🟢 **Per-NodeType primary y-axis label gap when override
    reroutes nodes (Claude-surfaced).** Two minor surprises with
    the CS-50 hook: (a) UVVIS overridden to "secondary" leaves
    the secondary axis unlabelled (no `(UVVIS, x_unit)` entry
@@ -2498,7 +2498,15 @@ session.**
    refs Phase 4u friction #9 (`_absorbance_to_y` corrupts d²A
    on %T) — both surface "primary axis assumes absorbance
    values" mistakes. **Cross-ref:** see the new register entry
-   above.
+   above.~~ ✅ Resolved in Phase 4ad (CS-55). The user bumped
+   this 🟢 → 🔴 at end of Phase 4ac with end-to-end reproduction;
+   Phase 4ad landed `_resolve_y_axis_label(node_type, x_unit,
+   y_unit)` plus the `_ABSORBANCE_SPACE_NODETYPES` /
+   `_ABSORBANCE_Y_LABEL` companions. Both surprises closed:
+   UVVIS-on-secondary now labels secondary "Absorbance"; d²A-on-
+   primary now labels primary "d²A/dλ²". Cross-ref Phase 4u
+   friction #9 stays open — that's the value-corruption half
+   (`_absorbance_to_y` clip), independent of label routing.
 
 3. 🟢 **DRY cross-typed-Apply y_axis inheritance helper (CS-50
    architectural debt, Claude-surfaced).** The inheritance
@@ -2759,7 +2767,7 @@ session.**
    dependency to `style_dialog.py`. Stuck with explicit +
    drift-test for now. No register entry.
 
-5. 🟢 **Phase 4y friction #2 (per-NodeType primary y-axis
+5. ~~🟢 **Phase 4y friction #2 (per-NodeType primary y-axis
    label gap) is now narrower in scope but still open
    (Claude-surfaced cross-ref).** With the Phase 4aa
    visibility gate, the override Combobox is only reachable
@@ -2771,7 +2779,10 @@ session.**
    `_NON_PRIMARY_Y_LABEL`. **Cross-ref:** Phase 4y friction
    #2 canonical register entry "Per-NodeType primary y-axis
    label for override use case" stays open; no new register
-   entry.
+   entry.~~ ✅ Resolved in Phase 4ad (CS-55) — same fix as
+   Phase 4y friction #2 above. `_resolve_y_axis_label` is the
+   new entry point; CS-44 invariants on `_NON_PRIMARY_Y_LABEL`
+   and `_resolve_non_primary_y_label` all preserved.
 
 6. 🟢 **Cancel always re-emits the snapshot label (Claude-
    surfaced).** `_do_cancel` calls
@@ -2795,7 +2806,7 @@ Claude-surfaced 🟢 polish notes flagged during step 5; none have
 new register entries beyond the cross-refs noted. **Do not fix
 until the relevant subsequent Phase 4 session.**
 
-1. 🔴 **Y-axis label routing follows axis side, not axis role —
+1. ~~🔴 **Y-axis label routing follows axis side, not axis role —
    wrong / missing labels when primary/secondary roles are
    swapped (USER-FLAGGED, bumped 🟢 → 🔴 in Phase 4ac).** User
    reproduced end-to-end at end of Phase 4ac (step 5
@@ -2812,7 +2823,11 @@ until the relevant subsequent Phase 4 session.**
    the single home (newly bumped to 🔴 USER-FLAGGED with the
    user-reproduction context). Pairs with Phase 4u friction #9
    (`_absorbance_to_y` corrupts d²A on %T) — both surface
-   "primary axis assumes absorbance values" mistakes.
+   "primary axis assumes absorbance values" mistakes.~~ ✅
+   Resolved in Phase 4ad (CS-55) — option (b) variant of the
+   three architecture options landed; see the canonical register
+   row above for full deliverables. Phase 4u friction #9 (value-
+   corruption half) stays open as a separate fix.
 
 2. 🟡 **Configurable plot grid colour (USER-FLAGGED).** User
    has asked for a per-plot grid-colour picker. Today the grid
@@ -2867,6 +2882,71 @@ until the relevant subsequent Phase 4 session.**
    apart. Defer until reported in real use; CS-33 label-
    truncation already pins the no-suffix-pollution invariant
    for the regular case. No register entry.
+
+### Friction points carried forward from Phase 4ad
+
+These are concrete obstacles the next Phase 4 session will hit.
+Identified during Phase 4ad while landing the role-agnostic
+y-axis label helper (CS-55) — closing Phase 4ac friction #1
+(USER-FLAGGED 🔴) and the Phase 4y / Phase 4aa cross-refs to
+the same root issue. The user accepted no new items at step 5
+("nothing to add at the moment"); all five items below are
+Claude-surfaced 🟢 polish notes flagged during step 5; none
+have new register entries. **Do not fix until the relevant
+subsequent Phase 4 session.**
+
+1. 🟢 **First-node-on-primary wins the label when multiple
+   NodeType classes coexist on primary (Claude-surfaced).** The
+   `first_node_type_per_role` map records the FIRST NodeType
+   to land on a role; when both UVVIS (default routing) and a
+   user-overridden SECOND_DERIVATIVE coexist on primary, the
+   UVVIS landed first so primary stays labelled "Absorbance"
+   — under-informative for the derivative-on-primary half.
+   The integration test
+   `test_second_derivative_on_primary_labels_primary_with_derivative`
+   documents this as intentional behaviour. A future polish
+   could (a) split the label e.g. "Absorbance / d²A/dλ²" when
+   the role hosts multiple NodeType classes; (b) prefer the
+   most recently added; (c) prefer the explicitly-overridden
+   NodeType. Defer until reported. No register entry.
+
+2. 🟢 **`_NON_PRIMARY_Y_LABEL` is now misnamed
+   (Claude-surfaced doc-debt).** Post-CS-55 the table is
+   consulted for both primary and non-primary derivative-space
+   labels. The name worked under CS-44 because the table only
+   fed the non-primary post-loop. A rename to
+   `_DERIVATIVE_Y_LABEL` or `_Y_LABEL_BY_NODETYPE_AND_X_UNIT`
+   would read cleaner, but CS-44 locks the name by tests
+   pinning the constant. A future CS-N can relax the name
+   lock; cheap rename. No register entry.
+
+3. 🟢 **Empty primary is silently unlabelled
+   (Claude-surfaced).** When a user overrides every visible
+   node off primary (everything routed to secondary/tertiary),
+   primary now shows no label. Pre-CS-55 it incorrectly showed
+   "Absorbance" — strictly an improvement. A future polish
+   could surface "(no data)" or similar to make the empty axis
+   visually explicit. Defer until reported. No register entry.
+
+4. 🟢 **Phase 4u friction #9 (`_absorbance_to_y` corrupts d²A
+   on %T) cross-refs CS-55's label fix (Claude-surfaced
+   cross-ref).** CS-55 fixes the label routing — d²A on
+   primary now labels "d²A/dλ²" — but the values plotted are
+   still transformed by `_absorbance_to_y` on %T toggle, which
+   clips to `[-10, 10]` and applies `100·10^(-A)`. Cross-refs
+   Phase 4u friction #9 register entry (still ⏳). Natural
+   co-pickup with the next session that touches the per-node
+   redraw loop's y-unit branch. No new register entry; cross-
+   ref only.
+
+5. 🟢 **BACKLOG.md changelog gap: no `*1.28: Phase 4ac...*`
+   entry (Claude-surfaced doc-debt).** Phase 4ac's bookkeeping
+   commit bumped the body version 1.27 → 1.28 but did not add
+   a corresponding `*1.28: Phase 4ac — drop CS-31 + CS-32
+   (CS-54)...*` line at the bottom of the changelog list.
+   Phase 4ad's `*1.29:` entry references "Phase 4ad" so the
+   gap is visible. A retroactive one-liner would fix it; not
+   blocking. No register entry.
 
 ---
 
@@ -3082,7 +3162,7 @@ the resolving phase + commit SHA appended to the row.
 
 ---
 
-*Document version: 1.28 — May 2026*
+*Document version: 1.29 — May 2026*
 *1.1: Known Bugs register added 2026-04-27 after Phase 4b manual testing.*
 *1.2: Phase 4c — baseline correction lands; B-001 / B-003 / B-004
 resolved; Phase 4c friction points logged.*
@@ -3634,4 +3714,45 @@ indicator. 878 tests, all green (832 + 46 new: 22 pure-module
 helpers in `TestStyleDialogPhase4abHelpers` + 9 Notebook structure
 in `TestStyleDialogPhase4abNotebook` + 15 Provenance tab in
 `TestStyleDialogPhase4abProvenanceTab`).*
+*1.29: Phase 4ad — y-axis label routing follows NodeType, not
+axis side (CS-55). Closes Phase 4ac friction #1 (USER-FLAGGED
+🔴) in full plus Phase 4y friction #2 and Phase 4aa friction
+#5 (same root issue, struck through). The user reproduced the
+bug end-to-end at end of Phase 4ac (placing Absorbance on
+secondary and a derivative on primary left the Absorbance
+label on the empty left axis and the right side unlabelled);
+Phase 4ad's fix is structural — labels are role-agnostic,
+dimensionalised by NodeType class instead. New
+`_ABSORBANCE_SPACE_NODETYPES: frozenset[NodeType]` covering
+UVVIS / BASELINE / NORMALISED / SMOOTHED / PEAK_LIST +
+`_ABSORBANCE_Y_LABEL` y-unit → label dict, plus pure helper
+`_resolve_y_axis_label(node_type, x_unit, y_unit)`:
+absorbance-space NodeTypes label by y-unit (independent of
+x-unit and role); derivative-space NodeTypes fall through to
+the existing CS-44 `_NON_PRIMARY_Y_LABEL` table (which now
+feeds both primary and non-primary roles). Renderer in
+`_redraw` widens `first_node_type_per_role.setdefault` to
+record primary too, drops the hardcoded primary-ylabel inline
+lookup, and walks every populated role through the helper.
+`ylabel_mode = "custom"` still wins for primary (user-text
+affordance remains primary-only); non-primary always auto.
+Default routing (UVVIS-only) is byte-identical pre/post — the
+common case is unchanged. **Lock decision taken:** option (b)
+variant of the three architecture options surveyed in the
+canonical register entry — single helper keyed on NodeType
+class rather than two parallel tables, because the
+dimensionality of variability is NodeType nature (absorbance-
+space vs derivative-space), not axis role. CS-44 invariants
+all preserved (`_NON_PRIMARY_Y_LABEL` content +
+`_resolve_non_primary_y_label` signature byte-identical; the
+new helper layers on top). CS-50 + CS-52 + CS-53 + CS-54
+unaffected. Five Claude-surfaced 🟢 friction items captured
+at step 5 without new register entries (user accepted no new
+items): first-node-on-primary wins label policy is
+under-informative when multi-class; `_NON_PRIMARY_Y_LABEL` is
+now misnamed (CS-44 lock); empty-primary is silently
+unlabelled; Phase 4u friction #9 cross-refs CS-55's fix; the
+Phase 4ac changelog-gap doc-debt. 882 tests, all green (864
++ 9 pure-module in `TestYAxisLabelResolution` + 9 integration
+in `TestYAxisLabelRoleSwap`).*
 *Supersedes: BACKLOG.md (original)*

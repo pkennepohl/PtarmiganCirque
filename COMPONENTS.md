@@ -6608,7 +6608,159 @@ parts a + b, ⏳ for part c) is the home for those decisions.
 
 ---
 
-*Document version: 1.29 — May 2026*
+## CS-55 — Role-agnostic y-axis label resolution (Phase 4ad)
+
+Phase 4ad (`uvvis_tab.py` + `test_uvvis_tab.py`) fixes the Phase
+4ac friction #1 USER-FLAGGED 🔴 bug where the renderer's primary
+y-axis label was hard-coded from y-unit only, leaving Absorbance-
+on-secondary unlabelled and SECOND_DERIVATIVE-on-primary labelled
+"Absorbance" (wrong for d²A values) once the CS-50 per-style
+`y_axis` override hook landed. The fix is structural: label
+dimensionality varies by NodeType class, not by axis role.
+
+**New module-level constants (additive only — CS-44 untouched).**
+
+- `_ABSORBANCE_SPACE_NODETYPES: frozenset[NodeType]` — the five
+  NodeTypes whose y-values are in absorbance / transmittance
+  space and therefore share the y-unit-derived label: UVVIS /
+  BASELINE / NORMALISED / SMOOTHED / PEAK_LIST. Pinned by the
+  drift test `test_absorbance_space_matches_primary_default_routing`
+  against `_DEFAULT_Y_AXIS_BY_NODETYPE`'s primary-by-default
+  subset — any future renderer NodeType that lands on `"primary"`
+  by default but is NOT absorbance-shaped (e.g. a hypothetical
+  concentration-space NodeType) must be added to the routing
+  table without being added here.
+- `_ABSORBANCE_Y_LABEL: dict[str, str]` — `{"A": "Absorbance",
+  "%T": "Transmittance (%)"}`. Lifted from the previously inline
+  `auto_ylabels` dict inside `_redraw`. Unknown y-units return
+  `None` from the helper rather than guessing.
+
+**New pure helper.**
+
+- `_resolve_y_axis_label(node_type: NodeType, x_unit: str, y_unit:
+  str) -> Optional[str]` — returns the label for a node of
+  `node_type` rendered against the current `(x_unit, y_unit)`
+  context, regardless of which axis role the node lives on.
+  Resolution:
+  1. If `node_type in _ABSORBANCE_SPACE_NODETYPES`, return
+     `_ABSORBANCE_Y_LABEL.get(y_unit)` (or `None` for unknown
+     y-units).
+  2. Otherwise fall through to `_NON_PRIMARY_Y_LABEL.get(
+     (node_type, x_unit))` — the existing CS-44 derivative-space
+     label table, byte-identical to its pre-CS-55 state.
+  3. Else `None`.
+
+  The helper is consulted for every populated axis role in the
+  Phase 4ad renderer pass; the role is intentionally NOT part of
+  the key, because label text depends on the NodeType's nature,
+  not on which side of the figure it ended up on.
+
+**Renderer changes in `_redraw`.**
+
+- `first_node_type_per_role.setdefault(role, node.type)` is now
+  unconditional (the `if role != "primary":` guard from CS-44 is
+  dropped). The map now records the first NodeType to land on
+  every populated role, including primary.
+- The pre-CS-55 unconditional primary `ax.set_ylabel(...)` block
+  (`auto_ylabels[self._y_unit.get()]` inline lookup) is replaced
+  by a role-walking pass. `ylabel_mode == "custom"` is the
+  primary-only user-text affordance: when set, primary's label
+  comes from `cfg["ylabel_text"]` and the auto loop skips
+  primary. Otherwise every populated role's label flows through
+  `_resolve_y_axis_label`. `None` returns leave the axis
+  unlabelled rather than picking a guess (strictly better than
+  pre-CS-55, which hard-coded "Absorbance" on an empty primary).
+
+**Why option (b) over (a) and (c).**
+
+The Phase 4ac friction #1 register entry surveyed three
+architecture options:
+
+- (a) Add a `_PRIMARY_Y_LABEL` companion table mirroring
+  `_NON_PRIMARY_Y_LABEL`'s `(NodeType, x_unit) → label` shape.
+- (b) Collapse into a single role-keyed lookup.
+- (c) Widen `_NON_PRIMARY_Y_LABEL` to cover every renderer
+  NodeType + parallel primary-side widening.
+
+(c) was rejected — two parallel tables would drift on every
+NodeType addition. (a) was rejected because absorbance-space
+NodeTypes' labels depend on **y-unit** while derivative-space
+NodeTypes' depend on **x-unit**: forcing UVVIS / BASELINE /
+NORMALISED / SMOOTHED / PEAK_LIST entries into the
+`(NodeType, x_unit)`-keyed shape would contradict the key's
+semantics. (b)'s helper-based collapse correctly captures that
+the dimension of variability is NodeType class, not role.
+
+**Test coverage.**
+
+- `TestYAxisLabelResolution` (9 pure-module tests, no Tk
+  dependency) — frozenset membership of
+  `_ABSORBANCE_SPACE_NODETYPES`; drift guard against
+  `_DEFAULT_Y_AXIS_BY_NODETYPE`; `_ABSORBANCE_Y_LABEL` dict
+  shape; absorbance-space y-unit invariance across every x-unit
+  for all five member NodeTypes; SECOND_DERIVATIVE x-unit
+  invariance across every y-unit; three `None`-return cases
+  (unknown y-unit on absorbance-space, unknown x-unit on
+  derivative, unrouted NodeType); backward-compatibility check
+  that the new helper agrees with `_resolve_non_primary_y_label`
+  for SECOND_DERIVATIVE.
+- `TestYAxisLabelRoleSwap` (9 integration tests) — default
+  routing UVVIS-only keeps primary's "Absorbance" label;
+  y-unit flip to "%T" drives primary's label to
+  "Transmittance (%)"; UVVIS routed to secondary labels
+  secondary "Absorbance" (case A of the user-reported bug);
+  same scenario with `y_unit = "%T"` labels secondary
+  "Transmittance (%)"; SECOND_DERIVATIVE routed to primary
+  alongside default-routed UVVIS labels primary by the first
+  node (UVVIS); SECOND_DERIVATIVE alone on primary (parent
+  hidden) labels primary "d²A/dλ²" (case B); full user-reported
+  scenario (UVVIS on secondary + d²A on primary) labels both
+  correctly; `ylabel_mode = "custom"` wins for primary
+  regardless of routing while secondary stays auto; CS-44
+  x-unit-aware secondary derivative label invariant preserved
+  through the new helper for nm / cm-1 / eV.
+
+**Locked invariants.**
+
+- `_ABSORBANCE_SPACE_NODETYPES` content + frozenset type pinned
+  by `test_absorbance_space_nodetypes_membership`.
+- `_ABSORBANCE_Y_LABEL` content pinned by
+  `test_absorbance_y_label_dict_shape`.
+- `_resolve_y_axis_label` signature `(node_type: NodeType,
+  x_unit: str, y_unit: str) -> Optional[str]`. Future widenings
+  (e.g. a third role parameter) would need a deliberate signature
+  change.
+- The renderer's role-walking pass MUST consult the helper for
+  every populated role, with `ylabel_mode == "custom"` skipping
+  primary only.
+- CS-44 invariants ALL preserved: `_NON_PRIMARY_Y_LABEL` content,
+  `_resolve_non_primary_y_label` signature, `_AXIS_ROLES` shape,
+  `_DEFAULT_Y_AXIS_BY_NODETYPE` content, `_TERTIARY_AXIS_OFFSET_FRAC`,
+  `_resolve_y_axis_role` signature — all byte-identical pre-CS-55
+  → post-CS-55. The new helper layers on top; it does not
+  replace any CS-44 surface.
+
+**Carry-forward.**
+
+- 🟢 First-node-on-primary wins the label when multiple NodeType
+  classes coexist on primary — under-informative when primary
+  hosts both a default-routed UVVIS and an override-routed
+  derivative. Polish-level; defer until reported.
+- 🟢 `_NON_PRIMARY_Y_LABEL` is now misnamed (post-CS-55 it feeds
+  primary too). Rename to `_DERIVATIVE_Y_LABEL` or
+  `_Y_LABEL_BY_NODETYPE_AND_X_UNIT` requires a CS-44 lock-name
+  relaxation. Cheap rename; defer.
+- 🟢 Empty primary is silently unlabelled (strict improvement
+  over pre-CS-55's wrong "Absorbance"). A future polish could
+  surface "(no data)".
+- Phase 4u friction #9 — `_absorbance_to_y` value-corruption on
+  %T for d²A — stays open. CS-55 fixes label routing; the value-
+  routing half is independent. Natural co-pickup with the next
+  session that touches the per-node redraw loop's y-unit branch.
+
+---
+
+*Document version: 1.30 — May 2026*
 *1.1: CS-13 implementation notes added in Phase 4a.*
 *1.2: CS-14 Plot Settings Dialog added in Phase 4b.*
 *1.3: CS-15 UV/Vis Baseline Correction + CS-04 implementation
@@ -7207,5 +7359,44 @@ Notebook structure in `TestStyleDialogPhase4abNotebook` + 15
 Provenance tab in `TestStyleDialogPhase4abProvenanceTab`).
 Phase 4ab friction list: TBD — populated by step 5 + step 6 of
 the bookkeeping commit.*
+*1.30: Phase 4ad — role-agnostic y-axis label resolution (CS-55).
+Closes Phase 4ac friction #1 (USER-FLAGGED 🔴) in full plus the
+Phase 4y friction #2 and Phase 4aa friction #5 cross-refs to the
+same root issue. The user reproduced the bug end-to-end at end
+of Phase 4ac: placing Absorbance on the secondary axis and a
+derivative on the primary axis used to leave "Absorbance" on the
+empty left axis and the right side unlabelled. CS-55's fix
+recognises that label dimensionality varies by NodeType class,
+not by axis role. New `_ABSORBANCE_SPACE_NODETYPES: frozenset`
+covering UVVIS / BASELINE / NORMALISED / SMOOTHED / PEAK_LIST +
+`_ABSORBANCE_Y_LABEL` y-unit → label dict, both module-level in
+`uvvis_tab`. New pure helper `_resolve_y_axis_label(node_type,
+x_unit, y_unit) -> Optional[str]`: absorbance-space NodeTypes
+label by y-unit (independent of x-unit and role); derivative-
+space NodeTypes fall through to the existing CS-44
+`_NON_PRIMARY_Y_LABEL` table (which now feeds both primary and
+non-primary roles). Renderer in `_redraw` widens
+`first_node_type_per_role.setdefault` to record primary too,
+drops the hardcoded primary-ylabel inline lookup, and walks
+every populated role through the helper. `ylabel_mode = "custom"`
+still wins for primary (user-text affordance remains primary-
+only); non-primary always auto. Default routing (UVVIS-only) is
+byte-identical pre/post — the common case is unchanged. **Lock
+decision taken:** option (b) variant of the three architecture
+options surveyed — single helper keyed on NodeType class rather
+than two parallel tables, because the dimensionality of
+variability is NodeType nature (absorbance-space vs derivative-
+space), not axis role. CS-44 invariants ALL preserved
+(`_NON_PRIMARY_Y_LABEL` content + `_resolve_non_primary_y_label`
+signature byte-identical; the new helper layers on top). CS-50
++ CS-52 + CS-53 + CS-54 unaffected. Five Claude-surfaced 🟢
+friction items at step 5 without new register entries (user
+accepted no new items): first-node-on-primary wins label policy;
+`_NON_PRIMARY_Y_LABEL` misnamed post-CS-55; empty-primary
+silently unlabelled; Phase 4u friction #9 cross-ref to value-
+corruption half; BACKLOG.md changelog gap for Phase 4ac. 882
+tests, all green (864 + 9 pure-module in
+`TestYAxisLabelResolution` + 9 integration in
+`TestYAxisLabelRoleSwap`).*
 *To be updated as Open Questions are resolved and new components
 are specified.*
