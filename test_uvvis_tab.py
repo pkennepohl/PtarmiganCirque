@@ -3444,6 +3444,147 @@ class TestMultiAxisRoutingHelpers(unittest.TestCase):
         self.assertLess(_TERTIARY_AXIS_OFFSET_FRAC, 1.30)
 
 
+class TestYAxisLabelResolution(unittest.TestCase):
+    """Phase 4ad (CS-55) — role-agnostic y-axis label helper.
+
+    CS-44 + CS-50 introduced multi-axis routing and a per-style
+    override; the resulting Phase 4ac friction #1 USER-FLAGGED bug
+    was that the renderer hard-coded primary's ylabel from y-unit
+    only, leaving Absorbance-on-secondary unlabelled and
+    SECOND_DERIVATIVE-on-primary labelled "Absorbance". The fix is
+    structural: ``_resolve_y_axis_label(node_type, x_unit, y_unit)``
+    returns the right label regardless of which axis the node lives
+    on. Absorbance-space NodeTypes label from y-unit; derivative-
+    space NodeTypes label from x-unit via the existing CS-44 table.
+    """
+
+    def test_absorbance_space_nodetypes_membership(self):
+        # The frozenset must cover exactly the NodeTypes that share
+        # the absorbance-or-transmittance y-unit semantics. Drift
+        # against this set would silently break the bug fix — e.g.
+        # adding a derivative NodeType here would route its label
+        # through the y-unit path, not the x-unit path.
+        from uvvis_tab import _ABSORBANCE_SPACE_NODETYPES
+        self.assertIsInstance(_ABSORBANCE_SPACE_NODETYPES, frozenset)
+        self.assertEqual(
+            _ABSORBANCE_SPACE_NODETYPES,
+            frozenset({
+                NodeType.UVVIS,
+                NodeType.BASELINE,
+                NodeType.NORMALISED,
+                NodeType.SMOOTHED,
+                NodeType.PEAK_LIST,
+            }),
+        )
+
+    def test_absorbance_space_matches_primary_default_routing(self):
+        # Sanity drift guard: every absorbance-space NodeType also
+        # defaults to "primary" in the CS-44 routing table. If a
+        # future NodeType lands on "primary" by default but its
+        # values are NOT absorbance-shaped, it must NOT be added to
+        # _ABSORBANCE_SPACE_NODETYPES — and the test would force a
+        # deliberate split here.
+        from uvvis_tab import (
+            _ABSORBANCE_SPACE_NODETYPES,
+            _DEFAULT_Y_AXIS_BY_NODETYPE,
+        )
+        for ntype in _ABSORBANCE_SPACE_NODETYPES:
+            self.assertEqual(
+                _DEFAULT_Y_AXIS_BY_NODETYPE.get(ntype),
+                "primary",
+                f"{ntype} is in absorbance-space set but does not "
+                f"default to primary",
+            )
+
+    def test_absorbance_y_label_dict_shape(self):
+        from uvvis_tab import _ABSORBANCE_Y_LABEL
+        self.assertEqual(
+            _ABSORBANCE_Y_LABEL,
+            {"A": "Absorbance", "%T": "Transmittance (%)"},
+        )
+
+    def test_resolve_label_for_absorbance_space_uses_y_unit(self):
+        # Every absorbance-space NodeType returns the y-unit-derived
+        # label regardless of x-unit. This is the core invariant
+        # that fixes Absorbance-on-secondary.
+        from uvvis_tab import _resolve_y_axis_label
+        for ntype in (NodeType.UVVIS, NodeType.BASELINE,
+                      NodeType.NORMALISED, NodeType.SMOOTHED,
+                      NodeType.PEAK_LIST):
+            for x_unit in ("nm", "cm-1", "eV"):
+                self.assertEqual(
+                    _resolve_y_axis_label(ntype, x_unit, "A"),
+                    "Absorbance",
+                    f"{ntype} on x={x_unit} y=A",
+                )
+                self.assertEqual(
+                    _resolve_y_axis_label(ntype, x_unit, "%T"),
+                    "Transmittance (%)",
+                    f"{ntype} on x={x_unit} y=%T",
+                )
+
+    def test_resolve_label_for_second_derivative_uses_x_unit(self):
+        # SECOND_DERIVATIVE labels by x-unit (independent of y-unit).
+        # This is the existing CS-44 contract — preserved end-to-end.
+        from uvvis_tab import _resolve_y_axis_label
+        cases = {
+            "nm":   "d²A/dλ²",
+            "cm-1": "d²A/d(cm⁻¹)²",
+            "eV":   "d²A/dE²",
+        }
+        for x_unit, expected in cases.items():
+            for y_unit in ("A", "%T"):
+                self.assertEqual(
+                    _resolve_y_axis_label(
+                        NodeType.SECOND_DERIVATIVE, x_unit, y_unit),
+                    expected,
+                    f"d²A on x={x_unit} y={y_unit}",
+                )
+
+    def test_resolve_label_returns_none_for_absorbance_space_unknown_y_unit(self):
+        # Unknown y-unit on an absorbance-space NodeType returns None
+        # rather than guessing.
+        from uvvis_tab import _resolve_y_axis_label
+        self.assertIsNone(
+            _resolve_y_axis_label(NodeType.UVVIS, "nm", "future-y-unit"))
+
+    def test_resolve_label_returns_none_for_derivative_unknown_x_unit(self):
+        # Unknown x-unit on a non-absorbance NodeType falls through
+        # to the existing _NON_PRIMARY_Y_LABEL lookup and returns
+        # None.
+        from uvvis_tab import _resolve_y_axis_label
+        self.assertIsNone(
+            _resolve_y_axis_label(
+                NodeType.SECOND_DERIVATIVE, "future-x-unit", "A"))
+
+    def test_resolve_label_returns_none_for_unrouted_nodetype(self):
+        # A NodeType that's neither absorbance-space nor present in
+        # the CS-44 derivative-label table returns None (e.g.
+        # RAW_FILE, TDDFT — not rendered on the UV/Vis tab).
+        from uvvis_tab import _resolve_y_axis_label
+        self.assertIsNone(
+            _resolve_y_axis_label(NodeType.RAW_FILE, "nm", "A"))
+        self.assertIsNone(
+            _resolve_y_axis_label(NodeType.TDDFT, "nm", "A"))
+
+    def test_resolve_label_agrees_with_legacy_non_primary_helper(self):
+        # Backward-compat check: for the SECOND_DERIVATIVE NodeType,
+        # the new helper returns exactly what the CS-44-locked
+        # _resolve_non_primary_y_label returns. The new helper is a
+        # widening, not a replacement; CS-44's contract stands.
+        from uvvis_tab import (
+            _resolve_y_axis_label,
+            _resolve_non_primary_y_label,
+        )
+        for x_unit in ("nm", "cm-1", "eV"):
+            self.assertEqual(
+                _resolve_y_axis_label(
+                    NodeType.SECOND_DERIVATIVE, x_unit, "A"),
+                _resolve_non_primary_y_label(
+                    NodeType.SECOND_DERIVATIVE, x_unit),
+            )
+
+
 class TestResolveYAxisRoleStyleOverride(unittest.TestCase):
     """Phase 4y (CS-50) — per-style ``y_axis`` override hook.
 
