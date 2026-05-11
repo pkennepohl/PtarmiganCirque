@@ -1627,7 +1627,7 @@ subsequent Phase 4 session.**
 | ✅ | 🔴 | **Y-axis label routing follows axis side, not axis role — wrong / missing labels when primary/secondary roles are swapped (USER-FLAGGED, bumped 🟢 → 🔴 in Phase 4ac)** | Originally surfaced by Claude during Phase 4y as 🟢 polish. **Bumped to 🔴 USER-FLAGGED at end of Phase 4ac (step 5 elicitation):** the user reproduced the bug end-to-end — placing Absorbance on the secondary axis and a derivative on the primary axis leaves the Absorbance label rendered on the *left* axis (because the renderer's primary-axis label is hard-coded to "Absorbance / Transmittance (%)") and the right axis appears unlabelled. Symmetrically, a SECOND_DERIVATIVE overridden to "primary" keeps the absorbance label even though the values plotted are d²A. Architecturally: CS-44's `_NON_PRIMARY_Y_LABEL` table is keyed by `(NodeType, x_unit)` and only carries entries for SECOND_DERIVATIVE; the renderer relies on the NodeType-default for the primary label (always "Absorbance" / "Transmittance (%)" today). With the CS-50 override hook landed, the table no longer covers every reachable role × NodeType combination, hence the missing-label and wrong-label visible failures. **Architecture proposal (lock pending):** option (a) introduce a `_PRIMARY_Y_LABEL: dict[(NodeType, x_unit), str]` companion table that mirrors `_NON_PRIMARY_Y_LABEL` so primary's label tracks the *first* node landing on it (CS-44 lock relaxes for both label tables); option (b) fold both into a single `_Y_LABEL_BY_ROLE_FIRST_NODE_TYPE: dict[(NodeType, x_unit), str]` lookup that the renderer reads per role from the role's first node; option (c) keep the two tables separate but widen `_NON_PRIMARY_Y_LABEL` to cover UVVIS / NORMALISED / SMOOTHED / BASELINE / PEAK_LIST on every x-unit AND build a parallel primary-side widening. **Affected:** `uvvis_tab.py` (`_redraw`'s y-label resolution + the new label table), tests pinning each role's label for every NodeType × x_unit combination. Cross-refs Phase 4u friction #9 (`_absorbance_to_y` corrupts d²A on %T) — both surface "primary axis assumes absorbance values" mistakes that pre-date the CS-50 override path. **Resolved Phase 4ad (CS-55):** option (b) variant landed — labels are role-agnostic, dimensionalised by NodeType class instead. New `_ABSORBANCE_SPACE_NODETYPES: frozenset[NodeType]` covering UVVIS / BASELINE / NORMALISED / SMOOTHED / PEAK_LIST + `_ABSORBANCE_Y_LABEL: dict[str, str]` mapping y-unit ("A" / "%T") to label, both module-level in `uvvis_tab`. New pure helper `_resolve_y_axis_label(node_type, x_unit, y_unit) -> Optional[str]`: absorbance-space NodeTypes label by y-unit (independent of x-unit and role); derivative-space NodeTypes fall through to the existing CS-44 `_NON_PRIMARY_Y_LABEL` table (which now feeds both primary and non-primary roles). Renderer in `_redraw` widens `first_node_type_per_role.setdefault` to record primary too (drop the `if role != "primary":` guard), drops the hardcoded `auto_ylabels = {"A": …}` inline lookup for primary, and walks every populated role through the helper. `ylabel_mode = "custom"` still wins for primary (user-text affordance remains primary-only); non-primary always auto. Default routing (UVVIS-only) is byte-identical pre/post — the common case is unchanged. **Lock decision taken:** option (b) variant over (a) and (c) — single helper keyed on NodeType class rather than two parallel tables, because the dimensionality of variability is NodeType nature (absorbance-space vs derivative-space), not axis role. (c) was rejected (two parallel tables would drift); (a) was rejected (mirroring `_NON_PRIMARY_Y_LABEL` for absorbance-space would force y-unit-keyed entries that contradict its `(NodeType, x_unit)` key shape). CS-44 invariants all preserved (`_NON_PRIMARY_Y_LABEL` content + `_resolve_non_primary_y_label` signature byte-identical; the new helper layers on top). 18 new tests (9 pure-module in `TestYAxisLabelResolution`: frozenset membership, drift guard against `_DEFAULT_Y_AXIS_BY_NODETYPE`, dict shape, absorbance-space y-unit invariance across x-units, derivative x-unit invariance across y-units, three `None`-return cases for unknown units / unrouted NodeTypes, backward-compat with CS-44 helper; 9 integration in `TestYAxisLabelRoleSwap`: default-routing preservation, y-unit flip, UVVIS-on-secondary case A, UVVIS-on-secondary %T flip, d²A-on-primary with parent visible, d²A alone on primary, full user-reported scenario, custom-mode wins, x-unit-aware secondary derivative). 882 tests, all green. |
 | ⏳ | 🟢 | **DRY cross-typed-Apply y_axis inheritance helper (CS-50 architectural debt)** | Surfaced by Claude during Phase 4y. The CS-50 inheritance block (set `style["y_axis"]` on a new node when its NodeType-default differs from the parent's effective role) lives inside `SmoothingPanel._apply`, today the only widened cross-type panel under CS-49. If a future panel widens its `ACCEPTED_PARENT_TYPES` cross-type (NormalisationPanel accepting SECOND_DERIVATIVE; SecondDerivativePanel accepting NORMALISED on a non-UVVis x-axis; etc.), each panel's `_apply` would copy-paste the same six-line block. Move it into `node_styles.py` (or a new `axis_inheritance.py`) as `inherit_y_axis_for_cross_typed_apply(parent_node, new_node_type) -> str \| None`; every panel calls it next to its `default_spectrum_style(colour)` call. Cheap one-time refactor; defer until a second cross-typed-Apply path lands so the abstraction has two consumers. Cross-refs the four open audit-held tuples (`NormalisationPanel` / `PeakPickingPanel` / `SecondDerivativePanel`) — the next CS-49-style widening will probably be the trigger |
 | ⏳ | 🟢 | **Hover/status-bar readout for active y-axis (CS-44 follow-up)** | Surfaced Phase 4u step 5. Once two y-axes coexist (CS-44), the matplotlib toolbar's coordinate readout reports primary-axis values only — a user mousing over a SECOND_DERIVATIVE point sees an absorbance number, not a d²A value. Likely shape: bind a `motion_notify_event` on the canvas, walk every populated `_axes_by_role` axis, transform the cursor's display coords into each axis's data coords, and surface the per-axis readout in a dedicated status strip below the toolbar. Cross-refs the diagnostic-console register entry — both add ambient information surfaces. Defer until two-axis use is common enough to motivate the complexity |
-| ⏳ | 🟢 | **Lift multi-axis routing to plot_widget.py + promote `_TERTIARY_AXIS_OFFSET_FRAC` to Plot Settings (CS-44 follow-up)** | Phase 4u Decision 7 kept the multi-axis routing inside `uvvis_tab._redraw` rather than lifting to `plot_widget.py`. This pairs with Q2's user decision to make `_TERTIARY_AXIS_OFFSET_FRAC` tunable later — both follow-ups land naturally in the same phase. Trigger: when a second tab (XANES / EXAFS) needs multi-axis routing, lift `_AXIS_ROLES` + `_DEFAULT_Y_AXIS_BY_NODETYPE` + `_NON_PRIMARY_Y_LABEL` + `_TERTIARY_AXIS_OFFSET_FRAC` + `_resolve_y_axis_role` + `_resolve_non_primary_y_label` + the `get_axis(role)` lazy-creation closure into `plot_widget.py` (or a new `plot_axes.py`). At the same time, surface the tertiary offset as a Plot Settings → Appearance row. Until then, the in-tab home is the right shape — single consumer, no abstraction tax |
+| ⏳ | 🟢 | **Lift multi-axis routing to plot_widget.py (CS-44 follow-up, partial — promote-to-Plot-Settings half closed Phase 4ae)** | Phase 4u Decision 7 kept the multi-axis routing inside `uvvis_tab._redraw` rather than lifting to `plot_widget.py`. The original entry had two halves; **the "promote `_TERTIARY_AXIS_OFFSET_FRAC` to Plot Settings → Appearance row" half closed in Phase 4ae (CS-56)**: new `"tertiary_axis_offset"` key in `_FACTORY_DEFAULTS` (default `1.12`, mirrors the module constant via a drift-pin test in `TestUVVisTabAppearancePhase4ae`); new float `tk.Spinbox` row in `_build_section_appearance` (row=4; bounds `1.00`–`1.50`, increment `0.01`); renderer reads `cfg.get("tertiary_axis_offset", _TERTIARY_AXIS_OFFSET_FRAC)` and passes it to the right-spine offset. The CS-44 module constant stays in place as the canonical fallback. **CS-44 lock relaxation taken in Phase 4ae:** the constant is no longer the sole source of truth — the dict key takes precedence; the helpers (`_AXIS_ROLES`, `_DEFAULT_Y_AXIS_BY_NODETYPE`, `_NON_PRIMARY_Y_LABEL`, `_resolve_y_axis_role`, `_resolve_non_primary_y_label`) stay byte-identical. **Still ⏳:** the larger lift to `plot_widget.py` (or a new `plot_axes.py`) — `_AXIS_ROLES`, `_DEFAULT_Y_AXIS_BY_NODETYPE`, `_NON_PRIMARY_Y_LABEL`, `_resolve_y_axis_role`, `_resolve_non_primary_y_label`, and the `get_axis(role)` lazy-creation closure all stay in `uvvis_tab._redraw` until a second tab (XANES / EXAFS) needs multi-axis routing. Single consumer today; no abstraction tax warranted. The new `tertiary_axis_offset` cfg-key read site lifts naturally alongside when the rest does |
 | ⏳ | 🟡 | **Top-bar Open File / Reload buttons belong to TDDFT only, not the app top level (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4t. The very top bar of the app currently shows `Open File` + `Reload` buttons that, in practice, only act on the TDDFT tab — they're not relevant to the UV/Vis tab (which has its own subject-loading paths inside the left pane), the XAS / EXAFS tabs (separate file paths), or the planned Compare tab. Today they're rendered at app top level (in `binah.py` or wherever the chrome lives), giving the user a false signal that they're cross-tab gestures. The user has flagged that they should be removed from the top-level row entirely and either (a) re-rendered inside the TDDFT tab where they belong, OR (b) become tab-context-aware so they only show when the TDDFT tab is active. Lock decision needed: (a) is structurally cleaner (each tab owns its own file ingestion); (b) preserves the existing "always-on top bar" pattern. Touches `binah.py` (top-bar removal) + the TDDFT tab module (button re-render, if path (a) chosen). Pairs with any future tab-chrome refactor — the file-open responsibility per tab is also relevant to the OLIS reader register entry above and to the persistence umbrella's `.ptmg` archive UX (load-project gestures stay app-level; load-instrument-file gestures are per-tab) |
 | ⏳ | 🔴 | **Diagnostic console / fitted-parameter panel (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4n. Several places in the app produce numeric diagnostics that currently live only in `OperationNode.params` and never surface to the user: scattering log fit's resolved n (Phase 4m friction #2), upcoming scattering+offset's `a_fitted`, polynomial baseline fit residuals, peak-picking match list, rubberband convex-hull point count, etc. The user is asking whether a small read-only "console" or "log" pane (a scrolling text widget at the bottom of the app or a per-tab footer) would carry these. Two shapes worth weighing: (a) **per-tab inline diagnostic strip** — small read-only panel at the bottom of each tab's left pane that names the most recently applied op and lists its key fitted values; refreshed on every Apply; (b) **app-wide log console** — a collapsible bottom drawer (like an IDE's output pane) that streams every op's "results" line plus warnings / errors / debug; survives tab switches. (b) doubles as a place for the `_redraw` KeyError trace (Phase 4n friction #1) and the messagebox messages currently shown via popups (e.g. "no Compare host connected"). Both shapes are non-trivial; pick before any Phase 4 follow-up that needs to surface a fitted value |
 | ✅ | 🔴 | **Defensive guard in `_redraw` for non-UVVIS DataNodes** | Surfaced by Phase 4n while writing the Send-to-Compare integration test. Resolved Phase 4o (CS-28): positive guard at the top of the per-node loop body (`if "wavelength_nm" not in node.arrays or "absorbance" not in node.arrays: continue`) and a mirror guard wrapped around the unit==`"nm"` xlim min/max comprehension. Silent skip — the diagnostic-console entry (still ⏳) will eventually surface skipped nodes. The Phase 4n note that BASELINE's schema was `wavelength_nm + baseline` was inaccurate — live BASELINE nodes carry `wavelength_nm + absorbance` (line 937 of `uvvis_tab.py`); the only `baseline`-keyed BASELINE in the codebase was the deliberately-malformed stub in `test_send_node_to_compare_skips_non_uvvis_nodes`, which the Phase 4o follow-up commit simplified to use the new guard rather than stub `graph.get_node` |
@@ -1648,8 +1648,8 @@ subsequent Phase 4 session.**
 | ⏳ | 🟡 | **Project-specific plot defaults + import from another project (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4v (step 5 elicitation). Phase A persistence (CS-46) round-trips `plot_settings_dialog._USER_DEFAULTS` as a top-level `plot_defaults` key, but those defaults are app-global (mutated in place at load time). The user has asked for project-scoped plot defaults that ride with the workflow + an "Import plot settings from another project" gesture in the Plot Settings dialog. **Architecture proposal (lock pending):** three-layer defaults — factory (`_FACTORY_DEFAULTS`, immutable) → user (`~/.binah_config.json`, app-global) → project (manifest, scoped to the loaded `.ptmg`). Lookups walk the layers (project ?? user ?? factory). New "Import plot settings…" file dialog in PlotSettingsDialog reads another `.ptmg`'s `plot_defaults` block and merges into the current project's overrides. Pairs with the still-open Phase 4l friction #1 register entry (audit dialog button-row vocabulary) — the import gesture is a new dialog. **Lock decisions for the implementing session:** (i) does the project layer override every key, or only ones explicitly set? (ii) is the import a copy (snapshot) or a reference (live link to the source project's defaults)? (iii) does the StyleDialog's "Apply to All" reach into the project-defaults layer? **Affected:** `plot_settings_dialog.py` (three-layer lookup + import file dialog), `project_io.py` (no schema change — `plot_defaults` already exists; semantics shift), `binah.py` (load-time wiring of the project layer) |
 | ⏳ | 🟡 | **Refactor uvvis_tab.py — extract host shell into separate files; cross-tab generalization (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4v (step 5 elicitation). Today `uvvis_tab.py` is ~2000 LOC mixing five concerns: (a) the left-pane chrome (CollapsibleSection wrappers, shared subject combobox, baseline-section inline panel), (b) the right-pane chrome (ScanTreeWidget host), (c) the matplotlib plot frame + redraw pipeline, (d) graph subscription + apply orchestration, (e) the LOAD path (file-open dialog → parser → DataNode creation). The five operation panels (`uvvis_baseline.py`, `uvvis_normalise.py`, `uvvis_smoothing.py`, `uvvis_peak_picking.py`, `uvvis_second_derivative.py`) are already separate files. **Architecture proposal (lock pending):** (a) extract the left-pane chrome into `processing_pane.py` (or `left_pane.py`) — the shared subject combobox + the CollapsibleSection wrappers + the panel registration mechanism become reusable across XAS / EXAFS / TDDFT tabs once those tabs adopt ProjectGraphs; (b) extract the right-pane chrome (ScanTreeWidget host wiring + `_restore_workflow_payload`) into `tab_shell.py`; (c) extract the matplotlib plot frame + redraw into `plot_pane.py`; (d) leave `uvvis_tab.py` as a thin orchestration class composing the three panes. The cross-tab generalization is a separate larger entry — the four tabs end up with a common `Tab` base class composing the same three pane classes. **Lock decisions for the implementing session:** (i) does the redraw pipeline stay inside the plot pane (lift the multi-axis routing CS-44 helpers along with it), or stay in `uvvis_tab.py` per the current Phase 4u Decision 7? (ii) which tab adopts the cross-tab generalization first — XANES (which has its own plot logic to reconcile) or a fresh "Compare" tab? (iii) is the panel registration mechanism a list of `(name, panel_class, factory)` tuples, a decorator, or hard-wired? Multi-phase task. Pairs with the future plot_widget abstraction lift register entry (CS-44 follow-up). Cross-refs the existing Phase 4t friction #3 / "Top-bar Open File / Reload buttons belong to TDDFT only" register entry — that one removes app-level chrome; this one extracts tab-level chrome |
 | ⏳ | 🟡 | **Plot data markers / points (instead of lines) with per-style marker config (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4v (step 5 elicitation). Today every visible spectrum is rendered as a continuous line (`ax.plot(..., linestyle=...)` in `uvvis_tab._redraw`); discrete points are not an option. The user has asked for a markers-only render mode + per-style marker configuration (shape + size). **Architecture proposal (lock pending):** new style keys `style["plot_kind"]: "line" \| "markers" \| "both"` (default `"line"` to preserve existing behaviour), `style["marker"]: str` (matplotlib marker spec — `"o"`, `"s"`, `"^"`, etc.), `style["marker_size"]: float`. The redraw branch in `uvvis_tab._redraw` reads `plot_kind` and switches between `ax.plot(..., linestyle="None", marker=..., markersize=...)` and the existing line path; `"both"` uses the existing line path with a non-`"None"` marker. **StyleDialog universal section:** new Combobox (line / markers / both), new marker-shape Combobox (matplotlib's standard set), new size Spinbox. **Cross-refs:** `node_styles.default_spectrum_style` grows the three new keys with sensible defaults. **Affected:** `node_styles.py` (defaults), `style_dialog.py` (universal section), `uvvis_tab.py` (`_redraw` switch), tests for the new style keys' round-trip and the renderer's branching. Pairs with: the future PEAK_LIST renderer (peaks are inherently markers — CS-19 already uses scatter); this entry generalises the markers path so PEAK_LIST and a markers-only spectrum share the same code |
-| ⏳ | 🟡 | **Configurable plot grid colour (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4ac (step 5 elicitation). Today the matplotlib grid renders at the matplotlib default (a light grey) with no user control surface; the user has asked for a per-plot grid colour picker. **Architecture proposal (lock pending):** add a `"grid_color"` key to `plot_settings_dialog._FACTORY_DEFAULTS` (default the existing matplotlib grey, e.g. `"#b0b0b0"`); add a colour-picker row under "Appearance" in the dialog (next to the existing tick-direction radios — already there per the inward-ticks register entry below). The renderer (`uvvis_tab._redraw`'s `ax.grid(...)` call) reads the value and passes it through. **Lock decisions for the implementing session:** (i) is the colour scoped per-tab (in `tabs[<name>].plot_config`) or app-global (in `_USER_DEFAULTS`)? (ii) one colour for both major + minor grids, or two pickers? (iii) does the StyleDialog gain a per-style override or stay plot-wide? **Affected:** `plot_settings_dialog.py` (factory + user defaults + new dialog row), `uvvis_tab.py` (`_redraw` reads the value), `project_io.py` (round-trips through the existing `plot_defaults` block — no schema change), tests for the round-trip + the dialog wiring. Pairs with: the inward-tick register entry below (both surface in the same Plot Settings → Appearance section) |
-| ⏳ | 🟡 | **Default to inward-facing axis ticks (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4ac (step 5 elicitation). The user has asked that the factory default for tick direction flip from `"out"` to `"in"`. The infrastructure already exists: `plot_settings_dialog._FACTORY_DEFAULTS["tick_direction"]` carries the value (`"in" \| "out" \| "inout"`), `_control_vars["tick_direction"]` is the `tk.StringVar` the dialog binds, and the renderer reads through `_control_refresh["tick_direction"]`. The change is therefore a one-line factory-default flip plus an audit pass: are there pre-existing user `~/.binah_config.json` files that pin `"out"` and would block the new default? Should the change be gated by a one-time migration that re-reads `_USER_DEFAULTS`? **Lock decisions for the implementing session:** (i) factory-default-only (so existing user configs keep `"out"` unless re-set), or one-time migration that bumps `"out" → "in"` for every `_USER_DEFAULTS["tick_direction"]` that matches the OLD factory default? (ii) do XANES / EXAFS / TDDFT plots also default to inward? (iii) does the change require a `plot_widget._tick_direction` `StringVar` default flip too (currently `"in"` per `plot_widget.py:250`)? **Affected:** `plot_settings_dialog.py` (one-line default flip, audit migration if (i) calls for it), tests pinning the new default. Cheap. Pairs with the grid-colour entry above |
+| ✅ | 🟡 | **Configurable plot grid colour (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4ac (step 5 elicitation). Resolved Phase 4ae (CS-56): new `"grid_color"` key in `plot_settings_dialog._FACTORY_DEFAULTS` (factory default `"#b0b0b0"` — matplotlib's standard light grey, preserves the existing visual). New `_make_colour_swatch` row under Appearance (row=1; existing rows shift one place to accommodate). Renderer (`uvvis_tab._redraw`'s `ax.grid(...)` call) reads the value through `cfg.get("grid_color", "#b0b0b0")`. **Lock decisions taken:** (i) **app-global** in `_USER_DEFAULTS` (consistent with every other Plot Settings key today; per-tab is the future "project-specific plot defaults" register entry above); (ii) **one colour** covering both major + minor grids (matplotlib's `ax.grid(color=...)` already applies to both — two pickers is gold-plating); (iii) **stay plot-wide** (no per-style override; the StyleDialog re-org register entry handles the per-style question if it ever comes up). Round-trips through `project_io.plot_defaults` already (CS-46) — no schema change. 5 new pure-module tests in `TestAppearanceSectionPhase4ae` (factory dict shape + dialog widget creation + write-through + Factory Reset) + 3 integration tests in `TestUVVisTabAppearancePhase4ae` (default + custom colour reach `ax.grid`, off-then-on round-trip) |
+| ✅ | 🟡 | **Default to inward-facing axis ticks (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4ac (step 5 elicitation). Resolved Phase 4ae (CS-56): `plot_settings_dialog._FACTORY_DEFAULTS["tick_direction"]` flipped `"out"` → `"in"`. Existing dialog fallback in `_build_section_appearance` and renderer fallback in `uvvis_tab._redraw` (`cfg.get("tick_direction", "out")`) also flipped to `"in"` for consistency. **Lock decisions taken:** (i) **factory-default-only flip** — no migration; existing `_USER_DEFAULTS["tick_direction"] = "out"` entries are left alone (explicit user choice wins). New users + users with no explicit setting get `"in"`. Cheapest, safest path; no migration code to write or test. (ii) **defer** — `_FACTORY_DEFAULTS` is module-level; XANES / EXAFS / TDDFT inherit the new default when they wire Plot Settings (UV/Vis is the only consumer today). (iii) **no-op** — `plot_widget._tick_direction` already defaults to `"in"` at [plot_widget.py:250](plot_widget.py#L250); no flip needed there. 1 new pure-module test in `TestAppearanceSectionPhase4ae` pinning the factory default + 1 integration test in `TestUVVisTabAppearancePhase4ae` confirming a fresh tab's `plot_config` inherits `"in"` |
 | ⏳ | 🟡 | **Re-run all changed ops at load (CS-45 follow-up)** | Phase 4v deferral. CS-45's mismatch dialog ships with two buttons (Keep cached / Show details); the third "Re-run all changed" action from the Phase 4v Q2 lock is wired to a placeholder. To implement it properly: walk the graph in topological order; for each OperationNode whose `metadata["implementation_hash"]` differs from the current `compute_implementation_hash(op.type)`, look up the matching `compute_*` helper (dispatching on `op.type` + `op.params["mode"]`), call it with the input arrays + params, replace the output DataNode's arrays in place, re-stamp the implementation hash. ~150 LOC of new replay logic + new test class `TestImplementationDriftReplay`. **Trigger:** when ≥3 ops drift across a release in real practice OR when `.ptmg` files start moving between machines that may run different builds. Until then, manual re-apply (select parent → click Apply) suffices |
 | ⏳ | 🟡 | **Original instrument file persistence (Phase A follow-up)** | Phase 4v deferral. The Phase A manifest+sidecar shipped (CS-46) round-trips DataNode arrays via `sidecars/<arrays_hash>.h5` but does NOT yet persist the *original instrument file* the LOAD operation parsed. The persistence-umbrella architecture lock specifies "the original instrument file as a first-class sidecar"; today we only round-trip the *parsed* (wavelength_nm, absorbance) arrays. Implementation: at save time, for each LOAD OperationNode, locate `metadata["source_file"]` on its output UVVIS DataNode (or carry the path on the LOAD op's params), hash the file bytes, copy to `sidecars/raw_<file_hash>.<ext>`, record `raw_file_hash` + `raw_file_format` on the LOAD op's metadata. At load time, the host can offer a "Re-import from original" gesture that re-runs the parser against the cached sidecar. Pairs with the OLIS reader register entry (binary `.ols` files MUST round-trip via this path — re-parsing without the original is impossible). Cross-refs the Phase A `hash_file` helper retained in `project_io.py` exactly for this case |
 | ⏳ | 🟢 | **`.ptmg` zip-archive form (CS-46 follow-up)** | Phase 4v deferral. Phase A ships directory-only (`myproject.ptmg/`); the persistence-umbrella architecture lock also calls for a single-archive form (zip-with-extension). One small follow-up phase: wrap `shutil.make_archive` / `unpack_archive` around save/load so the user can choose either form in the file dialog. Open-as-archive: detect that the picked path is a regular file, unpack to a tmp dir, hand over to the existing directory loader, register a save-back hook that re-archives on next Save. Save-as-archive: write to tmp dir, archive, replace destination. Smallish; defer until a user reports wanting it (likely after the first time someone tries to email a project) |
@@ -2829,21 +2829,27 @@ until the relevant subsequent Phase 4 session.**
    row above for full deliverables. Phase 4u friction #9 (value-
    corruption half) stays open as a separate fix.
 
-2. 🟡 **Configurable plot grid colour (USER-FLAGGED).** User
+2. ~~🟡 **Configurable plot grid colour (USER-FLAGGED).** User
    has asked for a per-plot grid-colour picker. Today the grid
    renders at the matplotlib default (light grey) with no user
    control. **Cross-ref:** see the new register entry above.
    Pairs with #3 below (both surface in the Plot Settings →
-   Appearance section).
+   Appearance section).~~ ✅ Resolved in Phase 4ae (CS-56) —
+   new `"grid_color"` factory key + colour-swatch row in
+   Appearance + renderer reads through. See the canonical
+   register entry above for full deliverables.
 
-3. 🟡 **Default to inward-facing axis ticks (USER-FLAGGED).**
+3. ~~🟡 **Default to inward-facing axis ticks (USER-FLAGGED).**
    User has asked that the factory default for tick direction
    flip from `"out"` to `"in"`. Infrastructure already exists
    in `plot_settings_dialog._FACTORY_DEFAULTS["tick_direction"]`;
    the change is a one-line factory-default flip plus an audit
    pass for existing user `~/.binah_config.json` files. **Cross-
    ref:** see the new register entry above. Pairs with #2
-   above.
+   above.~~ ✅ Resolved in Phase 4ae (CS-56) — factory-default-
+   only flip per decision lock (i); no migration needed.
+   `plot_widget._tick_direction` already defaulted to `"in"` so
+   question (iii) collapsed.
 
 4. 🟡 **Phase 4ad: NodeType.NODE_GROUP + user-driven "Combine
    selected → Group" gesture (carry-forward from Phase 4v
@@ -2939,14 +2945,100 @@ subsequent Phase 4 session.**
    redraw loop's y-unit branch. No new register entry; cross-
    ref only.
 
-5. 🟢 **BACKLOG.md changelog gap: no `*1.28: Phase 4ac...*`
+5. ~~🟢 **BACKLOG.md changelog gap: no `*1.28: Phase 4ac...*`
    entry (Claude-surfaced doc-debt).** Phase 4ac's bookkeeping
    commit bumped the body version 1.27 → 1.28 but did not add
    a corresponding `*1.28: Phase 4ac — drop CS-31 + CS-32
    (CS-54)...*` line at the bottom of the changelog list.
    Phase 4ad's `*1.29:` entry references "Phase 4ad" so the
    gap is visible. A retroactive one-liner would fix it; not
-   blocking. No register entry.
+   blocking. No register entry.~~ ✅ Resolved in Phase 4ae
+   (CS-56) — retroactive `*1.28: Phase 4ac...*` entry inserted
+   between 1.27 and 1.29 in this bookkeeping commit.
+
+### Friction points carried forward from Phase 4ae
+
+These are concrete obstacles the next Phase 4 session will hit.
+Identified during Phase 4ae while landing the three new Plot
+Settings → Appearance controls (CS-56) — closing Phase 4ac
+friction #2 + #3 (both USER-FLAGGED 🟡) plus the
+promote-to-Plot-Settings half of the CS-44 follow-up register
+entry, plus the Phase 4ad friction #5 doc-debt. The user
+accepted no new items at step 5 ("proceed"); all five items
+below are Claude-surfaced 🟢 polish notes flagged during step
+5; none have new register entries. **Do not fix until the
+relevant subsequent Phase 4 session.**
+
+1. 🟢 **`_make_colour_swatch` has no `trace_add` on its
+   `StringVar` (Claude-surfaced footgun).** Writes to
+   `_working` happen only via the colorchooser's `_pick`
+   callback explicitly calling `_on_var_write`. Setting the
+   var directly (e.g. programmatic restore, a test, a future
+   "import plot settings from another project" gesture) silently
+   drops the write — `_working[key]` keeps its prior value
+   while the widget displays the new value. The CS-56 test
+   `test_grid_color_swatch_writes_through_to_working` was
+   originally written assuming a trace fired on `var.set()`
+   and had to be rewritten to call `_on_var_write` directly
+   to expose the real path. The existing `background_color`
+   swatch has the same gap. **Fix shape:** one-line
+   `var.trace_add("write", lambda *_, k=key, v=var:
+   self._on_var_write(k, v.get()))` inside the helper. Touches
+   both swatch consumers (`grid_color` + `background_color`) +
+   any future swatch addition. Cheap, but worth its own phase
+   rather than a drive-by since it changes write semantics on
+   an existing widget. No register entry.
+
+2. 🟢 **No targeted persistence test for the new Appearance
+   keys round-tripping through `project_io` (Claude-surfaced
+   coverage gap).** The existing `TestPlotDefaultsRoundTrip.
+   test_user_defaults_round_trip` exercises the manifest
+   serialiser generically; the new keys ride along *if* they
+   reach `_USER_DEFAULTS`. There's no test that asserts
+   saving a `.ptmg` with `cfg["grid_color"] = "#ff0000"` and
+   `cfg["tertiary_axis_offset"] = 1.30`, reloading it, and
+   confirming both values land back at `_redraw` time. Likely
+   works (the schema doesn't reject unknown keys; CS-46 round-
+   trips arbitrary `plot_defaults` content) but unproven. **Fix
+   shape:** one new test in `test_persistence_phase_a.
+   TestPlotDefaultsRoundTrip` that mutates the two keys before
+   save and checks them after load. No register entry.
+
+3. 🟢 **`tick_direction` factory-default flip is observable
+   to existing users with no `_USER_DEFAULTS` entry (Claude-
+   surfaced behaviour-change visibility).** Per decision (i) of
+   the inward-tick lock, no migration runs — users who pin
+   `"out"` explicitly are unaffected, but users with no
+   `~/.binah_config.json` "tick_direction" entry will see ticks
+   suddenly point inward on next launch. This is the intended
+   path, but it's a visible behaviour change worth surfacing
+   somewhere user-facing once a release-note / CHANGELOG flow
+   exists. Today there is none. No register entry; folds into
+   the future release-note infrastructure when one lands.
+
+4. 🟢 **Tertiary-axis offset Spinbox bounds `1.00`–`1.50` are
+   a Claude pick, not a user lock (Claude-surfaced minor
+   choice).** User confirmed "as long as the user can change
+   this somehow in the plot settings and also have a way of
+   changing the default" — both reachable today (Spinbox
+   in-band edit + Save-as-Default via the CS-23 Save button).
+   `tk.Spinbox` lets the user type values outside the bounds
+   (the arrows clamp, typed input does not), so the band is
+   really a soft suggestion. If a user reports wanting a
+   stricter band, a wider band, or a hard cap, retune. Until
+   then, locked. No register entry.
+
+5. 🟢 **Dialog row order in `_build_section_appearance`
+   (Claude-surfaced minor choice).** Phase 4ae inserted Grid
+   colour at row=1 (immediately under Grid checkbox at row=0;
+   Background dropped to row=2). The cluster-by-concept order
+   (Grid + Grid colour together) won over cluster-by-widget
+   (both colour swatches adjacent). If a future user-facing
+   review prefers a different grouping — or if a planned
+   LabelFrame re-org pass (cross-refs the StyleDialog
+   LabelFrame-groupings register entry above) reshapes the
+   section — re-sort then. Until then, locked. No register
+   entry.
 
 ---
 
@@ -3162,7 +3254,7 @@ the resolving phase + commit SHA appended to the row.
 
 ---
 
-*Document version: 1.29 — May 2026*
+*Document version: 1.30 — May 2026*
 *1.1: Known Bugs register added 2026-04-27 after Phase 4b manual testing.*
 *1.2: Phase 4c — baseline correction lands; B-001 / B-003 / B-004
 resolved; Phase 4c friction points logged.*
@@ -3714,6 +3806,12 @@ indicator. 878 tests, all green (832 + 46 new: 22 pure-module
 helpers in `TestStyleDialogPhase4abHelpers` + 9 Notebook structure
 in `TestStyleDialogPhase4abNotebook` + 15 Provenance tab in
 `TestStyleDialogPhase4abProvenanceTab`).*
+*1.28: Phase 4ac — drop CS-31 dedup short-circuit + retire CS-32
+sweep auto-grouping machinery (CS-54). Closes the (a) + (b) parts
+of Phase 4v friction #1 (USER-FLAGGED "Drop CS-31 + introduce
+user-driven node groups"); the (c) part — user-driven NODE_GROUP
+container — stays carry-forward to a future phase. Retroactive
+entry inserted in Phase 4ae per Phase 4ad friction #5 ✅.*
 *1.29: Phase 4ad — y-axis label routing follows NodeType, not
 axis side (CS-55). Closes Phase 4ac friction #1 (USER-FLAGGED
 🔴) in full plus Phase 4y friction #2 and Phase 4aa friction
@@ -3755,4 +3853,43 @@ unlabelled; Phase 4u friction #9 cross-refs CS-55's fix; the
 Phase 4ac changelog-gap doc-debt. 882 tests, all green (864
 + 9 pure-module in `TestYAxisLabelResolution` + 9 integration
 in `TestYAxisLabelRoleSwap`).*
+*1.30: Phase 4ae — Plot Settings → Appearance gains three new
+controls (CS-56). Closes Phase 4ac friction #2 (USER-FLAGGED
+🟡 "Configurable plot grid colour") and Phase 4ac friction #3
+(USER-FLAGGED 🟡 "Default to inward-facing axis ticks") in
+full, plus the "promote `_TERTIARY_AXIS_OFFSET_FRAC` to Plot
+Settings" half of the CS-44 follow-up register entry (the
+larger lift to `plot_widget.py` stays carry-forward), plus the
+Phase 4ad friction #5 changelog-gap doc-debt via a retroactive
+`*1.28: Phase 4ac…*` insertion. Three new entries in
+`plot_settings_dialog._FACTORY_DEFAULTS`: `"grid_color"` =
+`"#b0b0b0"`, `"tertiary_axis_offset"` = `1.12`, and
+`"tick_direction"` flipped `"out"` → `"in"`. Two new rows in
+`_build_section_appearance`: a `_make_colour_swatch` for
+`grid_color` at row=1 (existing Background + Tick direction
+rows shift down by one), and an inline `tk.Spinbox` (bounds
+`1.00`–`1.50`, increment `0.01`) for `tertiary_axis_offset` at
+row=4 bound to a new `_on_float_var_write` helper (analogue of
+`_on_int_var_write`; skips mid-edit garbage). Three new
+renderer reads in `uvvis_tab._redraw`: `ax.grid(color=...)`,
+the inward-tick fallback flip, and `tertiary_offset` local
+that replaces the bare `_TERTIARY_AXIS_OFFSET_FRAC` consumer
+in the `get_axis(role)` closure. The CS-44 module constant
+stays in place as the canonical fallback; a drift-pin test
+asserts `_FACTORY_DEFAULTS["tertiary_axis_offset"]` equals
+`_TERTIARY_AXIS_OFFSET_FRAC`. **Lock decisions taken:** grid
+colour is app-global / single-colour / plot-wide; tick flip is
+factory-default-only / no migration / no plot_widget.py change
+(already `"in"` at line 250); tertiary offset is row-only
+(plot_widget.py lift stays carry-forward). Five Claude-surfaced
+🟢 friction items captured at step 5 without new register
+entries (user accepted no new items, "proceed"): `_make_colour_
+swatch` lacks a `trace_add` on its `StringVar`; no targeted
+persistence test for the new keys; the tick flip is observable
+to existing users with no `_USER_DEFAULTS["tick_direction"]`;
+Spinbox bounds `1.00`–`1.50` are a Claude pick not a user lock;
+the dialog row order in `_build_section_appearance` is a
+cluster-by-concept choice. 899 tests, all green (882 + 17 new:
+10 pure-module in `TestAppearanceSectionPhase4ae` + 7
+integration in `TestUVVisTabAppearancePhase4ae`).*
 *Supersedes: BACKLOG.md (original)*

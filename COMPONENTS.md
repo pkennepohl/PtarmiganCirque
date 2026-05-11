@@ -6760,7 +6760,184 @@ the dimension of variability is NodeType class, not role.
 
 ---
 
-*Document version: 1.30 — May 2026*
+## CS-56 — Plot Settings → Appearance: grid colour + tertiary offset + inward-tick default (Phase 4ae)
+
+**Origin**: Phase 4ac friction #2 + #3 (both USER-FLAGGED 🟡) and
+the promote-to-Plot-Settings half of the Phase 4u Decision 7 /
+CS-44 follow-up register entry. User had asked for a per-plot
+grid-colour picker (today the grid renders at matplotlib's default
+light grey with no control) and an inward-tick factory default
+(the matplotlib default `"out"` clashes with their visual
+preference). The CS-44 follow-up to promote
+`_TERTIARY_AXIS_OFFSET_FRAC` to a tunable Plot Settings row paired
+naturally — same Plot Settings → Appearance section, same factory-
+dict + dialog-row + renderer-read code path. Phase 4ae bundled the
+three into one phase to close two USER-FLAGGED items and a 🟢
+CS-44 follow-up at the same time, on a single coherent surface.
+
+### Architecture
+
+Three new / changed entries in `plot_settings_dialog._FACTORY_DEFAULTS`:
+
+    "grid_color":           "#b0b0b0",   # NEW (CS-56)
+    "tick_direction":       "in",        # was "out"
+    "tertiary_axis_offset": 1.12,        # NEW (CS-56)
+
+`_UNIVERSAL_DEFAULTS = dict(_FACTORY_DEFAULTS)` inherits both new
+keys at module import (shallow copy contract per the existing
+module docstring). The CS-44 module constant
+`uvvis_tab._TERTIARY_AXIS_OFFSET_FRAC = 1.12` stays in place as
+the canonical fallback value the renderer reads when the cfg key
+is missing; a drift-pin test asserts the two stay equal.
+
+Two new rows in `_build_section_appearance`:
+
+    row=0  Grid               (checkbox)        existing
+    row=1  Grid colour        (swatch)          NEW
+    row=2  Background         (swatch)          existing (was row=1)
+    row=3  Tick direction     (radio)           existing (was row=2)
+    row=4  Tertiary axis offset (float Spinbox) NEW
+
+Grid colour reuses the existing `_make_colour_swatch` helper.
+Tertiary offset uses an inline `tk.Spinbox` bound to a new
+`_on_float_var_write` helper — analogue of `_on_int_var_write`;
+skips the write on mid-edit `TclError`/`ValueError` rather than
+crashing the trace, so the working dict keeps its last good value
+until the spinbox re-stabilises. Spinbox bounds `1.00`–`1.50`,
+increment `0.01`, format `"%.2f"`; bounds are a Claude pick (the
+user confirmed both "change in plot settings" and "change the
+default" paths are reachable today, no specific bounds locked).
+
+Three apply sites in `uvvis_tab._redraw`:
+
+1. Tick-direction fallback flip:
+   `cfg.get("tick_direction", "out")` → `cfg.get("tick_direction", "in")`.
+   Matches the factory-default flip; existing user configs that
+   explicitly pin `"out"` still win.
+
+2. Tertiary spine offset reads through a new local:
+   `tertiary_offset = float(cfg.get("tertiary_axis_offset",
+   _TERTIARY_AXIS_OFFSET_FRAC))`. The `get_axis(role)` closure
+   uses `tertiary_offset` instead of the bare module constant
+   when offsetting the right spine of the tertiary axis. The
+   constant remains defined at module scope as the canonical
+   fallback.
+
+3. `ax.grid(...)` gains a `color=cfg.get("grid_color", "#b0b0b0")`
+   kwarg. The `"#b0b0b0"` fallback matches matplotlib's default
+   visual so existing user configs render identically until the
+   new key is set.
+
+### Lock decisions
+
+**Grid colour:**
+- (i) **app-global** in `_USER_DEFAULTS`. Consistent with every
+  other Plot Settings key today. Per-tab is the future "project-
+  specific plot defaults" register entry's job (BACKLOG line ~1648).
+- (ii) **one colour** covers both major + minor grids.
+  `ax.grid(color=...)` applies to both; two pickers is gold-plating.
+- (iii) **plot-wide only.** No per-style override; the StyleDialog
+  re-org register entry handles that if it ever surfaces.
+
+**Inward-tick flip:**
+- (i) **factory-default-only flip.** No migration code path.
+  Existing `_USER_DEFAULTS["tick_direction"] = "out"` entries are
+  left alone — explicit user choice wins. New users + users with
+  no explicit setting get `"in"`. Cheapest, safest.
+- (ii) **defer cross-tab.** `_FACTORY_DEFAULTS` is module-level;
+  XANES / EXAFS / TDDFT inherit when they wire Plot Settings.
+- (iii) **no-op for `plot_widget._tick_direction`.** Already
+  defaults to `"in"` at [plot_widget.py:250](plot_widget.py#L250);
+  question collapsed.
+
+**Tertiary offset row:**
+- **Surface-as-row only.** The larger CS-44 follow-up lift to
+  `plot_widget.py` (or a new `plot_axes.py`) stays carry-forward
+  on the original register entry. The new `tertiary_axis_offset`
+  cfg-key read site lifts naturally alongside when the rest does.
+
+### CS-44 lock relaxations
+
+`_TERTIARY_AXIS_OFFSET_FRAC` is no longer the sole source of truth
+for the tertiary spine offset — the Plot Settings cfg key takes
+precedence; the constant is the fallback. The other CS-44 locks
+stay byte-identical: `_AXIS_ROLES`, `_DEFAULT_Y_AXIS_BY_NODETYPE`,
+`_NON_PRIMARY_Y_LABEL`, `_resolve_y_axis_role`,
+`_resolve_non_primary_y_label`, the `get_axis(role)` lazy-creation
+closure structure.
+
+### Invariants (drift pins)
+
+- `_FACTORY_DEFAULTS["tertiary_axis_offset"] ==
+  uvvis_tab._TERTIARY_AXIS_OFFSET_FRAC`
+  Pinned by `TestUVVisTabAppearancePhase4ae.
+  test_factory_default_mirrors_tertiary_offset_constant`. Drift
+  would surface as a visual jump on Factory Reset for any user
+  who hasn't manually adjusted the offset.
+- `_FACTORY_DEFAULTS["grid_color"] == "#b0b0b0"`. Pinned by
+  `TestAppearanceSectionPhase4ae.
+  test_grid_color_in_factory_defaults`. The hex value matches
+  matplotlib's default so a fresh user config renders identically
+  to a pre-CS-56 default.
+- `_FACTORY_DEFAULTS["tick_direction"] == "in"`. Pinned by
+  `TestAppearanceSectionPhase4ae.
+  test_tick_direction_factory_default_is_in`.
+
+### Test footprint
+
+- 10 pure-module tests in `test_plot_settings_dialog.
+  TestAppearanceSectionPhase4ae` — factory dict shape, dialog
+  widget construction (swatch registry + DoubleVar registry),
+  write-through paths, Factory Reset, config pre-population.
+- 7 integration tests in `test_uvvis_tab.
+  TestUVVisTabAppearancePhase4ae` — drift pin, `plot_config`
+  inherits the inward-tick default, `ax.grid` colour for default
+  + custom + off-then-on round-trip, tertiary-offset spine
+  position for default fallback + custom cfg value (reusing the
+  monkey-patch trick `TestUVVisTabTertiaryAxisPath` uses to route
+  NORMALISED to "tertiary").
+
+Total: 882 → 899 (+17 new tests, all green).
+
+### Carry-forward (per the original CS-44 follow-up register entry)
+
+- The full lift of `_AXIS_ROLES`, `_DEFAULT_Y_AXIS_BY_NODETYPE`,
+  `_NON_PRIMARY_Y_LABEL`, `_resolve_y_axis_role`,
+  `_resolve_non_primary_y_label`, and the `get_axis(role)`
+  closure from `uvvis_tab._redraw` into `plot_widget.py` (or
+  a new `plot_axes.py`) stays ⏳. Trigger: when a second tab
+  (XANES / EXAFS) needs multi-axis routing. Single consumer
+  today; no abstraction tax warranted. The new
+  `tertiary_axis_offset` cfg-key read site lifts naturally
+  alongside when the rest does.
+
+### Friction surfaced at step 5 (Claude-surfaced; no register entries)
+
+- 🟢 `_make_colour_swatch` has no `trace_add` on its `StringVar` —
+  writes to `_working` only fire via the colorchooser's `_pick`
+  callback explicitly calling `_on_var_write`. Same gap exists
+  for the existing `background_color` swatch. One-line fix; own
+  phase to avoid drive-by behaviour change.
+- 🟢 No targeted persistence round-trip test for the new keys
+  through `project_io`. Likely works (CS-46 round-trips arbitrary
+  `plot_defaults` content) but unproven.
+- 🟢 The `tick_direction` factory-default flip is observable to
+  existing users with no `_USER_DEFAULTS["tick_direction"]`. Per
+  the decision lock this is intentional, but worth surfacing in
+  a future release-note flow.
+- 🟢 Spinbox bounds `1.00`–`1.50` are a Claude pick, not a user
+  lock. `tk.Spinbox` lets the user type values outside the
+  bounds (arrows clamp, typed input does not), so the band is a
+  soft suggestion.
+- 🟢 Dialog row order in `_build_section_appearance` is a
+  cluster-by-concept choice (Grid + Grid colour together) over
+  cluster-by-widget (both colour swatches adjacent). If the
+  planned LabelFrame re-org pass reshapes the section, re-sort
+  then.
+
+---
+
+*Document version: 1.31 — May 2026*
 *1.1: CS-13 implementation notes added in Phase 4a.*
 *1.2: CS-14 Plot Settings Dialog added in Phase 4b.*
 *1.3: CS-15 UV/Vis Baseline Correction + CS-04 implementation
