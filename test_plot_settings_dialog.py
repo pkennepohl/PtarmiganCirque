@@ -509,5 +509,150 @@ class TestPlotSettingsDialogDefaults(unittest.TestCase):
         )
 
 
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestAppearanceSectionPhase4ae(unittest.TestCase):
+    """Phase 4ae (CS-56) — Plot Settings → Appearance new controls.
+
+    Three changes:
+      - grid_color: NEW factory key + colour-swatch row.
+      - tertiary_axis_offset: NEW factory key + float-spinbox row.
+      - tick_direction: factory default flipped "out" → "in".
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import plot_settings_dialog
+        cls.psd = plot_settings_dialog
+        cls.PlotSettingsDialog = plot_settings_dialog.PlotSettingsDialog
+
+    def setUp(self):
+        self.psd._open_dialogs.clear()
+        self.psd._USER_DEFAULTS.clear()
+        self.host = tk.Frame(_root)
+        self.host.pack()
+        self.config: dict = {}
+
+    def tearDown(self):
+        for dlg in list(self.psd._open_dialogs.values()):
+            try:
+                dlg.destroy()
+            except Exception:
+                pass
+        self.psd._open_dialogs.clear()
+        self.psd._USER_DEFAULTS.clear()
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    # ---- factory-defaults dict shape ----
+
+    def test_grid_color_in_factory_defaults(self):
+        self.assertIn("grid_color", self.psd._FACTORY_DEFAULTS)
+        self.assertEqual(
+            self.psd._FACTORY_DEFAULTS["grid_color"], "#b0b0b0",
+        )
+
+    def test_tertiary_axis_offset_in_factory_defaults(self):
+        self.assertIn("tertiary_axis_offset", self.psd._FACTORY_DEFAULTS)
+        self.assertEqual(
+            self.psd._FACTORY_DEFAULTS["tertiary_axis_offset"], 1.12,
+        )
+
+    def test_tick_direction_factory_default_is_in(self):
+        # Phase 4ac friction #3 USER-FLAGGED — factory default flipped
+        # from "out" to "in". Existing _USER_DEFAULTS that pin "out"
+        # are unaffected (factory-default-only flip per the decision
+        # lock — no migration).
+        self.assertEqual(
+            self.psd._FACTORY_DEFAULTS["tick_direction"], "in",
+        )
+
+    def test_universal_defaults_carries_new_keys(self):
+        # _UNIVERSAL_DEFAULTS is a shallow copy of _FACTORY_DEFAULTS
+        # (see module top). The new keys must propagate.
+        self.assertIn("grid_color", self.psd._UNIVERSAL_DEFAULTS)
+        self.assertIn(
+            "tertiary_axis_offset", self.psd._UNIVERSAL_DEFAULTS,
+        )
+
+    # ---- dialog widget construction ----
+
+    def test_grid_color_swatch_widget_registered(self):
+        dlg = self.PlotSettingsDialog(self.host, self.config)
+        dlg.update_idletasks()
+        self.assertIn("grid_color", dlg._control_vars)
+        self.assertIn("grid_color", dlg._color_swatches)
+        swatch = dlg._color_swatches["grid_color"]
+        # Initial swatch colour matches the factory default.
+        self.assertEqual(swatch.cget("bg"), "#b0b0b0")
+
+    def test_tertiary_axis_offset_spinbox_registered(self):
+        dlg = self.PlotSettingsDialog(self.host, self.config)
+        dlg.update_idletasks()
+        self.assertIn("tertiary_axis_offset", dlg._control_vars)
+        var = dlg._control_vars["tertiary_axis_offset"]
+        self.assertIsInstance(var, tk.DoubleVar)
+        self.assertAlmostEqual(var.get(), 1.12, places=4)
+
+    # ---- writes route through to working dict ----
+
+    def test_grid_color_swatch_writes_through_to_working(self):
+        # Swatch writes to _working through the colorchooser's _pick
+        # callback (no trace on the StringVar, mirrors how the existing
+        # background_color swatch is wired). Simulate the post-pick
+        # call directly.
+        dlg = self.PlotSettingsDialog(self.host, self.config)
+        dlg.update_idletasks()
+        dlg._on_var_write("grid_color", "#ff0000")
+        self.assertEqual(dlg._working["grid_color"], "#ff0000")
+
+    def test_tertiary_axis_offset_spinbox_writes_through_to_working(self):
+        dlg = self.PlotSettingsDialog(self.host, self.config)
+        dlg.update_idletasks()
+        dlg._control_vars["tertiary_axis_offset"].set(1.25)
+        dlg.update_idletasks()
+        self.assertAlmostEqual(
+            dlg._working["tertiary_axis_offset"], 1.25, places=4,
+        )
+
+    # ---- factory reset restores the new keys ----
+
+    def test_factory_reset_restores_new_appearance_keys(self):
+        dlg = self.PlotSettingsDialog(self.host, self.config)
+        dlg.update_idletasks()
+        dlg._control_vars["grid_color"].set("#ff0000")
+        dlg._control_vars["tertiary_axis_offset"].set(1.40)
+        dlg._control_vars["tick_direction"].set("out")
+        dlg.update_idletasks()
+        dlg._do_factory_reset()
+        dlg.update_idletasks()
+        self.assertEqual(dlg._working["grid_color"], "#b0b0b0")
+        self.assertAlmostEqual(
+            dlg._working["tertiary_axis_offset"], 1.12, places=4,
+        )
+        self.assertEqual(dlg._working["tick_direction"], "in")
+
+    # ---- pre-population from config ----
+
+    def test_construct_pre_populates_new_keys_from_config(self):
+        self.config["grid_color"] = "#00ff00"
+        self.config["tertiary_axis_offset"] = 1.30
+        dlg = self.PlotSettingsDialog(self.host, self.config)
+        dlg.update_idletasks()
+        self.assertEqual(dlg._working["grid_color"], "#00ff00")
+        self.assertAlmostEqual(
+            dlg._working["tertiary_axis_offset"], 1.30, places=4,
+        )
+        # And the widgets carry the pre-populated values.
+        self.assertEqual(
+            dlg._color_swatches["grid_color"].cget("bg"), "#00ff00",
+        )
+        self.assertAlmostEqual(
+            dlg._control_vars["tertiary_axis_offset"].get(),
+            1.30, places=4,
+        )
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
