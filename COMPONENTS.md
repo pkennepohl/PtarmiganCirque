@@ -7139,10 +7139,273 @@ in:
   evaluation pass (new register entry, multi-phase design pass).
 - 🟡 USER-FLAGGED "Add to existing group" gesture (new register
   entry, Phase 4ag candidate — the natural v2 extend path).
+  ✅ Resolved in Phase 4ag (CS-58).
 
 ---
 
-*Document version: 1.32 — May 2026*
+## CS-58 — Extend + Remove gestures for NODE_GROUP (Phase 4ag)
+
+**Status:** ✅ implemented.
+
+The scientific question
+-----------------------
+
+Phase 4af (CS-57) shipped the v1 create + dissolve gestures for
+user-driven NODE_GROUPs. Once a group existed, the ONLY way to
+add new members was dissolve + reselect + recreate — destroying
+the user-edited label, the per-group state, and the ordering
+context the user had built. The architecture question for the
+v2 extend path: how do we surface "add to existing group" + the
+symmetric "remove single member" without re-introducing CS-32's
+auto-grouping pitfalls and without breaking CS-57's invariants?
+
+The Phase 4ag answer (CS-58)
+----------------------------
+
+Two new graph-layer methods that mirror CS-57's contract:
+`ProjectGraph.extend_group(group_id, member_ids)` appends to an
+existing group's roster, and `ProjectGraph.remove_from_group(
+node_id)` detaches a single node. The new
+`GraphEventType.NODE_GROUP_MEMBERS_CHANGED` event carries the
+delta (`{"group_id", "added", "removed"}`). Three new
+ScanTreeWidget surfaces consume the API: the footer
+`_group_btn` switches its text + click-target based on
+selection classification, the group-row context menu grows a
+fourth entry "Add selected to this group", and the data-row
+context menu grows two siblings ("Add selected to <group
+label>" + per-row "Remove from group").
+
+Design invariants
+-----------------
+
+Locked at the graph layer (`graph.py`):
+
+1. **List shape is canonical, mutability grows.** CS-57's
+   `metadata["member_ids"]: list[str]` convention stays. CS-58
+   relaxes the IMMUTABILITY of the list (extend / remove now
+   mutate in place). The shape — flat list of node ids in
+   roster order — is unchanged. A future tightening to e.g.
+   a frozen tuple would be a breaking change.
+2. **Validation mirrors `create_group`.** `extend_group`
+   re-runs every check (unique within call, no already-in-
+   roster, no already-grouped-elsewhere, no nested group, no
+   discarded, no operation node). The user-facing gestures
+   converge to a single set of rules — what fails on create
+   also fails on extend.
+3. **Append ordering.** New members are appended to the
+   existing roster, preserving caller order. Pre-existing
+   members keep their position. Re-ordering is out of scope
+   (no register entry; not surfaced as friction).
+4. **Auto-dissolve threshold reused.** `remove_from_group`
+   routes through `discard_node` when the post-removal active
+   member count drops below 2. CS-57's cascade logic fires
+   identically — `remove_from_group` does not duplicate the
+   walk; it just removes the id and lets `discard_node` decide.
+5. **Event suppression on cascade.** When `remove_from_group`
+   triggers the auto-dissolve, `NODE_GROUP_MEMBERS_CHANGED` is
+   NOT emitted — the cascading `NODE_DISCARDED` on the now-
+   defunct group is the authoritative signal. Subscribers see
+   exactly one terminal event for that group instance.
+
+Locked at the UI layer (`scan_tree_widget.py`):
+
+6. **Structural event routing.** `NODE_GROUP_MEMBERS_CHANGED`
+   joins `NODE_ADDED / NODE_COMMITTED / NODE_DISCARDED /
+   EDGE_ADDED / GRAPH_LOADED / GRAPH_CLEARED` in `_on_graph_
+   event`'s full-rebuild branch. Member changes are
+   structural (rows move between top-level and group-nested
+   rendering); a targeted `_refresh_row` cannot reshuffle
+   the membership boundary. CS-57's choice of
+   `NODE_LABEL_CHANGED → targeted refresh` is preserved; the
+   new event lands in the existing structural list because
+   that branch already handles the rebuild correctly.
+7. **Single selection-classification analysis.** New helper
+   `_classify_selection() -> dict` returns one of:
+   - `{"mode": "none"}` — empty selection.
+   - `{"mode": "group", "members": [ids in graph order]}` —
+     ≥2 ungroupable nodes, no groups, none already grouped:
+     `create_group` is legal.
+   - `{"mode": "extend", "group_id": str,
+     "members": [ungrouped ids in graph order]}` — exactly
+     one NODE_GROUP + ≥1 ungrouped, none already grouped:
+     `extend_group` is legal.
+   - `{"mode": "invalid"}` — non-empty but doesn't fit
+     either gesture.
+   Footer button refresh + both context-menu builders read
+   from this canonical analysis. Avoids the duplicated walk
+   adding per-surface predicates would have produced.
+8. **CS-57 button-text lock relaxed.** The footer button now
+   mutates its text per `_classify_selection`'s verdict:
+   `"Group selected (N)"` in group mode, `"Add to <truncated
+   group label>"` in extend mode, baseline `"Group selected"`
+   disabled otherwise. The relaxation trigger (Phase 4af
+   friction #6 "static button label") was always anticipated
+   in CS-57's lock list. `_group_btn` attribute name and the
+   button's existence + position are preserved.
+9. **Right-click-target / selection-payload convention.**
+   The group-row context menu's fourth entry ("Add selected
+   to this group") and the data-row "Add selected to <group
+   label>" sibling both follow the same shape: the
+   right-clicked row identifies the target / scope; the
+   current selection identifies the payload. The group-row
+   entry is intentionally insensitive to whether the
+   right-clicked group is itself in the selection — the
+   right-click IS the selection in that branch. The
+   data-row "Add selected to <group>" entry is gated on the
+   clicked row being in the selection, mirroring CS-57's
+   "Group selected" entry's predicate.
+10. **Per-row Remove preserves selection.** The data-row
+    context menu's "Remove from group" entry is a per-row
+    gesture (target identified by right-click only — the
+    selection is irrelevant). It does NOT clear
+    `_selected_node_ids`. Only multi-target gestures
+    (`_group_selected`, `_extend_into_group`) reset the
+    selection.
+
+Module layer
+------------
+
+CS-58 is concentrated in two modules:
+
+* `graph.py` —
+  * New `GraphEventType.NODE_GROUP_MEMBERS_CHANGED` enum
+    variant; payload convention documented on `GraphEvent`.
+  * `extend_group(group_id, member_ids) -> None` — validation
+    mirrors `create_group`; mutates `metadata["member_ids"]`
+    in place; emits `NODE_GROUP_MEMBERS_CHANGED` with
+    `{"added": [...], "removed": []}`.
+  * `remove_from_group(node_id) -> None` — raises
+    `ValueError` if not in any active group; mutates
+    `metadata["member_ids"]` in place; routes through
+    `discard_node` for the auto-dissolve cascade when the
+    active member count drops below 2; otherwise emits
+    `NODE_GROUP_MEMBERS_CHANGED` with `{"removed": [node_id],
+    "added": []}`.
+* `scan_tree_widget.py` —
+  * `_on_graph_event` — `NODE_GROUP_MEMBERS_CHANGED` joins
+    the structural-rebuild branch.
+  * `_classify_selection() -> dict` — canonical selection
+    analysis (see lock 7).
+  * `_can_extend_existing_group() -> tuple[str, list[str]]
+    | None` — thin wrapper that returns the extend pair or
+    None; used by context-menu predicates.
+  * `_refresh_group_button_state` — now sets BOTH text and
+    state (CS-58 button-text lock relaxation).
+  * `_group_selected` — branches on classification:
+    `create_group` for group mode, `extend_group` for
+    extend mode, no-op for invalid / none.
+  * `_extend_into_group(group_id)` — context-menu action.
+    Walks the selection, filters to only ungroupable data
+    nodes, calls `extend_group`, clears selection.
+  * `_remove_from_group_via_menu(node_id)` — per-row
+    gesture. Wraps `graph.remove_from_group` in `_safely`;
+    preserves selection.
+  * `_show_group_context_menu` — grows a fourth entry
+    "Add selected to this group (N)".
+  * `_show_context_menu` (data row) — grows two sibling
+    entries: "Add selected to <group label> (N)" and per-row
+    "Remove from group".
+  * `_can_group_selection` — preserved verbatim as a thin
+    alias of `_classify_selection()["mode"] == "group"`;
+    referenced by an existing Phase 4af test and the
+    data-row "Group selected (N)" predicate. Duplication
+    deferred (Phase 4ag friction #4).
+
+Test pins (53 new tests across three files)
+-------------------------------------------
+
+* `test_graph.TestNodeGroupExtendRemoveOps` (27 tests):
+  - extend happy path + caller-order preservation;
+  - every validation raise: unknown group, non-group target,
+    op-node target, discarded group, empty list, intra-call
+    duplicates, already-in-this-group, unknown member, op-node
+    member, nested group, discarded member, member in another
+    group;
+  - event shape: emits exactly `NODE_GROUP_MEMBERS_CHANGED`
+    with the added list; payload list is an independent copy;
+  - atomic validation (partial mutation never survives a raise);
+  - `group_of` consistency after extend;
+  - remove happy path + member-attribute preservation;
+  - auto-dissolve threshold (<2 active members) routes to
+    `NODE_DISCARDED`, suppressing `MEMBERS_CHANGED`;
+  - remove → extend round-trip.
+* `test_scan_tree_widget.TestScanTreeWidgetNodeGroupsPhase4ag`
+  (24 tests): structural rebuild on extend AND remove;
+  `_classify_selection` covers all five branches; footer
+  button text + state for each classification; footer click
+  dispatch; `_extend_into_group` selection filtering;
+  `_remove_from_group_via_menu` preserves selection; group
+  context menu fourth entry; data-row context menu siblings.
+  Uses an enriched spy-menu pattern (captures every
+  `add_command` keyword dict).
+* `test_persistence_phase_a.TestSaveLoadRoundTrip` (2 tests):
+  - full mutation sequence (create → extend → remove) round-
+    trips through save/load with `group_of()` mapping intact;
+  - auto-dissolved group survives save/load as DISCARDED with
+    `group_of()` returning None for formerly-grouped members.
+
+Lock relaxations
+----------------
+
+This CS section LOCKS the following identifiers — changing any of
+them requires a deliberate CS-N relaxation in a future phase:
+
+* `GraphEventType.NODE_GROUP_MEMBERS_CHANGED` enum variant + its
+  payload convention (`{"group_id", "added", "removed"}`).
+* `ProjectGraph.extend_group(group_id, member_ids) -> None` /
+  `remove_from_group(node_id) -> None` signatures + raise
+  semantics.
+* The auto-dissolve event-suppression contract on remove
+  (cascading `NODE_DISCARDED` is the authoritative signal;
+  `NODE_GROUP_MEMBERS_CHANGED` is NOT emitted in that branch).
+* `_classify_selection`'s four return shapes (none / group /
+  extend / invalid) + the field names (`mode`, `members`,
+  `group_id`).
+* `_extend_into_group(group_id)` + `_remove_from_group_via_menu(
+  node_id)` method names.
+* The footer button's three text variants (`"Group selected
+  (N)"`, `"Add to <label>"`, baseline `"Group selected"`).
+* The group-row context menu's growth from three entries to
+  four (Rename, Expand/Collapse, Ungroup, "Add selected to
+  this group (N)").
+
+Lock relaxations to CS-57 made by CS-58 (explicitly recorded):
+
+* CS-57 invariant 6 (`_can_group_selection` is the single
+  predicate gating the footer button + data-row entry) is
+  narrowed — `_can_group_selection` now covers ONLY the
+  create_group gesture; the extend gesture is gated by
+  `_can_extend_existing_group` (returns Some / None).
+* CS-57 button-text lock (`text="Group selected"` initial label)
+  is broadened — the button now mutates its text per
+  selection classification.
+* CS-57 narrow "any NODE_GROUP in selection → button disabled"
+  semantics is broadened — `1 group + ≥1 ungrouped` now
+  routes to the extend gesture.
+
+Lock relaxations that explicitly DO NOT require a CS-N bump:
+
+* The "Add to <group label>" 24-char truncation cap (Phase 4ag
+  friction #6 polish — derive from footer width if needed).
+* The group "(N members)" suffix's location inside the main
+  label widget (Phase 4af friction #4 carry-over — moving to
+  a separate widget cell is free).
+* The `_classify_selection` "invalid" branch's grouping of
+  sub-cases (mixed groups / orphan member / single group
+  alone are all "invalid"; future refactors can split into
+  distinct verdicts if a surface needs to differentiate).
+
+Friction points carried forward
+-------------------------------
+
+See "Friction points carried forward from Phase 4ag" in
+BACKLOG.md. Three new USER-FLAGGED 🟡 register entries from
+step 5: grid z-order bug, axis double-click dialog, "Show
+hidden" disable-gating. Four Claude-surfaced 🟢 polish notes.
+
+---
+
+*Document version: 1.33 — May 2026*
 *1.1: CS-13 implementation notes added in Phase 4a.*
 *1.2: CS-14 Plot Settings Dialog added in Phase 4b.*
 *1.3: CS-15 UV/Vis Baseline Correction + CS-04 implementation
@@ -7850,5 +8113,56 @@ members)" suffix on user-renamed groups; "Show hidden" toggle
 opacity; static footer button label; menu-introspection
 monkey-patch). 949 tests, all green (899 + 50 new across four
 files).*
+*1.33: Phase 4ag — Extend + Remove gestures for NODE_GROUP
+(CS-58). Fully resolves the canonical Phase 4af follow-up
+"'Add to existing group' gesture" register entry (USER-FLAGGED
+🟡). Also closes Phase 4af friction #6 (static button label)
+by relaxing CS-57's `text="Group selected"` initial-label
+lock. Graph layer: new `ProjectGraph.extend_group(group_id,
+member_ids)` + `remove_from_group(node_id)` methods + new
+`GraphEventType.NODE_GROUP_MEMBERS_CHANGED` event (payload
+`{"group_id", "added", "removed"}`); `remove_from_group`
+routes through `discard_node` for auto-dissolve when active
+member count drops below 2 (re-using CS-57's cascade
+threshold), suppressing `MEMBERS_CHANGED` in that branch so
+subscribers see exactly one terminal event. UI layer: new
+`_classify_selection` helper returns one of `"none"` /
+`"group"` / `"extend"` / `"invalid"` so the footer button +
+both context menus share a canonical analysis; footer button
+mutates text per classification (`"Group selected (N)"` /
+`"Add to <group label>"` / baseline disabled); group-row
+context menu grows a fourth entry "Add selected to this
+group (N)"; data-row context menu grows two siblings
+("Add selected to <group label> (N)" + per-row "Remove from
+group"). **Lock decisions taken:** (i) both surfaces —
+context menu AND footer button; (ii) append (preserve caller
+order); (iii) new `NODE_GROUP_MEMBERS_CHANGED` event type
+(rejected NODE_LABEL_CHANGED — scan tree routes label-changed
+to targeted refresh, but member changes are structural);
+(iv) yes — symmetric `remove_from_group` ships in the same
+phase. **Lock relaxations to CS-57:** narrow "any group in
+selection → button disabled" semantics broadened (1 group +
+≥1 ungrouped now routes to extend); `text="Group selected"`
+initial-label lock broadened (mutates per classification).
+Three new USER-FLAGGED 🟡 register entries surfaced at step
+5: grid renders in front of data lines (one-line fix, high
+bundling potential); axis double-click → axis-properties
+dialog (multi-phase, new dialog shell); "Show hidden" toggle
+should disable when no hidden rows exist (upgraded from
+Phase 4af friction #5 🟢 by user flag during verification).
+Four Claude-surfaced 🟢 polish notes: `_can_group_selection`
+preserved as thin alias of `_classify_selection`; spy-menu
+pattern duplicated between Phase 4af + 4ag tests; "Add to
+<group>" 24-char truncation cap hand-tuned (not responsive);
+right-click-target / selection-payload convention
+undocumented in CS-04. Phase 4af friction #4 ("(N members)"
+suffix relocation) stays carry-forward — Phase 4ag explicitly
+scoped it out because the existing inline rendering
+refreshes correctly on the new structural-rebuild path.
+1002 tests, all green (949 + 53 new across three files: 27
+in `test_graph.TestNodeGroupExtendRemoveOps` + 24 in
+`test_scan_tree_widget.TestScanTreeWidgetNodeGroupsPhase4ag`
++ 2 in `test_persistence_phase_a.TestSaveLoadRoundTrip` for
+the extend+remove and auto-dissolve cascade round-trips).*
 *To be updated as Open Questions are resolved and new components
 are specified.*
