@@ -6937,7 +6937,212 @@ Total: 882 → 899 (+17 new tests, all green).
 
 ---
 
-*Document version: 1.31 — May 2026*
+## CS-57 — User-driven NODE_GROUP container + Combine/Ungroup gesture (Phase 4af)
+
+**Status:** ✅ implemented.
+
+The scientific question
+-----------------------
+
+After Phase 4ac (CS-54) dropped the CS-31 dedup gate + the CS-32
+auto-sweep-grouping, identical re-applies render as N separate
+sibling rows. Users wanted to *organise* those siblings (and any
+other set of related DataNodes — kinetic series across a parameter
+sweep, a-vs-b comparison pair, baseline candidates) into a
+collapsible container without losing the per-node identity that
+CS-54 deliberately preserved. The architecture question: how do we
+add a view-layer aggregation without re-introducing CS-32's
+auto-grouping pitfalls?
+
+The Phase 4af answer (CS-57)
+----------------------------
+
+A new `NodeType.NODE_GROUP` DataNode that carries no scientific
+data (`arrays={}`), holds an ordered list of member ids in
+`metadata["member_ids"]: list[str]`, and renders in the scan tree
+as a chevron-toggleable container row above its members. Creation
+and dissolution are USER-DRIVEN through two surfaces — a footer
+"Group selected" button and a right-click "Group selected (N)"
+context-menu entry — never automatic. Members keep their original
+parent edges untouched; the group is a sibling, not a reparenting,
+so every consumer of `parent_id` (provenance walks, baseline
+lookups, send-to-compare wiring) needs zero awareness of grouping.
+
+Design invariants
+-----------------
+
+Locked at the graph layer (`graph.py`):
+
+1. **Flat-only — no nested groups.** `create_group` rejects any
+   member that is itself a NODE_GROUP. Relaxing this later is
+   additive (the chevron expansion becomes a tree walk); tightening
+   from nested to flat would be a breaking change, so flat-only is
+   the safe default.
+2. **Single-membership.** A node belongs to at most one active
+   NODE_GROUP. `create_group` rejects already-grouped members;
+   `group_of(node_id)` walks active groups and returns the first
+   (canonical) match.
+3. **No scientific arrays.** A NODE_GROUP MUST have `arrays={}`.
+   The renderer (`uvvis_tab._redraw`) does not iterate NODE_GROUPs
+   at all — they're a sidebar-only construct.
+4. **Always PROVISIONAL.** Groups have no scientific value to
+   commit; the only state transition is PROVISIONAL → DISCARDED
+   via `dissolve_group`, which routes through `discard_node` and
+   emits NODE_DISCARDED.
+5. **Auto-dissolve cascade.** When the discarded node is a group
+   member and the group falls below two active members,
+   `discard_node` recursively discards the group. Threshold matches
+   `create_group`'s ≥2 minimum so a group never lingers with one
+   or zero active members. The flat-only invariant bounds the
+   recursion at one level (groups never nest, so a group's own
+   discard never re-cascades).
+
+Locked at the UI layer (`scan_tree_widget.py`):
+
+6. **Two surfaces for the create gesture (decision lock i).**
+   Right-click context-menu "Group selected (N)" on a data row
+   AND footer "Group selected" button. Both are gated by
+   `_can_group_selection()`, which mirrors `create_group`'s
+   validation so the UI never offers a gesture that would raise.
+7. **Two surfaces for the dissolve gesture (decision lock iii).**
+   Right-click context-menu "Ungroup" on a group row AND inline
+   ✕ on the group row's right edge. Both call
+   `ProjectGraph.dissolve_group`.
+8. **`<ButtonRelease-1>` selection toggle, not `<Button-1>`.**
+   A double-click rename gesture fires Release twice
+   (Button → ButtonRelease → Double-Button → ButtonRelease), so
+   binding selection to Release nets out to zero toggle on
+   double-click while still toggling on single-click. The
+   alternative (deferred-resolution via `after(300, ...)`) is
+   complex; the Release approach is one line per binding.
+9. **Member indent reuses `_SWEEP_MEMBER_INDENT_PX = 16` (decision
+   lock iv).** CS-35's dormant constant + `_build_node_row(indent_
+   px=0)` kwarg signature, preserved verbatim across Phase 4ac
+   on the bet of Phase 4ad's NODE_GROUP arrival, are now LIVE in
+   Phase 4af. The CS-35 lock survives into Phase 4af's lock list.
+
+Module layer
+------------
+
+The Phase 4af machinery is concentrated in three modules + two
+new lifecycle helpers:
+
+* `nodes.py` — `NodeType.NODE_GROUP` enum variant. Docstring
+  records the lock invariants (no arrays, member_ids in metadata,
+  always PROVISIONAL, flat-only, single-membership, view-layer
+  aggregation).
+* `graph.py` —
+  * `create_group(member_ids: list[str], label: str | None = None)
+    -> str` — validates and creates; emits NODE_ADDED via
+    `add_node`. Default label `"Group N"` where N counts existing
+    NODE_GROUPs (active or discarded).
+  * `dissolve_group(group_id: str) -> None` — type-checks then
+    delegates to `discard_node` so NODE_DISCARDED fires normally.
+  * `group_of(node_id: str) -> str | None` — never raises; walks
+    active groups and matches against `metadata["member_ids"]`.
+  * `discard_node` — auto-dissolve cascade hook (see invariant 5).
+* `scan_tree_widget.py` — new view state (`_selected_node_ids`,
+  `_expanded_groups`), new footer button + group-row pipeline
+  (`_build_group_row`, `_toggle_group_expansion`,
+  `_toggle_row_selection`, `_apply_row_selection_visual`,
+  `_refresh_group_button_state`, `_can_group_selection`,
+  `_group_selected`, `_show_group_context_menu`). `_candidate_
+  nodes` excludes grouped members; `_rebuild` branches on
+  NODE_GROUP and renders members below with the CS-35 indent.
+
+Persistence
+-----------
+
+A NODE_GROUP DataNode survives `project_io.save_project` →
+`load_project` with NO schema changes (CS-46 already round-trips
+arbitrary DataNode shapes; arrays={} produces an empty savez
+archive, `member_ids` in metadata is JSON-serialisable). Pinned by
+`test_node_group_round_trips_through_save_load` in
+`test_persistence_phase_a.TestSaveLoadRoundTrip`.
+
+Test pins (50 new tests across four files)
+------------------------------------------
+
+* `test_nodes.TestNodeTypeEnum` — `NODE_GROUP` is a distinct
+  variant (not an alias of `AVERAGED` / `DIFFERENCE`).
+* `test_graph.TestNodeGroupOps` (27 tests) — create/dissolve/
+  group_of happy paths + all eight validation paths + auto-
+  dissolve cascade behaviour (fires at threshold, doesn't fire
+  above, walks through sequential discards, emits ordered events,
+  bounded at one level).
+* `test_scan_tree_widget.TestScanTreeWidgetNodeGroupsPhase4af`
+  (21 tests) — selection model, visual highlight, footer button
+  predicate (zero / one / two / already-grouped / NODE_GROUP-as-
+  selection), `_group_selected` clears selection + member-order
+  deterministic, group row chrome + count badge, members hidden
+  from top-level when collapsed + indent when expanded, chevron
+  toggle, dissolve restores members at top-level, auto-dissolve
+  prunes group row + expanded-groups set, rebuild prunes stale
+  selection ids, context-menu dispatch branch.
+* `test_persistence_phase_a.TestSaveLoadRoundTrip` (1 test) —
+  full `.ptmg` save → load round-trip with a NODE_GROUP holding
+  two UVVIS members; type, label, member_ids, arrays, and
+  `group_of` all survive.
+
+Lock relaxations
+----------------
+
+This CS section LOCKS the following identifiers — changing any of
+them requires a deliberate CS-N relaxation in a future phase that
+re-litigates the contract:
+
+* `NodeType.NODE_GROUP` enum variant existence + name.
+* `metadata["member_ids"]: list[str]` convention.
+* `ProjectGraph.create_group(member_ids, label=None) -> str` /
+  `dissolve_group(group_id)` / `group_of(node_id) -> Optional[str]`
+  signatures + raise semantics.
+* `discard_node` auto-dissolve cascade — threshold (<2 active
+  members), guard (skip on NODE_GROUP self-discard), one-level
+  recursion bound.
+* `_selected_node_ids: set[str]` + `_expanded_groups: set[str]`
+  attribute names on ScanTreeWidget.
+* `_SELECTION_BG = "#cce4ff"` (the row-selection highlight colour).
+* The footer button's existence + `_group_btn` attribute name +
+  `text="Group selected"` initial label (the count-aware label
+  is a future polish — Phase 4af friction #6).
+* The `<ButtonRelease-1>` selection toggle binding contract
+  (decision lock 8 — net-zero on double-click is the invariant
+  the binding shape encodes).
+* The simplified group context menu's three entries: Rename,
+  Expand-or-Collapse, Ungroup.
+* The `<Button-3>` data-row context-menu's new "Group selected
+  (N)" entry's existence + predicate (`_can_group_selection() AND
+  node_id in _selected_node_ids`).
+* `_SWEEP_MEMBER_INDENT_PX = 16` value + `_build_node_row(indent_
+  px=0)` kwarg signature — CS-35 lock survives.
+
+Lock relaxations that explicitly DO NOT require a CS-N bump:
+
+* The "(N members)" label suffix shape (Phase 4af friction #4
+  flags this for polish; rewording is free).
+* `_show_hidden`'s behaviour on group rows (untested edge — Phase
+  4af friction #5).
+* The selection-visual paint helper's implementation detail
+  (currently writes `bg` on the row's `anchor="w"` label widget;
+  any equivalent visual treatment is fine).
+* Auto-name `f"Group {N}"` template (user can rename freely;
+  template change is free).
+
+Friction points carried forward
+-------------------------------
+
+See "Friction points carried forward from Phase 4af" in
+BACKLOG.md. Highest-pain items the next session may want to fold
+in:
+
+- 🟡 USER-FLAGGED Keyboard shortcuts — whole-interface
+  evaluation pass (new register entry, multi-phase design pass).
+- 🟡 USER-FLAGGED "Add to existing group" gesture (new register
+  entry, Phase 4ag candidate — the natural v2 extend path).
+
+---
+
+*Document version: 1.32 — May 2026*
 *1.1: CS-13 implementation notes added in Phase 4a.*
 *1.2: CS-14 Plot Settings Dialog added in Phase 4b.*
 *1.3: CS-15 UV/Vis Baseline Correction + CS-04 implementation
@@ -7575,5 +7780,75 @@ corruption half; BACKLOG.md changelog gap for Phase 4ac. 882
 tests, all green (864 + 9 pure-module in
 `TestYAxisLabelResolution` + 9 integration in
 `TestYAxisLabelRoleSwap`).*
+*1.31: Phase 4ae — Plot Settings → Appearance gains three new
+controls (CS-56). Closes the two USER-FLAGGED 🟡 Phase 4ac
+friction items in full ("Configurable plot grid colour" +
+"Default to inward-facing axis ticks") plus the promote-to-Plot-
+Settings half of the CS-44 follow-up register entry (the larger
+`plot_widget.py` lift stays carry-forward). Three new entries in
+`plot_settings_dialog._FACTORY_DEFAULTS`: `"grid_color"` =
+`"#b0b0b0"` (matplotlib's standard light grey, preserves existing
+visual), `"tertiary_axis_offset"` = `1.12` (drift-pinned against
+`uvvis_tab._TERTIARY_AXIS_OFFSET_FRAC`), and `"tick_direction"`
+flipped `"out"` → `"in"`. Two new rows in
+`_build_section_appearance`: colour swatch for `grid_color` at
+row=1 (existing Background + Tick direction rows shift down by
+one), inline `tk.Spinbox` for `tertiary_axis_offset` at row=4
+bound to a new `_on_float_var_write` helper. Three new renderer
+reads in `uvvis_tab._redraw`: `ax.grid(color=...)`, the inward-
+tick fallback flip, and `tertiary_offset` local that replaces the
+bare `_TERTIARY_AXIS_OFFSET_FRAC` consumer in the `get_axis(role)`
+closure. **Lock decisions taken:** grid colour is app-global /
+single-colour / plot-wide; tick flip is factory-default-only / no
+migration; tertiary offset is row-only (plot_widget.py lift stays
+carry-forward). Retroactive `*1.28: Phase 4ac…*` BACKLOG entry
+inserted (the changelog gap that Phase 4ad surfaced). 899 tests,
+all green (882 + 17 new: 10 pure-module in
+`TestAppearanceSectionPhase4ae` + 7 integration in
+`TestUVVisTabAppearancePhase4ae`).*
+*1.32: Phase 4af — user-driven `NodeType.NODE_GROUP` container +
+"Combine selected → Group" gesture (CS-57). FULLY resolves the
+canonical Phase 4v friction #1 "Drop CS-31 + introduce user-
+driven node groups" register entry (USER-FLAGGED 🔴) — Phase 4ac
+shipped parts (a) + (b), Phase 4af ships part (c). Also closes
+Phase 4ac friction #4 (Phase 4ad → 4af carry-forward; intent
+slipped two phases) + Phase 4ac friction #5 (the dormant
+`_SWEEP_MEMBER_INDENT_PX` + `_build_node_row(indent_px=0)` kwarg
+— now LIVE). Graph layer: new `NodeType.NODE_GROUP` enum variant
+(arrays={}, `metadata["member_ids"]: list[str]`); new
+`ProjectGraph.create_group(member_ids, label=None) -> str` +
+`dissolve_group(group_id)` + `group_of(node_id) -> Optional[str]`;
+`discard_node` grew an auto-dissolve cascade (recursively
+discards a group when fewer than two active members remain;
+bounded at one level by flat-only). UI layer: ScanTreeWidget
+gained click-toggle selection (`_selected_node_ids` set,
+`<ButtonRelease-1>` so double-click rename nets zero toggle),
+footer "Group selected" button (predicate mirrors `create_
+group`), group-row pipeline (`_build_group_row` with chevron
+▾/▸ + "(N members)" badge + inline ✕), chevron `_expanded_
+groups` set, simplified group context menu via
+`_show_group_context_menu` (Rename / Expand-or-Collapse /
+Ungroup). Top-level rendering excludes grouped members;
+expanded groups render members below with `padx=(2 +
+_SWEEP_MEMBER_INDENT_PX, 2)`. Right-click on data rows grew
+"Group selected (N)" entry. **Lock decisions taken:** (i)
+context-menu + left-pane footer button (both surfaces); (ii)
+flat only, no nesting; (iii) Ungroup via context-menu + inline
+✕ on group rows; (iv) reuse `_SWEEP_MEMBER_INDENT_PX = 16`
+(CS-35 lock survives, purpose realised). Additional Claude-side
+locks: default label `"Group N"`; members keep their parent
+edges; single-membership enforced; NODE_ADDED on create +
+NODE_DISCARDED on dissolve; renderer-skip invariant; groups
+always PROVISIONAL; `project_io` round-trips through existing
+DataNode schema. Two new USER-FLAGGED register entries surfaced
+at step 5: 🟡 Keyboard shortcuts — whole-interface evaluation
+pass (multi-phase); 🟡 "Add to existing group" gesture (Phase
+4ag candidate). Recorded design constraint: no info bleed
+between tabs unless explicit (USER-CONFIRMED). Four Claude-
+surfaced 🟢 polish notes in Phase 4af friction (group "(N
+members)" suffix on user-renamed groups; "Show hidden" toggle
+opacity; static footer button label; menu-introspection
+monkey-patch). 949 tests, all green (899 + 50 new across four
+files).*
 *To be updated as Open Questions are resolved and new components
 are specified.*

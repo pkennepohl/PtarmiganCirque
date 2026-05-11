@@ -1642,7 +1642,7 @@ subsequent Phase 4 session.**
 | ✅ | 🟢 | **Compute label-truncation cap from canvas width / font metrics (CS-33 follow-up)** | Phase 4q friction #2. **Resolved Phase 4w (CS-47):** new pure helper `_label_char_capacity(canvas_width_px, avg_char_px, overhead_px) → int` clamped to `[_LABEL_CHAR_FLOOR=8, _LABEL_CHAR_CEIL=64]` falls back to `_LABEL_MAX_CHARS=32` when canvas is unrealised or font metrics unavailable. Wired into `_populate_node_row` and `_build_sweep_row` via instance method `_current_label_cap` (which delegates to the helper using `_scroll_canvas.winfo_width()` and `tkfont.nametofont("TkDefaultFont").measure("ABCDEFGHIJabcdefghij") // 20`). `_apply_responsive_layout` re-truncates the painted label and rotates the always-attached label tooltip's text whenever the canvas resizes — widening the sash visibly grows the label, narrowing trims it. The pure `_truncate_label` helper stays unchanged (CS-33 invariant preserved). Tooltip rotation uses the empty-string sentinel that `Tooltip._show` already supports, so no create/destroy churn. 12 pure-module + 3 integration tests cover the dynamic-cap behaviour |
 | ⏳ | 🟢 | **Promote `_Tooltip` to a shared utility module on first cross-module re-use** | Phase 4q friction #3. CS-33's `_Tooltip` is a small Toplevel-based hover tooltip co-located in `scan_tree_widget.py`. Other surfaces will eventually need similar tooltips (Plot Settings dialog parameter hints, StyleDialog "what does this control" hints, panel-status messages that only fit on hover). On first re-use, extract into `tooltip.py` (pure utility module, no scan-tree-specific imports) so the second consumer doesn't either re-implement or import a private name. Until then, the private name is fine — premature promotion would add an import surface without a second consumer |
 | ✅ | 🟢 | **Indent expanded sub-frames inside sweep groups (visual nesting)** | Phase 4q friction #5. Resolved Phase 4r (CS-35): new module-level `_SWEEP_MEMBER_INDENT_PX = 16` constant; `_build_node_row` grew an `indent_px: int = 0` keyword that is threaded into `row.pack(padx=(2 + indent_px, 2), pady=1)`. The sweep-expansion branch in `_rebuild` calls `_build_node_row(member_node, indent_px=_SWEEP_MEMBER_INDENT_PX)`. Pack-arg pass-through chosen over a wrapper-frame to avoid a parallel `_member_frames` dict + collapse cleanup. CS-32's flip-and-rebuild contract preserved verbatim. The history sub-frame inside an expanded member row carries the parent row's indent (since `_render_history` packs into the row's children frame), so visual nesting is correct without separate indent threading there. 7 new tests (2 pure-module constant, 5 integration nesting) |
-| ⏳ | 🔴 | **Drop CS-31 "no duplicate apply" check + introduce user-driven node groups (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4v (step 5 elicitation). The CS-31 `find_provisional_op_with_params` short-circuit (Phase 4p) prevents the same op-with-same-params from running twice on the same parent — but in practice this prevents the user from re-running an op that they want to re-run, and the auto-collapsed sweep groups (CS-32) bundle related applies into a unit the user can't operate on. The user has flagged that today's behaviour makes work flows unusable: re-applying a process you tweaked once is blocked, and the auto-grouping hides the individual nodes. **Architecture (lock pending):** (a) **drop CS-31** entirely — every Apply produces a fresh OperationNode + child DataNode regardless of whether identical params were applied before; the CS-31 register entry below flips ✅→reverted-by-CS-N. (b) **drop CS-32 auto-grouping** of provisional ops with identical (parent, op_type) signatures — the inline expansion stays as the rendering primitive, but the GROUPING decision moves from automatic to user-driven via a new "Combine selected → Group" gesture. (c) New `NodeType.NODE_GROUP` (or `USER_GROUP`) holds child node ids + a user-given label; renders as a row with a chevron that expands to show its members; group does not own arrays, has no scientific value of its own. (d) Pairs with the existing 🟡 "Multinode dataset import + combination" register entry above — both are user-driven combination UX; they may collapse into one OperationType (`SPECTRUM_DATASET` for sweep-grid-aware datasets, `NODE_GROUP` for everything else). **Lock decisions for the implementing session:** (i) does CS-32's sweep-group inline-expansion machinery survive (rebranded as "user group expansion") or get rewritten? (ii) does the group support nested groups? (iii) what's the gesture — context-menu "Group selected", left-pane button, drag-and-drop into a group node? **Affected modules:** `graph.py` (drop the `find_provisional_op_with_params` call from every apply site or remove the helper entirely), `uvvis_baseline.py` / `uvvis_normalise.py` / `uvvis_smoothing.py` / `uvvis_peak_picking.py` / `uvvis_second_derivative.py` (drop the dedup short-circuit), `scan_tree_widget.py` (replace the `_compute_sweep_groups` auto-grouping with a `_user_groups` set + user-driven gesture), `nodes.py` (new NodeType + dataclass changes), tests across the board. Multi-phase task. **Phase 4ac partial (CS-54):** parts (a) + (b) shipped — `find_provisional_op_with_params` removed from `graph.py`; the dedup short-circuit removed from all five apply sites; `_compute_sweep_groups` / `_build_sweep_row` / `_toggle_sweep_group` / `_expanded_sweep_groups` / `_sweep_groups` / `_sweep_leaders` / `_group_key_of` / `_discard_many` / `_datanode_parents` removed from `scan_tree_widget.py`; identical re-applies now create fresh standalone PROVISIONAL siblings, no auto-collapse. The CS-31 + CS-32 entries below are now struck through (reverted by CS-54). `_SWEEP_MEMBER_INDENT_PX = 16` constant + `_build_node_row(indent_px=0)` kwarg signature preserved (CS-35 lock survives) for Phase 4ad reuse. Decision lock taken for parts (a) + (b): mechanical removal rather than stub — Phase 4ad's user-driven NODE_GROUP container will be a different data shape (explicit GROUP DataNode with member ids, not a synthetic parent_id leader row), so dormant code would be lock-list weight without future-fit. **Carry-forward narrowed to part (c)** for Phase 4ad: `NodeType.NODE_GROUP` (or `USER_GROUP`) + the user-driven "Combine selected → Group" gesture. Lock decisions (i) — gesture style (context-menu / left-pane button / drag-and-drop), (ii) nested groups, (iii) where the "Ungroup" gesture lives — still pending; (iv) does Phase 4ad reuse `_SWEEP_MEMBER_INDENT_PX` or pick a fresh indent? — newly added. Net delta on the test suite: 864 tests (down 14 from 878). |
+| ✅ | 🔴 | **Drop CS-31 "no duplicate apply" check + introduce user-driven node groups (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4v (step 5 elicitation). The CS-31 `find_provisional_op_with_params` short-circuit (Phase 4p) prevents the same op-with-same-params from running twice on the same parent — but in practice this prevents the user from re-running an op that they want to re-run, and the auto-collapsed sweep groups (CS-32) bundle related applies into a unit the user can't operate on. The user has flagged that today's behaviour makes work flows unusable: re-applying a process you tweaked once is blocked, and the auto-grouping hides the individual nodes. **Architecture (locked across Phase 4ac + 4af):** (a) **drop CS-31** entirely — every Apply produces a fresh OperationNode + child DataNode regardless of whether identical params were applied before. (b) **drop CS-32 auto-grouping** of provisional ops with identical (parent, op_type) signatures. (c) New `NodeType.NODE_GROUP` holds child node ids + a user-given label; renders as a row with a chevron that expands to show its members; group does not own arrays, has no scientific value of its own. (d) Pairs with the existing 🟡 "Multinode dataset import + combination" register entry above. **Phase 4ac (CS-54) shipped parts (a) + (b):** `find_provisional_op_with_params` removed from `graph.py`; the dedup short-circuit removed from all five apply sites; `_compute_sweep_groups` / `_build_sweep_row` / `_toggle_sweep_group` / `_expanded_sweep_groups` / `_sweep_groups` / `_sweep_leaders` / `_group_key_of` / `_discard_many` / `_datanode_parents` removed from `scan_tree_widget.py`; identical re-applies now create fresh standalone PROVISIONAL siblings. **Phase 4af (CS-57) ships part (c) — fully resolves the register entry:** new `NodeType.NODE_GROUP` variant in `nodes.py` (arrays = `{}`, metadata carries `member_ids: list[str]`, single-membership invariant, flat-only no-nesting invariant); new graph-layer entry points `ProjectGraph.create_group(member_ids, label=None) -> str` + `dissolve_group(group_id)` + `group_of(node_id) -> Optional[str]`; `discard_node` grew an auto-dissolve cascade that recursively discards a group when fewer than two active members remain (bounded at one level by flat-only). `ScanTreeWidget` gained a click-toggle selection model (`_selected_node_ids` set, `<ButtonRelease-1>` so a double-click rename nets zero toggle), a footer "Group selected" button (enabled iff ≥2 selected AND none already grouped AND none is itself a NODE_GROUP — predicate mirrors `create_group`'s validation), a group-row pipeline (`_build_group_row` with chevron ▾/▸ + "(N members)" badge + inline ✕ for ungroup), and a chevron-driven `_expanded_groups` set. Top-level rendering excludes grouped members; expanded groups render members below with `padx=(2 + _SWEEP_MEMBER_INDENT_PX, 2)` — **CS-35's dormant indent constant + `_build_node_row(indent_px=0)` kwarg are now LIVE** (Phase 4ac friction #5 closed). Right-click context menu branches: data rows get a new "Group selected (N)" entry enabled by the same predicate; group rows get a simplified Rename / Expand-or-Collapse / Ungroup menu via `_show_group_context_menu`. **Lock decisions taken (Phase 4af):** (i) **gesture style — context-menu + left-pane footer button** (both surfaces, user choice); (ii) **flat only, no nesting** (rejected at `create_group` time — relaxing later is additive); (iii) **Ungroup lives on context-menu + inline ✕** on the group row; (iv) **indent reuses `_SWEEP_MEMBER_INDENT_PX = 16`** (CS-35 lock survives, purpose realised). Additional Claude-side locks: group default label `"Group N"`, members keep their parent edges (group is view-layer, not structural reparenting), single-membership enforced, NODE_ADDED on create + NODE_DISCARDED on dissolve (no new event types), groups never participate in y-axis routing / redraw (renderer-skip invariant), groups always PROVISIONAL (no commit path), `project_io` round-trips via the existing DataNode schema (arrays={} → empty savez archive; member_ids in metadata is JSON-serialisable). 50 new tests across `test_nodes.py` (1), `test_graph.py` (27 in `TestNodeGroupOps`), `test_scan_tree_widget.py` (21 in `TestScanTreeWidgetNodeGroupsPhase4af`), `test_persistence_phase_a.py` (1 round-trip). Net suite count: 949 (up from 899). |
 | ✅ | 🔴 | **Adjustable sidebar still not working — fix next, revisit every cell + minimum width (USER-FLAGGED bumped from 🟡 to 🔴 in Phase 4v)** | USER-FLAGGED at end of Phase 4u as 🟡 (Phase 4u friction #5); re-flagged at end of Phase 4v (bumped to 🔴). **Resolved Phase 4w (CS-47 + CS-48):** the auto-bump scope ships as CS-47 (`widest_label_pixel_width` measurement + `_calibrate_sidebar_width` one-shot via `after_idle`); the cell-vocabulary audit + minimum-width work ships as `_CELL_MIN_PX` (every cell documented in one dict) + `_SIDEBAR_MIN_WIDTH_PX = 240` (pinned floor used by both the responsive helper and the PanedWindow's `minsize`); the column-alignment scope ships as CS-48 (fixed-width `row_toggle` slot). The "minimum width" scope deliberately reused the existing 240 px floor (matching the smallest responsive threshold) rather than introducing a new per-cell sum, because changing the floor would break the existing TestResponsiveCollapse threshold tests. See the canonical resolved entry "Dynamic sidebar auto-width for long node labels" above for full deliverables list |
 | ⏳ | 🟡 | **Trash can for discarded nodes — restore from a Trash pane (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4v (step 5 elicitation). Today `ProjectGraph.discard_node` removes the node from `self.nodes` entirely; if the user discards a provisional node they later want back, it's gone. The user has asked for a Trash gesture analogous to a desktop OS recycle bin. **Architecture proposal (lock pending):** (a) new `NodeState.DISCARDED` (joining `PROVISIONAL` / `COMMITTED`); (b) `discard_node` flips state to DISCARDED rather than removing from `self.nodes`; (c) the default sidebar filter hides DISCARDED rows; (d) a "Trash" pane / collapsible section / dialog lists discarded nodes with a Restore gesture that flips state back to PROVISIONAL (or COMMITTED if the node was committed before discard); (e) discarded nodes round-trip through the Phase A manifest (sidecar storage stays). Pairs with: the new sidecar-garbage-collection register entry below (DISCARDED nodes' sidecars stay until the trash is emptied) and Phase 4q friction #4's left-pane Accept/Discard register entry (Discard now preserves recoverability). **Lock decisions for the implementing session:** (i) is Trash a top-of-sidebar collapsible section, a separate pane, or a Toplevel dialog? (ii) does Empty Trash literally remove from `self.nodes` (current discard behaviour) or is even that retained? (iii) does Restore preserve the original ordering / parent edges, or just resurrect the node and let the user reattach edges? **Affected:** `nodes.py` (new NodeState variant), `graph.py` (discard_node implementation + a new restore_node), `scan_tree_widget` (filter + new pane), `uvvis_tab` (pane wiring), `project_io.py` (sidecar persistence — already handled by the array-hash identity, but needs to round-trip the new state) |
 | ⏳ | 🟡 | **Project-specific plot defaults + import from another project (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4v (step 5 elicitation). Phase A persistence (CS-46) round-trips `plot_settings_dialog._USER_DEFAULTS` as a top-level `plot_defaults` key, but those defaults are app-global (mutated in place at load time). The user has asked for project-scoped plot defaults that ride with the workflow + an "Import plot settings from another project" gesture in the Plot Settings dialog. **Architecture proposal (lock pending):** three-layer defaults — factory (`_FACTORY_DEFAULTS`, immutable) → user (`~/.binah_config.json`, app-global) → project (manifest, scoped to the loaded `.ptmg`). Lookups walk the layers (project ?? user ?? factory). New "Import plot settings…" file dialog in PlotSettingsDialog reads another `.ptmg`'s `plot_defaults` block and merges into the current project's overrides. Pairs with the still-open Phase 4l friction #1 register entry (audit dialog button-row vocabulary) — the import gesture is a new dialog. **Lock decisions for the implementing session:** (i) does the project layer override every key, or only ones explicitly set? (ii) is the import a copy (snapshot) or a reference (live link to the source project's defaults)? (iii) does the StyleDialog's "Apply to All" reach into the project-defaults layer? **Affected:** `plot_settings_dialog.py` (three-layer lookup + import file dialog), `project_io.py` (no schema change — `plot_defaults` already exists; semantics shift), `binah.py` (load-time wiring of the project layer) |
@@ -1667,6 +1667,8 @@ subsequent Phase 4 session.**
 | ✅ | 🟡 | ~~**Per-node parameter window: add a Provenance tab (USER-FLAGGED)**~~ ✅ Resolved in Phase 4ab (CS-53). The dialog body is now a `ttk.Notebook`; Tab 2 "Provenance" walks `graph.provenance_chain(self._node_id)` and renders one block per ancestor (header: bold label · type · state badge; body for OperationNodes: pretty-printed sorted params, engine + version, 12-char-prefix truncated implementation hash with the `unregistered:` sentinel preserved through truncation). DISCARDED ancestors render unfiltered with dimmed grey foreground (`#888888`) per Phase 4ab Decision (iv) — the tab is a history view; filtering DISCARDED would defeat the point and pre-empt the "Add to graph" gesture (next entry below). Provenance content is eager-built at `__init__` (Decision (ii)); single scrolling column hosted in a `tk.Canvas` + `ttk.Scrollbar` pair (Decision (iii)). Read-only this phase — bottom button row scopes to the Style tab only. Graph-event refresh fires on `NODE_LABEL_CHANGED / NODE_DISCARDED / NODE_COMMITTED / NODE_ADDED / EDGE_ADDED` (`_PROVENANCE_REFRESHING_EVENTS` frozenset), gated by the existing `_suspend_writes` guard so the dialog's own keystroke-driven label rename does NOT rebuild Provenance per keystroke (perf trade-off; bottom-of-chain block briefly stale during typing). 24 new integration tests (`TestStyleDialogPhase4abNotebook` + `TestStyleDialogPhase4abProvenanceTab`) + 22 pure-helper tests (`TestStyleDialogPhase4abHelpers`). Reused `graph.provenance_chain` rather than introducing the originally proposed `ProjectGraph.ancestors_of` — same return shape, no `graph.py` change. Pairs with the next entry below (the "Add to graph" gesture is now unblocked since the Provenance tab is the surface it lives on). | USER-FLAGGED at end of Phase 4x (step 5 elicitation). The right-sidebar's per-row history dropdown (the `▿` chevron next to the label, opens an ad-hoc list of "Op A → Op B → Op C") is intentionally compact — but the user has asked for a more detailed view that lives inside the gear-icon dialog as a second tab. The new tab would show: ancestor walk back to the RAW_FILE / multi-input source, full op params for each step (params dict pretty-printed), timestamps, engine + engine_version, implementation hash (CS-45), status, log excerpts (when populated). **Architecture proposal (lock pending):** convert the StyleDialog to a `ttk.Notebook` shape — Tab 1 "Style" (today's content, possibly re-organised per the previous register entry); Tab 2 "Provenance" (the new view). Reuses the same Toplevel + button row (Apply · ∀ Apply to All · Save · Cancel). The provenance tab is read-only this phase; the "add historical node" gesture lands as the separate register entry below (D). **Lock decisions:** (i) is the provenance tab populated lazily (on-tab-switch) or eagerly (at dialog construction)? (ii) does it scroll vertically as a single column, or render as a tree with expandable nodes? (iii) does it show DISCARDED ancestors (history-style) or filter them? **Affected:** `style_dialog.py` (Notebook restructure), graph-walk helper for the ancestor list (likely a new `ProjectGraph.ancestors_of(node_id)` method), tests for the tab construction + the ancestor walk. Pairs with B above (same dialog) and D below (same tab — D adds a gesture, this entry adds the read-only view) |
 | ⏳ | 🟡 | **"Add to graph" gesture from a node's Provenance tab (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4x (step 5 elicitation). Once C lands (read-only Provenance tab), the user has asked for an "Add to graph" gesture per ancestor — clicking it materialises the historical ancestor as a new live node in the same graph without re-loading from disk. Concrete use case: the user has a SMOOTHED node loaded; they realise they want to compare the smoothed result against the underlying RAW_FILE / UVVIS parent; today the only path is to either (a) un-discard the parent (if it was discarded) or (b) re-load the source file via the LOAD path (which creates a fresh UVVIS DataNode with a different id, breaks the existing graph linkage to the SMOOTHED descendant). The new gesture would walk the ancestor chain, find the requested historical node, flip its `active` flag back to True (if currently inactive) OR clone it as a new live node parented on the same source. **Architecture (lock pending):** (a) does the gesture flip the existing node's `active` flag (cheap; preserves graph identity; couples to the existing CS-22 `_spectrum_nodes` filter), OR clone the node as a new id (preserves the historical node's state but creates a graph-edge fork)? (b) what's the gesture — button per provenance row, right-click, drag-and-drop into the sidebar? (c) does it emit a NODE_ADDED event (clone path) or NODE_STYLE_CHANGED + a re-render trigger (active-flip path)? **Affected:** `style_dialog.py` (the new gesture in the Provenance tab), `graph.py` (a new `restore_ancestor` or similar helper, depending on which architecture lands), `uvvis_tab._refresh_shared_subjects` (re-runs after the gesture so the resurrected node appears in the combobox), tests for both architectures. Pairs with C above (the tab the gesture lives on) AND with the existing 🟡 Trash can register entry (Trash + this gesture overlap conceptually — both surface "previously hidden" nodes). **Phase 4ab unblocks:** the Provenance tab landed (CS-53; entry above marked ✅), so this register entry is now actionable. The tab's per-ancestor block already carries the structural slot (header + body Frame) where a per-row "Add to graph" button would naturally fit — bottom-right of each block, parented to the same Frame the body Label uses. Decision (a) (active-flip vs clone) and Decision (c) (which graph event to emit) still need locking when the implementing session opens. |
 | ⏳ | 🟢 | **Visual cue for derivative entries in the shared subject combobox (CS-49 follow-up)** | Surfaced Phase 4x (Claude). Now that `SECOND_DERIVATIVE` rows mix into the shared combobox alongside the four spectrum-shaped types (`_refresh_shared_subjects` widening), the user has no per-row glyph or grouping divider to tell at a glance "this is a derivative" vs "this is an absorbance-domain spectrum". Cheap polish: prefix derivative entries with a `d² ` glyph in the combobox display key (or insert a `─── d²A/dλ² ───` separator entry between the spectrum block and the derivative block). The latter is more disruptive (changes the value-list semantics — the separator can't be selected); the former is one-line in `_refresh_shared_subjects`. Defer until the user reports actual confusion picking among mixed entries; the audit-stability test `test_shared_combobox_orders_spectrum_then_derivative` already pins the spectrum-first ordering so visual scanning is at least left-to-right consistent |
+| ⏳ | 🟡 | **Keyboard shortcuts — whole-interface evaluation pass (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4af (step 5 elicitation). User noted while reviewing Phase 4af friction list: "We'll need to evaluate keyboard shortcuts for the whole interface at some point. Not sure if it's better to do that sooner or later. Either way, let's put that into the list." Today the app exposes essentially no keyboard accelerators — gestures are mouse-driven (right-click context menus, footer buttons, dialog Apply/Cancel via mouse). Power-user workflows would benefit from a coherent shortcut vocabulary, but the design needs to be planned holistically rather than gesture-by-gesture so collisions don't compound. **Scope is a design pass before any implementation:** (a) inventory every active gesture (every ScanTreeWidget row gesture, every Plot Settings dialog action, every StyleDialog action, every tab-switch / file-open / save-workflow, every panel Apply, every Combine/Ungroup); (b) propose a shortcut table grouped by surface (App-global vs tab-scoped vs dialog-modal); (c) review for collisions with Tk's built-in bindings (Ctrl+C copy, Ctrl+W close window, F-keys); (d) review for platform consistency (Cmd vs Ctrl — currently Windows-only, but a XANES/EXAFS Mac contributor is plausible). Concrete first candidates the user-facing experience would benefit from: Ctrl+G "Group selected", Ctrl+Shift+G "Ungroup", Ctrl+S "Save workflow" (already present?), Ctrl+O "Open workflow", Delete "Discard selected" (with confirmation if any are COMMITTED), F2 "Rename" (matches the Windows convention CS-33's double-click started from), Enter "Apply" in the active panel. **Lock decisions for the implementing session:** (i) does the table live in `KEYBINDINGS.md` (separate doc, audit-friendly) or in `COMPONENTS.md` as a CS section, or both? (ii) is the implementation a single `key_bindings.py` module that registers all `bind_all` / per-tab `bind` calls at construction, or per-component bindings co-located with the gesture? (iii) does the app surface a "Keyboard shortcuts…" Help menu entry that opens a Toplevel with the table? Cross-refs every prior friction item that ended "would benefit from a keyboard shortcut" deferral (none today — the user has not previously surfaced this, which is why it's a fresh register entry). Multi-phase task; the design pass + a first batch of 3–5 shortcuts is a reasonable first phase. |
+| ⏳ | 🟡 | **"Add to existing group" gesture — extend an existing NODE_GROUP without dissolve-and-recreate (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4af (step 5 elicitation). User noted while reviewing Phase 4af friction list ("Definitely want that"). Phase 4af (CS-57) ships the create-a-group + dissolve-a-group gestures, but once a group exists the ONLY way to add more members is dissolve + reselect-all + recreate. That's poor UX once a group has any non-default state (a user-edited label like "my Ni²⁺ aquo series" is lost on dissolve-recreate). **Architecture proposal (lock pending):** new gesture flow — when the selection is ≥1 ungrouped node AND exactly one NODE_GROUP is also selected (or alternatively when the gesture is right-click on an existing group while ≥1 other node is selected), surface a menu entry "Add selected to <group label>". The graph-layer addition is a new `ProjectGraph.extend_group(group_id, member_ids)` method that re-runs the same validation `create_group` does (no already-grouped, no NODE_GROUP members, no DISCARDED) and appends to the existing `metadata["member_ids"]` list; emits NODE_LABEL_CHANGED (label rebuilds the "(N members)" suffix) or a new GRAPH event type if the label-changed semantics feel wrong. **Lock decisions for the implementing session:** (i) is the gesture a context-menu entry, a footer button (alongside "Group selected"), or both? (ii) does extending preserve the ordering of existing members or always append? (iii) does extending emit NODE_LABEL_CHANGED, a new NODE_GROUP_MEMBERS_CHANGED event, or piggyback on NODE_ADDED somehow (no new node is added)? (iv) symmetric question: should there be a "Remove from group" gesture that pulls a single member out without dissolving the entire group? **Affected:** `graph.py` (new method + possible new event type), `scan_tree_widget.py` (new menu / footer button surface + predicate), tests for the validation reuse + the event-emit shape. Pairs with the canonical "Drop CS-31 + introduce user-driven node groups" register entry above (now ✅ for the v1 create/dissolve path); this is the natural v2 extend path. Phase 4ag candidate. |
 
 ### Friction points carried forward from Phase 4r
 
@@ -2851,7 +2853,7 @@ until the relevant subsequent Phase 4 session.**
    `plot_widget._tick_direction` already defaulted to `"in"` so
    question (iii) collapsed.
 
-4. 🟡 **Phase 4ad: NodeType.NODE_GROUP + user-driven "Combine
+4. ~~🟡 **Phase 4ad: NodeType.NODE_GROUP + user-driven "Combine
    selected → Group" gesture (carry-forward from Phase 4v
    friction #1 part (c)).** Phase 4ac shipped parts (a) + (b)
    of the original Phase 4v friction #1 architecture; part (c)
@@ -2864,9 +2866,18 @@ until the relevant subsequent Phase 4 session.**
    a fresh indent? **Cross-ref:** the canonical "Drop CS-31 +
    introduce user-driven node groups" register entry above
    carries the architecture; the Phase 4ac partial note narrows
-   the carry-forward to part (c).
+   the carry-forward to part (c).~~ ✅ Resolved in Phase 4af
+   (CS-57) — the intent slipped two phases (Phase 4ad shipped
+   CS-55's label routing; Phase 4ae shipped CS-56's Appearance
+   pass) but landed in Phase 4af with all four lock decisions
+   taken: (i) context-menu + left-pane footer button (both
+   surfaces); (ii) flat only (no nesting); (iii) ungroup via
+   context-menu + inline ✕ on the group row; (iv) reuse
+   `_SWEEP_MEMBER_INDENT_PX = 16` (CS-35 lock survives,
+   purpose realised). See the canonical register entry above
+   for full deliverables.
 
-5. 🟢 **`_SWEEP_MEMBER_INDENT_PX` is a dormant constant
+5. ~~🟢 **`_SWEEP_MEMBER_INDENT_PX` is a dormant constant
    awaiting Phase 4ad re-use (Claude-surfaced).** The constant
    + the `indent_px=0` kwarg on `_build_node_row` survive Phase
    4ac on the bet that Phase 4ad's user-driven NODE_GROUP
@@ -2875,7 +2886,12 @@ until the relevant subsequent Phase 4 session.**
    shape (e.g. tree-style left-rule lines instead of pure pack
    padding), the constant becomes dead weight — re-evaluate at
    the close of Phase 4ad: keep, retune, or remove. No new
-   register entry; folds into the Phase 4ad intent.
+   register entry; folds into the Phase 4ad intent.~~ ✅
+   Resolved in Phase 4af (CS-57) — the constant is now LIVE:
+   `_rebuild` calls `_build_node_row(member, indent_px=_SWEEP_MEMBER_INDENT_PX)`
+   for every member of an expanded NODE_GROUP. The CS-35 lock
+   on the constant value + `_build_node_row(indent_px=0)`
+   kwarg signature carries forward into Phase 4af's lock list.
 
 6. 🟢 **No "which one is which?" cue when N identical
    PROVISIONAL siblings render (Claude-surfaced).** With auto-
@@ -3039,6 +3055,106 @@ relevant subsequent Phase 4 session.**
    LabelFrame-groupings register entry above) reshapes the
    section — re-sort then. Until then, locked. No register
    entry.
+
+### Friction points carried forward from Phase 4af
+
+These are concrete obstacles the next Phase 4 session will hit.
+Identified during Phase 4af while landing the user-driven
+NODE_GROUP container + Combine/Ungroup gestures (CS-57) — closing
+Phase 4v friction #1 part (c) (USER-FLAGGED 🔴), Phase 4ac
+friction #4 + #5. The user contributed two new USER-FLAGGED
+register entries at step 5 ("keyboard shortcuts whole-interface
+evaluation" + "Add to existing group" gesture) and a design
+constraint ("no info bleed between tabs unless explicitly user-
+driven"). The polish-level items below stay 🟢. **Do not fix
+until the relevant subsequent Phase 4 session.**
+
+1. 🟡 **USER-FLAGGED Keyboard shortcuts — whole-interface
+   evaluation pass.** User-flagged at end of Phase 4af. **Cross-
+   ref:** see the new canonical register entry above. The Phase
+   4af gestures (Combine selected, Ungroup, chevron expand) all
+   ship mouse-only; first candidates for the eventual shortcut
+   pass are Ctrl+G / Ctrl+Shift+G / F2 / Delete. Multi-phase
+   task — the design pass needs to inventory every existing
+   gesture before any binding lands.
+
+2. 🟡 **USER-FLAGGED "Add to existing group" gesture (Phase
+   4ag candidate).** User-flagged at end of Phase 4af
+   ("Definitely want that"). Today the only way to add a member
+   to an existing NODE_GROUP is dissolve + recreate, which is
+   bad UX once a group has any non-default state (user-edited
+   label, future per-group style). **Cross-ref:** see the new
+   canonical register entry above. Pairs with the canonical
+   "Drop CS-31 + introduce user-driven node groups" register
+   entry (now ✅ for the v1 create/dissolve path); this is the
+   natural v2 extend path.
+
+3. 🟢 **Design constraint — no information bleed between tabs
+   unless explicit (USER-CONFIRMED).** User confirmed at end of
+   Phase 4af: "We don't want information to bleed from one tab
+   to another unless explicitly done so by the user (or in some
+   very specific cases, but I can't think of any at the
+   moment)." Today this is honoured for the new Phase 4af
+   selection model: each ScanTreeWidget owns its own
+   `_selected_node_ids` set, and selections are NOT
+   synchronised across tabs. Recording this as a design
+   constraint so future cross-tab work (e.g. a shared
+   "selection bus" idea, multi-tab Apply gestures) is
+   evaluated against it explicitly. No register entry yet; the
+   constraint is more of a North Star than an actionable item.
+   If/when a need for cross-tab propagation surfaces, the
+   register entry that ships it must call out the explicit
+   user gesture that triggers it (e.g. a "Send selection to
+   Compare" button, not an implicit sync).
+
+4. 🟢 **Group "(N members)" suffix is always appended, even
+   for user-renamed groups (Claude-surfaced polish, USER-
+   CONFIRMED polish-level).** `_build_group_row` appends
+   `"  (N members)"` to whatever `node.label` carries, so a
+   user-renamed "my Ni²⁺ aquo series" renders as
+   "my Ni²⁺ aquo series  (2 members)". User acknowledged at
+   end of Phase 4af: "Good call - something definitely for
+   polishing rather than mission critical." Future polish
+   options: (a) drop the suffix once the user explicitly
+   renames; (b) move the count to its own widget cell so it
+   doesn't compete for label width; (c) keep the current
+   behaviour and accept the visual noise. Defer until reported
+   in real use. No register entry.
+
+5. 🟢 **"Show hidden" footer toggle behaviour is opaque
+   (USER-CONFIRMED; polish-level).** User noted at end of
+   Phase 4af: "I've not yet seen an example where 'show
+   hidden' actually uncovers anything... I'll have to play
+   around with it some more to see how it behaves. Definitely
+   polish level." The toggle reveals committed nodes whose
+   `active` flag is False (set via the context-menu Hide
+   action or the future Trash-can register entry); on a fresh
+   workflow no nodes are hidden, so the toggle is a no-op. A
+   future polish could disable the toggle when no hidden
+   rows exist, OR surface a count badge ("Show hidden (3)"),
+   OR add inline help. Defer until the user runs into the
+   real path (committed-then-hidden) and reports confusion.
+   No register entry.
+
+6. 🟢 **Footer "Group selected" button label is static —
+   doesn't say how many will be combined (Claude-surfaced
+   polish, USER-CONFIRMED).** Today the button reads "Group
+   selected" regardless of selection size; the context-menu
+   companion entry shows "(N)". Easy polish: bind button text
+   to `len(_selected_node_ids)`, e.g. "Group selected (3)".
+   User confirmed at end of Phase 4af. Defer until reported.
+   No register entry.
+
+7. 🟢 **`_show_group_context_menu` is monkey-patched in one
+   test (Claude-surfaced testing-shape note, USER-CONFIRMED).**
+   `test_group_row_uses_group_context_menu_branch` swaps in a
+   spy callable rather than inspecting a real `tk.Menu`'s
+   items, because Tk menus don't expose their entries to
+   introspection without significant scaffolding. The
+   monkey-patch is the most surgical approach given Tk's
+   API surface; if a future test refactor lifts a shared
+   "menu inspection" helper, this test can be retired. No
+   register entry.
 
 ---
 
@@ -3254,7 +3370,7 @@ the resolving phase + commit SHA appended to the row.
 
 ---
 
-*Document version: 1.30 — May 2026*
+*Document version: 1.31 — May 2026*
 *1.1: Known Bugs register added 2026-04-27 after Phase 4b manual testing.*
 *1.2: Phase 4c — baseline correction lands; B-001 / B-003 / B-004
 resolved; Phase 4c friction points logged.*
@@ -3892,4 +4008,63 @@ the dialog row order in `_build_section_appearance` is a
 cluster-by-concept choice. 899 tests, all green (882 + 17 new:
 10 pure-module in `TestAppearanceSectionPhase4ae` + 7
 integration in `TestUVVisTabAppearancePhase4ae`).*
+*1.31: Phase 4af — user-driven `NodeType.NODE_GROUP` container
++ "Combine selected → Group" gesture (CS-57). FULLY resolves
+the canonical Phase 4v friction #1 "Drop CS-31 + introduce
+user-driven node groups" register entry (USER-FLAGGED 🔴) —
+Phase 4ac shipped parts (a) + (b), Phase 4af ships part (c).
+Also closes Phase 4ac friction #4 (the Phase 4ad → 4af NODE_
+GROUP carry-forward — intent slipped two phases because
+Phase 4ad shipped CS-55 label routing and Phase 4ae shipped
+CS-56 Appearance pass) and Phase 4ac friction #5 (the dormant
+`_SWEEP_MEMBER_INDENT_PX` constant + `_build_node_row(indent_
+px=0)` kwarg — now LIVE, used by every member of an expanded
+group). Graph layer: new `NodeType.NODE_GROUP` enum variant
+(carries `arrays={}` + `metadata["member_ids"]: list[str]`);
+new `ProjectGraph.create_group(member_ids, label=None) -> str`
++ `dissolve_group(group_id)` + `group_of(node_id) -> Optional
+[str]`; `discard_node` grew an auto-dissolve cascade that
+recursively discards a group when fewer than two active
+members remain (bounded at one level by the flat-only
+invariant). UI layer: ScanTreeWidget gained a click-toggle
+selection model (`_selected_node_ids` set, `<ButtonRelease-1>`
+binding so a double-click rename gesture nets out to zero
+toggle), a footer "Group selected" button (predicate mirrors
+`create_group`'s validation: ≥2 selected AND none already
+grouped AND none a NODE_GROUP), a group-row pipeline
+(`_build_group_row` with chevron ▾/▸ + "(N members)" badge +
+inline ✕), a chevron-driven `_expanded_groups` set, and a
+`_show_group_context_menu` branch for the simplified group
+menu (Rename / Expand-or-Collapse / Ungroup). Top-level
+rendering excludes grouped members; expanded groups render
+members below with `padx=(2 + _SWEEP_MEMBER_INDENT_PX, 2)`.
+Right-click context menu on data rows grew a "Group selected
+(N)" entry enabled by the same predicate. **Lock decisions
+taken:** (i) **gesture style — context-menu + left-pane
+footer button** (both surfaces); (ii) **flat only, no
+nesting**; (iii) **Ungroup via context-menu + inline ✕** on
+group rows; (iv) **indent reuses `_SWEEP_MEMBER_INDENT_PX
+= 16`** (CS-35 lock survives, purpose realised). Additional
+Claude-side locks: default label `"Group N"`, members keep
+their parent edges (group is view-layer, not structural
+reparenting), single-membership enforced, NODE_ADDED on
+create + NODE_DISCARDED on dissolve (no new event types),
+groups skip y-axis routing / redraw, groups always
+PROVISIONAL, `project_io` round-trips through the existing
+DataNode schema (arrays={} → empty savez archive; member_ids
+in metadata is JSON-serialisable). Two new USER-FLAGGED
+register entries surfaced at step 5: 🟡 "Keyboard shortcuts —
+whole-interface evaluation pass" (multi-phase design pass) +
+🟡 "'Add to existing group' gesture (Phase 4ag candidate)".
+Recorded design constraint: no information bleed between tabs
+unless explicit (USER-CONFIRMED). Four Claude-surfaced 🟢
+polish notes folded into Phase 4af friction (group "(N
+members)" suffix on user-renamed groups; "Show hidden" toggle
+opacity; footer button label is static not size-aware; menu-
+introspection monkey-patch). 949 tests, all green (899 + 50
+new: 1 in `test_nodes.py` pinning NODE_GROUP as a distinct
+variant + 27 in `test_graph.TestNodeGroupOps` + 21 in
+`test_scan_tree_widget.TestScanTreeWidgetNodeGroupsPhase4af` +
+1 in `test_persistence_phase_a.TestSaveLoadRoundTrip` for the
+NODE_GROUP `.ptmg` round-trip).*
 *Supersedes: BACKLOG.md (original)*

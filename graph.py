@@ -166,6 +166,16 @@ class ProjectGraph:
         a node already in the COMMITTED or DISCARDED state raises
         ``ValueError`` (committed nodes are hidden via ``active=False``,
         not discarded). Emits ``NODE_DISCARDED``.
+
+        CS-57 (Phase 4af): when the discarded node was a member of an
+        active NODE_GROUP and the group now has fewer than two active
+        (i.e. non-DISCARDED) members, the group is auto-dissolved by
+        a recursive ``discard_node`` call. This cascades at most one
+        level because the flat-only invariant (``create_group``
+        rejects nested groups) means a NODE_GROUP is never itself a
+        member of another NODE_GROUP. The cascade emits a second
+        NODE_DISCARDED event for the group; subscribers see both
+        events in order (member first, then group).
         """
         node = self.get_node(node_id)
         if node.state != NodeState.PROVISIONAL:
@@ -175,6 +185,26 @@ class ProjectGraph:
             )
         node.state = NodeState.DISCARDED
         self._notify(GraphEvent(GraphEventType.NODE_DISCARDED, node_id))
+
+        # CS-57: auto-dissolve cascade. Skip when the just-discarded
+        # node is itself a NODE_GROUP — by the flat-only invariant a
+        # group is never a member of another group, so this would be
+        # a wasted ``group_of`` walk.
+        if not (isinstance(node, DataNode)
+                and node.type == NodeType.NODE_GROUP):
+            group_id = self.group_of(node_id)
+            if group_id is not None:
+                group = self.nodes[group_id]
+                assert isinstance(group, DataNode)
+                member_ids = group.metadata.get("member_ids", ())
+                active_count = sum(
+                    1 for mid in member_ids
+                    if mid in self.nodes
+                    and isinstance(self.nodes[mid], DataNode)
+                    and self.nodes[mid].state != NodeState.DISCARDED
+                )
+                if active_count < 2:
+                    self.discard_node(group_id)
 
     def set_label(self, node_id: str, new_label: str) -> None:
         """Update the display label of a DataNode.
@@ -306,6 +336,152 @@ class ProjectGraph:
         )
         self.add_node(clone)
         return new_id
+
+    # ------------------------------------------------------------
+    # Node groups (CS-57, Phase 4af)
+    # ------------------------------------------------------------
+
+    def create_group(
+        self,
+        member_ids: list[str],
+        label: str | None = None,
+    ) -> str:
+        """Create a NODE_GROUP DataNode aggregating ``member_ids``.
+
+        CS-57 (Phase 4af) part (c) of the Phase 4v friction #1
+        architecture. A NODE_GROUP is a view-layer aggregation: it
+        carries no scientific arrays and does not reparent its
+        members. ``ScanTreeWidget`` reads ``metadata["member_ids"]``
+        to render member rows under a chevron-toggleable group row.
+
+        Validation rules (all raise on violation, no node is created):
+
+        * ``member_ids`` must contain at least two ids.
+        * Ids must be unique (no duplicate within ``member_ids``).
+        * Every id must exist in the graph (``KeyError`` otherwise).
+        * Every member must be a DataNode (``TypeError`` if an
+          OperationNode id is passed).
+        * No member may itself be a NODE_GROUP — the flat-only
+          invariant (``ValueError``). Relaxing this would require
+          updating ``group_of`` and the scan tree to walk a tree.
+        * No member may be DISCARDED — would render under the group
+          but immediately be invisible (``ValueError``).
+        * No member may already belong to another active NODE_GROUP
+          (``ValueError`` — the single-membership invariant).
+
+        ``label`` defaults to ``f"Group {N}"`` where N is one past the
+        count of existing NODE_GROUPs (active or discarded). The
+        caller may pass a user-chosen label.
+
+        Returns the new group's id. Emits ``NODE_ADDED`` via
+        ``add_node``. The group is created in state ``PROVISIONAL``;
+        groups have no scientific value to commit and dissolve via
+        ``dissolve_group`` (which routes through ``discard_node``).
+        """
+        if len(member_ids) < 2:
+            raise ValueError(
+                f"NODE_GROUP requires at least 2 members, got "
+                f"{len(member_ids)}"
+            )
+        if len(set(member_ids)) != len(member_ids):
+            raise ValueError(
+                f"NODE_GROUP member_ids must be unique: {member_ids!r}"
+            )
+        for mid in member_ids:
+            if mid not in self.nodes:
+                raise KeyError(f"Unknown member id: {mid!r}")
+            member = self.nodes[mid]
+            if not isinstance(member, DataNode):
+                raise TypeError(
+                    f"NODE_GROUP members must be DataNode, {mid!r} is "
+                    f"{type(member).__name__}"
+                )
+            if member.type == NodeType.NODE_GROUP:
+                raise ValueError(
+                    f"Nested NODE_GROUPs are not supported: {mid!r} "
+                    f"is itself a NODE_GROUP"
+                )
+            if member.state == NodeState.DISCARDED:
+                raise ValueError(
+                    f"NODE_GROUP members must not be DISCARDED: {mid!r}"
+                )
+            existing_group = self.group_of(mid)
+            if existing_group is not None:
+                raise ValueError(
+                    f"Node {mid!r} already belongs to group "
+                    f"{existing_group!r}"
+                )
+
+        if label is None:
+            existing_total = sum(
+                1 for n in self.nodes.values()
+                if isinstance(n, DataNode) and n.type == NodeType.NODE_GROUP
+            )
+            label = f"Group {existing_total + 1}"
+
+        new_id = uuid.uuid4().hex
+        group = DataNode(
+            id=new_id,
+            type=NodeType.NODE_GROUP,
+            arrays={},
+            metadata={"member_ids": list(member_ids)},
+            label=label,
+            state=NodeState.PROVISIONAL,
+            active=True,
+            style={},
+        )
+        self.add_node(group)
+        return new_id
+
+    def dissolve_group(self, group_id: str) -> None:
+        """Discard a NODE_GROUP, unbundling its members.
+
+        Dissolving a group does NOT discard its members — members
+        return to top-level scan-tree rendering with their state and
+        edges untouched. The group itself transitions to DISCARDED
+        via ``discard_node``, emitting NODE_DISCARDED.
+
+        Raises ``KeyError`` if the id is unknown, ``TypeError`` if the
+        id refers to a non-NODE_GROUP node, and ``ValueError`` (via
+        ``discard_node``) if the group is not PROVISIONAL.
+        """
+        node = self.get_node(group_id)
+        if not isinstance(node, DataNode) or node.type != NodeType.NODE_GROUP:
+            raise TypeError(
+                f"dissolve_group expects a NODE_GROUP DataNode, got "
+                f"{type(node).__name__}"
+                + (f" (type={node.type.name})" if isinstance(node, DataNode)
+                   else "")
+            )
+        self.discard_node(group_id)
+
+    def group_of(self, node_id: str) -> str | None:
+        """Return the id of the active NODE_GROUP containing ``node_id``.
+
+        Walks the graph looking for an active (non-DISCARDED)
+        NODE_GROUP whose ``metadata["member_ids"]`` includes the
+        given id. Returns ``None`` if no such group exists. Used by
+        ``create_group`` to enforce single-membership, by
+        ``discard_node`` to drive the auto-dissolve cascade, and by
+        ``ScanTreeWidget._candidate_nodes`` to exclude grouped
+        members from top-level rendering.
+
+        Returns ``None`` for unknown ids; never raises. By the
+        single-membership invariant a node belongs to at most one
+        active group, so the first match is canonical.
+        """
+        if node_id not in self.nodes:
+            return None
+        for node in self.nodes.values():
+            if not isinstance(node, DataNode):
+                continue
+            if node.type != NodeType.NODE_GROUP:
+                continue
+            if node.state == NodeState.DISCARDED:
+                continue
+            if node_id in node.metadata.get("member_ids", ()):
+                return node.id
+        return None
 
     # ------------------------------------------------------------
     # Edge management

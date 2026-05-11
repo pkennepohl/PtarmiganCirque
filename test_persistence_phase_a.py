@@ -247,6 +247,42 @@ class TestSaveLoadRoundTrip(unittest.TestCase):
             self.graph.nodes["u1"].arrays["absorbance"],
         )
 
+    def test_node_group_round_trips_through_save_load(self):
+        # CS-57 (Phase 4af): a NODE_GROUP DataNode has arrays={} +
+        # metadata['member_ids']: list[str]. The existing schema
+        # round-trips it without changes (empty arrays → empty
+        # savez archive; metadata is JSON-serialisable). This pin
+        # traps a future schema tightening that would reject empty-
+        # arrays nodes from silently breaking group carry-over.
+        wl = self.graph.nodes["u1"].arrays["wavelength_nm"]
+        self.graph.add_node(DataNode(
+            id="u2", type=NodeType.UVVIS,
+            arrays={"wavelength_nm": wl,
+                    "absorbance": np.zeros_like(wl)},
+            metadata={"x_unit": "nm", "y_unit": "absorbance",
+                      "instrument": "synthetic",
+                      "source_file": "syn_u2"},
+            label="u2", state=NodeState.PROVISIONAL,
+        ))
+        gid = self.graph.create_group(["u1", "u2"], label="my pair")
+        project_io.save_project(
+            self.tmp, name="rt", plot_defaults={},
+            tabs={"uvvis": project_io.TabPayload(
+                plot_config={}, graph=self.graph)},
+        )
+        loaded = project_io.load_project(self.tmp)
+        gloaded = loaded.tabs["uvvis"].graph
+        self.assertIn(gid, gloaded.nodes)
+        group_after = gloaded.nodes[gid]
+        self.assertEqual(group_after.type, NodeType.NODE_GROUP)
+        self.assertEqual(group_after.label, "my pair")
+        self.assertEqual(
+            group_after.metadata["member_ids"], ["u1", "u2"],
+        )
+        self.assertEqual(group_after.arrays, {})
+        self.assertEqual(gloaded.group_of("u1"), gid)
+        self.assertEqual(gloaded.group_of("u2"), gid)
+
 
 @unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
 class TestRestoreWorkflowPayload(unittest.TestCase):

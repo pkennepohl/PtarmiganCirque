@@ -33,6 +33,11 @@ class TestNodeTypeEnum(unittest.TestCase):
         "DEGLITCHED", "NORMALISED", "SMOOTHED", "SHIFTED",
         "BASELINE", "AVERAGED", "DIFFERENCE",
         "TDDFT", "FEFF_PATHS", "BXAS_RESULT",
+        # CS-57 (Phase 4af): user-driven NODE_GROUP aggregation
+        # nodetype. Added so any future removal lights this test up
+        # (the lock-list keeps the create_group / dissolve_group /
+        # group_of contract anchored on NODE_GROUP).
+        "NODE_GROUP",
     }
 
     def test_all_documented_variants_exist(self):
@@ -43,6 +48,13 @@ class TestNodeTypeEnum(unittest.TestCase):
     def test_variants_are_unique(self):
         values = [m.value for m in NodeType]
         self.assertEqual(len(values), len(set(values)))
+
+    def test_node_group_variant_is_a_distinct_nodetype(self):
+        # CS-57: NODE_GROUP is its own value, not an alias of an
+        # existing aggregation-shaped type (e.g. AVERAGED).
+        self.assertIsNot(NodeType.NODE_GROUP, NodeType.AVERAGED)
+        self.assertIsNot(NodeType.NODE_GROUP, NodeType.DIFFERENCE)
+        self.assertEqual(NodeType.NODE_GROUP.name, "NODE_GROUP")
 
 
 class TestNodeStateEnum(unittest.TestCase):
