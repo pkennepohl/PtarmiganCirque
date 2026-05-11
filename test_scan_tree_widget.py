@@ -3232,16 +3232,25 @@ class TestScanTreeWidgetNodeGroupsPhase4af(unittest.TestCase):
             "disabled",
         )
 
-    def test_group_button_disabled_when_a_selection_is_node_group(self):
+    def test_group_button_routes_group_plus_ungrouped_to_extend_mode(self):
+        # CS-58 (Phase 4ag) relaxes CS-57: a selection of 1 NODE_GROUP +
+        # ≥1 ungrouped data node is no longer "disabled" — it now
+        # surfaces the extend gesture. The button enables with an
+        # "Add to <group label>" text. The flat-only invariant is
+        # preserved at the graph layer (extend_group rejects nested
+        # NODE_GROUPs); the UI never asks for one.
         gid = self.graph.create_group(["a", "b"])
         self.widget.update_idletasks()
-        # Select the group + c → flat-only invariant: button must
-        # not enable.
         self.widget._toggle_row_selection(gid)
         self.widget._toggle_row_selection("c")
         self.assertEqual(
             self.widget._group_btn.cget("state"),
-            "disabled",
+            "normal",
+        )
+        self.assertTrue(
+            self.widget._group_btn.cget("text").startswith("Add to "),
+            f"expected 'Add to ...' label, got "
+            f"{self.widget._group_btn.cget('text')!r}",
         )
 
     # ---- footer button action ---------------------------------

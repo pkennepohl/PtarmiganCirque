@@ -568,6 +568,7 @@ class ScanTreeWidget(tk.Frame):
             GraphEventType.NODE_ADDED,
             GraphEventType.NODE_COMMITTED,
             GraphEventType.NODE_DISCARDED,
+            GraphEventType.NODE_GROUP_MEMBERS_CHANGED,
             GraphEventType.EDGE_ADDED,
             GraphEventType.GRAPH_LOADED,
             GraphEventType.GRAPH_CLEARED,
@@ -1183,30 +1184,129 @@ class ScanTreeWidget(tk.Frame):
                 child.config(bg=new_bg)
 
     def _refresh_group_button_state(self) -> None:
-        """Enable or disable the footer "Group selected" button.
+        """Update the footer button's text + enable state.
 
-        Enabled iff:
-          * ≥2 nodes are currently selected,
-          * none of them is itself a NODE_GROUP (groups don't nest),
-          * none of them already belongs to another active group
-            (single-membership invariant; create_group would raise),
-          * all of them exist in the graph and are not DISCARDED.
+        The button has three operating modes, determined by
+        ``_classify_selection``:
 
-        The check mirrors the validation inside
-        ``ProjectGraph.create_group`` so the UI never offers a
-        gesture that would raise. Called from
-        ``_toggle_row_selection`` and at the end of ``_rebuild``.
+        * ``"group"`` — ≥2 ungroupable nodes selected, no groups.
+          Button reads ``"Group selected (N)"`` (CS-58, Phase 4ag
+          friction #6 polish) and clicking calls ``create_group``.
+        * ``"extend"`` — exactly 1 NODE_GROUP + ≥1 ungroupable
+          nodes selected. Button reads ``"Add to <group label>"``
+          and clicking calls ``extend_group``. The group label is
+          truncated so the button doesn't stretch the footer.
+        * ``"none"`` / ``"invalid"`` — button reads
+          ``"Group selected"`` (the CS-57 baseline label) and is
+          disabled.
+
+        CS-57 lock: the button's existence + ``_group_btn``
+        attribute name are preserved. The text-mutability is the
+        explicit relaxation trigger (Phase 4af friction #6).
+        Called from ``_toggle_row_selection`` and at the end of
+        ``_rebuild``.
         """
         # Defensive: the button may not exist yet if this is called
         # during ``__init__`` before ``_build_chrome`` finishes.
         btn = getattr(self, "_group_btn", None)
         if btn is None:
             return
-        ok = self._can_group_selection()
-        btn.config(state=("normal" if ok else "disabled"))
+        classification = self._classify_selection()
+        mode = classification["mode"]
+        if mode == "group":
+            n = len(classification["members"])
+            btn.config(
+                state="normal",
+                text=f"Group selected ({n})",
+            )
+        elif mode == "extend":
+            target = self._graph.get_node(classification["group_id"])
+            # Truncate the group's label so the footer doesn't
+            # stretch on long user-renames. Reuses ``_truncate_label``
+            # so the cap policy stays consistent with the row labels.
+            short_label = _truncate_label(target.label, max_chars=24)
+            btn.config(
+                state="normal",
+                text=f"Add to {short_label}",
+            )
+        else:
+            btn.config(state="disabled", text="Group selected")
+
+    def _classify_selection(self) -> dict:
+        """Classify ``_selected_node_ids`` into a single gesture verdict.
+
+        Returns a small dict so callers (footer button refresh,
+        context-menu builders) all read from the same canonical
+        analysis. Possible verdicts:
+
+        * ``{"mode": "none"}`` — empty selection.
+        * ``{"mode": "group", "members": [ids in graph order]}`` —
+          ≥2 ungroupable data nodes, no NODE_GROUPs, none already
+          grouped: the create_group gesture is legal.
+        * ``{"mode": "extend", "group_id": str,
+          "members": [ungrouped ids in graph order]}`` — exactly
+          one NODE_GROUP + ≥1 ungrouped data nodes, none already
+          grouped: the extend_group gesture is legal.
+        * ``{"mode": "invalid"}`` — non-empty selection that doesn't
+          fit either gesture (mixed groups, members of another
+          group, discarded ids, etc.).
+
+        The ``members`` list is sorted by the graph's node insertion
+        order so member_ids stays deterministic across runs (Python
+        set iteration is hash-dependent).
+        """
+        if not self._selected_node_ids:
+            return {"mode": "none"}
+
+        groups: list[str] = []
+        ungrouped: list[str] = []
+        for sid in self._selected_node_ids:
+            if sid not in self._graph.nodes:
+                return {"mode": "invalid"}
+            node = self._graph.nodes[sid]
+            if not isinstance(node, DataNode):
+                return {"mode": "invalid"}
+            if node.state == NodeState.DISCARDED:
+                return {"mode": "invalid"}
+            if node.type == NodeType.NODE_GROUP:
+                if node.state == NodeState.DISCARDED:
+                    return {"mode": "invalid"}
+                groups.append(sid)
+            else:
+                if self._graph.group_of(sid) is not None:
+                    # Member of some other active group — can't
+                    # legally be moved into a new gesture target.
+                    return {"mode": "invalid"}
+                ungrouped.append(sid)
+
+        # Deterministic order: walk insertion order, keep selected.
+        ordered_ungrouped = [
+            nid for nid in self._graph.nodes.keys()
+            if nid in ungrouped
+        ]
+
+        if not groups and len(ordered_ungrouped) >= 2:
+            return {"mode": "group", "members": ordered_ungrouped}
+        if (len(groups) == 1 and ordered_ungrouped
+                and self._graph.nodes[groups[0]].state
+                != NodeState.DISCARDED):
+            return {
+                "mode":     "extend",
+                "group_id": groups[0],
+                "members":  ordered_ungrouped,
+            }
+        return {"mode": "invalid"}
 
     def _can_group_selection(self) -> bool:
-        """True iff the current selection is a legal create_group call."""
+        """True iff the current selection is a legal create_group call.
+
+        Preserved verbatim from CS-57 (Phase 4af) — Phase 4ag adds
+        ``_classify_selection`` as the richer counterpart but does
+        not retire this predicate; callers that only care about
+        the create_group gesture (existing footer-button test, the
+        data-row context-menu "Group selected (N)" entry) keep
+        their narrow check.
+        """
         if len(self._selected_node_ids) < 2:
             return False
         for sid in self._selected_node_ids:
@@ -1223,36 +1323,99 @@ class ScanTreeWidget(tk.Frame):
                 return False
         return True
 
-    def _group_selected(self) -> None:
-        """Footer-button action: form a NODE_GROUP from the selection.
+    def _can_extend_existing_group(self) -> tuple[str, list[str]] | None:
+        """Return ``(group_id, ungrouped_ids)`` iff the extend gesture is legal.
 
-        Reads ``_selected_node_ids`` in *insertion order* (which Tk
-        sets don't preserve; the workaround is to sort by the
-        graph's node insertion order so the group's member_ids
-        list is deterministic across runs) and calls
-        ``ProjectGraph.create_group``. Clears the selection on
-        success — the user's next gesture starts from a clean
-        slate. ``_safely`` swallows the ValueError if the
-        predicate races a discard between button-enable and click.
+        Thin wrapper over ``_classify_selection`` that returns the
+        pair callers need or ``None``. Used by both the footer
+        button (via _refresh_group_button_state) and the
+        context-menu predicates.
         """
-        if not self._can_group_selection():
+        c = self._classify_selection()
+        if c["mode"] != "extend":
+            return None
+        return c["group_id"], c["members"]
+
+    def _group_selected(self) -> None:
+        """Footer-button click — dispatch to create_group OR extend_group.
+
+        Re-reads the selection classification so a race between
+        button-enable and click (e.g. a graph event that re-shaped
+        the selection) gracefully no-ops rather than crashing.
+        Clears the selection on success — the user's next gesture
+        starts from a clean slate. ``_safely`` swallows benign
+        exceptions if the predicate raced a state change.
+
+        CS-58 (Phase 4ag): the click handler used to call
+        ``create_group`` unconditionally. It now branches on
+        ``_classify_selection`` so the same button surfaces both
+        gestures, matching the dynamic label set by
+        ``_refresh_group_button_state``.
+        """
+        classification = self._classify_selection()
+        mode = classification["mode"]
+        if mode == "group":
+            try:
+                self._graph.create_group(classification["members"])
+            except (KeyError, ValueError, TypeError):
+                return
+        elif mode == "extend":
+            try:
+                self._graph.extend_group(
+                    classification["group_id"],
+                    classification["members"],
+                )
+            except (KeyError, ValueError, TypeError):
+                return
+        else:
             return
-        # Deterministic order: walk the graph's insertion order and
-        # pick out the selected ids. Without this, member_ids would
-        # follow Python set iteration which depends on hash + insert
-        # history.
-        ordered = [
-            nid for nid in self._graph.nodes.keys()
-            if nid in self._selected_node_ids
+        self._selected_node_ids.clear()
+        # The graph event from create_group/extend_group will trigger
+        # a rebuild via _on_graph_event, which also refreshes the
+        # button state and re-paints the selection visual.
+
+    def _extend_into_group(self, group_id: str) -> None:
+        """Context-menu action — add selection's ungrouped members to ``group_id``.
+
+        Called from the group-row context menu's
+        "Add selected to this group" entry and the data-row
+        context menu's "Add selected to <group label>" entry.
+        Independent of which row was right-clicked — the right-
+        click identifies the target group; the *selection*
+        identifies what gets added.
+
+        Walks the graph's insertion order to keep member_ids
+        deterministic. Clears selection on success. Wraps the
+        graph call so a race condition (e.g. group discarded
+        between menu-popup and click) silently no-ops.
+        """
+        ungrouped_ids = [
+            sid for sid in self._graph.nodes.keys()
+            if sid in self._selected_node_ids
+            and isinstance(self._graph.nodes[sid], DataNode)
+            and self._graph.nodes[sid].type != NodeType.NODE_GROUP
+            and self._graph.nodes[sid].state != NodeState.DISCARDED
+            and self._graph.group_of(sid) is None
         ]
+        if not ungrouped_ids:
+            return
         try:
-            self._graph.create_group(ordered)
+            self._graph.extend_group(group_id, ungrouped_ids)
         except (KeyError, ValueError, TypeError):
             return
         self._selected_node_ids.clear()
-        # The NODE_ADDED event from create_group will trigger a
-        # rebuild via _on_graph_event, which also refreshes the
-        # button state and re-paints the selection visual.
+
+    def _remove_from_group_via_menu(self, node_id: str) -> None:
+        """Context-menu action — detach a single node from its group.
+
+        Wraps ``ProjectGraph.remove_from_group`` so the per-row
+        gesture (right-click on a grouped member → "Remove from
+        group") swallows benign races silently. Does NOT clear
+        the selection — the user's selection should survive a
+        single-target gesture; only multi-target gestures
+        (Group selected / Add selected to <group>) reset it.
+        """
+        self._safely(self._graph.remove_from_group, node_id)
 
     # ------------------------------------------------------------
     # Label measurement (Phase 4w CS-47)
@@ -1901,6 +2064,33 @@ class ScanTreeWidget(tk.Frame):
             state=("normal" if group_ok else "disabled"),
             command=self._group_selected,
         )
+        # CS-58 (Phase 4ag): sibling "Add selected to <group>" entry
+        # when selection is exactly 1 NODE_GROUP + ≥1 ungrouped.
+        # Like "Group selected", it is gated on the right-clicked
+        # row being part of the selection — so the gesture always
+        # acts on what the user can see is highlighted, never on a
+        # clicked-but-unselected target.
+        extend_target = self._can_extend_existing_group()
+        if extend_target is not None:
+            target_gid, target_members = extend_target
+            extend_ok = node_id in self._selected_node_ids
+            target_label = self._graph.nodes[target_gid].label
+            short_label = _truncate_label(target_label, max_chars=20)
+            menu.add_command(
+                label=f"Add selected to {short_label} "
+                      f"({len(target_members)})",
+                state=("normal" if extend_ok else "disabled"),
+                command=lambda gid=target_gid: self._extend_into_group(gid),
+            )
+        # CS-58: "Remove from group" — per-row gesture (not
+        # selection-based). Visible only when the right-clicked
+        # row is itself a member of an active group.
+        clicked_group = self._graph.group_of(node_id)
+        if clicked_group is not None:
+            menu.add_command(
+                label="Remove from group",
+                command=lambda nid=node_id: self._remove_from_group_via_menu(nid),
+            )
 
         try:
             menu.tk_popup(event.x_root, event.y_root)
@@ -1916,6 +2106,15 @@ class ScanTreeWidget(tk.Frame):
         view-layer aggregation, so the menu carries only Rename,
         Expand/Collapse, and Ungroup. Ungroup dispatches to
         ``ProjectGraph.dissolve_group``.
+
+        CS-58 (Phase 4ag): when the current selection contains
+        ≥1 ungrouped data node that could legally be added to
+        the right-clicked group, the menu grows a fourth entry
+        ``"Add selected to this group"``. This entry is
+        intentionally insensitive to whether the right-clicked
+        group is itself in the selection — the right-click
+        identifies the target; the selection identifies the
+        payload.
         """
         menu = tk.Menu(self, tearoff=0)
         is_expanded = group_id in self._expanded_groups
@@ -1932,6 +2131,28 @@ class ScanTreeWidget(tk.Frame):
             label="Ungroup",
             command=lambda nid=group_id: self._safely(
                 self._graph.dissolve_group, nid),
+        )
+        # CS-58: "Add selected to this group" — visible only when
+        # the selection holds ≥1 ungrouped data node. Disabled
+        # otherwise so the affordance remains discoverable.
+        addable_count = sum(
+            1 for sid in self._selected_node_ids
+            if sid in self._graph.nodes
+            and isinstance(self._graph.nodes[sid], DataNode)
+            and self._graph.nodes[sid].type != NodeType.NODE_GROUP
+            and self._graph.nodes[sid].state != NodeState.DISCARDED
+            and self._graph.group_of(sid) is None
+        )
+        add_ok = (
+            addable_count > 0
+            and group_id in self._graph.nodes
+            and self._graph.nodes[group_id].state != NodeState.DISCARDED
+        )
+        menu.add_separator()
+        menu.add_command(
+            label=f"Add selected to this group ({addable_count})",
+            state=("normal" if add_ok else "disabled"),
+            command=lambda gid=group_id: self._extend_into_group(gid),
         )
         try:
             menu.tk_popup(event.x_root, event.y_root)
