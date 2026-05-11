@@ -945,5 +945,284 @@ class TestNodeGroupOps(unittest.TestCase):
         self.assertEqual(discarded[0].node_id, gid)
 
 
+class TestNodeGroupExtendRemoveOps(unittest.TestCase):
+    """CS-58 (Phase 4ag) — extend_group + remove_from_group.
+
+    Pins the two new graph-layer methods that complete the
+    NODE_GROUP gesture set. Co-located with TestNodeGroupOps so
+    the full group lifecycle (create → extend → remove →
+    dissolve) is locked in a single file. Validation invariants
+    deliberately mirror create_group so the user-facing gestures
+    have a single, consistent contract.
+    """
+
+    def _four_uvvis(self) -> ProjectGraph:
+        g = ProjectGraph()
+        for nid in ("a", "b", "c", "d"):
+            g.add_node(_data(nid, ntype=NodeType.UVVIS))
+        return g
+
+    # ---- extend_group -------------------------------------------------
+
+    def test_extend_group_appends_to_existing_roster(self):
+        g = self._four_uvvis()
+        gid = g.create_group(["a", "b"])
+        g.extend_group(gid, ["c"])
+        self.assertEqual(
+            g.get_node(gid).metadata["member_ids"],
+            ["a", "b", "c"],
+        )
+
+    def test_extend_group_appends_in_caller_order(self):
+        g = self._four_uvvis()
+        gid = g.create_group(["a", "b"])
+        # Caller-supplied order is preserved, not re-sorted.
+        g.extend_group(gid, ["d", "c"])
+        self.assertEqual(
+            g.get_node(gid).metadata["member_ids"],
+            ["a", "b", "d", "c"],
+        )
+
+    def test_extend_group_emits_members_changed_event(self):
+        g = self._four_uvvis()
+        gid = g.create_group(["a", "b"])
+        events: list[GraphEvent] = []
+        g.subscribe(events.append)
+        g.extend_group(gid, ["c", "d"])
+        members_changed = [
+            e for e in events
+            if e.type == GraphEventType.NODE_GROUP_MEMBERS_CHANGED
+        ]
+        self.assertEqual(len(members_changed), 1)
+        evt = members_changed[0]
+        self.assertEqual(evt.node_id, gid)
+        self.assertEqual(evt.payload["group_id"], gid)
+        self.assertEqual(evt.payload["added"], ["c", "d"])
+        self.assertEqual(evt.payload["removed"], [])
+
+    def test_extend_group_does_not_emit_label_changed(self):
+        g = self._four_uvvis()
+        gid = g.create_group(["a", "b"])
+        events: list[GraphEvent] = []
+        g.subscribe(events.append)
+        g.extend_group(gid, ["c"])
+        label_changed = [
+            e for e in events
+            if e.type == GraphEventType.NODE_LABEL_CHANGED
+        ]
+        self.assertEqual(len(label_changed), 0)
+
+    def test_extend_group_payload_added_list_is_independent_copy(self):
+        # Mutating the caller's list after the call must not corrupt
+        # the event payload.
+        g = self._four_uvvis()
+        gid = g.create_group(["a", "b"])
+        events: list[GraphEvent] = []
+        g.subscribe(events.append)
+        new_members = ["c"]
+        g.extend_group(gid, new_members)
+        new_members.append("d")
+        self.assertEqual(events[0].payload["added"], ["c"])
+
+    def test_extend_group_rejects_unknown_group_id(self):
+        g = self._four_uvvis()
+        with self.assertRaises(KeyError):
+            g.extend_group("no-such-group", ["a"])
+
+    def test_extend_group_rejects_non_group_target(self):
+        g = self._four_uvvis()
+        with self.assertRaisesRegex(TypeError, "NODE_GROUP DataNode"):
+            g.extend_group("a", ["b"])
+
+    def test_extend_group_rejects_operation_node_target(self):
+        g = self._four_uvvis()
+        g.add_node(_op("op1"))
+        with self.assertRaisesRegex(TypeError, "NODE_GROUP DataNode"):
+            g.extend_group("op1", ["a"])
+
+    def test_extend_group_rejects_discarded_group(self):
+        g = self._four_uvvis()
+        gid = g.create_group(["a", "b"])
+        g.dissolve_group(gid)
+        with self.assertRaisesRegex(ValueError, "DISCARDED"):
+            g.extend_group(gid, ["c"])
+
+    def test_extend_group_rejects_empty_member_ids(self):
+        g = self._four_uvvis()
+        gid = g.create_group(["a", "b"])
+        with self.assertRaisesRegex(ValueError, "at least 1"):
+            g.extend_group(gid, [])
+
+    def test_extend_group_rejects_duplicates_within_call(self):
+        g = self._four_uvvis()
+        gid = g.create_group(["a", "b"])
+        with self.assertRaisesRegex(ValueError, "unique"):
+            g.extend_group(gid, ["c", "c"])
+
+    def test_extend_group_rejects_already_in_this_group(self):
+        g = self._four_uvvis()
+        gid = g.create_group(["a", "b"])
+        with self.assertRaisesRegex(ValueError, "already a member"):
+            g.extend_group(gid, ["a"])
+
+    def test_extend_group_rejects_unknown_member_id(self):
+        g = self._four_uvvis()
+        gid = g.create_group(["a", "b"])
+        with self.assertRaises(KeyError):
+            g.extend_group(gid, ["zzz"])
+
+    def test_extend_group_rejects_operation_node_member(self):
+        g = self._four_uvvis()
+        gid = g.create_group(["a", "b"])
+        g.add_node(_op("op1"))
+        with self.assertRaisesRegex(TypeError, "DataNode"):
+            g.extend_group(gid, ["op1"])
+
+    def test_extend_group_rejects_nested_group(self):
+        g = self._four_uvvis()
+        gid = g.create_group(["a", "b"])
+        # Form a second group and try to nest it into the first.
+        gid2 = g.create_group(["c", "d"])
+        with self.assertRaisesRegex(ValueError, "Nested"):
+            g.extend_group(gid, [gid2])
+
+    def test_extend_group_rejects_discarded_member(self):
+        g = self._four_uvvis()
+        gid = g.create_group(["a", "b"])
+        g.discard_node("c")
+        with self.assertRaisesRegex(ValueError, "DISCARDED"):
+            g.extend_group(gid, ["c"])
+
+    def test_extend_group_rejects_member_in_another_group(self):
+        g = self._four_uvvis()
+        gid = g.create_group(["a", "b"])
+        # c+d form another group; can't move c into the first group
+        # while it still belongs to the second.
+        g.create_group(["c", "d"])
+        with self.assertRaisesRegex(ValueError, "already belongs to group"):
+            g.extend_group(gid, ["c"])
+
+    def test_extend_group_keeps_group_of_consistent(self):
+        g = self._four_uvvis()
+        gid = g.create_group(["a", "b"])
+        g.extend_group(gid, ["c"])
+        self.assertEqual(g.group_of("c"), gid)
+        self.assertIsNone(g.group_of("d"))
+
+    def test_extend_group_failure_leaves_roster_untouched(self):
+        # Validation errors on the second of two ids must not have
+        # partially mutated the roster with the first id.
+        g = self._four_uvvis()
+        gid = g.create_group(["a", "b"])
+        # "c" is valid, "zzz" is not — the call must reject atomically.
+        with self.assertRaises(KeyError):
+            g.extend_group(gid, ["c", "zzz"])
+        self.assertEqual(
+            g.get_node(gid).metadata["member_ids"], ["a", "b"]
+        )
+
+    # ---- remove_from_group --------------------------------------------
+
+    def test_remove_from_group_detaches_node(self):
+        g = self._four_uvvis()
+        gid = g.create_group(["a", "b", "c"])
+        g.remove_from_group("b")
+        self.assertEqual(
+            g.get_node(gid).metadata["member_ids"], ["a", "c"]
+        )
+        self.assertIsNone(g.group_of("b"))
+
+    def test_remove_from_group_preserves_member_state_and_label(self):
+        # Removal is purely a membership change; the node's own
+        # state, label, edges, and arrays must not be touched.
+        g = self._four_uvvis()
+        gid = g.create_group(["a", "b", "c"])
+        b = g.get_node("b")
+        original_label = b.label
+        original_state = b.state
+        original_arrays = b.arrays
+        g.remove_from_group("b")
+        self.assertEqual(b.label, original_label)
+        self.assertEqual(b.state, original_state)
+        self.assertIs(b.arrays, original_arrays)
+        self.assertTrue(b.active)
+        # Group still exists.
+        self.assertIn(gid, g.nodes)
+
+    def test_remove_from_group_emits_members_changed_event(self):
+        g = self._four_uvvis()
+        gid = g.create_group(["a", "b", "c"])
+        events: list[GraphEvent] = []
+        g.subscribe(events.append)
+        g.remove_from_group("b")
+        members_changed = [
+            e for e in events
+            if e.type == GraphEventType.NODE_GROUP_MEMBERS_CHANGED
+        ]
+        self.assertEqual(len(members_changed), 1)
+        evt = members_changed[0]
+        self.assertEqual(evt.node_id, gid)
+        self.assertEqual(evt.payload["group_id"], gid)
+        self.assertEqual(evt.payload["added"], [])
+        self.assertEqual(evt.payload["removed"], ["b"])
+
+    def test_remove_from_group_rejects_ungrouped_node(self):
+        g = self._four_uvvis()
+        g.create_group(["a", "b"])
+        with self.assertRaisesRegex(ValueError, "not in any active group"):
+            g.remove_from_group("c")
+
+    def test_remove_from_group_rejects_unknown_node(self):
+        g = self._four_uvvis()
+        g.create_group(["a", "b"])
+        with self.assertRaisesRegex(ValueError, "not in any active group"):
+            g.remove_from_group("zzz")
+
+    def test_remove_from_group_auto_dissolves_below_threshold(self):
+        # Removing one member from a 2-member group leaves only one
+        # active member → auto-dissolve via discard_node.
+        g = self._four_uvvis()
+        gid = g.create_group(["a", "b"])
+        g.remove_from_group("a")
+        # Group is DISCARDED; surviving member returns to top level.
+        self.assertEqual(g.get_node(gid).state, NodeState.DISCARDED)
+        self.assertIsNone(g.group_of("b"))
+
+    def test_auto_dissolve_emits_discarded_not_members_changed(self):
+        # On the dissolve branch the contract suppresses
+        # MEMBERS_CHANGED: subscribers see only NODE_DISCARDED on
+        # the group itself.
+        g = self._four_uvvis()
+        gid = g.create_group(["a", "b"])
+        events: list[GraphEvent] = []
+        g.subscribe(events.append)
+        g.remove_from_group("a")
+        members_changed = [
+            e for e in events
+            if e.type == GraphEventType.NODE_GROUP_MEMBERS_CHANGED
+        ]
+        discarded = [
+            e for e in events
+            if e.type == GraphEventType.NODE_DISCARDED
+        ]
+        self.assertEqual(len(members_changed), 0)
+        self.assertEqual(len(discarded), 1)
+        self.assertEqual(discarded[0].node_id, gid)
+
+    def test_remove_from_group_then_extend_round_trips(self):
+        # A node removed from a group should be re-addable (its
+        # state must be clean after removal).
+        g = self._four_uvvis()
+        gid = g.create_group(["a", "b", "c"])
+        g.remove_from_group("c")
+        # c is now ungrouped; the group still has 2 active members.
+        self.assertEqual(g.group_of("c"), None)
+        g.extend_group(gid, ["c"])
+        self.assertEqual(g.group_of("c"), gid)
+        self.assertEqual(
+            g.get_node(gid).metadata["member_ids"], ["a", "b", "c"]
+        )
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

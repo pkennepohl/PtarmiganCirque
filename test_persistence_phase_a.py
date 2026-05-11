@@ -283,6 +283,91 @@ class TestSaveLoadRoundTrip(unittest.TestCase):
         self.assertEqual(gloaded.group_of("u1"), gid)
         self.assertEqual(gloaded.group_of("u2"), gid)
 
+    def test_extend_then_remove_round_trips_through_save_load(self):
+        # CS-58 (Phase 4ag): extend_group and remove_from_group
+        # mutate metadata["member_ids"] in place. The save schema
+        # serialises the list verbatim, so post-mutation rosters
+        # must reach disk and come back identical. Pins that
+        # neither method introduces a transient field or alternate
+        # representation that the JSON manifest can't preserve.
+        wl = self.graph.nodes["u1"].arrays["wavelength_nm"]
+        # Add three more UVVIS nodes (u1 already exists from setUp).
+        for nid in ("u2", "u3", "u4"):
+            self.graph.add_node(DataNode(
+                id=nid, type=NodeType.UVVIS,
+                arrays={"wavelength_nm": wl,
+                        "absorbance": np.zeros_like(wl)},
+                metadata={"x_unit": "nm", "y_unit": "absorbance",
+                          "instrument": "synthetic",
+                          "source_file": f"syn_{nid}"},
+                label=nid, state=NodeState.PROVISIONAL,
+            ))
+        # Start with {u1,u2}; extend to {u1,u2,u3,u4}; remove u2.
+        gid = self.graph.create_group(["u1", "u2"], label="my pair")
+        self.graph.extend_group(gid, ["u3", "u4"])
+        self.graph.remove_from_group("u2")
+        # Pre-flight: roster reflects all three mutations in order.
+        self.assertEqual(
+            self.graph.nodes[gid].metadata["member_ids"],
+            ["u1", "u3", "u4"],
+        )
+        project_io.save_project(
+            self.tmp, name="rt2", plot_defaults={},
+            tabs={"uvvis": project_io.TabPayload(
+                plot_config={}, graph=self.graph)},
+        )
+        loaded = project_io.load_project(self.tmp)
+        gloaded = loaded.tabs["uvvis"].graph
+        self.assertIn(gid, gloaded.nodes)
+        group_after = gloaded.nodes[gid]
+        self.assertEqual(group_after.type, NodeType.NODE_GROUP)
+        self.assertEqual(group_after.label, "my pair")
+        self.assertEqual(
+            group_after.metadata["member_ids"], ["u1", "u3", "u4"],
+        )
+        # group_of() also survives.
+        self.assertEqual(gloaded.group_of("u1"), gid)
+        self.assertIsNone(gloaded.group_of("u2"))
+        self.assertEqual(gloaded.group_of("u3"), gid)
+        self.assertEqual(gloaded.group_of("u4"), gid)
+
+    def test_auto_dissolved_group_round_trips_as_discarded(self):
+        # CS-58 (Phase 4ag): when remove_from_group drops a group
+        # below the 2-active-member threshold the group is auto-
+        # dissolved (DISCARDED). Verify the discarded state +
+        # group_of consequences survive save/load.
+        wl = self.graph.nodes["u1"].arrays["wavelength_nm"]
+        self.graph.add_node(DataNode(
+            id="u2", type=NodeType.UVVIS,
+            arrays={"wavelength_nm": wl,
+                    "absorbance": np.zeros_like(wl)},
+            metadata={"x_unit": "nm", "y_unit": "absorbance",
+                      "instrument": "synthetic",
+                      "source_file": "syn_u2"},
+            label="u2", state=NodeState.PROVISIONAL,
+        ))
+        gid = self.graph.create_group(["u1", "u2"], label="doomed")
+        self.graph.remove_from_group("u1")
+        # Pre-flight: group is now DISCARDED, u2 has no group.
+        self.assertEqual(
+            self.graph.nodes[gid].state, NodeState.DISCARDED
+        )
+        self.assertIsNone(self.graph.group_of("u2"))
+        project_io.save_project(
+            self.tmp, name="rt3", plot_defaults={},
+            tabs={"uvvis": project_io.TabPayload(
+                plot_config={}, graph=self.graph)},
+        )
+        loaded = project_io.load_project(self.tmp)
+        gloaded = loaded.tabs["uvvis"].graph
+        # Group node still in graph but DISCARDED; members untouched.
+        self.assertIn(gid, gloaded.nodes)
+        self.assertEqual(
+            gloaded.nodes[gid].state, NodeState.DISCARDED
+        )
+        self.assertIsNone(gloaded.group_of("u1"))
+        self.assertIsNone(gloaded.group_of("u2"))
+
 
 @unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
 class TestRestoreWorkflowPayload(unittest.TestCase):

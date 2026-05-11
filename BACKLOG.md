@@ -1668,7 +1668,10 @@ subsequent Phase 4 session.**
 | ⏳ | 🟡 | **"Add to graph" gesture from a node's Provenance tab (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4x (step 5 elicitation). Once C lands (read-only Provenance tab), the user has asked for an "Add to graph" gesture per ancestor — clicking it materialises the historical ancestor as a new live node in the same graph without re-loading from disk. Concrete use case: the user has a SMOOTHED node loaded; they realise they want to compare the smoothed result against the underlying RAW_FILE / UVVIS parent; today the only path is to either (a) un-discard the parent (if it was discarded) or (b) re-load the source file via the LOAD path (which creates a fresh UVVIS DataNode with a different id, breaks the existing graph linkage to the SMOOTHED descendant). The new gesture would walk the ancestor chain, find the requested historical node, flip its `active` flag back to True (if currently inactive) OR clone it as a new live node parented on the same source. **Architecture (lock pending):** (a) does the gesture flip the existing node's `active` flag (cheap; preserves graph identity; couples to the existing CS-22 `_spectrum_nodes` filter), OR clone the node as a new id (preserves the historical node's state but creates a graph-edge fork)? (b) what's the gesture — button per provenance row, right-click, drag-and-drop into the sidebar? (c) does it emit a NODE_ADDED event (clone path) or NODE_STYLE_CHANGED + a re-render trigger (active-flip path)? **Affected:** `style_dialog.py` (the new gesture in the Provenance tab), `graph.py` (a new `restore_ancestor` or similar helper, depending on which architecture lands), `uvvis_tab._refresh_shared_subjects` (re-runs after the gesture so the resurrected node appears in the combobox), tests for both architectures. Pairs with C above (the tab the gesture lives on) AND with the existing 🟡 Trash can register entry (Trash + this gesture overlap conceptually — both surface "previously hidden" nodes). **Phase 4ab unblocks:** the Provenance tab landed (CS-53; entry above marked ✅), so this register entry is now actionable. The tab's per-ancestor block already carries the structural slot (header + body Frame) where a per-row "Add to graph" button would naturally fit — bottom-right of each block, parented to the same Frame the body Label uses. Decision (a) (active-flip vs clone) and Decision (c) (which graph event to emit) still need locking when the implementing session opens. |
 | ⏳ | 🟢 | **Visual cue for derivative entries in the shared subject combobox (CS-49 follow-up)** | Surfaced Phase 4x (Claude). Now that `SECOND_DERIVATIVE` rows mix into the shared combobox alongside the four spectrum-shaped types (`_refresh_shared_subjects` widening), the user has no per-row glyph or grouping divider to tell at a glance "this is a derivative" vs "this is an absorbance-domain spectrum". Cheap polish: prefix derivative entries with a `d² ` glyph in the combobox display key (or insert a `─── d²A/dλ² ───` separator entry between the spectrum block and the derivative block). The latter is more disruptive (changes the value-list semantics — the separator can't be selected); the former is one-line in `_refresh_shared_subjects`. Defer until the user reports actual confusion picking among mixed entries; the audit-stability test `test_shared_combobox_orders_spectrum_then_derivative` already pins the spectrum-first ordering so visual scanning is at least left-to-right consistent |
 | ⏳ | 🟡 | **Keyboard shortcuts — whole-interface evaluation pass (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4af (step 5 elicitation). User noted while reviewing Phase 4af friction list: "We'll need to evaluate keyboard shortcuts for the whole interface at some point. Not sure if it's better to do that sooner or later. Either way, let's put that into the list." Today the app exposes essentially no keyboard accelerators — gestures are mouse-driven (right-click context menus, footer buttons, dialog Apply/Cancel via mouse). Power-user workflows would benefit from a coherent shortcut vocabulary, but the design needs to be planned holistically rather than gesture-by-gesture so collisions don't compound. **Scope is a design pass before any implementation:** (a) inventory every active gesture (every ScanTreeWidget row gesture, every Plot Settings dialog action, every StyleDialog action, every tab-switch / file-open / save-workflow, every panel Apply, every Combine/Ungroup); (b) propose a shortcut table grouped by surface (App-global vs tab-scoped vs dialog-modal); (c) review for collisions with Tk's built-in bindings (Ctrl+C copy, Ctrl+W close window, F-keys); (d) review for platform consistency (Cmd vs Ctrl — currently Windows-only, but a XANES/EXAFS Mac contributor is plausible). Concrete first candidates the user-facing experience would benefit from: Ctrl+G "Group selected", Ctrl+Shift+G "Ungroup", Ctrl+S "Save workflow" (already present?), Ctrl+O "Open workflow", Delete "Discard selected" (with confirmation if any are COMMITTED), F2 "Rename" (matches the Windows convention CS-33's double-click started from), Enter "Apply" in the active panel. **Lock decisions for the implementing session:** (i) does the table live in `KEYBINDINGS.md` (separate doc, audit-friendly) or in `COMPONENTS.md` as a CS section, or both? (ii) is the implementation a single `key_bindings.py` module that registers all `bind_all` / per-tab `bind` calls at construction, or per-component bindings co-located with the gesture? (iii) does the app surface a "Keyboard shortcuts…" Help menu entry that opens a Toplevel with the table? Cross-refs every prior friction item that ended "would benefit from a keyboard shortcut" deferral (none today — the user has not previously surfaced this, which is why it's a fresh register entry). Multi-phase task; the design pass + a first batch of 3–5 shortcuts is a reasonable first phase. |
-| ⏳ | 🟡 | **"Add to existing group" gesture — extend an existing NODE_GROUP without dissolve-and-recreate (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4af (step 5 elicitation). User noted while reviewing Phase 4af friction list ("Definitely want that"). Phase 4af (CS-57) ships the create-a-group + dissolve-a-group gestures, but once a group exists the ONLY way to add more members is dissolve + reselect-all + recreate. That's poor UX once a group has any non-default state (a user-edited label like "my Ni²⁺ aquo series" is lost on dissolve-recreate). **Architecture proposal (lock pending):** new gesture flow — when the selection is ≥1 ungrouped node AND exactly one NODE_GROUP is also selected (or alternatively when the gesture is right-click on an existing group while ≥1 other node is selected), surface a menu entry "Add selected to <group label>". The graph-layer addition is a new `ProjectGraph.extend_group(group_id, member_ids)` method that re-runs the same validation `create_group` does (no already-grouped, no NODE_GROUP members, no DISCARDED) and appends to the existing `metadata["member_ids"]` list; emits NODE_LABEL_CHANGED (label rebuilds the "(N members)" suffix) or a new GRAPH event type if the label-changed semantics feel wrong. **Lock decisions for the implementing session:** (i) is the gesture a context-menu entry, a footer button (alongside "Group selected"), or both? (ii) does extending preserve the ordering of existing members or always append? (iii) does extending emit NODE_LABEL_CHANGED, a new NODE_GROUP_MEMBERS_CHANGED event, or piggyback on NODE_ADDED somehow (no new node is added)? (iv) symmetric question: should there be a "Remove from group" gesture that pulls a single member out without dissolving the entire group? **Affected:** `graph.py` (new method + possible new event type), `scan_tree_widget.py` (new menu / footer button surface + predicate), tests for the validation reuse + the event-emit shape. Pairs with the canonical "Drop CS-31 + introduce user-driven node groups" register entry above (now ✅ for the v1 create/dissolve path); this is the natural v2 extend path. Phase 4ag candidate. |
+| ✅ | 🟡 | ~~**"Add to existing group" gesture — extend an existing NODE_GROUP without dissolve-and-recreate (USER-FLAGGED)**~~ ✅ Resolved in Phase 4ag (CS-58). USER-FLAGGED at end of Phase 4af (step 5 elicitation; "Definitely want that"). Phase 4af shipped only create + dissolve, so once a group existed the only way to add members was dissolve + recreate (losing any user-edited label). **Phase 4ag (CS-58) ships the v2 extend path + a symmetric remove path:** two new graph-layer methods (`ProjectGraph.extend_group(group_id, member_ids)` + `remove_from_group(node_id)`) with validation invariants mirroring CS-57's `create_group`; one new event type (`NODE_GROUP_MEMBERS_CHANGED` payload `{"group_id", "added", "removed"}`) routed to the scan tree's structural-rebuild branch; three new ScanTreeWidget surfaces: footer button now switches its text + click-target on selection (`"Group selected (N)"` in group mode, `"Add to <group label>"` in extend mode, baseline `"Group selected"` disabled otherwise — also closes Phase 4af friction #6); group-row context menu grows a fourth entry `"Add selected to this group (N)"`; data-row context menu grows two sibling entries `"Add selected to <group label> (N)"` + per-row `"Remove from group"`. **Lock decisions taken (Phase 4ag):** (i) **both surfaces** — context menu AND footer button (matches CS-57's two-surface symmetry); (ii) **append** (preserve caller order); (iii) **new event type `NODE_GROUP_MEMBERS_CHANGED`** — rejected NODE_LABEL_CHANGED because the scan tree routes label-changed to targeted row refresh while member changes are structural (rows move between top-level and group-nested rendering); (iv) **yes — symmetric `remove_from_group` ships in the same phase**, reusing CS-57's auto-dissolve threshold (<2 active members) via `discard_node`. **Lock relaxations:** CS-57's `text="Group selected"` initial-label lock is broadened — the button now mutates its text per selection classification (Phase 4af friction #6 polish trigger). The CS-57 narrow "any group in selection → disabled" semantics is also deliberately relaxed: a `1 group + ≥1 ungrouped` selection now routes to the extend gesture (test pinning the old semantics was updated in the same commit). 53 new tests across `test_graph.py` (27 in `TestNodeGroupExtendRemoveOps`), `test_scan_tree_widget.py` (24 in `TestScanTreeWidgetNodeGroupsPhase4ag`), `test_persistence_phase_a.py` (2 round-trip — extend+remove sequence, auto-dissolve cascade). Net suite count: 1002 (up from 949). |
+| ⏳ | 🟡 | **Grid renders in front of data lines, not behind (USER-FLAGGED bug)** | USER-FLAGGED at end of Phase 4ag (step 5 elicitation). `uvvis_tab._redraw` calls `ax.grid(True, linestyle=":", alpha=0.4, color=cfg.get("grid_color", "#b0b0b0"))` without specifying `zorder`; matplotlib's default zorder for the grid is 2.5 while line plots use 2.0, so gridlines paint ON TOP of the data — visually distracting on dense overlays. Fix is one keyword arg: pass `zorder=0` (or any value < the line zorder) on the `ax.grid(...)` call. Mirror on every other tab that calls `ax.grid(True, ...)` (Compare, XANES, EXAFS, TDDFT) once they migrate. **Lock decisions for the implementing session:** (i) Hard-code `zorder=0` everywhere, or expose a `grid_zorder` Plot Settings → Appearance key (likely overkill); (ii) Apply only to UV/Vis in this phase or sweep all tabs simultaneously. **Affected:** `uvvis_tab._redraw` (one-line fix), regression test in `test_uvvis_tab` that asserts the rendered grid's effective zorder is below the line collection's. No CS-N section needed — this is a one-line render bug, not new architecture. |
+| ⏳ | 🟡 | **Axis double-click → axis-properties dialog (USER-FLAGGED feature)** | USER-FLAGGED at end of Phase 4ag (step 5 elicitation). User asked: "Double-click a plot axis in order to open a window to change axis-specific parameters? (including min, max, spacing, axis label, fonts, font sizes, axis colour, tick size, etc.)" Today axis-level controls are scattered: x-min / x-max / y-min / y-max sit on the UV/Vis top toolbar (read by `uvvis_tab._on_xmin_changed` etc.); y-axis label is rendered through CS-50 / CS-52 / CS-55 via `_resolve_y_axis_label`; tick direction lives in Plot Settings → Appearance (CS-56); font / font size / axis colour / tick size are NOT user-configurable today (matplotlib defaults). **Architecture proposal (lock pending):** new `axis_settings_dialog.py` modal Toplevel opened by a `<Double-Button-1>` binding on the matplotlib Axes (specifically on the axis-label and tick-label regions; clicking inside the plot area should NOT open it — that conflicts with the existing zoom-box gesture). Dialog covers: limits (min/max + autoscale toggle), tick spacing (major + minor), tick direction (CS-56 lives here too — relocate), tick size, axis label text, axis label font + font size + colour, tick label font + font size + colour, axis line colour. **Lock decisions for the implementing session:** (i) one dialog with primary/secondary/tertiary y selectors, or one dialog *per axis* opened by which axis was double-clicked? (ii) which settings move from Plot Settings → Appearance into the new dialog (avoid duplication) — CS-56 `grid_color` and `tertiary_axis_offset` should probably stay in Plot Settings (figure-level), but `tick_direction` is genuinely per-axis. (iii) Are axis settings per-tab or per-axis-role (left/right/secondary)? Likely per-axis-role for symmetry with how the renderer already constructs them. (iv) Does the dialog respect the existing Apply / ∀ Apply to All / Save / Cancel button row pattern (CS-23 lock)? **Affected:** new `axis_settings_dialog.py`, `uvvis_tab._redraw` (reads per-axis style keys), `_on_canvas_double_click` event hook, regression tests for the double-click region detection + the round-trip of every new style key. Pairs with the existing Plot Settings dialog (some keys may relocate). Multi-phase task — the design pass + the dialog shell + a first batch of 3–4 controls is a reasonable first phase. |
+| ⏳ | 🟡 | **"Show hidden" toggle should disable when no hidden rows exist (USER-FLAGGED polish)** | USER-FLAGGED at end of Phase 4ag (step 5 elicitation; "If it's not relevant, then it should be greyed out when it's not relevant"). Originally surfaced as a 🟢 Claude polish in Phase 4af friction #5 ("'Show hidden' footer toggle behaviour is opaque") — the user investigated in Phase 4ag verification and confirmed they couldn't tell whether the toggle was even responsive because the rendered list never changed (on a fresh workflow no rows have `active=False`, so the toggle is a click-but-no-visible-effect). **Architecture proposal (lock pending):** at every `_rebuild` end, compute `any(not n.active and not is_discarded for n in candidate_nodes)`; toggle the Checkbutton's state to `"disabled"` when no hidden rows would be revealed, otherwise `"normal"`. **Lock decisions for the implementing session:** (i) just disable-gate, OR surface a count badge ("Show hidden (3)") for stronger affordance — (ii) does the disabled state need a tooltip explaining "no hidden rows in the current view"? (iii) Cascade: when "Show hidden" is currently ON and the user discards the last hidden row, does the toggle silently flip OFF + disable, or stay ON + disabled? **Affected:** `scan_tree_widget._build_chrome` (Checkbutton reference stored as an attribute), `_rebuild` (gating recompute), regression test that checks the toggle state on a graph with and without hidden rows. Cross-ref Phase 4af friction #5 (now upgraded from 🟢 to 🟡 by user flag). |
 
 ### Friction points carried forward from Phase 4r
 
@@ -3078,7 +3081,7 @@ until the relevant subsequent Phase 4 session.**
    task — the design pass needs to inventory every existing
    gesture before any binding lands.
 
-2. 🟡 **USER-FLAGGED "Add to existing group" gesture (Phase
+2. ~~🟡 **USER-FLAGGED "Add to existing group" gesture (Phase
    4ag candidate).** User-flagged at end of Phase 4af
    ("Definitely want that"). Today the only way to add a member
    to an existing NODE_GROUP is dissolve + recreate, which is
@@ -3087,7 +3090,10 @@ until the relevant subsequent Phase 4 session.**
    canonical register entry above. Pairs with the canonical
    "Drop CS-31 + introduce user-driven node groups" register
    entry (now ✅ for the v1 create/dissolve path); this is the
-   natural v2 extend path.
+   natural v2 extend path.~~ ✅ Resolved in Phase 4ag (CS-58).
+   Shipped both surfaces (footer + context menus), append
+   ordering, new `NODE_GROUP_MEMBERS_CHANGED` event, AND the
+   symmetric "Remove from group" gesture in the same phase.
 
 3. 🟢 **Design constraint — no information bleed between tabs
    unless explicit (USER-CONFIRMED).** User confirmed at end of
@@ -3121,7 +3127,7 @@ until the relevant subsequent Phase 4 session.**
    behaviour and accept the visual noise. Defer until reported
    in real use. No register entry.
 
-5. 🟢 **"Show hidden" footer toggle behaviour is opaque
+5. ~~🟢 **"Show hidden" footer toggle behaviour is opaque
    (USER-CONFIRMED; polish-level).** User noted at end of
    Phase 4af: "I've not yet seen an example where 'show
    hidden' actually uncovers anything... I'll have to play
@@ -3129,21 +3135,31 @@ until the relevant subsequent Phase 4 session.**
    polish level." The toggle reveals committed nodes whose
    `active` flag is False (set via the context-menu Hide
    action or the future Trash-can register entry); on a fresh
-   workflow no nodes are hidden, so the toggle is a no-op. A
-   future polish could disable the toggle when no hidden
-   rows exist, OR surface a count badge ("Show hidden (3)"),
-   OR add inline help. Defer until the user runs into the
-   real path (committed-then-hidden) and reports confusion.
-   No register entry.
+   workflow no nodes are hidden, so the toggle is a no-op.~~
+   🟡 **Upgraded to USER-FLAGGED in Phase 4ag step 5:** the
+   user verified during Phase 4ag and re-flagged ("doesn't
+   allow me to select it ... if it's not relevant, then it
+   should be greyed out when it's not relevant"). **Cross-ref:**
+   see the new canonical register entry "Show hidden toggle
+   should disable when no hidden rows exist". Not yet
+   resolved — Phase 4ag scope was the extend/remove gesture
+   set; this polish is the next session's pick if no other
+   USER-FLAGGED 🟡 takes priority.
 
-6. 🟢 **Footer "Group selected" button label is static —
+6. ~~🟢 **Footer "Group selected" button label is static —
    doesn't say how many will be combined (Claude-surfaced
    polish, USER-CONFIRMED).** Today the button reads "Group
    selected" regardless of selection size; the context-menu
    companion entry shows "(N)". Easy polish: bind button text
    to `len(_selected_node_ids)`, e.g. "Group selected (3)".
    User confirmed at end of Phase 4af. Defer until reported.
-   No register entry.
+   No register entry.~~ ✅ Resolved in Phase 4ag (CS-58). The
+   button now mutates its text per selection classification:
+   `"Group selected (N)"` in group mode, `"Add to <group
+   label>"` in extend mode, baseline `"Group selected"`
+   disabled otherwise. CS-57's `text="Group selected"` initial-
+   label lock was relaxed in this phase (the relaxation
+   trigger was always this friction item).
 
 7. 🟢 **`_show_group_context_menu` is monkey-patched in one
    test (Claude-surfaced testing-shape note, USER-CONFIRMED).**
@@ -3154,6 +3170,120 @@ until the relevant subsequent Phase 4 session.**
    monkey-patch is the most surgical approach given Tk's
    API surface; if a future test refactor lifts a shared
    "menu inspection" helper, this test can be retired. No
+   register entry. **Phase 4ag note:** the spy-menu pattern
+   was reproduced (with an enriched form that captures every
+   add_command kwarg dict) in `TestScanTreeWidgetNodeGroups-
+   Phase4ag`. Same root cause; same root mitigation. Cross-
+   ref to the new "Spy-menu helper duplication" carry-forward
+   below.
+
+### Friction points carried forward from Phase 4ag
+
+These are concrete obstacles the next Phase 4 session will hit.
+Identified during Phase 4ag while landing the extend / remove
+gestures + footer button state-aware label (CS-58). Phase 4ag
+closed the highest-pain USER-FLAGGED 🟡 carry-forward from Phase
+4af ("Add to existing group") and incidentally closed Phase 4af
+friction #6 (static button label). The user contributed THREE new
+USER-FLAGGED register entries at step 5 (grid z-order bug, axis
+double-click dialog, "Show hidden" disable-gating) — all 🟡, all
+above. The Claude-surfaced 🟢 items below are polish-level and
+deferrable. **Do not fix until the relevant subsequent Phase 4
+session.**
+
+1. 🟡 **USER-FLAGGED Grid renders in front of data lines,
+   not behind.** User-flagged at end of Phase 4ag step 5
+   ("Grid should be behind the datasets, not in front").
+   `uvvis_tab._redraw` calls `ax.grid(...)` without a
+   `zorder` kwarg; matplotlib's default grid zorder (2.5) is
+   above the line plots' default zorder (2.0). **Cross-ref:**
+   see the new canonical register entry above. One-line fix,
+   small regression test. Highest-pain because it's a
+   user-visible rendering bug, not an abstraction or
+   architectural concern. Strong candidate for being bundled
+   into the next phase regardless of which intent is locked.
+
+2. 🟡 **USER-FLAGGED Axis double-click → axis-properties
+   dialog.** User-flagged at end of Phase 4ag step 5
+   ("Double-click a plot axis in order to open a window to
+   change axis-specific parameters? including min, max,
+   spacing, axis label, fonts, font sizes, axis colour, tick
+   size, etc."). Multi-phase task — significant new dialog
+   shell + per-axis-role style schema + matplotlib event
+   binding work. **Cross-ref:** see the new canonical
+   register entry above. Pairs with CS-23 (Plot Settings
+   dialog button-row vocabulary) and CS-56 (tick_direction
+   key may relocate to the new dialog).
+
+3. 🟡 **USER-FLAGGED "Show hidden" toggle should disable
+   when no hidden rows exist.** Upgraded from Phase 4af
+   friction #5 🟢 by user flag during Phase 4ag step 5.
+   **Cross-ref:** see the new canonical register entry above.
+   Smallest scope of the three new USER-FLAGGED items —
+   would be a fast pick if a session needs a contained
+   polish phase.
+
+4. 🟢 **`_can_group_selection` preserved as a thin alias of
+   `_classify_selection()["mode"] == "group"` (Claude-
+   surfaced refactor note).** Phase 4ag introduced
+   `_classify_selection` as the canonical analysis (returns
+   one of `"none"` / `"group"` / `"extend"` / `"invalid"`)
+   but kept `_can_group_selection` because it's referenced
+   by an existing Phase 4af test and the data-row context
+   menu's "Group selected (N)" predicate. Duplication a
+   future refactor could collapse — both walks check the
+   same per-id rules. Defer until a refactor naturally
+   touches this region. No register entry.
+
+5. 🟢 **Spy-menu pattern duplicated between Phase 4af and
+   Phase 4ag UI tests (Claude-surfaced testing-shape note).**
+   Both `TestScanTreeWidgetNodeGroupsPhase4af` and
+   `TestScanTreeWidgetNodeGroupsPhase4ag` reach into Tk's
+   `Menu` constructor via mock to capture `add_command`
+   entries — the Phase 4ag form is enriched (captures every
+   keyword dict for state/label/command introspection). A
+   future test refactor could lift a shared `_SpyMenu`
+   helper into a test-utilities module. Cross-ref Phase 4af
+   friction #7 (same root cause). No register entry.
+
+6. 🟢 **"Add to <group label>" footer button truncation
+   cap is hand-tuned at 24 chars (Claude-surfaced polish).**
+   `_refresh_group_button_state` calls `_truncate_label(...,
+   max_chars=24)` so a long user-renamed group ("my Ni²⁺
+   aquo series across 12 °C → 80 °C") doesn't stretch the
+   footer. The cap is not responsive — a wider window leaves
+   horizontal slack unused. Future polish: derive the cap
+   from the actual footer width (similar to CS-47's dynamic
+   label cap for sidebar rows). Defer until the user reports
+   real-world friction (e.g. a long group label being
+   over-truncated). No register entry.
+
+7. 🟢 **Right-click-target / selection-payload convention
+   used by Phase 4ag's context-menu gestures isn't recorded
+   in CS-04 (Claude-surfaced spec gap).** Both the group-row
+   "Add selected to this group" entry and the data-row
+   "Remove from group" entry follow the pattern: the
+   right-clicked row IDENTIFIES the target / scope; the
+   current selection identifies the payload (what gets
+   added / acted on). CS-04 §"Context menu" doesn't yet
+   document this convention. When CS-04 next gets touched
+   (e.g. a keyboard-shortcuts phase or a new gesture
+   landing), record the convention so future implementers
+   converge to the same shape. No register entry.
+
+8. 🟢 **Group "(N members)" suffix relocation
+   (Phase 4af friction #4 carry-over).** The current
+   inline rendering (`<user label>  (N members)` inside
+   the main label widget) refreshes correctly on the
+   new structural-rebuild path, so the cosmetic polish
+   (move count to its own widget cell so it doesn't
+   compete for label width) is deferrable. Originally
+   surfaced in Phase 4af; Phase 4ag explicitly scoped it
+   OUT during decision lock because moving the suffix
+   would force a brittle test update on the existing
+   `test_group_row_displays_member_count_suffix` pin for
+   a 🟢 polish. Stays deferred until reported in real use
+   or until a phase naturally touches that test. No
    register entry.
 
 ---
@@ -3370,7 +3500,7 @@ the resolving phase + commit SHA appended to the row.
 
 ---
 
-*Document version: 1.31 — May 2026*
+*Document version: 1.32 — May 2026*
 *1.1: Known Bugs register added 2026-04-27 after Phase 4b manual testing.*
 *1.2: Phase 4c — baseline correction lands; B-001 / B-003 / B-004
 resolved; Phase 4c friction points logged.*
@@ -4067,4 +4197,50 @@ variant + 27 in `test_graph.TestNodeGroupOps` + 21 in
 `test_scan_tree_widget.TestScanTreeWidgetNodeGroupsPhase4af` +
 1 in `test_persistence_phase_a.TestSaveLoadRoundTrip` for the
 NODE_GROUP `.ptmg` round-trip).*
+*1.32: Phase 4ag — Extend / remove gestures for NODE_GROUP
+(CS-58). Fully resolves the canonical Phase 4af follow-up
+"'Add to existing group' gesture" register entry (USER-FLAGGED
+🟡); also closes Phase 4af friction #6 (static footer button
+label) by extending CS-57's `_group_btn` lock-relaxation
+trigger (the button now mutates its text per selection
+classification — `"Group selected (N)"` in group mode,
+`"Add to <group label>"` in extend mode, baseline
+`"Group selected"` disabled otherwise). Graph layer: new
+`ProjectGraph.extend_group(group_id, member_ids)` +
+`remove_from_group(node_id)` methods; new
+`GraphEventType.NODE_GROUP_MEMBERS_CHANGED` event with
+payload `{"group_id", "added", "removed"}`. UI layer:
+ScanTreeWidget's `_on_graph_event` routes the new event to
+the structural-rebuild branch; new `_classify_selection`
+helper returns `{"mode": "none"|"group"|"extend"|"invalid",
+...}` so the footer button + both context menus read from
+one canonical analysis; group-row context menu grows a
+fourth entry "Add selected to this group (N)" (right-click
+identifies target / selection identifies payload); data-row
+context menu grows two siblings — "Add selected to <group
+label> (N)" + per-row "Remove from group". **Lock decisions
+taken (Phase 4ag):** (i) both surfaces — context menu AND
+footer button; (ii) append (preserve caller order); (iii)
+new `NODE_GROUP_MEMBERS_CHANGED` event type (rejected
+NODE_LABEL_CHANGED — scan tree routes that to targeted
+row refresh, but member changes are structural); (iv) yes —
+symmetric `remove_from_group` ships in the same phase,
+reusing CS-57's auto-dissolve threshold (<2 active members)
+via `discard_node`. **Lock relaxations:** CS-57's
+`text="Group selected"` initial-label lock broadened (Phase
+4af friction #6 polish trigger); CS-57's narrow "any group
+in selection → disabled" semantics relaxed (a 1 group +
+≥1 ungrouped selection now routes to the extend gesture).
+Three new USER-FLAGGED register entries surfaced at step 5:
+🟡 "Grid renders in front of data lines, not behind"
+(one-line fix, bundleable into the next phase regardless of
+intent); 🟡 "Axis double-click → axis-properties dialog"
+(multi-phase, dialog shell + per-axis style schema); 🟡
+"Show hidden toggle should disable when no hidden rows
+exist" (upgraded from Phase 4af friction #5 🟢 by user flag).
+1002 tests, all green (949 + 53 new: 27 in
+`test_graph.TestNodeGroupExtendRemoveOps` + 24 in
+`test_scan_tree_widget.TestScanTreeWidgetNodeGroupsPhase4ag`
++ 2 in `test_persistence_phase_a.TestSaveLoadRoundTrip` for
+the extend+remove and auto-dissolve cascade round-trips).*
 *Supersedes: BACKLOG.md (original)*
