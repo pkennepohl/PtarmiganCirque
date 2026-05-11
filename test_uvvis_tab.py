@@ -2219,6 +2219,190 @@ class TestUVVisTabSecondDerivativeIntegration(unittest.TestCase):
 
 
 @unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestAbsorbanceToYNodeTypeGatePhase4ah(unittest.TestCase):
+    """Phase 4ah — `_absorbance_to_y` is a no-op for derivative-space NodeTypes.
+
+    Phase 4u friction #9 fix. The helper used to apply the
+    absorbance→%T conversion (``100 · 10^(-A)``) on every node's
+    values regardless of NodeType — which corrupted d²A/dλ²
+    values (stored in the legacy ``arrays["absorbance"]`` field
+    on SECOND_DERIVATIVE nodes for historical reasons). The fix
+    gates the conversion on CS-55's ``_ABSORBANCE_SPACE_NODETYPES``
+    frozenset; non-absorbance-space NodeTypes pass through
+    unchanged.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from uvvis_tab import (
+            UVVisTab,
+            _absorbance_to_y,
+            _ABSORBANCE_SPACE_NODETYPES,
+        )
+        cls.UVVisTab = UVVisTab
+        cls._absorbance_to_y = staticmethod(_absorbance_to_y)
+        cls._ABSORBANCE_SPACE_NODETYPES = _ABSORBANCE_SPACE_NODETYPES
+
+    def setUp(self):
+        self.host = tk.Frame(_root)
+        self.host.pack()
+        self.graph = ProjectGraph()
+        self.tab = self.UVVisTab(self.host, graph=self.graph)
+
+    def tearDown(self):
+        try:
+            self.tab.destroy()
+        except Exception:
+            pass
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    # ---- pure-helper coverage ----
+
+    def test_absorbance_space_node_types_pin(self):
+        # The five NodeTypes whose ``arrays["absorbance"]`` field
+        # genuinely holds absorbance values. Add to this set with
+        # care — adding SECOND_DERIVATIVE here would re-introduce
+        # the Phase 4u friction #9 bug.
+        self.assertEqual(
+            self._ABSORBANCE_SPACE_NODETYPES,
+            frozenset({
+                NodeType.UVVIS,
+                NodeType.BASELINE,
+                NodeType.NORMALISED,
+                NodeType.SMOOTHED,
+                NodeType.PEAK_LIST,
+            }),
+        )
+
+    def test_helper_noop_on_second_derivative_regardless_of_y_unit(self):
+        # The headline regression: d²A values pass through unchanged
+        # on "A" AND on "%T".
+        d2 = np.array([-0.005, -0.001, 0.0, 0.001, 0.005])
+        for y_unit in ("A", "%T"):
+            with self.subTest(y_unit=y_unit):
+                out = self._absorbance_to_y(
+                    d2.copy(), y_unit, NodeType.SECOND_DERIVATIVE,
+                )
+                np.testing.assert_array_equal(out, d2)
+
+    def test_helper_applies_pct_t_on_uvvis(self):
+        # Backwards-compat: absorbance-space NodeTypes still get the
+        # conversion. The clip + 100·10^(-A) maths is unchanged.
+        a = np.array([0.0, 0.5, 1.0, 2.0])
+        out = self._absorbance_to_y(a, "%T", NodeType.UVVIS)
+        np.testing.assert_allclose(
+            out, 100.0 * np.power(10.0, -a),
+        )
+
+    def test_helper_clip_preserved_on_absorbance_space(self):
+        # The defensive clip on absorbance values must still hold
+        # for absorbance-space NodeTypes — a 100 dB value would
+        # otherwise underflow to 0 and lose information.
+        a = np.array([-100.0, 100.0])
+        out = self._absorbance_to_y(a, "%T", NodeType.UVVIS)
+        # clip to [-10, 10] then 100·10^(-A)
+        np.testing.assert_allclose(
+            out,
+            100.0 * np.power(10.0, -np.array([-10.0, 10.0])),
+        )
+
+    def test_helper_passthrough_on_absorbance_unit_for_absorbance_space(self):
+        # "A" branch is byte-identical pre/post fix — pass-through.
+        a = np.array([0.1, 0.5, 0.9])
+        for ntype in self._ABSORBANCE_SPACE_NODETYPES:
+            with self.subTest(node_type=ntype):
+                out = self._absorbance_to_y(a.copy(), "A", ntype)
+                np.testing.assert_array_equal(out, a)
+
+    # ---- integration coverage: d²A values reach matplotlib unchanged ----
+
+    def _add_uvvis(self, nid: str = "u1") -> str:
+        wl = np.linspace(200.0, 800.0, 601)
+        absorb = np.exp(-((wl - 500.0) / 50.0) ** 2) + 0.05
+        self.graph.add_node(DataNode(
+            id=nid, type=NodeType.UVVIS,
+            arrays={"wavelength_nm": wl, "absorbance": absorb},
+            metadata={"source_file": "syn"},
+            label=nid, state=NodeState.COMMITTED,
+            style={"color": "#111", "linestyle": "solid",
+                   "linewidth": 1.5, "alpha": 0.9, "visible": True,
+                   "in_legend": True, "fill": False, "fill_alpha": 0.08},
+        ))
+        return nid
+
+    def test_second_derivative_values_unchanged_by_percent_t_y_unit(self):
+        # Phase 4u friction #9 end-to-end. Render a UVVIS parent +
+        # SECOND_DERIVATIVE child + flip _y_unit to "%T" + assert
+        # the rendered y-data on secondary equals the raw d²A values
+        # (which live in the SECOND_DERIVATIVE node's
+        # ``arrays["absorbance"]`` field by legacy naming).
+        self._add_uvvis("u1")
+        self.tab.update_idletasks()
+        # Apply second derivative via the panel to get a real
+        # SECOND_DERIVATIVE node in the graph.
+        items = self.tab._shared_subject_cb.cget("values")
+        if isinstance(items, str):
+            items = tuple(items.split())
+        self.tab._shared_subject.set(items[0])
+        self.tab._second_derivative_panel._window_length.set(11)
+        self.tab._second_derivative_panel._polyorder.set(3)
+        _, d2_id = self.tab._second_derivative_panel._apply()
+        self.tab.update_idletasks()
+
+        d2_node = self.graph.get_node(d2_id)
+        raw_d2 = np.asarray(d2_node.arrays["absorbance"], dtype=float)
+        wl = np.asarray(d2_node.arrays["wavelength_nm"], dtype=float)
+        # The renderer sorts by x; mirror the sort so our expected
+        # array matches the line's data order.
+        order = np.argsort(wl)
+        expected = raw_d2[order]
+
+        # Now flip y-unit to "%T" and force a fresh redraw.
+        self.tab._y_unit.set("%T")
+        self.tab._redraw()
+        self.tab.update_idletasks()
+
+        secondary = self.tab._axes_by_role["secondary"]
+        lines = secondary.get_lines()
+        self.assertEqual(len(lines), 1,
+                         "expected exactly one Line2D on secondary "
+                         "(the SECOND_DERIVATIVE curve)")
+        rendered_y = lines[0].get_ydata()
+        np.testing.assert_allclose(
+            rendered_y, expected,
+            err_msg="SECOND_DERIVATIVE values must NOT be transformed "
+                    "by the _y_unit='%T' toggle — they are not "
+                    "absorbance-space values.",
+        )
+
+    def test_uvvis_values_still_transformed_by_percent_t_y_unit(self):
+        # Backwards-compat for absorbance-space: UVVIS values on
+        # primary must STILL convert to %T when the toggle flips.
+        # This pins that the gate hasn't accidentally broken the
+        # original conversion path.
+        self._add_uvvis("u1")
+        self.tab._y_unit.set("%T")
+        self.tab._redraw()
+        self.tab.update_idletasks()
+        lines = self.tab._ax.get_lines()
+        self.assertEqual(len(lines), 1)
+        rendered_y = lines[0].get_ydata()
+        # The peak of the UVVIS Gaussian is around A≈1 → %T≈10. If
+        # we accidentally skipped the conversion the peak would
+        # still be ≈1, not 10ish. Use the minimum y value as a
+        # robust proxy (it corresponds to the peak A).
+        self.assertLess(
+            float(np.min(rendered_y)), 50.0,
+            "UVVIS on primary with y_unit='%T' must still apply the "
+            "absorbance→%T conversion; minimum should be in %T units "
+            "(near 10), not the raw absorbance (near 1).",
+        )
+
+
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
 class TestYAxisLabelRoleSwap(unittest.TestCase):
     """Phase 4ad (CS-55) — y-axis label tracks NodeType, not axis side.
 
