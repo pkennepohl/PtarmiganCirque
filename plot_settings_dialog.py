@@ -122,7 +122,11 @@ _LEGEND_POSITIONS: tuple[str, ...] = (
 # Factory defaults. Used by Factory Reset and as the fallback when a
 # config dict is missing keys. Conservative values matching today's
 # UV/Vis _redraw output: bold 10pt axis labels, no plot title, a
-# light grid, white background, outward ticks, legend visible.
+# light grid, white background, inward ticks, legend visible.
+# CS-56 (Phase 4ae) added grid_color + tertiary_axis_offset and flipped
+# tick_direction from "out" to "in". tertiary_axis_offset shadows the
+# CS-44 _TERTIARY_AXIS_OFFSET_FRAC constant in uvvis_tab; a drift pin
+# test asserts the two stay equal.
 _FACTORY_DEFAULTS: dict[str, Any] = {
     # Fonts
     "title_font_size":       12,
@@ -135,8 +139,10 @@ _FACTORY_DEFAULTS: dict[str, Any] = {
     "legend_font_size":      8,
     # Appearance
     "grid":                  True,
+    "grid_color":            "#b0b0b0",
     "background_color":      "#ffffff",
-    "tick_direction":        "out",   # "in" | "out" | "inout"
+    "tick_direction":        "in",    # "in" | "out" | "inout"
+    "tertiary_axis_offset":  1.12,    # right-spine offset for 3rd y-axis
     # Legend
     "legend_show":           True,
     "legend_position":       "best",
@@ -393,7 +399,7 @@ class PlotSettingsDialog(tk.Toplevel):
         radio_frame = tk.Frame(parent)
         radio_frame.grid(row=2, column=1, columnspan=2, sticky="w")
         var = tk.StringVar(
-            value=str(self._working.get("tick_direction", "out")),
+            value=str(self._working.get("tick_direction", "in")),
         )
         self._control_vars["tick_direction"] = var
         for display, value in (
