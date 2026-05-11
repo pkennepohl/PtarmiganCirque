@@ -217,6 +217,63 @@ def _resolve_non_primary_y_label(node_type: NodeType, x_unit: str) -> Optional[s
     return _NON_PRIMARY_Y_LABEL.get((node_type, x_unit))
 
 
+# Phase 4ad (CS-55): role-agnostic y-axis label resolution.
+#
+# CS-44 + CS-50 introduced multi-axis routing and a per-style override;
+# the resulting bug (Phase 4ac friction #1, USER-FLAGGED) was that the
+# renderer hard-coded the primary axis's ylabel from y-unit only, so
+# routing Absorbance to "secondary" left the "Absorbance" label on the
+# (now empty) primary side, and routing SECOND_DERIVATIVE to "primary"
+# kept the "Absorbance" label on a derivative-valued axis. The fix
+# below is structural: label dimensionality varies by NodeType class,
+# not by axis role. The renderer walks every populated role's first
+# node through ``_resolve_y_axis_label`` and labels each axis from the
+# returned text (with ylabel_mode = "custom" still winning for primary).
+#
+# Absorbance-space NodeTypes label from y-unit (A vs %T), independent
+# of x-unit and role. Derivative-space NodeTypes label from x-unit via
+# the existing CS-44 ``_NON_PRIMARY_Y_LABEL`` table (now consulted for
+# both primary and non-primary roles).
+_ABSORBANCE_SPACE_NODETYPES: frozenset[NodeType] = frozenset({
+    NodeType.UVVIS,
+    NodeType.BASELINE,
+    NodeType.NORMALISED,
+    NodeType.SMOOTHED,
+    NodeType.PEAK_LIST,
+})
+
+_ABSORBANCE_Y_LABEL: dict[str, str] = {
+    "A":  "Absorbance",
+    "%T": "Transmittance (%)",
+}
+
+
+def _resolve_y_axis_label(
+    node_type: NodeType,
+    x_unit: str,
+    y_unit: str,
+) -> Optional[str]:
+    """Return the y-axis label for a node, regardless of axis role.
+
+    Resolution:
+
+    1. If ``node_type`` is in :data:`_ABSORBANCE_SPACE_NODETYPES`,
+       return ``_ABSORBANCE_Y_LABEL[y_unit]`` (or ``None`` if the
+       y-unit is unknown).
+    2. Otherwise look up ``(node_type, x_unit)`` in
+       :data:`_NON_PRIMARY_Y_LABEL` (the existing CS-44 table) and
+       return its value (or ``None`` for unregistered pairs).
+
+    The helper is consulted for every populated axis role in the
+    Phase 4ad renderer pass; the role is intentionally NOT part of the
+    key, because label text depends on the NodeType's nature, not on
+    which side of the figure it ended up on.
+    """
+    if node_type in _ABSORBANCE_SPACE_NODETYPES:
+        return _ABSORBANCE_Y_LABEL.get(y_unit)
+    return _NON_PRIMARY_Y_LABEL.get((node_type, x_unit))
+
+
 class UVVisTab(tk.Frame):
     """UV/Vis/NIR import, display and analysis panel."""
 
