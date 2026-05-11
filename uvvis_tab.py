@@ -1848,19 +1848,23 @@ class UVVisTab(tk.Frame):
         self._axes_by_role = {"primary": ax}
         first_node_type_per_role: dict[str, NodeType] = {}
 
-        tick_dir = cfg.get("tick_direction", "out")
+        tick_dir = cfg.get("tick_direction", "in")
         tick_size = cfg.get("tick_label_font_size", 9)
+        tertiary_offset = float(
+            cfg.get("tertiary_axis_offset", _TERTIARY_AXIS_OFFSET_FRAC))
 
         def get_axis(role: str):
             """Return (creating if needed) the Axes for ``role``.
 
             Primary is always available. Secondary is a plain
             ``twinx()``. Tertiary is a second ``twinx()`` with its
-            right spine offset to ``_TERTIARY_AXIS_OFFSET_FRAC``
-            (matplotlib axes coordinates) so the three y-axis labels
-            stack visually. Unknown roles fall back to primary so a
-            future per-style override with a malformed value cannot
-            crash the renderer.
+            right spine offset by ``tertiary_offset`` (matplotlib axes
+            coordinates) so the three y-axis labels stack visually.
+            ``tertiary_offset`` reads through the Plot Settings
+            ``tertiary_axis_offset`` key (CS-56 / Phase 4ae) with
+            ``_TERTIARY_AXIS_OFFSET_FRAC`` as the fallback. Unknown
+            roles fall back to primary so a future per-style override
+            with a malformed value cannot crash the renderer.
             """
             if role in self._axes_by_role:
                 return self._axes_by_role[role]
@@ -1869,7 +1873,7 @@ class UVVisTab(tk.Frame):
             elif role == "tertiary":
                 ax_new = ax.twinx()
                 ax_new.spines["right"].set_position(
-                    ("axes", _TERTIARY_AXIS_OFFSET_FRAC))
+                    ("axes", tertiary_offset))
             else:  # pragma: no cover — defensive fallback
                 return ax
             ax_new.tick_params(direction=tick_dir, labelsize=tick_size)
@@ -2176,9 +2180,14 @@ class UVVisTab(tk.Frame):
 
         # ── Grid (Plot Settings → Appearance) ───────────────────────────────
         # Grid is drawn on primary only — gridlines from twin axes
-        # would visually compete with the primary's grid.
+        # would visually compete with the primary's grid. The grid
+        # colour reads through the CS-56 ``grid_color`` key with the
+        # matplotlib-standard light grey as the fallback.
         if cfg.get("grid", True):
-            ax.grid(True, linestyle=":", alpha=0.4)
+            ax.grid(
+                True, linestyle=":", alpha=0.4,
+                color=cfg.get("grid_color", "#b0b0b0"),
+            )
         else:
             ax.grid(False)
 

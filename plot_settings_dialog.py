@@ -122,7 +122,11 @@ _LEGEND_POSITIONS: tuple[str, ...] = (
 # Factory defaults. Used by Factory Reset and as the fallback when a
 # config dict is missing keys. Conservative values matching today's
 # UV/Vis _redraw output: bold 10pt axis labels, no plot title, a
-# light grid, white background, outward ticks, legend visible.
+# light grid, white background, inward ticks, legend visible.
+# CS-56 (Phase 4ae) added grid_color + tertiary_axis_offset and flipped
+# tick_direction from "out" to "in". tertiary_axis_offset shadows the
+# CS-44 _TERTIARY_AXIS_OFFSET_FRAC constant in uvvis_tab; a drift pin
+# test asserts the two stay equal.
 _FACTORY_DEFAULTS: dict[str, Any] = {
     # Fonts
     "title_font_size":       12,
@@ -135,8 +139,10 @@ _FACTORY_DEFAULTS: dict[str, Any] = {
     "legend_font_size":      8,
     # Appearance
     "grid":                  True,
+    "grid_color":            "#b0b0b0",
     "background_color":      "#ffffff",
-    "tick_direction":        "out",   # "in" | "out" | "inout"
+    "tick_direction":        "in",    # "in" | "out" | "inout"
+    "tertiary_axis_offset":  1.12,    # right-spine offset for 3rd y-axis
     # Legend
     "legend_show":           True,
     "legend_position":       "best",
@@ -380,20 +386,27 @@ class PlotSettingsDialog(tk.Toplevel):
             parent, 0, 1, "grid", label_text="Show grid",
         )
 
-        # Background colour swatch (click → colorchooser).
-        tk.Label(parent, text="Background:", font=("", 9, "bold")).grid(
+        # Grid colour swatch (CS-56). Click → colorchooser. Plot-wide;
+        # the StyleDialog per-style override stays carry-forward.
+        tk.Label(parent, text="Grid colour:", font=("", 9, "bold")).grid(
             row=1, column=0, sticky="w", pady=2,
         )
-        self._make_colour_swatch(parent, 1, 1, "background_color")
+        self._make_colour_swatch(parent, 1, 1, "grid_color")
+
+        # Background colour swatch (click → colorchooser).
+        tk.Label(parent, text="Background:", font=("", 9, "bold")).grid(
+            row=2, column=0, sticky="w", pady=2,
+        )
+        self._make_colour_swatch(parent, 2, 1, "background_color")
 
         # Tick direction radio.
         tk.Label(parent, text="Tick direction:", font=("", 9, "bold")).grid(
-            row=2, column=0, sticky="w", pady=2,
+            row=3, column=0, sticky="w", pady=2,
         )
         radio_frame = tk.Frame(parent)
-        radio_frame.grid(row=2, column=1, columnspan=2, sticky="w")
+        radio_frame.grid(row=3, column=1, columnspan=2, sticky="w")
         var = tk.StringVar(
-            value=str(self._working.get("tick_direction", "out")),
+            value=str(self._working.get("tick_direction", "in")),
         )
         self._control_vars["tick_direction"] = var
         for display, value in (
@@ -411,6 +424,40 @@ class PlotSettingsDialog(tk.Toplevel):
         def _refresh_dir(value, _v=var):
             _v.set(str(value))
         self._control_refresh["tick_direction"] = _refresh_dir
+
+        # Tertiary y-axis offset (CS-56 + CS-44 follow-up). Promotes the
+        # uvvis_tab._TERTIARY_AXIS_OFFSET_FRAC module-level constant to
+        # a tunable Plot Settings key; 1.00 = right spine flush against
+        # the figure edge, 1.50 = offset half a figure-width outward.
+        # 0.01 step is fine enough for visual tuning; bounds picked from
+        # practical use rather than matplotlib's full numerical range.
+        tk.Label(
+            parent, text="Tertiary axis offset:", font=("", 9, "bold"),
+        ).grid(row=4, column=0, sticky="w", pady=2)
+        off_var = tk.DoubleVar(
+            value=float(self._working.get(
+                "tertiary_axis_offset",
+                _FACTORY_DEFAULTS["tertiary_axis_offset"],
+            )),
+        )
+        self._control_vars["tertiary_axis_offset"] = off_var
+        off_spin = tk.Spinbox(
+            parent, from_=1.00, to=1.50, increment=0.01,
+            textvariable=off_var, width=6, format="%.2f",
+        )
+        off_spin.grid(row=4, column=1, sticky="w", padx=2)
+        off_var.trace_add(
+            "write",
+            lambda *_, k="tertiary_axis_offset", v=off_var:
+                self._on_float_var_write(k, v),
+        )
+
+        def _refresh_off(value, _v=off_var):
+            try:
+                _v.set(float(value))
+            except (tk.TclError, ValueError):
+                pass
+        self._control_refresh["tertiary_axis_offset"] = _refresh_off
 
     # ============================================================
     # Section: Legend
@@ -662,6 +709,18 @@ class PlotSettingsDialog(tk.Toplevel):
             self._working[key] = int(var.get())
         except (tk.TclError, ValueError):
             # Bad spinbox state (mid-edit). Skip until valid.
+            pass
+
+    def _on_float_var_write(self, key: str, var: tk.DoubleVar) -> None:
+        # CS-56 (Phase 4ae): float-spinbox analogue of _on_int_var_write.
+        # Skips the write on mid-edit garbage rather than crashing the
+        # trace; the working dict keeps its last good value until the
+        # spinbox re-stabilises.
+        if self._suspend_writes:
+            return
+        try:
+            self._working[key] = float(var.get())
+        except (tk.TclError, ValueError):
             pass
 
     # ------------------------------------------------------------

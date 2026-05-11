@@ -2537,6 +2537,202 @@ class TestUVVisTabTertiaryAxisPath(unittest.TestCase):
 
 
 @unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestUVVisTabAppearancePhase4ae(unittest.TestCase):
+    """Phase 4ae (CS-56) — renderer reads the new Appearance keys.
+
+    Integration coverage for the three Plot Settings → Appearance
+    additions in commits 1–3:
+      - cfg["grid_color"] reaches ax.grid(color=...).
+      - cfg["tertiary_axis_offset"] reaches the tertiary-axis right
+        spine position when a node routes to "tertiary".
+      - The factory-default tick direction flipped to "in"; a fresh
+        UVVisTab's plot_config inherits it.
+      - Drift pin: _FACTORY_DEFAULTS["tertiary_axis_offset"] mirrors
+        the uvvis_tab._TERTIARY_AXIS_OFFSET_FRAC constant.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from uvvis_tab import UVVisTab
+        cls.UVVisTab = UVVisTab
+        import plot_settings_dialog
+        cls.psd = plot_settings_dialog
+
+    def setUp(self):
+        self.psd._USER_DEFAULTS.clear()
+        self.host = tk.Frame(_root)
+        self.host.pack()
+        self.graph = ProjectGraph()
+        self.tab = self.UVVisTab(self.host, graph=self.graph)
+
+    def tearDown(self):
+        try:
+            self.tab.destroy()
+        except Exception:
+            pass
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+        self.psd._USER_DEFAULTS.clear()
+
+    def _add_uvvis(self, nid: str = "u1") -> str:
+        wl = np.linspace(200.0, 800.0, 601)
+        absorb = np.exp(-((wl - 500.0) / 50.0) ** 2) + 0.05
+        self.graph.add_node(DataNode(
+            id=nid, type=NodeType.UVVIS,
+            arrays={"wavelength_nm": wl, "absorbance": absorb},
+            metadata={"source_file": "syn"},
+            label=nid, state=NodeState.COMMITTED,
+            style={"color": "#1f77b4", "linestyle": "solid",
+                   "linewidth": 1.5, "alpha": 0.9, "visible": True,
+                   "in_legend": True, "fill": False, "fill_alpha": 0.08},
+        ))
+        return nid
+
+    # ---- drift pin: dict default mirrors the module constant ----
+
+    def test_factory_default_mirrors_tertiary_offset_constant(self):
+        # CS-56 invariant. The Plot Settings dict default and the
+        # CS-44 module-level constant must stay equal — the constant
+        # is the canonical fallback the renderer reads when cfg lacks
+        # the key, and Factory Reset writes the dict default into
+        # cfg. Drift here would surface as a visual jump on Factory
+        # Reset for any user who hasn't manually adjusted the slider.
+        import uvvis_tab as ut
+        self.assertEqual(
+            self.psd._FACTORY_DEFAULTS["tertiary_axis_offset"],
+            ut._TERTIARY_AXIS_OFFSET_FRAC,
+        )
+
+    # ---- tick direction factory default reaches the tab ----
+
+    def test_plot_config_inherits_inward_tick_default(self):
+        # No user-defaults, no explicit config — the fresh tab's
+        # plot_config copies the factory default "in".
+        self.assertEqual(self.tab._plot_config["tick_direction"], "in")
+
+    # ---- grid colour reaches matplotlib ----
+
+    def test_default_grid_colour_applied(self):
+        self._add_uvvis()
+        self.tab._redraw()
+        lines = self.tab._ax.get_xgridlines()
+        self.assertTrue(lines)
+        # matplotlib expands the hex string to an RGBA tuple in
+        # Line2D.get_color(); compare via to_rgba for tolerance.
+        from matplotlib.colors import to_rgba
+        self.assertEqual(
+            to_rgba(lines[0].get_color()),
+            to_rgba("#b0b0b0"),
+        )
+
+    def test_custom_grid_colour_applied(self):
+        self._add_uvvis()
+        self.tab._plot_config["grid_color"] = "#ff0000"
+        self.tab._redraw()
+        lines = self.tab._ax.get_xgridlines()
+        self.assertTrue(lines)
+        from matplotlib.colors import to_rgba
+        self.assertEqual(
+            to_rgba(lines[0].get_color()),
+            to_rgba("#ff0000"),
+        )
+
+    def test_grid_off_then_on_with_custom_colour_round_trip(self):
+        # Flip grid off then back on with a custom colour. The colour
+        # must apply on the second draw (i.e. cfg["grid_color"] isn't
+        # cached from the off path).
+        self._add_uvvis()
+        self.tab._plot_config["grid"] = False
+        self.tab._redraw()
+        self.tab._plot_config["grid"] = True
+        self.tab._plot_config["grid_color"] = "#00ff00"
+        self.tab._redraw()
+        from matplotlib.colors import to_rgba
+        lines = self.tab._ax.get_xgridlines()
+        self.assertTrue(any(g.get_visible() for g in lines))
+        self.assertEqual(
+            to_rgba(lines[0].get_color()),
+            to_rgba("#00ff00"),
+        )
+
+    # ---- tertiary axis offset reaches matplotlib ----
+
+    def test_tertiary_offset_default_reaches_spine(self):
+        # Same monkey-patch trick TestUVVisTabTertiaryAxisPath uses
+        # above — route NORMALISED to "tertiary" so the offset-spine
+        # path lights up — but here we omit any cfg override, so the
+        # fallback to the module constant is the path under test.
+        import uvvis_tab as ut
+
+        self._add_uvvis()
+        wl = np.linspace(200.0, 800.0, 601)
+        absorb = np.exp(-((wl - 500.0) / 50.0) ** 2) + 0.05
+        self.graph.add_node(DataNode(
+            id="n1", type=NodeType.NORMALISED,
+            arrays={"wavelength_nm": wl, "absorbance": absorb * 2.0},
+            metadata={"source_file": "syn"},
+            label="n1", state=NodeState.COMMITTED,
+            style={"color": "#222", "visible": True, "in_legend": True},
+        ))
+
+        original_resolver = ut._resolve_y_axis_role
+
+        def routed_to_tertiary(node_type, style=None):
+            if node_type == NodeType.NORMALISED:
+                return "tertiary"
+            return original_resolver(node_type, style)
+
+        ut._resolve_y_axis_role = routed_to_tertiary
+        try:
+            self.tab._redraw()
+            tert = self.tab._axes_by_role["tertiary"]
+            position = tert.spines["right"].get_position()
+            self.assertEqual(position[0], "axes")
+            self.assertAlmostEqual(
+                position[1], ut._TERTIARY_AXIS_OFFSET_FRAC, places=4,
+            )
+        finally:
+            ut._resolve_y_axis_role = original_resolver
+
+    def test_tertiary_offset_custom_reaches_spine(self):
+        # Custom cfg value (1.30) overrides the constant fallback and
+        # reaches the spine.
+        import uvvis_tab as ut
+
+        self._add_uvvis()
+        wl = np.linspace(200.0, 800.0, 601)
+        absorb = np.exp(-((wl - 500.0) / 50.0) ** 2) + 0.05
+        self.graph.add_node(DataNode(
+            id="n1", type=NodeType.NORMALISED,
+            arrays={"wavelength_nm": wl, "absorbance": absorb * 2.0},
+            metadata={"source_file": "syn"},
+            label="n1", state=NodeState.COMMITTED,
+            style={"color": "#222", "visible": True, "in_legend": True},
+        ))
+
+        self.tab._plot_config["tertiary_axis_offset"] = 1.30
+
+        original_resolver = ut._resolve_y_axis_role
+
+        def routed_to_tertiary(node_type, style=None):
+            if node_type == NodeType.NORMALISED:
+                return "tertiary"
+            return original_resolver(node_type, style)
+
+        ut._resolve_y_axis_role = routed_to_tertiary
+        try:
+            self.tab._redraw()
+            tert = self.tab._axes_by_role["tertiary"]
+            position = tert.spines["right"].get_position()
+            self.assertEqual(position[0], "axes")
+            self.assertAlmostEqual(position[1], 1.30, places=4)
+        finally:
+            ut._resolve_y_axis_role = original_resolver
+
+
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
 class TestUVVisTabExportIntegration(unittest.TestCase):
     """Phase 4f, CS-17 — Export… dialog flow.
 
