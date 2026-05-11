@@ -44,15 +44,16 @@ _log = logging.getLogger(__name__)
 class GraphEventType(Enum):
     """Categories of events the graph can emit to its subscribers."""
 
-    NODE_ADDED           = auto()
-    NODE_COMMITTED       = auto()
-    NODE_DISCARDED       = auto()
-    NODE_LABEL_CHANGED   = auto()
-    NODE_ACTIVE_CHANGED  = auto()
-    NODE_STYLE_CHANGED   = auto()
-    EDGE_ADDED           = auto()
-    GRAPH_LOADED         = auto()
-    GRAPH_CLEARED        = auto()
+    NODE_ADDED                  = auto()
+    NODE_COMMITTED              = auto()
+    NODE_DISCARDED              = auto()
+    NODE_LABEL_CHANGED          = auto()
+    NODE_ACTIVE_CHANGED         = auto()
+    NODE_STYLE_CHANGED          = auto()
+    NODE_GROUP_MEMBERS_CHANGED  = auto()
+    EDGE_ADDED                  = auto()
+    GRAPH_LOADED                = auto()
+    GRAPH_CLEARED               = auto()
 
 
 @dataclass(frozen=True)
@@ -74,6 +75,17 @@ class GraphEvent:
         * ``NODE_STYLE_CHANGED``: ``{"partial": dict, "new_style": dict}``
           where ``partial`` is the user-supplied delta and
           ``new_style`` is the full merged style dict after the update.
+        * ``NODE_GROUP_MEMBERS_CHANGED``: ``{"group_id": str,
+          "added": list[str], "removed": list[str]}``. Emitted when
+          ``extend_group`` or ``remove_from_group`` mutates a
+          NODE_GROUP's ``metadata["member_ids"]`` while the group
+          itself survives. When ``remove_from_group`` triggers the
+          auto-dissolve cascade (active member count < 2), the event
+          is *not* emitted — the cascading ``NODE_DISCARDED`` is the
+          authoritative signal in that case. ``node_id`` is the
+          group id (same as ``group_id`` in payload, repeated there
+          so subscribers walking the payload don't need to consult
+          the envelope).
         * ``EDGE_ADDED``: ``{"parent_id": str, "child_id": str}``
         * other event types may carry an empty dict.
     """
@@ -482,6 +494,160 @@ class ProjectGraph:
             if node_id in node.metadata.get("member_ids", ()):
                 return node.id
         return None
+
+    def extend_group(
+        self,
+        group_id: str,
+        member_ids: list[str],
+    ) -> None:
+        """Append ``member_ids`` to an existing NODE_GROUP's roster.
+
+        CS-58 (Phase 4ag). The natural follow-up to CS-57's
+        ``create_group``: once a group exists, the user can keep
+        adding nodes to it without dissolving and re-creating. The
+        method mutates the group's ``metadata["member_ids"]`` list
+        in place (per the CS-57 lock relaxation: the list *shape*
+        stays canonical, only mutability grows).
+
+        Validation mirrors ``create_group`` so the gesture has the
+        same invariants regardless of which entry point the user
+        reached:
+
+        * ``group_id`` must exist and refer to an active (non-DISCARDED)
+          NODE_GROUP DataNode.
+        * ``member_ids`` must contain at least one id.
+        * Ids must be unique within the call.
+        * None of the ids may already be in the group's roster (no
+          accidental duplicates from a re-issued gesture).
+        * Every id must exist in the graph.
+        * Every member must be a DataNode (not OperationNode).
+        * No member may itself be a NODE_GROUP — flat-only invariant.
+        * No member may be DISCARDED.
+        * No member may already belong to another active NODE_GROUP
+          (single-membership invariant).
+
+        Emits ``NODE_GROUP_MEMBERS_CHANGED`` with payload carrying
+        the group id and the list of added ids. Does NOT emit
+        ``NODE_LABEL_CHANGED``: the group's *backing* label is
+        unchanged; the displayed "(N members)" suffix is a view-layer
+        concern that the scan tree re-derives on rebuild.
+        """
+        group = self.get_node(group_id)
+        if (not isinstance(group, DataNode)
+                or group.type != NodeType.NODE_GROUP):
+            raise TypeError(
+                f"extend_group expects a NODE_GROUP DataNode, got "
+                f"{type(group).__name__}"
+                + (f" (type={group.type.name})" if isinstance(group, DataNode)
+                   else "")
+            )
+        if group.state == NodeState.DISCARDED:
+            raise ValueError(
+                f"Cannot extend a DISCARDED group: {group_id!r}"
+            )
+        if len(member_ids) < 1:
+            raise ValueError(
+                f"extend_group requires at least 1 new member, got 0"
+            )
+        if len(set(member_ids)) != len(member_ids):
+            raise ValueError(
+                f"extend_group member_ids must be unique: {member_ids!r}"
+            )
+        existing_roster = group.metadata.get("member_ids", [])
+        for mid in member_ids:
+            if mid in existing_roster:
+                raise ValueError(
+                    f"Node {mid!r} is already a member of group "
+                    f"{group_id!r}"
+                )
+            if mid not in self.nodes:
+                raise KeyError(f"Unknown member id: {mid!r}")
+            member = self.nodes[mid]
+            if not isinstance(member, DataNode):
+                raise TypeError(
+                    f"NODE_GROUP members must be DataNode, {mid!r} is "
+                    f"{type(member).__name__}"
+                )
+            if member.type == NodeType.NODE_GROUP:
+                raise ValueError(
+                    f"Nested NODE_GROUPs are not supported: {mid!r} "
+                    f"is itself a NODE_GROUP"
+                )
+            if member.state == NodeState.DISCARDED:
+                raise ValueError(
+                    f"NODE_GROUP members must not be DISCARDED: {mid!r}"
+                )
+            existing_group = self.group_of(mid)
+            if existing_group is not None:
+                raise ValueError(
+                    f"Node {mid!r} already belongs to group "
+                    f"{existing_group!r}"
+                )
+
+        existing_roster.extend(member_ids)
+        self._notify(GraphEvent(
+            GraphEventType.NODE_GROUP_MEMBERS_CHANGED,
+            group_id,
+            payload={
+                "group_id": group_id,
+                "added":    list(member_ids),
+                "removed":  [],
+            },
+        ))
+
+    def remove_from_group(self, node_id: str) -> None:
+        """Detach ``node_id`` from whichever NODE_GROUP currently owns it.
+
+        CS-58 (Phase 4ag). The per-row counterpart to ``extend_group``:
+        the user can pull a single node out of its group without
+        dissolving the whole group. The removed node returns to
+        top-level scan-tree rendering with its state, edges, label,
+        and style untouched.
+
+        Raises ``ValueError`` if ``node_id`` is not in any active group.
+
+        Auto-dissolve: if removing the node leaves the group with
+        fewer than two active (non-DISCARDED) members, the group is
+        dissolved by routing through ``discard_node`` — same
+        threshold as CS-57's discard cascade. In that branch the
+        event stream is ``NODE_DISCARDED`` (on the group) only —
+        ``NODE_GROUP_MEMBERS_CHANGED`` is suppressed because the
+        group is gone by the time subscribers run.
+
+        When the group survives, emits
+        ``NODE_GROUP_MEMBERS_CHANGED`` with the removed id in the
+        payload's ``removed`` list.
+        """
+        group_id = self.group_of(node_id)
+        if group_id is None:
+            raise ValueError(
+                f"Node {node_id!r} is not in any active group"
+            )
+        group = self.nodes[group_id]
+        assert isinstance(group, DataNode)
+        member_ids = group.metadata.get("member_ids", [])
+        member_ids.remove(node_id)
+        active_count = sum(
+            1 for mid in member_ids
+            if mid in self.nodes
+            and isinstance(self.nodes[mid], DataNode)
+            and self.nodes[mid].state != NodeState.DISCARDED
+        )
+        if active_count < 2:
+            # Auto-dissolve. discard_node emits NODE_DISCARDED on the
+            # group; we suppress NODE_GROUP_MEMBERS_CHANGED because
+            # the group no longer exists for subscribers to refresh.
+            self.discard_node(group_id)
+            return
+        self._notify(GraphEvent(
+            GraphEventType.NODE_GROUP_MEMBERS_CHANGED,
+            group_id,
+            payload={
+                "group_id": group_id,
+                "added":    [],
+                "removed":  [node_id],
+            },
+        ))
 
     # ------------------------------------------------------------
     # Edge management
