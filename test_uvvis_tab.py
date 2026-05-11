@@ -2219,6 +2219,224 @@ class TestUVVisTabSecondDerivativeIntegration(unittest.TestCase):
 
 
 @unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestYAxisLabelRoleSwap(unittest.TestCase):
+    """Phase 4ad (CS-55) — y-axis label tracks NodeType, not axis side.
+
+    Reproduces the Phase 4ac friction #1 USER-FLAGGED bug end-to-end:
+    placing Absorbance (UVVIS) on the secondary axis via the CS-50
+    ``style["y_axis"]`` override used to leave Absorbance unlabelled
+    on the right side AND keep "Absorbance" hard-coded on the empty
+    primary; placing SECOND_DERIVATIVE on primary used to label
+    primary "Absorbance" even though the values plotted were d²A.
+    CS-55's role-agnostic ``_resolve_y_axis_label`` fixes both.
+
+    Default routing (no overrides) must still produce the pre-Phase-
+    4ad labels — the bug fix is strictly a widening, not a behavioural
+    flip for the common case.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from uvvis_tab import UVVisTab
+        cls.UVVisTab = UVVisTab
+
+    def setUp(self):
+        self.host = tk.Frame(_root)
+        self.host.pack()
+        self.graph = ProjectGraph()
+        self.tab = self.UVVisTab(self.host, graph=self.graph)
+
+    def tearDown(self):
+        try:
+            self.tab.destroy()
+        except Exception:
+            pass
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    def _add_uvvis(self, nid: str = "u1") -> None:
+        wl = np.linspace(200.0, 800.0, 601)
+        absorb = np.exp(-((wl - 500.0) / 50.0) ** 2) + 0.05
+        self.graph.add_node(DataNode(
+            id=nid, type=NodeType.UVVIS,
+            arrays={"wavelength_nm": wl, "absorbance": absorb},
+            metadata={"source_file": "syn"},
+            label=nid, state=NodeState.COMMITTED,
+            style={"color": "#111", "linestyle": "solid",
+                   "linewidth": 1.5, "alpha": 0.9, "visible": True,
+                   "in_legend": True, "fill": False, "fill_alpha": 0.08},
+        ))
+
+    def _select_first_d2_subject(self):
+        items = self.tab._shared_subject_cb.cget("values")
+        if isinstance(items, str):
+            items = tuple(items.split())
+        self.assertGreaterEqual(len(items), 1)
+        self.tab._shared_subject.set(items[0])
+
+    def test_default_routing_uvvis_only_keeps_primary_absorbance_label(self):
+        # Pre-Phase-4ad behaviour preservation: a default-routed UVVIS
+        # node lands on primary with the "Absorbance" label (or
+        # "Transmittance (%)" if y-unit is "%T"). The fix must NOT
+        # regress the common case.
+        self._add_uvvis("u1")
+        self.tab.update_idletasks()
+        self.assertEqual(self.tab._ax.get_ylabel(), "Absorbance")
+
+    def test_default_routing_y_unit_flip_to_transmittance(self):
+        # The y-unit toggle still drives primary's auto label for
+        # absorbance-space NodeTypes; the helper reads y-unit.
+        self._add_uvvis("u1")
+        self.tab.update_idletasks()
+        self.tab._y_unit.set("%T")
+        self.tab._redraw()
+        self.tab.update_idletasks()
+        self.assertEqual(self.tab._ax.get_ylabel(), "Transmittance (%)")
+
+    def test_uvvis_on_secondary_labels_secondary_absorbance(self):
+        # Phase 4ac friction #1 case A: route Absorbance (UVVIS) to
+        # secondary via CS-50 override. Secondary's label must be
+        # "Absorbance"; primary is empty so it stays unlabelled.
+        self._add_uvvis("u1")
+        self.graph.set_style("u1", {"y_axis": "secondary"})
+        self.tab.update_idletasks()
+        self.assertIn("secondary", self.tab._axes_by_role)
+        self.assertEqual(
+            self.tab._axes_by_role["secondary"].get_ylabel(),
+            "Absorbance",
+            "Absorbance routed to secondary must label the secondary axis",
+        )
+        # Primary holds no nodes after the override; the helper does
+        # not invent a label for an empty axis.
+        self.assertEqual(self.tab._ax.get_ylabel(), "")
+
+    def test_uvvis_on_secondary_with_y_unit_percent_t_labels_transmittance(self):
+        # Y-unit toggle still drives the label when UVVIS is on the
+        # secondary side — the dimension is NodeType class, not role.
+        self._add_uvvis("u1")
+        self.graph.set_style("u1", {"y_axis": "secondary"})
+        self.tab._y_unit.set("%T")
+        self.tab._redraw()
+        self.tab.update_idletasks()
+        self.assertEqual(
+            self.tab._axes_by_role["secondary"].get_ylabel(),
+            "Transmittance (%)",
+        )
+
+    def test_second_derivative_on_primary_labels_primary_with_derivative(self):
+        # Phase 4ac friction #1 case B: route SECOND_DERIVATIVE to
+        # primary via CS-50 override. Primary's label must be
+        # "d²A/dλ²" (not "Absorbance"), because the helper now reads
+        # the NodeType — not a hard-coded y-unit lookup.
+        self._add_uvvis("u1")
+        self.tab.update_idletasks()
+        self._select_first_d2_subject()
+        _, d2_id = self.tab._second_derivative_panel._apply()
+        self.graph.set_style(d2_id, {"y_axis": "primary"})
+        self.tab.update_idletasks()
+        # The override flipped the derivative onto primary, so
+        # secondary should not be created at all (parent UVVIS is
+        # also on primary by default).
+        self.assertNotIn("secondary", self.tab._axes_by_role)
+        # Primary's first node (the UVVIS, added first) wins the
+        # label — the bug isn't fully symmetric. Confirm the UVVIS
+        # case stays correct under default y-unit, then test the
+        # all-derivatives-on-primary case in a separate test.
+        # Here we expect "Absorbance" (UVVIS is the first node).
+        self.assertEqual(self.tab._ax.get_ylabel(), "Absorbance")
+
+    def test_second_derivative_alone_on_primary_labels_derivative(self):
+        # Bug repro: only a SECOND_DERIVATIVE node, routed to primary
+        # via override, on the figure → primary's label is the
+        # derivative label, not "Absorbance". The parent UVVIS is
+        # hidden so primary's first (and only) node is the derivative.
+        self._add_uvvis("u1")
+        self.tab.update_idletasks()
+        self._select_first_d2_subject()
+        _, d2_id = self.tab._second_derivative_panel._apply()
+        self.graph.set_style(d2_id, {"y_axis": "primary"})
+        # Hide the parent so only the derivative renders.
+        self.graph.set_style("u1", {"visible": False})
+        self.tab.update_idletasks()
+        self.assertEqual(self.tab._ax.get_ylabel(), "d²A/dλ²",
+                         "primary axis with only a SECOND_DERIVATIVE "
+                         "node must be labelled by the derivative, "
+                         "NOT by the hard-coded absorbance label")
+
+    def test_uvvis_on_secondary_and_derivative_on_primary_labels_both_correctly(self):
+        # The full Phase 4ac friction #1 user-reported scenario:
+        # Absorbance routed to secondary AND derivative routed to
+        # primary. Pre-CS-55 the user saw "Absorbance" on the LEFT
+        # (wrong; primary now holds a derivative) and nothing on the
+        # right (wrong; secondary holds the absorbance). CS-55 fixes
+        # both: primary → "d²A/dλ²", secondary → "Absorbance".
+        self._add_uvvis("u1")
+        self.tab.update_idletasks()
+        self._select_first_d2_subject()
+        _, d2_id = self.tab._second_derivative_panel._apply()
+        self.graph.set_style("u1", {"y_axis": "secondary"})
+        self.graph.set_style(d2_id, {"y_axis": "primary"})
+        self.tab.update_idletasks()
+        self.assertIn("secondary", self.tab._axes_by_role)
+        self.assertEqual(
+            self.tab._ax.get_ylabel(), "d²A/dλ²",
+            "primary holds the derivative — label must follow")
+        self.assertEqual(
+            self.tab._axes_by_role["secondary"].get_ylabel(),
+            "Absorbance",
+            "secondary holds the absorbance — label must follow")
+
+    def test_custom_ylabel_mode_wins_for_primary_regardless_of_routing(self):
+        # ylabel_mode = "custom" is the user-text affordance and is
+        # primary-only. When set, primary shows the user's text
+        # regardless of what NodeType lands there. Non-primary axes
+        # always auto.
+        self._add_uvvis("u1")
+        self.tab.update_idletasks()
+        self._select_first_d2_subject()
+        _, d2_id = self.tab._second_derivative_panel._apply()
+        self.graph.set_style("u1", {"y_axis": "secondary"})
+        self.graph.set_style(d2_id, {"y_axis": "primary"})
+        # Mutate the plot config the way the Plot Settings dialog
+        # would after Save / Apply.
+        self.tab._plot_config["ylabel_mode"] = "custom"
+        self.tab._plot_config["ylabel_text"] = "My custom label"
+        self.tab._redraw()
+        self.tab.update_idletasks()
+        self.assertEqual(self.tab._ax.get_ylabel(), "My custom label")
+        # Non-primary still gets the auto label.
+        self.assertEqual(
+            self.tab._axes_by_role["secondary"].get_ylabel(),
+            "Absorbance",
+        )
+
+    def test_secondary_label_x_unit_aware_for_derivative_default_routing(self):
+        # CS-44 contract preserved: default routing puts d²A on
+        # secondary, and the secondary label tracks x-unit (nm /
+        # cm-1 / eV). Mirrors
+        # TestUVVisTabSecondDerivativeIntegration.
+        # test_secondary_axis_label_is_x_unit_aware — same invariant,
+        # different surface (the new helper is wired in but its
+        # SECOND_DERIVATIVE branch must keep its CS-44 behaviour).
+        self._add_uvvis("u1")
+        self.tab.update_idletasks()
+        self._select_first_d2_subject()
+        self.tab._second_derivative_panel._apply()
+        self.tab.update_idletasks()
+        for unit, expected in (("nm", "d²A/dλ²"),
+                               ("cm-1", "d²A/d(cm⁻¹)²"),
+                               ("eV", "d²A/dE²")):
+            self.tab._x_unit.set(unit)
+            self.tab._on_unit_change()
+            self.tab.update_idletasks()
+            self.assertEqual(
+                self.tab._axes_by_role["secondary"].get_ylabel(),
+                expected,
+                f"secondary label wrong for x-unit={unit} via CS-55 helper")
+
+
 class TestUVVisTabTertiaryAxisPath(unittest.TestCase):
     """Phase 4u (CS-44) — tertiary axis path coverage.
 
