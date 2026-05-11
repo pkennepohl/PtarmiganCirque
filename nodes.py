@@ -70,6 +70,27 @@ class NodeType(Enum):
                           # "absorbance" key holds the derivative values (units
                           # are A/nm² but the renderer plots on the shared
                           # absorbance Y-axis) (CS-20, Phase 4i)
+    NODE_GROUP  = auto()  # user-driven aggregation of two or more other
+                          # DataNodes for sidebar visual nesting (CS-57,
+                          # Phase 4af). A NODE_GROUP carries no scientific
+                          # data — ``arrays`` MUST be ``{}`` — and is the
+                          # only NodeType for which the renderer skips
+                          # redraw entirely. The list of member ids lives
+                          # in ``metadata["member_ids"]: list[str]`` and
+                          # records insertion order (the order the user
+                          # selected the members when forming the group).
+                          # The group is a view-layer aggregation: members
+                          # keep their original parent edges untouched, so
+                          # consumers of ``parent_id`` (provenance walks,
+                          # baseline lookups, send-to-compare wiring) need
+                          # no awareness of grouping. Lifecycle is always
+                          # PROVISIONAL — groups have no scientific value
+                          # to commit; dissolving a group transitions it
+                          # to DISCARDED via the usual ``discard_node``
+                          # path. Single-membership: a node may belong
+                          # to at most one active group; nested groups
+                          # (a NODE_GROUP whose members include another
+                          # NODE_GROUP) are forbidden at create time.
     # Add further types as new operations are implemented.
 
 
