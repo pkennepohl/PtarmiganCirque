@@ -7403,9 +7403,219 @@ BACKLOG.md. Three new USER-FLAGGED 🟡 register entries from
 step 5: grid z-order bug, axis double-click dialog, "Show
 hidden" disable-gating. Four Claude-surfaced 🟢 polish notes.
 
+## CS-59 — Show-hidden disable-gating + `_absorbance_to_y` NodeType gate (Phase 4ah)
+
+**Status:** ✅ implemented.
+
+The scientific question
+-----------------------
+
+Phase 4ah is a polish bundle resolving four register entries
+of different sizes. CS-59 anchors the two changes that
+introduce new locks the next session must respect — a new
+Checkbutton state-aware refresh pattern (in `scan_tree_widget.
+py`) and a signature widening on the renderer's y-axis
+conversion helper (in `uvvis_tab.py`). The other two
+Phase 4ah commits (grid `zorder=0`; relocation of Open File /
+Reload from app top-bar into the TDDFT sidebar) are bug-fix
+/ UI relocation changes that don't introduce architectural
+locks — they're documented in the doc-version footer entry
+1.34 below.
+
+The Phase 4ah answer (CS-59)
+----------------------------
+
+Two architectural threads:
+
+**Thread A — Show-hidden disable-gating.** The "Show hidden"
+footer Checkbutton, on a fresh workflow where no rows have
+`active=False`, reads as responsive but produces no visible
+change on click — a false affordance the user explicitly
+flagged ("if it's not relevant, then it should be greyed out
+when it's not relevant"). The Checkbutton is now stored as
+`self._show_hidden_btn`, and a new `_refresh_show_hidden_
+button_state()` method (called from `_rebuild`'s tail
+alongside `_refresh_group_button_state`) reads the new
+`_has_hidden_rows()` predicate and flips the button between
+`"normal"` and `"disabled"`. The pattern generalises: future
+state-aware footer controls follow the same shape — store
+the widget as an attribute, recompute on `_rebuild` end via
+a `_refresh_<name>_button_state` method whose name pattern
+makes the cluster discoverable.
+
+**Thread B — `_absorbance_to_y` NodeType gate.** The
+renderer's per-node y-conversion helper used to apply
+`100 · 10^(-A)` to every node's `arrays["absorbance"]` field
+when `_y_unit == "%T"`, regardless of NodeType. This
+corrupted SECOND_DERIVATIVE values (whose `arrays["absorbance"]`
+field actually holds d²A/dλ² values by legacy naming). The
+helper now takes a third positional `node_type: NodeType`
+argument and short-circuits to a pass-through when
+`node_type not in _ABSORBANCE_SPACE_NODETYPES` (the CS-55
+frozenset). Centralised gate keeps the three `_redraw`
+call sites symmetric — the helper owns the rule.
+
+Design invariants
+-----------------
+
+Locked at the widget layer (`scan_tree_widget.py`):
+
+1. **`_show_hidden_btn` attribute identity.** The "Show
+   hidden" Checkbutton is the `self._show_hidden_btn`
+   attribute on `ScanTreeWidget`. Future state-aware
+   manipulations (count badge, tooltip) attach to this
+   attribute. Renaming would break the refresh method's
+   `getattr(self, "_show_hidden_btn", None)` defensive lookup
+   that protects against in-flight `__init__` calls.
+2. **`_has_hidden_rows() -> bool` semantics.** Returns True
+   iff ≥1 non-DISCARDED DataNode with `active=False` passes
+   the tab predicate (or is itself a NODE_GROUP — which
+   always passes per CS-57's visual-layer invariant).
+   Includes hidden group members regardless of whether their
+   parent group is expanded. Rationale: if a member is
+   currently hidden, the toggle becomes relevant the moment
+   the user expands its group, so the toggle's enabled state
+   should not whiplash as the user expands/collapses groups.
+3. **`_refresh_show_hidden_button_state()` signature + call
+   site.** No arguments; called at the end of every
+   `_rebuild` immediately after `_refresh_group_button_state`.
+   The order matters only for predictability — the two
+   refresh methods are independent.
+4. **Cascade contract: never silently flip `_show_hidden`.**
+   If the toggle is currently ON and the last hidden row
+   disappears (discarded or un-hidden), `_show_hidden` STAYS
+   True and `_show_hidden_btn` becomes `disabled`. The
+   disabled state is itself the affordance; mutating
+   `_show_hidden` would change view state behind the user's
+   back.
+5. **Disable-only — no tooltip, no count badge.** The
+   register entry asked whether to surface a count badge
+   ("Show hidden (3)") or a tooltip on the disabled state.
+   Phase 4ah picked the minimal scope: disable-gate only.
+   Adding either is a future polish trigger, not a hidden
+   constraint.
+
+Locked at the renderer layer (`uvvis_tab.py`):
+
+6. **`_absorbance_to_y(absorbance, y_unit, node_type) ->
+   np.ndarray`.** Three positional args; the third is a
+   `NodeType` enum value. Future signature changes (e.g.
+   widening to accept the full node for style-aware
+   conversion) require a CS-N relaxation.
+7. **The CS-55 frozenset is the canonical gate.**
+   `_absorbance_to_y` reads `_ABSORBANCE_SPACE_NODETYPES`
+   directly. Adding SECOND_DERIVATIVE (or any future
+   derivative-space NodeType) to that frozenset would
+   re-introduce the Phase 4u friction #9 bug — pinned by
+   `test_absorbance_space_node_types_pin`.
+8. **Pass-through, not error.** Non-absorbance-space
+   NodeTypes return the input array unchanged. The helper
+   never raises on an unknown NodeType — additive
+   compatibility is the contract so a future NodeType lands
+   as a single `_DEFAULT_Y_AXIS_BY_NODETYPE` table edit
+   (CS-44 / CS-55 follow-up) without needing to touch
+   `_absorbance_to_y`.
+
+Module layer
+------------
+
+CS-59 is concentrated in two modules:
+
+* `scan_tree_widget.py` —
+  * `self._show_hidden_btn` — Checkbutton reference now
+    stored as an attribute (was anonymous in Phase 4af).
+  * `_has_hidden_rows() -> bool` — new pure predicate.
+  * `_refresh_show_hidden_button_state()` — new no-arg
+    refresh method; called from `_rebuild`'s tail.
+* `uvvis_tab.py` —
+  * `_absorbance_to_y(absorbance, y_unit, node_type)` —
+    signature widened; gates `%T` conversion on the CS-55
+    `_ABSORBANCE_SPACE_NODETYPES` frozenset.
+  * Three call sites in `_redraw` pass `node.type` /
+    `bn.type` / `peak_node.type` respectively.
+
+Test pins (20 new tests across two files)
+-----------------------------------------
+
+* `test_uvvis_tab.TestUVVisTabGridZOrderPhase4ah` (2 tests,
+  commit 1 / not CS-59 strictly but Phase 4ah anchor):
+  - relational invariant (every gridline zorder < every
+    data-line zorder);
+  - literal value (`get_zorder() == 0`).
+* `test_scan_tree_widget.TestShowHiddenButtonGatingPhase4ah`
+  (11 tests, commit 2 / Thread A):
+  - 6 pure-helper coverage (empty graph, all-active, one
+    hidden, discarded-ignored, predicate-excluded-ignored,
+    NODE_GROUP-counts);
+  - 5 button-state coverage (fresh-disabled, becomes-hidden,
+    un-hidden-redisables, cascade discard preserves
+    `_show_hidden` ON, hidden group member counts).
+* `test_uvvis_tab.TestAbsorbanceToYNodeTypeGatePhase4ah`
+  (7 tests, commit 4 / Thread B):
+  - 1 frozenset-membership pin (drift guard);
+  - 4 pure-helper coverage (d²A passthrough on A AND %T;
+    UVVIS conversion preserved; clip preserved on absorbance-
+    space; A passthrough across all absorbance-space
+    NodeTypes);
+  - 2 integration coverage (d²A values reach matplotlib
+    unchanged on %T flip; UVVIS values STILL convert on %T
+    flip).
+
+Lock relaxations
+----------------
+
+This CS section LOCKS the following identifiers — changing
+any of them requires a deliberate CS-N relaxation in a
+future phase:
+
+* `_show_hidden_btn` attribute identity on `ScanTreeWidget`.
+* `_has_hidden_rows() -> bool` signature + the predicate it
+  evaluates (lock 2).
+* `_refresh_show_hidden_button_state()` signature + the
+  `_rebuild`-tail call site.
+* Cascade contract: `_show_hidden` is never silently flipped
+  by the refresh method.
+* `_absorbance_to_y(absorbance, y_unit, node_type)` three-
+  positional signature.
+* The CS-55 frozenset `_ABSORBANCE_SPACE_NODETYPES` remains
+  the canonical gate (CS-55 invariant 1 is RE-LOCKED here,
+  not relaxed — adding SECOND_DERIVATIVE to it would
+  regress Phase 4u friction #9).
+
+Lock relaxations to prior CS sections made by CS-59:
+
+* None. CS-55, CS-57, and CS-58 invariants are all preserved
+  byte-identical. CS-59 layers on top of CS-55 (uses its
+  frozenset as the gate) and on top of CS-57 (uses its
+  `_rebuild`-tail refresh pattern as the call-site
+  convention).
+
+Lock relaxations that explicitly DO NOT require a CS-N bump:
+
+* The disable-only / no-tooltip / no-count-badge choice
+  (lock 5). Adding either UI affordance is additive and
+  doesn't break the existing predicate.
+* The "what counts as a hidden row" predicate's group-member
+  branch (lock 2 final paragraph). If the user later flags
+  that the whiplash-avoidance behaviour is wrong, narrowing
+  to "only count members of expanded groups" is a contained
+  edit inside `_has_hidden_rows()`.
+
+Friction points carried forward
+-------------------------------
+
+See "Friction points carried forward from Phase 4ah" in
+BACKLOG.md. One new 🟢 register entry from step 5 (USER-
+CONFIRMED): sidebar `«` toggle + "TDDFT Section:" combobox
+should follow Open File / Reload into TDDFT-only chrome in a
+future phase. Two open Phase 4ag carry-forwards remain (🟡
+axis double-click dialog; 🟢 `_can_group_selection` thin-
+alias cleanup). Phase 4af friction #4 ("(N members)" suffix
+relocation) still open.
+
 ---
 
-*Document version: 1.33 — May 2026*
+*Document version: 1.34 — May 2026*
 *1.1: CS-13 implementation notes added in Phase 4a.*
 *1.2: CS-14 Plot Settings Dialog added in Phase 4b.*
 *1.3: CS-15 UV/Vis Baseline Correction + CS-04 implementation
@@ -8164,5 +8374,59 @@ in `test_graph.TestNodeGroupExtendRemoveOps` + 24 in
 `test_scan_tree_widget.TestScanTreeWidgetNodeGroupsPhase4ag`
 + 2 in `test_persistence_phase_a.TestSaveLoadRoundTrip` for
 the extend+remove and auto-dissolve cascade round-trips).*
+*1.34: Phase 4ah — polish bundle (A.1 + A.2 + F + G).
+Resolves four BACKLOG register entries in one phase, each
+scoped narrowly: (A.1) USER-FLAGGED Phase 4ag friction #1 —
+grid renders in front of data lines: `ax.grid(...)` in
+`uvvis_tab._redraw` now takes `zorder=0` so gridlines paint
+behind data; (A.2 — CS-59 Thread A) USER-FLAGGED Phase 4ag
+friction #3 / Phase 4af friction #5 chain — "Show hidden"
+Checkbutton disable-gating: new `_has_hidden_rows()` predicate
++ `_refresh_show_hidden_button_state()` companion to
+`_refresh_group_button_state`, called from `_rebuild`'s tail;
+Checkbutton is now `self._show_hidden_btn`; cascade contract
+locked (never silently flip `_show_hidden`). (F) USER-FLAGGED
+Phase 4t friction #3 — Open File / Reload relocate from the
+app-level top bar into the TDDFT tab's left sidebar (path (a)
+from the register entry — each tab owns its file ingestion;
+the flanking ttk.Separator is removed too). (G — CS-59
+Thread B) Phase 4u friction #9 — `_absorbance_to_y(absorbance,
+y_unit, node_type)` signature widened with a NodeType gate
+keyed on CS-55's `_ABSORBANCE_SPACE_NODETYPES` frozenset;
+SECOND_DERIVATIVE values pass through unchanged on `%T`,
+fixing the d²A/dλ² corruption bug. **Lock decisions taken
+(Phase 4ah):** (i) hard-code `zorder=0`, no Plot Settings key
+(no plausible user wants grid in front of data lines, this
+is render correctness); (ii) UV/Vis tab only this phase
+(other tabs migrate on renderer adoption); (iii) disable-only
+on the Show hidden gate — no count badge or tooltip; (iv)
+cascade preserves `_show_hidden` ON when the last hidden row
+disappears (disabled state is the affordance); (v) member-of-
+collapsed-group counts as hidden (avoids whiplash on
+expand/collapse); (vi) path (a) for TDDFT chrome — re-render
+in the tab, not tab-context-aware top-bar; (vii) sidebar `«`
+toggle + "TDDFT Section:" combobox + file label stay in the
+top bar this phase (USER-CONFIRMED for the `«` + combobox
+follow-up as a new 🟢 BACKLOG entry); (viii) global Ctrl+O
+keybinding stays bound to `_open_file` (keyboard-shortcut
+scope-by-tab is its own future phase); (ix)
+`_absorbance_to_y` extends signature rather than branching at
+the three call sites (helper owns the rule). **Lock
+relaxations:** none to CS-55, CS-57, CS-58, CS-44 — all
+preserved byte-identical; CS-55 invariant 1 explicitly
+RE-LOCKED here (adding SECOND_DERIVATIVE to
+`_ABSORBANCE_SPACE_NODETYPES` would regress this phase's
+fix). The user noted a multi-axis-defaults design question at
+step 5 (what counts as a tertiary-y-axis default per tab —
+UV/Vis derivative→secondary is clear, but tertiary candidates
+are tab-specific); recorded as a new 🟢 BACKLOG entry for a
+dedicated future phase rather than bundled. 1022 tests, all
+green (1002 + 20 new across two files: 2 in
+`test_uvvis_tab.TestUVVisTabGridZOrderPhase4ah` + 11 in
+`test_scan_tree_widget.TestShowHiddenButtonGatingPhase4ah` +
+7 in `test_uvvis_tab.TestAbsorbanceToYNodeTypeGatePhase4ah`).
+No test added for the TDDFT button relocation — Lock 13
+explicitly accepted manual smoke for a one-button-parent
+move on a module that has no existing test coverage.*
 *To be updated as Open Questions are resolved and new components
 are specified.*
