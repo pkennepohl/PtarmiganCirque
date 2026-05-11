@@ -31,6 +31,7 @@ graph subscription drop on ``unsubscribe`` / ``<Destroy>``, and the
 from __future__ import annotations
 
 import unittest
+import unittest.mock
 
 import numpy as np
 
@@ -3418,6 +3419,407 @@ class TestScanTreeWidgetNodeGroupsPhase4af(unittest.TestCase):
         })()
         self.widget._show_context_menu(fake_event, gid)
         self.assertEqual(called, [gid])
+
+
+class TestScanTreeWidgetNodeGroupsPhase4ag(unittest.TestCase):
+    """CS-58 (Phase 4ag) — extend + remove gestures in the scan tree.
+
+    Pins the new UI surfaces added on top of Phase 4af's CS-57:
+      * NODE_GROUP_MEMBERS_CHANGED is structural — triggers rebuild
+      * footer button switches text + click-target on selection:
+        - "group" mode → "Group selected (N)" + create_group
+        - "extend" mode → "Add to <group>" + extend_group
+        - other modes → "Group selected" disabled
+      * _classify_selection canonical analysis covers all branches
+      * group context menu fourth entry "Add selected to this group"
+        respects ungroupable count and discarded-group safety
+      * data-row context menu siblings "Add selected to <group>" and
+        per-row "Remove from group" obey the gating rules
+      * end-to-end gesture wiring on widget callbacks
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from scan_tree_widget import ScanTreeWidget
+        cls.ScanTreeWidget = ScanTreeWidget
+
+    def setUp(self):
+        self.host = tk.Frame(_root)
+        self.graph = ProjectGraph()
+        for nid in ("a", "b", "c", "d"):
+            self.graph.add_node(_data(nid, NodeType.UVVIS))
+        _, self.cb = _redraw_calls()
+        self.widget = self.ScanTreeWidget(
+            self.host, self.graph, [NodeType.UVVIS], self.cb,
+        )
+        self.widget.update_idletasks()
+
+    def tearDown(self):
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    # ---- structural event routing -----------------------------
+
+    def test_members_changed_event_triggers_full_rebuild(self):
+        gid = self.graph.create_group(["a", "b"])
+        self.widget.update_idletasks()
+        # Pre-condition: c, d render top-level; a, b inside the group.
+        self.assertIn("c", self.widget._row_frames)
+        self.assertNotIn("a", self.widget._row_frames)
+        # extend_group emits NODE_GROUP_MEMBERS_CHANGED.
+        self.graph.extend_group(gid, ["c"])
+        self.widget.update_idletasks()
+        # After rebuild: c is no longer rendered at top level (it now
+        # sits under the collapsed group). a, b remain hidden under
+        # the group. d still renders top-level.
+        self.assertNotIn("c", self.widget._row_frames)
+        self.assertIn("d", self.widget._row_frames)
+        # Group itself still renders.
+        self.assertIn(gid, self.widget._row_frames)
+
+    def test_remove_from_group_rebuilds_top_level(self):
+        gid = self.graph.create_group(["a", "b", "c"])
+        self.widget.update_idletasks()
+        self.graph.remove_from_group("c")
+        self.widget.update_idletasks()
+        # c returns to top-level; group survives with a, b.
+        self.assertIn("c", self.widget._row_frames)
+        self.assertIn(gid, self.widget._row_frames)
+        # a, b still hidden (group is collapsed).
+        self.assertNotIn("a", self.widget._row_frames)
+        self.assertNotIn("b", self.widget._row_frames)
+
+    # ---- _classify_selection ----------------------------------
+
+    def test_classify_none_when_empty(self):
+        self.assertEqual(
+            self.widget._classify_selection(), {"mode": "none"}
+        )
+
+    def test_classify_group_when_two_ungrouped_selected(self):
+        self.widget._toggle_row_selection("a")
+        self.widget._toggle_row_selection("b")
+        c = self.widget._classify_selection()
+        self.assertEqual(c["mode"], "group")
+        self.assertEqual(c["members"], ["a", "b"])
+
+    def test_classify_group_preserves_graph_insertion_order(self):
+        # Selecting in reverse order still yields ["a","b","c"]:
+        # _classify_selection sorts by graph node order.
+        self.widget._toggle_row_selection("c")
+        self.widget._toggle_row_selection("a")
+        self.widget._toggle_row_selection("b")
+        self.assertEqual(
+            self.widget._classify_selection()["members"],
+            ["a", "b", "c"],
+        )
+
+    def test_classify_extend_when_one_group_plus_ungrouped(self):
+        gid = self.graph.create_group(["a", "b"])
+        self.widget.update_idletasks()
+        self.widget._toggle_row_selection(gid)
+        self.widget._toggle_row_selection("c")
+        c = self.widget._classify_selection()
+        self.assertEqual(c["mode"], "extend")
+        self.assertEqual(c["group_id"], gid)
+        self.assertEqual(c["members"], ["c"])
+
+    def test_classify_invalid_when_two_groups_selected(self):
+        gid1 = self.graph.create_group(["a", "b"])
+        gid2 = self.graph.create_group(["c", "d"])
+        self.widget.update_idletasks()
+        self.widget._toggle_row_selection(gid1)
+        self.widget._toggle_row_selection(gid2)
+        self.assertEqual(
+            self.widget._classify_selection()["mode"], "invalid"
+        )
+
+    def test_classify_invalid_when_member_of_another_group_selected(self):
+        # b belongs to {a,b}; selecting b alone with c is invalid.
+        self.graph.create_group(["a", "b"])
+        self.widget.update_idletasks()
+        # b is hidden inside the collapsed group — selection through
+        # the predicate API still surfaces the invariant.
+        self.widget._selected_node_ids.add("b")
+        self.widget._selected_node_ids.add("c")
+        self.assertEqual(
+            self.widget._classify_selection()["mode"], "invalid"
+        )
+
+    def test_classify_invalid_when_one_group_only_selected(self):
+        gid = self.graph.create_group(["a", "b"])
+        self.widget.update_idletasks()
+        self.widget._toggle_row_selection(gid)
+        # No ungrouped companion → no gesture available.
+        self.assertEqual(
+            self.widget._classify_selection()["mode"], "invalid"
+        )
+
+    # ---- footer button label + state --------------------------
+
+    def test_footer_button_text_group_mode(self):
+        self.widget._toggle_row_selection("a")
+        self.widget._toggle_row_selection("b")
+        self.assertEqual(
+            self.widget._group_btn.cget("text"), "Group selected (2)"
+        )
+        self.assertEqual(
+            self.widget._group_btn.cget("state"), "normal"
+        )
+
+    def test_footer_button_text_extend_mode_shows_group_label(self):
+        gid = self.graph.create_group(
+            ["a", "b"], label="my Ni²⁺ aquo series"
+        )
+        self.widget.update_idletasks()
+        self.widget._toggle_row_selection(gid)
+        self.widget._toggle_row_selection("c")
+        text = self.widget._group_btn.cget("text")
+        self.assertTrue(text.startswith("Add to "))
+        self.assertIn("Ni", text)
+        self.assertEqual(
+            self.widget._group_btn.cget("state"), "normal"
+        )
+
+    def test_footer_button_disabled_for_invalid_selection(self):
+        # Selecting two groups is invalid → button disabled.
+        gid1 = self.graph.create_group(["a", "b"])
+        gid2 = self.graph.create_group(["c", "d"])
+        self.widget.update_idletasks()
+        self.widget._toggle_row_selection(gid1)
+        self.widget._toggle_row_selection(gid2)
+        self.assertEqual(
+            self.widget._group_btn.cget("state"), "disabled"
+        )
+        self.assertEqual(
+            self.widget._group_btn.cget("text"), "Group selected"
+        )
+
+    def test_footer_button_reset_to_baseline_after_clearing_selection(self):
+        self.widget._toggle_row_selection("a")
+        self.widget._toggle_row_selection("b")
+        # Now clear back to baseline.
+        self.widget._toggle_row_selection("a")
+        self.widget._toggle_row_selection("b")
+        self.assertEqual(
+            self.widget._group_btn.cget("text"), "Group selected"
+        )
+        self.assertEqual(
+            self.widget._group_btn.cget("state"), "disabled"
+        )
+
+    # ---- footer button click dispatch -------------------------
+
+    def test_group_selected_dispatches_to_extend_in_extend_mode(self):
+        gid = self.graph.create_group(["a", "b"])
+        self.widget.update_idletasks()
+        self.widget._toggle_row_selection(gid)
+        self.widget._toggle_row_selection("c")
+        self.widget._group_selected()
+        self.widget.update_idletasks()
+        # Members now include c, in graph insertion order.
+        self.assertEqual(
+            self.graph.get_node(gid).metadata["member_ids"],
+            ["a", "b", "c"],
+        )
+        # Selection cleared.
+        self.assertFalse(self.widget._selected_node_ids)
+
+    def test_group_selected_noops_when_classification_invalid(self):
+        gid1 = self.graph.create_group(["a", "b"])
+        gid2 = self.graph.create_group(["c", "d"])
+        self.widget.update_idletasks()
+        self.widget._toggle_row_selection(gid1)
+        self.widget._toggle_row_selection(gid2)
+        # No crash, no roster mutation.
+        self.widget._group_selected()
+        self.assertEqual(
+            self.graph.get_node(gid1).metadata["member_ids"], ["a", "b"]
+        )
+        self.assertEqual(
+            self.graph.get_node(gid2).metadata["member_ids"], ["c", "d"]
+        )
+
+    # ---- _extend_into_group filtering -------------------------
+
+    def test_extend_into_group_filters_to_valid_members_only(self):
+        gid = self.graph.create_group(["a", "b"])
+        # Selection contains: c (valid), d (valid), gid (skipped — is
+        # a group), and a fake nonsense id (defensively skipped).
+        self.widget._selected_node_ids = {"c", "d", gid, "nonsense"}
+        self.widget._extend_into_group(gid)
+        self.widget.update_idletasks()
+        self.assertEqual(
+            self.graph.get_node(gid).metadata["member_ids"],
+            ["a", "b", "c", "d"],
+        )
+
+    def test_extend_into_group_noops_when_no_valid_members(self):
+        gid1 = self.graph.create_group(["a", "b"])
+        gid2 = self.graph.create_group(["c", "d"])
+        # Selection contains only members already in groups — no
+        # legal payload exists.
+        self.widget._selected_node_ids = {"a", "c"}
+        self.widget._extend_into_group(gid1)
+        self.assertEqual(
+            self.graph.get_node(gid1).metadata["member_ids"], ["a", "b"]
+        )
+        self.assertEqual(
+            self.graph.get_node(gid2).metadata["member_ids"], ["c", "d"]
+        )
+
+    # ---- remove from group via menu ---------------------------
+
+    def test_remove_from_group_via_menu_detaches_member(self):
+        gid = self.graph.create_group(["a", "b", "c"])
+        self.widget.update_idletasks()
+        self.widget._remove_from_group_via_menu("b")
+        self.widget.update_idletasks()
+        self.assertEqual(
+            self.graph.get_node(gid).metadata["member_ids"], ["a", "c"]
+        )
+
+    def test_remove_from_group_via_menu_preserves_selection(self):
+        # Single-target gesture should NOT clear the selection.
+        self.graph.create_group(["a", "b", "c"])
+        self.widget.update_idletasks()
+        self.widget._toggle_row_selection("d")
+        self.widget._remove_from_group_via_menu("a")
+        self.assertIn("d", self.widget._selected_node_ids)
+
+    def test_remove_from_group_via_menu_swallows_invalid_target(self):
+        # Not in any group — _safely swallows the ValueError.
+        try:
+            self.widget._remove_from_group_via_menu("a")
+        except Exception as exc:
+            self.fail(f"_remove_from_group_via_menu raised: {exc!r}")
+
+    # ---- group context menu fourth entry ----------------------
+
+    def _spy_menu_factory(self):
+        """Return (entries, replacement_factory) for capturing menu items.
+
+        Tk Menu introspection isn't reliable on Windows; the pattern
+        from Phase 4af monkey-patches the Menu constructor through
+        the widget's own namespace. We capture every add_command
+        call so individual tests can inspect labels + states.
+        """
+        entries: list[dict] = []
+
+        class _SpyMenu:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def add_command(self, **kw):
+                entries.append(dict(kw))
+
+            def add_separator(self):
+                entries.append({"separator": True})
+
+            def tk_popup(self, *_args, **_kw):
+                pass
+
+            def grab_release(self):
+                pass
+
+        return entries, _SpyMenu
+
+    def test_group_context_menu_includes_add_selected_entry(self):
+        gid = self.graph.create_group(["a", "b"])
+        self.widget.update_idletasks()
+        self.widget._toggle_row_selection("c")  # one ungrouped selected
+        entries, spy_menu = self._spy_menu_factory()
+        with unittest.mock.patch(
+            "scan_tree_widget.tk.Menu", spy_menu
+        ):
+            self.widget._show_group_context_menu(
+                type("Evt", (), {"x_root": 0, "y_root": 0})(), gid
+            )
+        labels = [
+            e.get("label", "")
+            for e in entries
+            if "label" in e
+        ]
+        # All four entries are present in order.
+        self.assertEqual(labels[0], "Rename")
+        self.assertEqual(labels[1], "Expand")  # collapsed by default
+        self.assertEqual(labels[2], "Ungroup")
+        self.assertTrue(
+            labels[3].startswith("Add selected to this group"),
+            f"unexpected: {labels[3]!r}",
+        )
+        # Add entry shows count of addable members.
+        self.assertIn("(1)", labels[3])
+
+    def test_group_context_menu_add_entry_disabled_with_no_addable(self):
+        gid = self.graph.create_group(["a", "b"])
+        self.widget.update_idletasks()
+        # No selection → nothing addable.
+        entries, spy_menu = self._spy_menu_factory()
+        with unittest.mock.patch(
+            "scan_tree_widget.tk.Menu", spy_menu
+        ):
+            self.widget._show_group_context_menu(
+                type("Evt", (), {"x_root": 0, "y_root": 0})(), gid
+            )
+        add_entry = [
+            e for e in entries
+            if "label" in e
+            and e["label"].startswith("Add selected to this group")
+        ][0]
+        self.assertEqual(add_entry["state"], "disabled")
+        self.assertIn("(0)", add_entry["label"])
+
+    # ---- data-row context menu siblings -----------------------
+
+    def test_data_row_menu_shows_add_to_group_when_extend_legal(self):
+        gid = self.graph.create_group(["a", "b"], label="serie")
+        self.widget.update_idletasks()
+        self.widget._toggle_row_selection(gid)
+        self.widget._toggle_row_selection("c")
+        entries, spy_menu = self._spy_menu_factory()
+        with unittest.mock.patch(
+            "scan_tree_widget.tk.Menu", spy_menu
+        ):
+            self.widget._show_context_menu(
+                type("Evt", (), {"x_root": 0, "y_root": 0})(), "c"
+            )
+        labels = [e.get("label", "") for e in entries if "label" in e]
+        add_to_group = [
+            label for label in labels
+            if label.startswith("Add selected to ")
+            and "this group" not in label
+        ]
+        self.assertEqual(len(add_to_group), 1)
+        self.assertIn("serie", add_to_group[0])
+
+    def test_data_row_menu_remove_from_group_only_when_grouped(self):
+        gid = self.graph.create_group(["a", "b"])
+        self.widget.update_idletasks()
+        self.widget._toggle_group_expansion(gid)  # so a is visible
+        # Right-click on grouped a — "Remove from group" appears.
+        entries, spy_menu = self._spy_menu_factory()
+        with unittest.mock.patch(
+            "scan_tree_widget.tk.Menu", spy_menu
+        ):
+            self.widget._show_context_menu(
+                type("Evt", (), {"x_root": 0, "y_root": 0})(), "a"
+            )
+        labels = [e.get("label", "") for e in entries if "label" in e]
+        self.assertIn("Remove from group", labels)
+
+        # Right-click on ungrouped c — entry absent.
+        entries.clear()
+        with unittest.mock.patch(
+            "scan_tree_widget.tk.Menu", spy_menu
+        ):
+            self.widget._show_context_menu(
+                type("Evt", (), {"x_root": 0, "y_root": 0})(), "c"
+            )
+        labels = [e.get("label", "") for e in entries if "label" in e]
+        self.assertNotIn("Remove from group", labels)
 
 
 if __name__ == "__main__":
