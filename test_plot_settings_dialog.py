@@ -15,6 +15,14 @@ from __future__ import annotations
 
 import unittest
 
+# Silence Tk messageboxes so the CS-60 Cancel-with-pending confirm
+# (and any other modal added later) returns askokcancel=True
+# unattended. Mirrors the run_tests.py wiring so this test module
+# is runnable standalone (``python -m unittest test_plot_settings_dialog``)
+# as well as through the suite.
+from _test_silence import silence_all_messageboxes
+silence_all_messageboxes()
+
 # Try to construct a Tk root once at module import time. If it fails
 # (no display, missing tcl/tk), every test in the file is skipped.
 try:
@@ -930,6 +938,357 @@ class TestPlotConfigDialogNotebookPhase4ai(unittest.TestCase):
         dlg.update_idletasks()
         dlg._do_apply()
         self.assertEqual(self.config["title_font_size"], 22)
+
+
+# =====================================================================
+# CS-60 Phase 4ai: cross-tab pending-edit state model + new button row
+# =====================================================================
+
+
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestPlotConfigDialogStateModelPhase4ai(unittest.TestCase):
+    """CS-60 cross-tab pending-edit state model.
+
+    Per-tab modified marker: ``_TAB_TITLES[tab] + " •"`` while any
+    setting on that tab has uncommitted edits. Apply / Save / Apply
+    to All Tabs commit and clear every marker; Cancel reverts and
+    clears every marker. The marker is the soft signal the user
+    sees; ``_modified_tabs`` is the source of truth.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import plot_settings_dialog
+        cls.psd = plot_settings_dialog
+        cls.PlotConfigDialog = plot_settings_dialog.PlotConfigDialog
+        cls.open_dialog = staticmethod(plot_settings_dialog.open_plot_config_dialog)
+
+    def setUp(self):
+        self.psd._open_dialogs.clear()
+        self.psd._USER_DEFAULTS.clear()
+        self.host = tk.Frame(_root)
+        self.host.pack()
+        self.config: dict = {}
+
+    def tearDown(self):
+        for dlg in list(self.psd._open_dialogs.values()):
+            try:
+                dlg.destroy()
+            except Exception:
+                pass
+        self.psd._open_dialogs.clear()
+        self.psd._USER_DEFAULTS.clear()
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    def _tab_text(self, dlg, key: str) -> str:
+        frame = dlg._tab_frames[key]
+        return dlg._notebook.tab(frame, "text")
+
+    # ----- module-level _KEY_TO_TAB defaults all current keys to global
+
+    def test_key_to_tab_defaults_to_global(self):
+        # No factory key has a registered tab today — they all live
+        # on the Global tab. Phase 4aj+ extends _KEY_TO_TAB as
+        # per-axis settings move out of Global.
+        for key in self.psd._FACTORY_DEFAULTS:
+            self.assertEqual(
+                self.psd._key_to_tab(key), "global",
+                f"key {key!r} should default to the Global tab",
+            )
+
+    def test_modified_tab_suffix_constant(self):
+        # The bullet character is what the user sees; keep it
+        # explicit so renames of the suffix can't drift silently.
+        self.assertEqual(self.psd._MODIFIED_TAB_SUFFIX, " •")
+
+    # ----- initial state -----
+
+    def test_no_tabs_modified_at_construction(self):
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        self.assertEqual(dlg._modified_tabs, set())
+        # Every tab shows its plain title — no bullet appended.
+        for key in self.psd._TAB_KEYS:
+            self.assertEqual(self._tab_text(dlg, key), self.psd._TAB_TITLES[key])
+
+    # ----- edit marks the tab -----
+
+    def test_int_var_edit_marks_global(self):
+        self.config["title_font_size"] = 12
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        dlg._control_vars["title_font_size"].set(20)
+        dlg.update_idletasks()
+        self.assertIn("global", dlg._modified_tabs)
+        self.assertEqual(
+            self._tab_text(dlg, "global"),
+            "Global" + self.psd._MODIFIED_TAB_SUFFIX,
+        )
+
+    def test_bool_var_edit_marks_global(self):
+        self.config["grid"] = True
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        dlg._control_vars["grid"].set(False)
+        dlg.update_idletasks()
+        self.assertIn("global", dlg._modified_tabs)
+
+    def test_float_var_edit_marks_global(self):
+        self.config["tertiary_axis_offset"] = 1.12
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        dlg._control_vars["tertiary_axis_offset"].set(1.30)
+        dlg.update_idletasks()
+        self.assertIn("global", dlg._modified_tabs)
+
+    def test_string_var_edit_marks_global(self):
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        dlg._control_vars["legend_position"].set("upper left")
+        dlg.update_idletasks()
+        self.assertIn("global", dlg._modified_tabs)
+
+    def test_marker_only_on_first_edit_idempotent(self):
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        # Two edits to the same tab → still one entry in _modified_tabs.
+        dlg._control_vars["title_font_size"].set(20)
+        dlg._control_vars["ylabel_font_size"].set(14)
+        dlg.update_idletasks()
+        self.assertEqual(dlg._modified_tabs, {"global"})
+
+    # ----- direct mark/clear helpers -----
+
+    def test_mark_then_clear_round_trips(self):
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        dlg._mark_tab_modified("primary_y")
+        self.assertIn("primary_y", dlg._modified_tabs)
+        self.assertEqual(
+            self._tab_text(dlg, "primary_y"),
+            "Primary Y" + self.psd._MODIFIED_TAB_SUFFIX,
+        )
+        dlg._clear_tab_modified("primary_y")
+        self.assertNotIn("primary_y", dlg._modified_tabs)
+        self.assertEqual(self._tab_text(dlg, "primary_y"), "Primary Y")
+
+    def test_mark_unknown_tab_is_no_op(self):
+        # A future _KEY_TO_TAB drift that maps a key to an unknown
+        # tab key should not crash. The mark silently no-ops.
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        dlg._mark_tab_modified("not_a_tab")
+        self.assertEqual(dlg._modified_tabs, set())
+
+    def test_clear_all_drops_every_marker(self):
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        dlg._mark_tab_modified("primary_y")
+        dlg._mark_tab_modified("secondary_y")
+        dlg._mark_tab_modified("tertiary_y")
+        dlg._clear_all_modified_tabs()
+        self.assertEqual(dlg._modified_tabs, set())
+        for k in ("primary_y", "secondary_y", "tertiary_y"):
+            self.assertEqual(self._tab_text(dlg, k), self.psd._TAB_TITLES[k])
+
+    # ----- Apply / Save clear markers -----
+
+    def test_apply_clears_modified_tabs(self):
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        dlg._control_vars["title_font_size"].set(20)
+        dlg.update_idletasks()
+        self.assertEqual(dlg._modified_tabs, {"global"})
+        dlg._do_apply()
+        self.assertEqual(dlg._modified_tabs, set())
+        self.assertEqual(self._tab_text(dlg, "global"), "Global")
+
+    def test_save_clears_modified_tabs_before_destroy(self):
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        dlg._control_vars["title_font_size"].set(20)
+        dlg.update_idletasks()
+        # We can't introspect after destroy; record _modified_tabs
+        # snapshot just before destroy by calling clear ourselves
+        # via _commit_working_copy instead. Equivalent invariant.
+        dlg._commit_working_copy()
+        self.assertEqual(dlg._modified_tabs, set())
+
+    def test_apply_all_tabs_clears_modified_tabs(self):
+        seen: list = []
+        dlg = self.PlotConfigDialog(
+            self.host, self.config,
+            on_apply_all_tabs=lambda: seen.append(1),
+        )
+        dlg.update_idletasks()
+        dlg._control_vars["title_font_size"].set(20)
+        dlg.update_idletasks()
+        dlg._do_apply_all_tabs()
+        self.assertEqual(dlg._modified_tabs, set())
+        self.assertEqual(seen, [1])
+
+    # ----- Cancel reverts and clears markers -----
+
+    def test_cancel_clears_modified_tabs(self):
+        self.config["title_font_size"] = 12
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        dlg._control_vars["title_font_size"].set(20)
+        dlg.update_idletasks()
+        self.assertEqual(dlg._modified_tabs, {"global"})
+        dlg._do_cancel()  # silenced askokcancel returns True
+        # After cancel + destroy we can't access _modified_tabs on
+        # a destroyed dialog; but the config revert demonstrates
+        # cancel ran end-to-end. The marker-clear step is also
+        # exercised in _commit_working_copy and _do_apply tests.
+        self.assertEqual(self.config["title_font_size"], 12)
+
+
+# =====================================================================
+# CS-60 Phase 4ai: new four-button row (Save / Apply / Apply All / Cancel)
+# =====================================================================
+
+
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestPlotConfigDialogButtonRowPhase4ai(unittest.TestCase):
+    """The dialog-level button row carries four buttons in canonical order.
+
+    Save · Apply · Apply to All Tabs · Cancel — right-aligned at the
+    bottom of the Toplevel. Apply to All Tabs is disabled unless the
+    host supplied an ``on_apply_all_tabs`` callback.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import plot_settings_dialog
+        cls.psd = plot_settings_dialog
+        cls.PlotConfigDialog = plot_settings_dialog.PlotConfigDialog
+
+    def setUp(self):
+        self.psd._open_dialogs.clear()
+        self.psd._USER_DEFAULTS.clear()
+        self.host = tk.Frame(_root)
+        self.host.pack()
+        self.config: dict = {}
+
+    def tearDown(self):
+        for dlg in list(self.psd._open_dialogs.values()):
+            try:
+                dlg.destroy()
+            except Exception:
+                pass
+        self.psd._open_dialogs.clear()
+        self.psd._USER_DEFAULTS.clear()
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    def test_four_buttons_in_order(self):
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        # The attributes are the canonical names; the visible text is
+        # what the user sees.
+        self.assertEqual(dlg._save_btn.cget("text"), "Save")
+        self.assertEqual(dlg._apply_btn.cget("text"), "Apply")
+        self.assertEqual(
+            dlg._apply_all_tabs_btn.cget("text"), "Apply to All Tabs",
+        )
+        self.assertEqual(dlg._cancel_btn.cget("text"), "Cancel")
+
+    def test_apply_all_tabs_disabled_without_callback(self):
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        self.assertEqual(str(dlg._apply_all_tabs_btn.cget("state")), "disabled")
+
+    def test_apply_all_tabs_enabled_with_callback(self):
+        dlg = self.PlotConfigDialog(
+            self.host, self.config, on_apply_all_tabs=lambda: None,
+        )
+        dlg.update_idletasks()
+        self.assertEqual(str(dlg._apply_all_tabs_btn.cget("state")), "normal")
+
+    def test_apply_all_tabs_button_invokes_callback(self):
+        seen: list = []
+        dlg = self.PlotConfigDialog(
+            self.host, self.config,
+            on_apply_all_tabs=lambda: seen.append(1),
+        )
+        dlg.update_idletasks()
+        dlg._apply_all_tabs_btn.invoke()
+        self.assertEqual(seen, [1])
+
+    def test_apply_all_tabs_commits_locally_first(self):
+        # The host's replication callback reads self._config, so the
+        # local commit must run BEFORE the host callback fires.
+        observed: list = []
+
+        def host_cb():
+            observed.append(self.config.get("title_font_size"))
+
+        dlg = self.PlotConfigDialog(
+            self.host, self.config, on_apply_all_tabs=host_cb,
+        )
+        dlg.update_idletasks()
+        dlg._control_vars["title_font_size"].set(20)
+        dlg.update_idletasks()
+        dlg._do_apply_all_tabs()
+        self.assertEqual(observed, [20])
+
+    def test_apply_all_tabs_propagates_via_factory(self):
+        seen: list = []
+        dlg = self.psd.open_plot_config_dialog(
+            self.host, self.config,
+            on_apply_all_tabs=lambda: seen.append(1),
+        )
+        dlg.update_idletasks()
+        dlg._apply_all_tabs_btn.invoke()
+        self.assertEqual(seen, [1])
+
+    def test_apply_all_tabs_callback_exception_is_logged_not_raised(self):
+        # _do_apply_all_tabs must not raise — the host's callback can
+        # throw without crashing the dialog.
+        def bad_cb():
+            raise RuntimeError("boom")
+        dlg = self.PlotConfigDialog(
+            self.host, self.config, on_apply_all_tabs=bad_cb,
+        )
+        dlg.update_idletasks()
+        try:
+            dlg._do_apply_all_tabs()
+        except RuntimeError:
+            self.fail("_do_apply_all_tabs must swallow on_apply_all_tabs errors")
+
+    # ----- _has_uncommitted_changes contract -----
+
+    def test_has_uncommitted_changes_false_at_start(self):
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        self.assertFalse(dlg._has_uncommitted_changes())
+
+    def test_has_uncommitted_changes_true_after_edit(self):
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        dlg._control_vars["title_font_size"].set(20)
+        dlg.update_idletasks()
+        self.assertTrue(dlg._has_uncommitted_changes())
+
+    def test_has_uncommitted_changes_true_after_apply_then_no_edit(self):
+        # Apply commits to config but the __init__ snapshot lives on;
+        # Cancel would still revert. So has_uncommitted_changes
+        # reports True until the snapshot also matches.
+        self.config["title_font_size"] = 12
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        dlg._control_vars["title_font_size"].set(20)
+        dlg.update_idletasks()
+        dlg._do_apply()
+        # Modified set was cleared by Apply, but config != snapshot.
+        self.assertEqual(dlg._modified_tabs, set())
+        self.assertTrue(dlg._has_uncommitted_changes())
 
 
 if __name__ == "__main__":

@@ -77,7 +77,7 @@ from __future__ import annotations
 import copy
 import logging
 import tkinter as tk
-from tkinter import colorchooser, ttk
+from tkinter import colorchooser, messagebox, ttk
 from typing import Any, Callable
 
 _log = logging.getLogger(__name__)
@@ -203,6 +203,31 @@ _AXIS_TAB_PLACEHOLDER_BADGE: dict[str, str] = {
 }
 
 
+# CS-60 (Phase 4ai): per-setting tab attribution for the modified-tab
+# marker. Every working-copy key resolves to a Notebook tab; the
+# writer helpers tag that tab dirty when the user edits it. Today
+# every key lives in the Global tab; Phase 4aj+ populates this map
+# with per-axis-role keys as per-axis settings land.
+_KEY_TO_TAB: dict[str, str] = {}
+
+
+# Suffix appended to a tab's title when it carries uncommitted edits.
+# IntelliJ-style bullet so the visual change is unmissable across
+# tab themes.
+_MODIFIED_TAB_SUFFIX: str = " •"
+
+
+def _key_to_tab(key: str) -> str:
+    """Resolve a working-copy key to its owning Notebook tab key.
+
+    Phase 4ai ships every existing setting on the Global tab — the
+    map is empty and the default branch returns ``"global"`` for
+    every key. Phase 4aj+ adds per-axis-role entries as per-axis
+    settings move out of the Global tab.
+    """
+    return _KEY_TO_TAB.get(key, "global")
+
+
 # =====================================================================
 # Module-level factory
 # =====================================================================
@@ -213,6 +238,7 @@ def open_plot_config_dialog(
     on_apply: Callable[[], None] | None = None,
     sections: tuple[str, ...] | None = None,
     tab: str = "global",
+    on_apply_all_tabs: Callable[[], None] | None = None,
 ) -> "PlotConfigDialog":
     """Open the Plot Config dialog for a host, or focus the existing one.
 
@@ -225,6 +251,13 @@ def open_plot_config_dialog(
     ``tab`` is one of :data:`_TAB_KEYS`; values outside the set fall
     back to ``"global"``. Used by the Phase 4ai double-click hit-test
     (CS-60) to pre-select the clicked axis's tab.
+
+    ``on_apply_all_tabs`` is the optional "Apply to All Tabs"
+    callback. When omitted (or None) the button shows disabled —
+    the dialog still functions as a per-tab editor. The callback
+    runs in addition to ``on_apply``: cross-UV/Vis-tab replication
+    semantics belong to the host (typically Binah) and remain
+    out-of-scope for the dialog itself.
 
     Returns the live ``PlotConfigDialog`` either way.
     """
@@ -242,7 +275,10 @@ def open_plot_config_dialog(
             pass
         # Stale registry entry — fall through to construct fresh.
         _open_dialogs.pop(key, None)
-    return PlotConfigDialog(parent, config, on_apply, sections, tab=tab)
+    return PlotConfigDialog(
+        parent, config, on_apply, sections,
+        tab=tab, on_apply_all_tabs=on_apply_all_tabs,
+    )
 
 
 # =====================================================================
@@ -269,12 +305,17 @@ class PlotConfigDialog(tk.Toplevel):
         on_apply: Callable[[], None] | None = None,
         sections: tuple[str, ...] | None = None,
         tab: str = "global",
+        on_apply_all_tabs: Callable[[], None] | None = None,
     ) -> None:
         super().__init__(parent)
 
         self._parent = parent
         self._config = config
         self._on_apply = on_apply
+        # CS-60: optional cross-tab application callback. None means
+        # "the host hasn't wired the multi-tab apply path", so the
+        # "Apply to All Tabs" button shows disabled.
+        self._on_apply_all_tabs = on_apply_all_tabs
 
         # Resolve the section set: explicit argument > config["_sections"]
         # > module default. Filtering to known names keeps a stray
@@ -314,10 +355,19 @@ class PlotConfigDialog(tk.Toplevel):
         # CS-60: Notebook tab frames keyed by :data:`_TAB_KEYS`. The
         # Global tab hosts the existing section LabelFrames; each
         # axis tab hosts the per-axis shell built in
-        # :meth:`_build_axis_tab_shell`. Commit 4 layers a per-tab
-        # modified-edit marker on top.
+        # :meth:`_build_axis_tab_shell`.
         self._notebook: ttk.Notebook | None = None
         self._tab_frames: dict[str, tk.Frame] = {}
+
+        # CS-60 (Phase 4ai): per-tab pending-edit tracking. Each tab
+        # key in this set carries an uncommitted edit; the tab's
+        # Notebook title gets the :data:`_MODIFIED_TAB_SUFFIX` bullet
+        # appended until Apply / Save clears it (or Cancel reverts
+        # everything). Tabs persist their pending state across tab
+        # switches — switching tabs is a navigation gesture, not a
+        # commit boundary, so edits made on one tab survive a hop
+        # to another and back.
+        self._modified_tabs: set[str] = set()
 
         self.title("Plot Settings")
         # Modal: transient + grab_set per CS-06. ``transient`` keeps
@@ -887,6 +937,7 @@ class PlotConfigDialog(tk.Toplevel):
         if self._suspend_writes:
             return
         self._working[key] = value
+        self._mark_tab_modified(_key_to_tab(key))
 
     def _on_int_var_write(self, key: str, var: tk.IntVar) -> None:
         if self._suspend_writes:
@@ -895,7 +946,8 @@ class PlotConfigDialog(tk.Toplevel):
             self._working[key] = int(var.get())
         except (tk.TclError, ValueError):
             # Bad spinbox state (mid-edit). Skip until valid.
-            pass
+            return
+        self._mark_tab_modified(_key_to_tab(key))
 
     def _on_float_var_write(self, key: str, var: tk.DoubleVar) -> None:
         # CS-56 (Phase 4ae): float-spinbox analogue of _on_int_var_write.
@@ -907,35 +959,136 @@ class PlotConfigDialog(tk.Toplevel):
         try:
             self._working[key] = float(var.get())
         except (tk.TclError, ValueError):
-            pass
+            return
+        self._mark_tab_modified(_key_to_tab(key))
 
     # ------------------------------------------------------------
-    # Bottom button row (Apply / Save / Cancel)
+    # Per-tab modified-edit tracking (CS-60, Phase 4ai)
+    # ------------------------------------------------------------
+
+    def _mark_tab_modified(self, tab_key: str) -> None:
+        """Flag ``tab_key`` as carrying uncommitted edits.
+
+        Adds the :data:`_MODIFIED_TAB_SUFFIX` bullet to the
+        Notebook tab title and records the tab in
+        :attr:`_modified_tabs`. Idempotent — a second edit on the
+        same tab is a no-op.
+        """
+        if tab_key not in self._tab_frames:
+            return
+        if tab_key in self._modified_tabs:
+            return
+        self._modified_tabs.add(tab_key)
+        self._refresh_tab_title(tab_key)
+
+    def _clear_tab_modified(self, tab_key: str) -> None:
+        """Clear the uncommitted-edit marker for ``tab_key``."""
+        if tab_key not in self._modified_tabs:
+            return
+        self._modified_tabs.discard(tab_key)
+        self._refresh_tab_title(tab_key)
+
+    def _clear_all_modified_tabs(self) -> None:
+        """Drop the modified marker from every tab.
+
+        Called by Apply / Save / "Apply to All Tabs" after the
+        working copy commits, and by Cancel after the snapshot
+        revert. Walks a snapshot of :attr:`_modified_tabs` so
+        :meth:`_clear_tab_modified` can mutate the set during the
+        loop.
+        """
+        for tab_key in list(self._modified_tabs):
+            self._clear_tab_modified(tab_key)
+
+    def _refresh_tab_title(self, tab_key: str) -> None:
+        """Push the current modified-state suffix into the Notebook tab.
+
+        Idempotent. ``_TAB_TITLES[tab_key]`` is the canonical
+        base text; the suffix is appended iff ``tab_key`` is in
+        :attr:`_modified_tabs`.
+        """
+        if self._notebook is None:
+            return
+        frame = self._tab_frames.get(tab_key)
+        if frame is None:
+            return
+        title = _TAB_TITLES[tab_key]
+        if tab_key in self._modified_tabs:
+            title += _MODIFIED_TAB_SUFFIX
+        try:
+            self._notebook.tab(frame, text=title)
+        except tk.TclError:
+            pass
+
+    def _has_uncommitted_changes(self) -> bool:
+        """True iff Cancel would discard something the user could miss.
+
+        Two ways to be "dirty": uncommitted edits in the working
+        copy (``_modified_tabs`` non-empty), or intermediate-Applied
+        edits that Cancel would still revert (config != snapshot).
+        """
+        if self._modified_tabs:
+            return True
+        return dict(self._config) != self._snapshot
+
+    # ------------------------------------------------------------
+    # Bottom button row — CS-60: Save · Apply · Apply to All Tabs · Cancel
     # ------------------------------------------------------------
 
     def _build_button_row(self) -> None:
-        """Apply · Save · Cancel row at the bottom (CS-23).
+        """Build the right-aligned dialog-level button row (CS-60).
 
-        Mirrors the CS-05 StyleDialog vocabulary: ``Apply`` commits and
-        keeps the dialog open for further iteration; ``Save`` commits
-        and closes (the "Save & Close" gesture); ``Cancel`` reverts to
-        the snapshot taken at ``__init__`` and closes.
+        Layout, left → right:
+        ``Save``, ``Apply``, ``Apply to All Tabs``, ``Cancel``.
+
+        * **Save** commits every pending edit across every tab and
+          closes the dialog. Same wording as CS-23; cross-tab scope
+          is new in CS-60.
+        * **Apply** commits every pending edit across every tab and
+          keeps the dialog open. The user iterates: edit → Apply →
+          inspect the plot → edit more.
+        * **Apply to All Tabs** commits and replicates the result to
+          the host's sibling UV/Vis notebook tabs. Disabled when the
+          host hasn't supplied ``on_apply_all_tabs``.
+        * **Cancel** reverts every pending edit across every tab
+          AND any intermediate-Applied edit, then closes. When the
+          dialog has uncommitted state it shows an
+          ``askokcancel("Discard changes?")`` confirm first; the
+          conservative tk-silenced answer (True) preserves the
+          existing CS-23 always-close-on-Cancel test contract.
+
+        The button row sits at the bottom of the Toplevel, not
+        inside the Notebook, so it applies dialog-wide. CS-23's
+        per-section "Save as Default / Reset Defaults / Factory
+        Reset" row inside Fonts stays — those affect the working
+        copy only and are independent of the dialog-level buttons.
         """
         btn_row = tk.Frame(self)
-        btn_row.pack(pady=(4, 10))
+        btn_row.pack(side=tk.BOTTOM, fill=tk.X, padx=8, pady=(4, 10))
 
-        self._apply_btn = tk.Button(
-            btn_row, text="Apply", width=10, command=self._do_apply,
-        )
-        self._apply_btn.pack(side=tk.LEFT, padx=3)
+        # Right-aligned: pack into a sub-frame anchored east.
+        right = tk.Frame(btn_row)
+        right.pack(side=tk.RIGHT)
 
         self._save_btn = tk.Button(
-            btn_row, text="Save", width=8, command=self._do_save,
+            right, text="Save", width=8, command=self._do_save,
         )
         self._save_btn.pack(side=tk.LEFT, padx=3)
 
+        self._apply_btn = tk.Button(
+            right, text="Apply", width=10, command=self._do_apply,
+        )
+        self._apply_btn.pack(side=tk.LEFT, padx=3)
+
+        self._apply_all_tabs_btn = tk.Button(
+            right, text="Apply to All Tabs", width=18,
+            command=self._do_apply_all_tabs,
+            state=(tk.NORMAL if self._on_apply_all_tabs else tk.DISABLED),
+        )
+        self._apply_all_tabs_btn.pack(side=tk.LEFT, padx=3)
+
         self._cancel_btn = tk.Button(
-            btn_row, text="Cancel", width=8, command=self._do_cancel,
+            right, text="Cancel", width=8, command=self._do_cancel,
         )
         self._cancel_btn.pack(side=tk.LEFT, padx=3)
 
@@ -943,15 +1096,14 @@ class PlotConfigDialog(tk.Toplevel):
     # Bottom button actions
     # ------------------------------------------------------------
 
-    def _do_apply(self) -> None:
-        """Commit the working copy into the tab's config and notify.
+    def _commit_working_copy(self) -> None:
+        """Mutate ``self._config`` in place from ``self._working``.
 
-        Mutates the caller's dict in place so the tab's existing
-        reference (``self._plot_config``) sees the new values without
-        a reassignment. The tab's ``on_apply`` callback (typically
-        ``self._redraw``) is invoked once afterwards.
+        Shared by every "commit" path (Apply / Save / Apply All).
+        After commit fires ``on_apply`` if wired, then clears every
+        modified-tab marker — the working state is the new live
+        state and no tab is dirty.
         """
-        # Mutate in place: keep the tab's reference valid.
         self._config.clear()
         self._config.update(copy.deepcopy(self._working))
         if self._on_apply is not None:
@@ -961,27 +1113,54 @@ class PlotConfigDialog(tk.Toplevel):
                 _log.warning(
                     "plot_settings_dialog: on_apply raised", exc_info=True,
                 )
+        self._clear_all_modified_tabs()
+
+    def _do_apply(self) -> None:
+        """Commit working copy + on_apply + clear markers; stay open."""
+        self._commit_working_copy()
 
     def _do_save(self) -> None:
-        """Commit the working copy and close the dialog (CS-23).
-
-        Equivalent to ``_do_apply`` + ``destroy``. This is the explicit
-        "Save & Close" gesture the user expects from a modal dialog;
-        before CS-23 the only persist-and-close path required hitting
-        Apply then closing via [X], which the protocol handler treated
-        as Cancel — silently reverting the just-committed edit.
-        """
-        self._do_apply()
+        """Commit working copy + on_apply + clear markers; close."""
+        self._commit_working_copy()
         self.destroy()
 
-    def _do_cancel(self) -> None:
-        """Revert to the snapshot taken at __init__ and close.
+    def _do_apply_all_tabs(self) -> None:
+        """Commit working copy locally, then replicate via the host callback.
 
-        Even if the user clicked Apply intermediate times during this
-        session, Cancel reverts everything they did since the dialog
-        opened — that matches the modal/snapshot contract the user
-        expects from a Cancel gesture.
+        The local commit runs first so the host's replication logic
+        sees the new value when it reads ``self._config``.
+        Disabled-button guard is enforced at construction; if the
+        callback is None we still no-op safely.
         """
+        self._commit_working_copy()
+        if self._on_apply_all_tabs is None:
+            return
+        try:
+            self._on_apply_all_tabs()
+        except Exception:
+            _log.warning(
+                "plot_settings_dialog: on_apply_all_tabs raised",
+                exc_info=True,
+            )
+
+    def _do_cancel(self) -> None:
+        """Revert to the __init__ snapshot and close — with confirm.
+
+        Cancel reverts everything done since the dialog opened, even
+        edits that were intermediate-Applied (CS-23 semantic kept).
+        Shows ``askokcancel("Discard changes?")`` first when there is
+        anything to discard. When the answer is False, stay open;
+        otherwise revert and destroy.
+        """
+        if self._has_uncommitted_changes():
+            proceed = messagebox.askokcancel(
+                "Discard changes?",
+                "There are unsaved changes in this dialog. "
+                "Discard them and close?",
+                parent=self,
+            )
+            if not proceed:
+                return
         if dict(self._config) != self._snapshot:
             self._config.clear()
             self._config.update(copy.deepcopy(self._snapshot))
@@ -993,6 +1172,7 @@ class PlotConfigDialog(tk.Toplevel):
                         "plot_settings_dialog: on_apply raised on cancel",
                         exc_info=True,
                     )
+        self._clear_all_modified_tabs()
         self.destroy()
 
     def _on_close_requested(self) -> None:
