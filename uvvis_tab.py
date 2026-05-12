@@ -111,7 +111,33 @@ def _wavelength_to_x(wavelength_nm: np.ndarray, unit: str) -> np.ndarray:
     return wavelength_nm
 
 
-def _absorbance_to_y(absorbance: np.ndarray, y_unit: str) -> np.ndarray:
+def _absorbance_to_y(
+    absorbance: np.ndarray,
+    y_unit: str,
+    node_type: NodeType,
+) -> np.ndarray:
+    """Convert raw values to the renderer y-axis unit, gated on NodeType.
+
+    For absorbance-space NodeTypes (CS-55 ``_ABSORBANCE_SPACE_NODETYPES``
+    — UVVIS / BASELINE / NORMALISED / SMOOTHED / PEAK_LIST), the "%T"
+    branch applies ``100 · 10^(-A)`` with a defensive clip to [-10, 10].
+
+    For every other NodeType (notably ``SECOND_DERIVATIVE``, whose
+    ``arrays["absorbance"]`` field actually holds d²A/dλ² values),
+    the helper is a no-op regardless of y-unit. Reason: the %T
+    conversion is meaningful for absorbance values but corrupts d²A
+    values (which are typically ~0.001 and can be negative, so the
+    clip + ``100 · 10^(-A)`` mapping produces nonsense values that
+    visually swamp the secondary axis). The secondary y-axis label
+    already encodes the unit context post-CS-44/CS-55, so the toggle
+    doesn't need to mutate derivative-space values.
+
+    Phase 4ah fix for Phase 4u friction #9 ("`_absorbance_to_y`
+    corrupts d²A on %T"). The NodeType-gated branch keeps the three
+    ``_redraw`` call sites symmetric — the helper owns the rule.
+    """
+    if node_type not in _ABSORBANCE_SPACE_NODETYPES:
+        return absorbance
     if y_unit == "%T":
         return 100.0 * np.power(10.0, -np.clip(absorbance, -10, 10))
     return absorbance
@@ -1917,7 +1943,7 @@ class UVVisTab(tk.Frame):
             wl     = node.arrays["wavelength_nm"]
             absorb = node.arrays["absorbance"]
             x = _wavelength_to_x(wl, unit)
-            y = _absorbance_to_y(absorb, self._y_unit.get())
+            y = _absorbance_to_y(absorb, self._y_unit.get(), node.type)
             order  = np.argsort(x)
             x, y   = x[order], y[order]
             label  = node.label if style.get("in_legend", True) else None
@@ -1971,7 +1997,7 @@ class UVVisTab(tk.Frame):
                     continue
                 bwl, bcurve = pair
                 bx = _wavelength_to_x(bwl, unit)
-                by = _absorbance_to_y(bcurve, self._y_unit.get())
+                by = _absorbance_to_y(bcurve, self._y_unit.get(), bn.type)
                 border = np.argsort(bx)
                 bx, by = bx[border], by[border]
                 bcolour = bn.style.get("color", "#333333")
@@ -2017,7 +2043,8 @@ class UVVisTab(tk.Frame):
                 continue
             px = _wavelength_to_x(np.asarray(pwl, dtype=float), unit)
             py = _absorbance_to_y(np.asarray(pa, dtype=float),
-                                  self._y_unit.get())
+                                  self._y_unit.get(),
+                                  peak_node.type)
             plabel = (peak_node.label
                       if pstyle.get("in_legend", True) else None)
             peak_target = get_axis(
@@ -2182,11 +2209,16 @@ class UVVisTab(tk.Frame):
         # Grid is drawn on primary only — gridlines from twin axes
         # would visually compete with the primary's grid. The grid
         # colour reads through the CS-56 ``grid_color`` key with the
-        # matplotlib-standard light grey as the fallback.
+        # matplotlib-standard light grey as the fallback. ``zorder=0``
+        # is hard-coded (Phase 4ah) so gridlines paint BEHIND data
+        # lines — matplotlib's default grid zorder (2.5) is above the
+        # line collection's (2.0) and produces visually distracting
+        # cross-hatching on dense overlays.
         if cfg.get("grid", True):
             ax.grid(
                 True, linestyle=":", alpha=0.4,
                 color=cfg.get("grid_color", "#b0b0b0"),
+                zorder=0,
             )
         else:
             ax.grid(False)

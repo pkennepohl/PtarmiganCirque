@@ -1621,14 +1621,14 @@ subsequent Phase 4 session.**
 | ⏳ | 🟡 | **Detachable sidebar windows / pop-out panels (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4u (step 5 elicitation). User has flagged that sidebars (left pane operation panels, right pane ScanTreeWidget) should be detachable into their own top-level windows so a multi-monitor user can keep the plot main-screen and the controls on a side screen. Tk supports this via `Toplevel` + reparenting (`pack_forget` from the original PanedWindow + repack into a new `tk.Toplevel`); on close the panel re-attaches. **Affected:** every tab's left + right pane shell. The simplest shape ships at the host level (`binah.py` adds a "↗ pop out" button per pane that toggles between attached and detached); a per-pane gear menu is a more polished follow-up. Lock decisions needed: (i) one Toplevel per pane vs per tab; (ii) does pane state (collapsed sections, scroll position) survive the round trip; (iii) does the host close → panel close, or does the panel persist and re-attach on host re-open. Cross-refs the long-running CS-04 ScanTreeWidget cohabitation work — the right pane is already widget-shaped enough to detach cleanly; the left pane's collapsible sections (Phase 4f) are too. Multi-phase if both panes ship together |
 | ⏳ | 🟡 | **Colour-blind-safe palette (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4u (step 5 elicitation). Today `node_styles.SPECTRUM_PALETTE` is matplotlib's default tab10 sequence (ten entries, e.g. `#1f77b4` blue / `#d62728` red / `#2ca02c` green) — this palette is NOT optimised for colour-blindness; deuteranopia conflates the red/green pair, protanopia conflates the orange/red pair. The user has flagged that colour choices should be limited to a colour-blind-safe palette. **Lock decision needed:** which palette — Wong / Okabe-Ito 8-colour (`#000000 #E69F00 #56B4E9 #009E73 #F0E442 #0072B2 #D55E00 #CC79A7 #999999`), Tol's vibrant 7-colour, ColorBrewer's qualitative palettes? Wong/Okabe-Ito is the de facto scientific-publication standard. **Affected:** `node_styles.SPECTRUM_PALETTE` (CS-21 is *locked* but USER-FLAGGED change supersedes the lock); the existing `pick_default_color` walk works unchanged; existing graphs with previously-assigned colors are unaffected (style dict is immutable per node). New tests: `TestColorBlindSafePalette` validates the palette under simulated dichromacy (luminance-pair distance check). One-file change in node_styles.py + COMPONENTS.md doc-version bump. Pairs structurally with the future StyleDialog colour picker — the picker should ALSO restrict its swatch choices to the same palette unless the user opts into "show all colours" |
 | ⏳ | 🟢 | **Parallelize heavy-compute paths (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4u (step 5 elicitation). Today every `compute_*` runs synchronously on the Tk event thread — fine for the current set (linear / polynomial / spline / scattering / scattering+offset / rubberband / savgol smoothing / second derivative / peak picking) which all return in tens of milliseconds on typical UV/Vis grids. The expensive cases that motivate parallelism are **future**: SVD on a large multinode dataset, MCR-ALS iteration, MC bootstrap (when added), Apply-to-All across a large dataset (each apply independent — embarrassingly parallel). **Architecture proposal:** introduce `compute_async` companions that return a `concurrent.futures.Future` and a "compute panel busy" UI state; the Tk event loop polls on `<<ComputeDone>>` virtual events. For NumPy-heavy work `concurrent.futures.ProcessPoolExecutor` releases the GIL; for I/O-bound work (file ingest) `ThreadPoolExecutor` is enough. Pairs with the diagnostic-console register entry (long-running ops surface progress). Defer until at least one user-reported "the UI froze for N seconds" — today's compute set doesn't justify the complexity |
-| ⏳ | 🟡 | **`_absorbance_to_y` should not transform SECOND_DERIVATIVE values** | Surfaced Phase 4u while writing the multi-axis tests. Pre-existing bug, not introduced by Phase 4u: when `_y_unit` is `"%T"`, `_absorbance_to_y` clips values to `[-10, 10]` and applies `100·10^(-A)` — this conversion is meaningful for absorbance but corrupts d²A/dλ² values (which are typically `~0.001` and can be negative, so the clip → `100·10^(-A)` mapping produces nonsense). Fix: gate the conversion on the node's NodeType — only UVVIS / BASELINE / NORMALISED / SMOOTHED really live in absorbance space; SECOND_DERIVATIVE always renders as raw d²A/dλ² regardless of the y-unit toggle (the secondary y-axis label already encodes the unit context post-CS-44, so the toggle doesn't need to mutate the values). Touches `uvvis_tab._redraw` per-node loop (pass NodeType into the conversion or branch on it before calling). Test impact: a new `test_second_derivative_values_unchanged_by_percent_t_y_unit` in `TestUVVisTabSecondDerivativeIntegration` |
+| ✅ | 🟡 | **`_absorbance_to_y` should not transform SECOND_DERIVATIVE values** | Surfaced Phase 4u while writing the multi-axis tests. Pre-existing bug, not introduced by Phase 4u: when `_y_unit` is `"%T"`, `_absorbance_to_y` clips values to `[-10, 10]` and applies `100·10^(-A)` — this conversion is meaningful for absorbance but corrupts d²A/dλ² values (which are typically `~0.001` and can be negative, so the clip → `100·10^(-A)` mapping produces nonsense). **Resolved Phase 4ah (CS-59 Thread B):** helper signature widened to `_absorbance_to_y(absorbance, y_unit, node_type)` with a CS-55-frozenset gate. When `node_type not in _ABSORBANCE_SPACE_NODETYPES` (currently SECOND_DERIVATIVE — the one derivative-space NodeType the tab knows about), the helper short-circuits to a pass-through regardless of y-unit. All three `_redraw` call sites (main per-node loop, baseline-curve overlay, peak-list overlay) updated to pass `node.type` / `bn.type` / `peak_node.type`. PEAK_LIST + BASELINE remain in the frozenset (their values ARE absorbance), so behaviour is byte-identical for them. **Lock decision taken:** extend signature rather than branch at each call site (helper owns the rule — centralised gate keeps the three sites symmetric). 7 new tests in `TestAbsorbanceToYNodeTypeGatePhase4ah`: 1 frozenset-membership pin (drift guard); 4 pure-helper coverage (d²A passthrough on A AND %T, UVVIS conversion preserved, clip preserved on absorbance-space, A passthrough across all absorbance-space NodeTypes); 2 integration coverage (d²A values reach matplotlib unchanged on %T flip; UVVIS values STILL convert on %T flip) |
 | ✅ | 🟢 | **Per-style `y_axis` override hook + StyleDialog row (CS-44 follow-up)** | Phase 4u Decision 1 deferred the per-style override (`node.style.get("y_axis")`) per the user's "Default only for now is okay" decision. The hook is wired into `_resolve_y_axis_role` as a one-line addition (read style first, fall back to per-NodeType default); the StyleDialog universal-section row is the bigger lift — a new `ttk.Combobox` choosing `"primary" / "secondary" / "tertiary"`, threaded through `_BULK_UNIVERSAL_KEYS`. Useful when a user wants to send a specific SECOND_DERIVATIVE node back to primary (small-magnitude derivatives that share scale with their parent) or send a UVVIS reference spectrum to a third axis. Defer until a user reports needing it. **Resolved Phase 4y (CS-50):** `node_styles.default_spectrum_style` adds `style["y_axis"]: str \| None` (default `None` = follow the per-NodeType default; non-None = literal CS-44 axis role overrides per-node); `_resolve_y_axis_role` grows an optional `style: Mapping \| None = None` argument and a one-line short-circuit at the front (override beats default; malformed values fall through). Renderer threads `node.style` at three call sites: per-node main loop, BASELINE-curve dashed overlay (resolver moved INSIDE per-bn body so a BASELINE on "secondary" puts both its main render AND its dashed overlay on the same axis), PEAK_LIST scatter loop. StyleDialog universal section gains a read-only `ttk.Combobox` row labelled "Y axis:" with options `["(default)", "primary", "secondary", "tertiary"]`; "(default)" round-trips to `None`. Decision lock taken: (i) cross-typed Apply auto-inherits parent's effective role on the new node IFF NodeType-defaults differ — `SmoothingPanel._apply` writes `style["y_axis"] = parent_effective_role` for smoothed-of-derivative outputs (closes Phase 4x friction #6); (ii) "(default)" = literal `None` semantics; inheritance is a separate apply-time mechanism that writes a literal role string; (iii) `y_axis` is intentionally absent from `_BULK_UNIVERSAL_KEYS` (parallel to Phase 4d's `visible` / `in_legend` carve-out — bottom ∀ Apply-to-All would too easily collapse derivatives onto primary), but the per-row ∀ button widens its scope to every renderable node (UVVIS / BASELINE / NORMALISED / SMOOTHED / SECOND_DERIVATIVE / PEAK_LIST) via `_on_uvvis_apply_to_all`'s special-case for the key. 35 new tests (7 pure-helper + 2 default-style + 16 StyleDialog Combobox + 4 renderer override + 3 cross-typed inheritance + 3 fan-out-scope). 781 tests, all green. Persistence (CS-46) auto-rides — the new key sits in the existing style-dict round-trip; no manifest schema change |
 | ✅ | 🟡 | ~~**Y-axis Combobox row appears on non-UVVis StyleDialog instances (Claude-surfaced Phase 4y)**~~ ✅ Resolved in Phase 4aa (CS-52). Path (a) (NodeType-gate the row) landed: the new module-private `_Y_AXIS_VISIBLE_NODETYPES: frozenset[NodeType]` mirrors `uvvis_tab._DEFAULT_Y_AXIS_BY_NODETYPE.keys()` exactly (UVVIS / BASELINE / NORMALISED / SMOOTHED / PEAK_LIST / SECOND_DERIVATIVE), and `_build_universal_section` wraps the `_build_y_axis_row` call in `if self._node_type in _Y_AXIS_VISIBLE_NODETYPES`. For TDDFT / FEFF_PATHS / XANES / EXAFS / DEGLITCHED / AVERAGED / BXAS_RESULT the Combobox is now suppressed — the affordance no longer appears where it would be a no-op. `_read_universal_values` skips the key automatically when its var isn't in `_control_vars`, so Save / Apply / ∀ paths stay self-consistent. The drift test `test_y_axis_visible_node_types_match_routing_table` pins the gate against the routing table so a future widening of `_DEFAULT_Y_AXIS_BY_NODETYPE` (when path (b) — the multi-axis-routing lift to `plot_widget.py` — eventually lands) cannot silently reintroduce the misleading affordance. 15 new integration tests (six routing-NodeType "present" cases + seven non-routing "absent" cases + two self-consistency cases) plus 2 pure-module drift tests. |
 | ✅ | 🔴 | **Y-axis label routing follows axis side, not axis role — wrong / missing labels when primary/secondary roles are swapped (USER-FLAGGED, bumped 🟢 → 🔴 in Phase 4ac)** | Originally surfaced by Claude during Phase 4y as 🟢 polish. **Bumped to 🔴 USER-FLAGGED at end of Phase 4ac (step 5 elicitation):** the user reproduced the bug end-to-end — placing Absorbance on the secondary axis and a derivative on the primary axis leaves the Absorbance label rendered on the *left* axis (because the renderer's primary-axis label is hard-coded to "Absorbance / Transmittance (%)") and the right axis appears unlabelled. Symmetrically, a SECOND_DERIVATIVE overridden to "primary" keeps the absorbance label even though the values plotted are d²A. Architecturally: CS-44's `_NON_PRIMARY_Y_LABEL` table is keyed by `(NodeType, x_unit)` and only carries entries for SECOND_DERIVATIVE; the renderer relies on the NodeType-default for the primary label (always "Absorbance" / "Transmittance (%)" today). With the CS-50 override hook landed, the table no longer covers every reachable role × NodeType combination, hence the missing-label and wrong-label visible failures. **Architecture proposal (lock pending):** option (a) introduce a `_PRIMARY_Y_LABEL: dict[(NodeType, x_unit), str]` companion table that mirrors `_NON_PRIMARY_Y_LABEL` so primary's label tracks the *first* node landing on it (CS-44 lock relaxes for both label tables); option (b) fold both into a single `_Y_LABEL_BY_ROLE_FIRST_NODE_TYPE: dict[(NodeType, x_unit), str]` lookup that the renderer reads per role from the role's first node; option (c) keep the two tables separate but widen `_NON_PRIMARY_Y_LABEL` to cover UVVIS / NORMALISED / SMOOTHED / BASELINE / PEAK_LIST on every x-unit AND build a parallel primary-side widening. **Affected:** `uvvis_tab.py` (`_redraw`'s y-label resolution + the new label table), tests pinning each role's label for every NodeType × x_unit combination. Cross-refs Phase 4u friction #9 (`_absorbance_to_y` corrupts d²A on %T) — both surface "primary axis assumes absorbance values" mistakes that pre-date the CS-50 override path. **Resolved Phase 4ad (CS-55):** option (b) variant landed — labels are role-agnostic, dimensionalised by NodeType class instead. New `_ABSORBANCE_SPACE_NODETYPES: frozenset[NodeType]` covering UVVIS / BASELINE / NORMALISED / SMOOTHED / PEAK_LIST + `_ABSORBANCE_Y_LABEL: dict[str, str]` mapping y-unit ("A" / "%T") to label, both module-level in `uvvis_tab`. New pure helper `_resolve_y_axis_label(node_type, x_unit, y_unit) -> Optional[str]`: absorbance-space NodeTypes label by y-unit (independent of x-unit and role); derivative-space NodeTypes fall through to the existing CS-44 `_NON_PRIMARY_Y_LABEL` table (which now feeds both primary and non-primary roles). Renderer in `_redraw` widens `first_node_type_per_role.setdefault` to record primary too (drop the `if role != "primary":` guard), drops the hardcoded `auto_ylabels = {"A": …}` inline lookup for primary, and walks every populated role through the helper. `ylabel_mode = "custom"` still wins for primary (user-text affordance remains primary-only); non-primary always auto. Default routing (UVVIS-only) is byte-identical pre/post — the common case is unchanged. **Lock decision taken:** option (b) variant over (a) and (c) — single helper keyed on NodeType class rather than two parallel tables, because the dimensionality of variability is NodeType nature (absorbance-space vs derivative-space), not axis role. (c) was rejected (two parallel tables would drift); (a) was rejected (mirroring `_NON_PRIMARY_Y_LABEL` for absorbance-space would force y-unit-keyed entries that contradict its `(NodeType, x_unit)` key shape). CS-44 invariants all preserved (`_NON_PRIMARY_Y_LABEL` content + `_resolve_non_primary_y_label` signature byte-identical; the new helper layers on top). 18 new tests (9 pure-module in `TestYAxisLabelResolution`: frozenset membership, drift guard against `_DEFAULT_Y_AXIS_BY_NODETYPE`, dict shape, absorbance-space y-unit invariance across x-units, derivative x-unit invariance across y-units, three `None`-return cases for unknown units / unrouted NodeTypes, backward-compat with CS-44 helper; 9 integration in `TestYAxisLabelRoleSwap`: default-routing preservation, y-unit flip, UVVIS-on-secondary case A, UVVIS-on-secondary %T flip, d²A-on-primary with parent visible, d²A alone on primary, full user-reported scenario, custom-mode wins, x-unit-aware secondary derivative). 882 tests, all green. |
 | ⏳ | 🟢 | **DRY cross-typed-Apply y_axis inheritance helper (CS-50 architectural debt)** | Surfaced by Claude during Phase 4y. The CS-50 inheritance block (set `style["y_axis"]` on a new node when its NodeType-default differs from the parent's effective role) lives inside `SmoothingPanel._apply`, today the only widened cross-type panel under CS-49. If a future panel widens its `ACCEPTED_PARENT_TYPES` cross-type (NormalisationPanel accepting SECOND_DERIVATIVE; SecondDerivativePanel accepting NORMALISED on a non-UVVis x-axis; etc.), each panel's `_apply` would copy-paste the same six-line block. Move it into `node_styles.py` (or a new `axis_inheritance.py`) as `inherit_y_axis_for_cross_typed_apply(parent_node, new_node_type) -> str \| None`; every panel calls it next to its `default_spectrum_style(colour)` call. Cheap one-time refactor; defer until a second cross-typed-Apply path lands so the abstraction has two consumers. Cross-refs the four open audit-held tuples (`NormalisationPanel` / `PeakPickingPanel` / `SecondDerivativePanel`) — the next CS-49-style widening will probably be the trigger |
 | ⏳ | 🟢 | **Hover/status-bar readout for active y-axis (CS-44 follow-up)** | Surfaced Phase 4u step 5. Once two y-axes coexist (CS-44), the matplotlib toolbar's coordinate readout reports primary-axis values only — a user mousing over a SECOND_DERIVATIVE point sees an absorbance number, not a d²A value. Likely shape: bind a `motion_notify_event` on the canvas, walk every populated `_axes_by_role` axis, transform the cursor's display coords into each axis's data coords, and surface the per-axis readout in a dedicated status strip below the toolbar. Cross-refs the diagnostic-console register entry — both add ambient information surfaces. Defer until two-axis use is common enough to motivate the complexity |
 | ⏳ | 🟢 | **Lift multi-axis routing to plot_widget.py (CS-44 follow-up, partial — promote-to-Plot-Settings half closed Phase 4ae)** | Phase 4u Decision 7 kept the multi-axis routing inside `uvvis_tab._redraw` rather than lifting to `plot_widget.py`. The original entry had two halves; **the "promote `_TERTIARY_AXIS_OFFSET_FRAC` to Plot Settings → Appearance row" half closed in Phase 4ae (CS-56)**: new `"tertiary_axis_offset"` key in `_FACTORY_DEFAULTS` (default `1.12`, mirrors the module constant via a drift-pin test in `TestUVVisTabAppearancePhase4ae`); new float `tk.Spinbox` row in `_build_section_appearance` (row=4; bounds `1.00`–`1.50`, increment `0.01`); renderer reads `cfg.get("tertiary_axis_offset", _TERTIARY_AXIS_OFFSET_FRAC)` and passes it to the right-spine offset. The CS-44 module constant stays in place as the canonical fallback. **CS-44 lock relaxation taken in Phase 4ae:** the constant is no longer the sole source of truth — the dict key takes precedence; the helpers (`_AXIS_ROLES`, `_DEFAULT_Y_AXIS_BY_NODETYPE`, `_NON_PRIMARY_Y_LABEL`, `_resolve_y_axis_role`, `_resolve_non_primary_y_label`) stay byte-identical. **Still ⏳:** the larger lift to `plot_widget.py` (or a new `plot_axes.py`) — `_AXIS_ROLES`, `_DEFAULT_Y_AXIS_BY_NODETYPE`, `_NON_PRIMARY_Y_LABEL`, `_resolve_y_axis_role`, `_resolve_non_primary_y_label`, and the `get_axis(role)` lazy-creation closure all stay in `uvvis_tab._redraw` until a second tab (XANES / EXAFS) needs multi-axis routing. Single consumer today; no abstraction tax warranted. The new `tertiary_axis_offset` cfg-key read site lifts naturally alongside when the rest does |
-| ⏳ | 🟡 | **Top-bar Open File / Reload buttons belong to TDDFT only, not the app top level (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4t. The very top bar of the app currently shows `Open File` + `Reload` buttons that, in practice, only act on the TDDFT tab — they're not relevant to the UV/Vis tab (which has its own subject-loading paths inside the left pane), the XAS / EXAFS tabs (separate file paths), or the planned Compare tab. Today they're rendered at app top level (in `binah.py` or wherever the chrome lives), giving the user a false signal that they're cross-tab gestures. The user has flagged that they should be removed from the top-level row entirely and either (a) re-rendered inside the TDDFT tab where they belong, OR (b) become tab-context-aware so they only show when the TDDFT tab is active. Lock decision needed: (a) is structurally cleaner (each tab owns its own file ingestion); (b) preserves the existing "always-on top bar" pattern. Touches `binah.py` (top-bar removal) + the TDDFT tab module (button re-render, if path (a) chosen). Pairs with any future tab-chrome refactor — the file-open responsibility per tab is also relevant to the OLIS reader register entry above and to the persistence umbrella's `.ptmg` archive UX (load-project gestures stay app-level; load-instrument-file gestures are per-tab) |
+| ✅ | 🟡 | **Top-bar Open File / Reload buttons belong to TDDFT only, not the app top level (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4t. The very top bar of the app currently shows `Open File` + `Reload` buttons that, in practice, only act on the TDDFT tab — they're not relevant to the UV/Vis tab (which has its own subject-loading paths inside the left pane), the XAS / EXAFS tabs (separate file paths), or the planned Compare tab. **Resolved Phase 4ah (commit 3, F):** Path (a) chosen — Open File + Reload removed from `binah._build_top_bar` and re-rendered inside the TDDFT tab's left sidebar, at the top above the "Loaded Files" listbox (`_build_main_area`). The flanking `ttk.Separator` between the buttons and the "TDDFT Section:" combobox is removed too. The `«` sidebar-toggle button + the "TDDFT Section:" combobox + the "No file loaded" file label stay in the top bar this phase (USER-CONFIRMED follow-up: a new 🟢 BACKLOG entry queues the `«` toggle + Section combobox to follow Open File / Reload in a future phase). Global `<Control-o>` keybinding stays bound to `_open_file` — keyboard-shortcut scope-by-tab is the keyboard-shortcuts whole-interface USER-FLAGGED phase's responsibility. **Lock decisions taken:** (i) path (a) over path (b) — each tab owns its own file ingestion, cleaner than tab-context-aware top-bar; (ii) global Ctrl+O unchanged; (iii) no regression test (Lock 13 — manual smoke for a one-button-parent move on a module with no existing test coverage). No test added: binah.py has no test coverage today; a Tk-rendering placement test for one button relocation is over-investment |
 | ⏳ | 🔴 | **Diagnostic console / fitted-parameter panel (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4n. Several places in the app produce numeric diagnostics that currently live only in `OperationNode.params` and never surface to the user: scattering log fit's resolved n (Phase 4m friction #2), upcoming scattering+offset's `a_fitted`, polynomial baseline fit residuals, peak-picking match list, rubberband convex-hull point count, etc. The user is asking whether a small read-only "console" or "log" pane (a scrolling text widget at the bottom of the app or a per-tab footer) would carry these. Two shapes worth weighing: (a) **per-tab inline diagnostic strip** — small read-only panel at the bottom of each tab's left pane that names the most recently applied op and lists its key fitted values; refreshed on every Apply; (b) **app-wide log console** — a collapsible bottom drawer (like an IDE's output pane) that streams every op's "results" line plus warnings / errors / debug; survives tab switches. (b) doubles as a place for the `_redraw` KeyError trace (Phase 4n friction #1) and the messagebox messages currently shown via popups (e.g. "no Compare host connected"). Both shapes are non-trivial; pick before any Phase 4 follow-up that needs to surface a fitted value |
 | ✅ | 🔴 | **Defensive guard in `_redraw` for non-UVVIS DataNodes** | Surfaced by Phase 4n while writing the Send-to-Compare integration test. Resolved Phase 4o (CS-28): positive guard at the top of the per-node loop body (`if "wavelength_nm" not in node.arrays or "absorbance" not in node.arrays: continue`) and a mirror guard wrapped around the unit==`"nm"` xlim min/max comprehension. Silent skip — the diagnostic-console entry (still ⏳) will eventually surface skipped nodes. The Phase 4n note that BASELINE's schema was `wavelength_nm + baseline` was inaccurate — live BASELINE nodes carry `wavelength_nm + absorbance` (line 937 of `uvvis_tab.py`); the only `baseline`-keyed BASELINE in the codebase was the deliberately-malformed stub in `test_send_node_to_compare_skips_non_uvvis_nodes`, which the Phase 4o follow-up commit simplified to use the new guard rather than stub `graph.get_node` |
 | ⏳ | 🟡 | **Long-provenance hist button display options (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4n. The `⌥{n}` always-visible cell (CS-26 promotion) renders the provenance chain length as a literal integer. For complex workflows `n > 9` is realistic — the row's natural width grows with the digit count, which can re-trigger the responsive overflow pattern at the same widths today's tests verify. Options to weigh in the implementing session: (a) cap display at `⌥9+` once n > 9 with the exact count surfaced via tooltip / history sub-frame; (b) two-digit fixed width (`⌥01`...`⌥99`) so the row's natural width is bounded but the count remains readable; (c) hide digits entirely (just `⌥`) and surface the count only via the expanded history sub-frame; (d) SI-suffix style (`⌥9`, `⌥1k` for >999). Touches `scan_tree_widget._populate_node_row` (the `text=f"⌥{chain_len}"` line) and the existing `test_provenance_op_count` style assertions. User has confirmed `n > 9` is "easily seen for complex workflows" so this is not edge-case |
@@ -1669,9 +1669,11 @@ subsequent Phase 4 session.**
 | ⏳ | 🟢 | **Visual cue for derivative entries in the shared subject combobox (CS-49 follow-up)** | Surfaced Phase 4x (Claude). Now that `SECOND_DERIVATIVE` rows mix into the shared combobox alongside the four spectrum-shaped types (`_refresh_shared_subjects` widening), the user has no per-row glyph or grouping divider to tell at a glance "this is a derivative" vs "this is an absorbance-domain spectrum". Cheap polish: prefix derivative entries with a `d² ` glyph in the combobox display key (or insert a `─── d²A/dλ² ───` separator entry between the spectrum block and the derivative block). The latter is more disruptive (changes the value-list semantics — the separator can't be selected); the former is one-line in `_refresh_shared_subjects`. Defer until the user reports actual confusion picking among mixed entries; the audit-stability test `test_shared_combobox_orders_spectrum_then_derivative` already pins the spectrum-first ordering so visual scanning is at least left-to-right consistent |
 | ⏳ | 🟡 | **Keyboard shortcuts — whole-interface evaluation pass (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4af (step 5 elicitation). User noted while reviewing Phase 4af friction list: "We'll need to evaluate keyboard shortcuts for the whole interface at some point. Not sure if it's better to do that sooner or later. Either way, let's put that into the list." Today the app exposes essentially no keyboard accelerators — gestures are mouse-driven (right-click context menus, footer buttons, dialog Apply/Cancel via mouse). Power-user workflows would benefit from a coherent shortcut vocabulary, but the design needs to be planned holistically rather than gesture-by-gesture so collisions don't compound. **Scope is a design pass before any implementation:** (a) inventory every active gesture (every ScanTreeWidget row gesture, every Plot Settings dialog action, every StyleDialog action, every tab-switch / file-open / save-workflow, every panel Apply, every Combine/Ungroup); (b) propose a shortcut table grouped by surface (App-global vs tab-scoped vs dialog-modal); (c) review for collisions with Tk's built-in bindings (Ctrl+C copy, Ctrl+W close window, F-keys); (d) review for platform consistency (Cmd vs Ctrl — currently Windows-only, but a XANES/EXAFS Mac contributor is plausible). Concrete first candidates the user-facing experience would benefit from: Ctrl+G "Group selected", Ctrl+Shift+G "Ungroup", Ctrl+S "Save workflow" (already present?), Ctrl+O "Open workflow", Delete "Discard selected" (with confirmation if any are COMMITTED), F2 "Rename" (matches the Windows convention CS-33's double-click started from), Enter "Apply" in the active panel. **Lock decisions for the implementing session:** (i) does the table live in `KEYBINDINGS.md` (separate doc, audit-friendly) or in `COMPONENTS.md` as a CS section, or both? (ii) is the implementation a single `key_bindings.py` module that registers all `bind_all` / per-tab `bind` calls at construction, or per-component bindings co-located with the gesture? (iii) does the app surface a "Keyboard shortcuts…" Help menu entry that opens a Toplevel with the table? Cross-refs every prior friction item that ended "would benefit from a keyboard shortcut" deferral (none today — the user has not previously surfaced this, which is why it's a fresh register entry). Multi-phase task; the design pass + a first batch of 3–5 shortcuts is a reasonable first phase. |
 | ✅ | 🟡 | ~~**"Add to existing group" gesture — extend an existing NODE_GROUP without dissolve-and-recreate (USER-FLAGGED)**~~ ✅ Resolved in Phase 4ag (CS-58). USER-FLAGGED at end of Phase 4af (step 5 elicitation; "Definitely want that"). Phase 4af shipped only create + dissolve, so once a group existed the only way to add members was dissolve + recreate (losing any user-edited label). **Phase 4ag (CS-58) ships the v2 extend path + a symmetric remove path:** two new graph-layer methods (`ProjectGraph.extend_group(group_id, member_ids)` + `remove_from_group(node_id)`) with validation invariants mirroring CS-57's `create_group`; one new event type (`NODE_GROUP_MEMBERS_CHANGED` payload `{"group_id", "added", "removed"}`) routed to the scan tree's structural-rebuild branch; three new ScanTreeWidget surfaces: footer button now switches its text + click-target on selection (`"Group selected (N)"` in group mode, `"Add to <group label>"` in extend mode, baseline `"Group selected"` disabled otherwise — also closes Phase 4af friction #6); group-row context menu grows a fourth entry `"Add selected to this group (N)"`; data-row context menu grows two sibling entries `"Add selected to <group label> (N)"` + per-row `"Remove from group"`. **Lock decisions taken (Phase 4ag):** (i) **both surfaces** — context menu AND footer button (matches CS-57's two-surface symmetry); (ii) **append** (preserve caller order); (iii) **new event type `NODE_GROUP_MEMBERS_CHANGED`** — rejected NODE_LABEL_CHANGED because the scan tree routes label-changed to targeted row refresh while member changes are structural (rows move between top-level and group-nested rendering); (iv) **yes — symmetric `remove_from_group` ships in the same phase**, reusing CS-57's auto-dissolve threshold (<2 active members) via `discard_node`. **Lock relaxations:** CS-57's `text="Group selected"` initial-label lock is broadened — the button now mutates its text per selection classification (Phase 4af friction #6 polish trigger). The CS-57 narrow "any group in selection → disabled" semantics is also deliberately relaxed: a `1 group + ≥1 ungrouped` selection now routes to the extend gesture (test pinning the old semantics was updated in the same commit). 53 new tests across `test_graph.py` (27 in `TestNodeGroupExtendRemoveOps`), `test_scan_tree_widget.py` (24 in `TestScanTreeWidgetNodeGroupsPhase4ag`), `test_persistence_phase_a.py` (2 round-trip — extend+remove sequence, auto-dissolve cascade). Net suite count: 1002 (up from 949). |
-| ⏳ | 🟡 | **Grid renders in front of data lines, not behind (USER-FLAGGED bug)** | USER-FLAGGED at end of Phase 4ag (step 5 elicitation). `uvvis_tab._redraw` calls `ax.grid(True, linestyle=":", alpha=0.4, color=cfg.get("grid_color", "#b0b0b0"))` without specifying `zorder`; matplotlib's default zorder for the grid is 2.5 while line plots use 2.0, so gridlines paint ON TOP of the data — visually distracting on dense overlays. Fix is one keyword arg: pass `zorder=0` (or any value < the line zorder) on the `ax.grid(...)` call. Mirror on every other tab that calls `ax.grid(True, ...)` (Compare, XANES, EXAFS, TDDFT) once they migrate. **Lock decisions for the implementing session:** (i) Hard-code `zorder=0` everywhere, or expose a `grid_zorder` Plot Settings → Appearance key (likely overkill); (ii) Apply only to UV/Vis in this phase or sweep all tabs simultaneously. **Affected:** `uvvis_tab._redraw` (one-line fix), regression test in `test_uvvis_tab` that asserts the rendered grid's effective zorder is below the line collection's. No CS-N section needed — this is a one-line render bug, not new architecture. |
+| ✅ | 🟡 | **Grid renders in front of data lines, not behind (USER-FLAGGED bug)** | USER-FLAGGED at end of Phase 4ag (step 5 elicitation). `uvvis_tab._redraw` called `ax.grid(True, linestyle=":", alpha=0.4, color=cfg.get("grid_color", "#b0b0b0"))` without specifying `zorder`; matplotlib's default zorder for the grid is 2.5 while line plots use 2.0, so gridlines painted ON TOP of the data. **Resolved Phase 4ah (commit 1, A.1):** one keyword arg added — `zorder=0` on the `ax.grid(...)` call. Other tabs migrate when they adopt the renderer architecture. **Lock decisions taken:** (i) hard-code `zorder=0`, no Plot Settings key — render-correctness fix, not a user preference; no plausible user wants the grid in front of data. (ii) UV/Vis only this phase — Compare, XANES, EXAFS, TDDFT migrate on renderer adoption. 2 new tests in `TestUVVisTabGridZOrderPhase4ah`: relational invariant (every gridline zorder < every data-line zorder) and the literal value pin (`get_zorder() == 0`). No CS-N section needed — render bug fix, not architecture. |
 | ⏳ | 🟡 | **Axis double-click → axis-properties dialog (USER-FLAGGED feature)** | USER-FLAGGED at end of Phase 4ag (step 5 elicitation). User asked: "Double-click a plot axis in order to open a window to change axis-specific parameters? (including min, max, spacing, axis label, fonts, font sizes, axis colour, tick size, etc.)" Today axis-level controls are scattered: x-min / x-max / y-min / y-max sit on the UV/Vis top toolbar (read by `uvvis_tab._on_xmin_changed` etc.); y-axis label is rendered through CS-50 / CS-52 / CS-55 via `_resolve_y_axis_label`; tick direction lives in Plot Settings → Appearance (CS-56); font / font size / axis colour / tick size are NOT user-configurable today (matplotlib defaults). **Architecture proposal (lock pending):** new `axis_settings_dialog.py` modal Toplevel opened by a `<Double-Button-1>` binding on the matplotlib Axes (specifically on the axis-label and tick-label regions; clicking inside the plot area should NOT open it — that conflicts with the existing zoom-box gesture). Dialog covers: limits (min/max + autoscale toggle), tick spacing (major + minor), tick direction (CS-56 lives here too — relocate), tick size, axis label text, axis label font + font size + colour, tick label font + font size + colour, axis line colour. **Lock decisions for the implementing session:** (i) one dialog with primary/secondary/tertiary y selectors, or one dialog *per axis* opened by which axis was double-clicked? (ii) which settings move from Plot Settings → Appearance into the new dialog (avoid duplication) — CS-56 `grid_color` and `tertiary_axis_offset` should probably stay in Plot Settings (figure-level), but `tick_direction` is genuinely per-axis. (iii) Are axis settings per-tab or per-axis-role (left/right/secondary)? Likely per-axis-role for symmetry with how the renderer already constructs them. (iv) Does the dialog respect the existing Apply / ∀ Apply to All / Save / Cancel button row pattern (CS-23 lock)? **Affected:** new `axis_settings_dialog.py`, `uvvis_tab._redraw` (reads per-axis style keys), `_on_canvas_double_click` event hook, regression tests for the double-click region detection + the round-trip of every new style key. Pairs with the existing Plot Settings dialog (some keys may relocate). Multi-phase task — the design pass + the dialog shell + a first batch of 3–4 controls is a reasonable first phase. |
-| ⏳ | 🟡 | **"Show hidden" toggle should disable when no hidden rows exist (USER-FLAGGED polish)** | USER-FLAGGED at end of Phase 4ag (step 5 elicitation; "If it's not relevant, then it should be greyed out when it's not relevant"). Originally surfaced as a 🟢 Claude polish in Phase 4af friction #5 ("'Show hidden' footer toggle behaviour is opaque") — the user investigated in Phase 4ag verification and confirmed they couldn't tell whether the toggle was even responsive because the rendered list never changed (on a fresh workflow no rows have `active=False`, so the toggle is a click-but-no-visible-effect). **Architecture proposal (lock pending):** at every `_rebuild` end, compute `any(not n.active and not is_discarded for n in candidate_nodes)`; toggle the Checkbutton's state to `"disabled"` when no hidden rows would be revealed, otherwise `"normal"`. **Lock decisions for the implementing session:** (i) just disable-gate, OR surface a count badge ("Show hidden (3)") for stronger affordance — (ii) does the disabled state need a tooltip explaining "no hidden rows in the current view"? (iii) Cascade: when "Show hidden" is currently ON and the user discards the last hidden row, does the toggle silently flip OFF + disable, or stay ON + disabled? **Affected:** `scan_tree_widget._build_chrome` (Checkbutton reference stored as an attribute), `_rebuild` (gating recompute), regression test that checks the toggle state on a graph with and without hidden rows. Cross-ref Phase 4af friction #5 (now upgraded from 🟢 to 🟡 by user flag). |
+| ⏳ | 🟢 | **Per-tab tertiary-y-axis default routing schema (USER-FLAGGED design topic)** | USER-FLAGGED at the START of Phase 4ah ("With regards to default multi-axis functionality, we will need to consider what counts as default behaviour differently in different tabs. For UV/Vis, we know that the derivative goes to secondary. Not sure what would need to default to the tertiary y-axis (if anything)."). Today `_DEFAULT_Y_AXIS_BY_NODETYPE` (CS-44-locked, in `uvvis_tab.py`) is a single flat dict mapping `NodeType → axis_role` shared across the codebase. As more tabs adopt the renderer architecture (TDDFT pending UV/Vis-style migration; Compare planned), per-tab routing diverges: UV/Vis derivative → secondary is clear, but TDDFT might want primary=spectrum / secondary=oscillator-strength / tertiary=transition-density-or-state-energy; Compare might be primary-only. **Architecture proposal (lock pending):** (a) extend `_DEFAULT_Y_AXIS_BY_NODETYPE` into `_DEFAULT_Y_AXIS_BY_NODETYPE: dict[str_tab_name, dict[NodeType, role]]` and have each tab read its sub-dict; (b) introduce a per-tab registry pattern where each Tab class owns its own `DEFAULT_Y_AXIS_BY_NODETYPE` class attribute (the renderer reads from `self.DEFAULT_Y_AXIS_BY_NODETYPE` instead of the module-level constant); (c) status quo + per-NodeType-uniqueness invariant (each NodeType belongs to exactly one tab, so the flat dict suffices — only ambiguous if two tabs render the same NodeType). **Lock decisions for the implementing session:** (i) which option (a/b/c); (ii) does d²A stay on secondary by default (current behaviour) or move to tertiary (separate magnitude from d¹A) — Claude's recommendation during the Phase 4ah elicitation was "keep both derivatives on secondary, let users move d²A explicitly"; (iii) TDDFT tertiary candidates — transition density vs state energy vs none; (iv) does this phase relocate CS-44 invariants into a registry, or layer on top. **Affected:** `uvvis_tab._DEFAULT_Y_AXIS_BY_NODETYPE` (CS-44 lock needs deliberate relaxation), every tab's renderer, COMPONENTS.md CS-44 update. Cross-refs the multi-axis routing CS-44 register entries above and the "Refactor uvvis_tab.py — extract host shell" cross-tab generalization entry. Dedicated future phase — Claude recommended NOT bundling into Phase 4ah; queued here for explicit pickup. |
+| ⏳ | 🟢 | **Sidebar `«` toggle + "TDDFT Section:" combobox follow Open File / Reload into TDDFT chrome (USER-CONFIRMED follow-up)** | Surfaced Phase 4ah step 5 and USER-CONFIRMED for queueing as a future-phase polish. With commit 3 of Phase 4ah relocating Open File / Reload from `binah._build_top_bar` into the TDDFT sidebar, the top bar still hosts two pieces of TDDFT-only chrome: (a) the `«` sidebar-toggle button (operates on `self._sidebar`, which is the TDDFT-specific Loaded Files pane), and (b) the "TDDFT Section:" combobox + the "No file loaded" file label. None of those make sense for UV/Vis, XANES, EXAFS, or the planned Compare tab. **Architecture proposal (lock pending):** relocate all three into the TDDFT tab — the `«` button into the TDDFT sidebar's own chrome, the section combobox + file label into a small TDDFT-tab top strip. Once done, the app top bar becomes either empty (auto-hidden) or repurposed as a true cross-tab status row. **Lock decisions for the implementing session:** (i) where does the `«` button live — TDDFT sidebar top corner, or inside `_build_main_area`'s spectra-frame chrome? (ii) does the empty top-bar disappear (`pack_forget` when no children), or stay as a status strip? (iii) keyboard shortcuts (none currently bound) — defer. **Affected:** `binah._build_top_bar`, `binah._build_main_area` (TDDFT side), `_toggle_sidebar`'s `self._sidebar_btn` lookup. Cross-refs the larger "Refactor uvvis_tab.py — extract host shell into separate files; cross-tab generalization" register entry (the broader tab-chrome lift). Pairs with the keyboard-shortcuts whole-interface evaluation USER-FLAGGED pass (which may scope `Ctrl+O` to TDDFT at the same time). |
+| ✅ | 🟡 | **"Show hidden" toggle should disable when no hidden rows exist (USER-FLAGGED polish)** | USER-FLAGGED at end of Phase 4ag (step 5 elicitation; "If it's not relevant, then it should be greyed out when it's not relevant"). Originally surfaced as a 🟢 Claude polish in Phase 4af friction #5 ("'Show hidden' footer toggle behaviour is opaque"). **Resolved Phase 4ah (CS-59 Thread A, commit 2):** new `_has_hidden_rows()` predicate returns True iff ≥1 non-DISCARDED DataNode with `active=False` passes the tab predicate (or is itself a NODE_GROUP). New companion `_refresh_show_hidden_button_state()` flips the Checkbutton (now stored as `self._show_hidden_btn`) between `"normal"` and `"disabled"`. Called at the end of every `_rebuild` immediately after `_refresh_group_button_state` — the cluster of `_refresh_*_button_state` methods is now the canonical pattern for state-aware footer controls. **Lock decisions taken:** (i) disable-only — no count badge or tooltip (minimal scope, matches the user's "greyed out" phrasing); (ii) cascade preserves `_show_hidden` ON when the last hidden row disappears (toggle stays ON + becomes disabled — never silently flipped, the disabled state is the affordance); (iii) hidden group members count regardless of whether their parent group is expanded (avoids whiplash on expand/collapse — see CS-59 lock 2). 11 new tests in `TestShowHiddenButtonGatingPhase4ah`: 6 pure-helper coverage (empty graph, all-active, one-hidden, discarded-ignored, predicate-excluded-ignored, NODE_GROUP-counts), 5 button-state coverage (fresh-disabled, becomes-hidden, un-hidden-redisables, cascade discard preserves `_show_hidden` ON, hidden group member counts). Closes the chain with Phase 4af friction #5 (now ✅). |
 
 ### Friction points carried forward from Phase 4r
 
@@ -1950,21 +1952,19 @@ subsequent Phase 4 session.**
    (`style["y_axis"]` short-circuit + StyleDialog Combobox row).
    Decision 4 (per-role y-limit Tk vars) remains deferred.
 
-3. 🟡 **Top-bar Open File / Reload buttons belong to TDDFT
+3. 🟡 ~~**Top-bar Open File / Reload buttons belong to TDDFT
    only, not the app top level (USER-FLAGGED).** The top-bar
-   buttons in `binah.py` (or wherever the app chrome lives)
-   only act on the TDDFT tab in practice but visually suggest
-   cross-tab gestures. The user has flagged that they should
-   be removed from the top-level row entirely. **Cross-ref:**
-   see the new register entry "Top-bar Open File / Reload
-   buttons belong to TDDFT only" above for the architecture
-   (lock decision needed: re-render inside the TDDFT tab vs.
-   tab-context-aware show/hide on the existing top bar).
-   Touches `binah.py` + the TDDFT tab module. Pairs with the
-   OLIS reader register entry (per-tab file ingestion) and
-   the persistence umbrella's `.ptmg` archive UX (load-project
-   gestures stay app-level; load-instrument gestures are
-   per-tab).
+   buttons in `binah.py` only act on the TDDFT tab in practice
+   but visually suggest cross-tab gestures.~~ ✅ Resolved in
+   Phase 4ah (commit 3, F). Path (a) chosen — Open File +
+   Reload removed from `binah._build_top_bar` and re-rendered
+   inside the TDDFT tab's left sidebar at the top, above
+   "Loaded Files". Flanking `ttk.Separator` removed. The `«`
+   sidebar toggle + "TDDFT Section:" combobox + file label
+   stay in the top bar this phase; a new 🟢 BACKLOG entry
+   ("Sidebar `«` toggle + 'TDDFT Section:' combobox follow
+   Open File / Reload into TDDFT chrome") queues the
+   follow-up.
 
 4. 🟢 **`_FLOOR_ZERO_SUPPORTED_MODES` is currently dead code.**
    CS-43's constant is initialised to `frozenset(BASELINE_MODES)`
@@ -2058,18 +2058,20 @@ subsequent Phase 4 session.**
    until a "UI froze" report. **Cross-ref:** see the new
    register entry.
 
-9. 🟡 **`_absorbance_to_y` corrupts SECOND_DERIVATIVE on %T y-unit.**
+9. 🟡 ~~**`_absorbance_to_y` corrupts SECOND_DERIVATIVE on %T y-unit.**
    Pre-existing bug surfaced while pinning the multi-axis tests.
    The conversion clips + maps `100·10^(-A)` which is meaningless
-   for d²A values. Fix: gate the conversion on NodeType. One
-   per-node-loop edit + one regression test. **Cross-ref:** see
-   the new register entry. **Phase 4y note (CS-50):** the override
-   hook makes a SECOND_DERIVATIVE-on-primary configuration newly
-   reachable from the StyleDialog UI; before CS-50 the user had
-   to hand-edit a project file's style dict to land the bug. The
-   canonical register entry's priority arguably ticks up post-4y;
-   defer the fix until either a user reports nonsense %T values or
-   the next phase that touches the per-node loop's y-unit branch.
+   for d²A values. Fix: gate the conversion on NodeType.~~ ✅
+   Resolved in Phase 4ah (CS-59 Thread B, commit 4). Helper
+   signature widened to `_absorbance_to_y(absorbance, y_unit,
+   node_type)`; CS-55-frozenset gate short-circuits to
+   pass-through for derivative-space NodeTypes (currently
+   SECOND_DERIVATIVE). All three `_redraw` call sites updated.
+   PEAK_LIST + BASELINE remain absorbance-space — byte-identical
+   behaviour. 7 tests in `TestAbsorbanceToYNodeTypeGatePhase4ah`.
+   Chain note: this also closes the Phase 4ac friction #1 chain
+   (label-routing) ✅ resolved Phase 4ad CS-55 — Phase 4u #9 was
+   the values half of that chain; both halves are now closed.
 
 10. ~~🟢 **Per-style `y_axis` override hook + StyleDialog row.**
     Phase 4u Decision 1 deferred this — per-NodeType defaults
@@ -3136,15 +3138,18 @@ until the relevant subsequent Phase 4 session.**
    `active` flag is False (set via the context-menu Hide
    action or the future Trash-can register entry); on a fresh
    workflow no nodes are hidden, so the toggle is a no-op.~~
-   🟡 **Upgraded to USER-FLAGGED in Phase 4ag step 5:** the
+   ~~🟡 **Upgraded to USER-FLAGGED in Phase 4ag step 5:** the
    user verified during Phase 4ag and re-flagged ("doesn't
    allow me to select it ... if it's not relevant, then it
    should be greyed out when it's not relevant"). **Cross-ref:**
    see the new canonical register entry "Show hidden toggle
-   should disable when no hidden rows exist". Not yet
-   resolved — Phase 4ag scope was the extend/remove gesture
-   set; this polish is the next session's pick if no other
-   USER-FLAGGED 🟡 takes priority.
+   should disable when no hidden rows exist".~~ ✅ Chain
+   closed in Phase 4ah (CS-59 Thread A, commit 2) — the
+   canonical register entry is now resolved; this friction
+   item, Phase 4ag friction #3, and the canonical entry all
+   reference the same fix. Chain collapsed: this is the
+   first occurrence in the friction-history record and stays
+   as the canonical breadcrumb.
 
 6. ~~🟢 **Footer "Group selected" button label is static —
    doesn't say how many will be combined (Claude-surfaced
@@ -3191,17 +3196,15 @@ above. The Claude-surfaced 🟢 items below are polish-level and
 deferrable. **Do not fix until the relevant subsequent Phase 4
 session.**
 
-1. 🟡 **USER-FLAGGED Grid renders in front of data lines,
+1. 🟡 ~~**USER-FLAGGED Grid renders in front of data lines,
    not behind.** User-flagged at end of Phase 4ag step 5
    ("Grid should be behind the datasets, not in front").
    `uvvis_tab._redraw` calls `ax.grid(...)` without a
    `zorder` kwarg; matplotlib's default grid zorder (2.5) is
-   above the line plots' default zorder (2.0). **Cross-ref:**
-   see the new canonical register entry above. One-line fix,
-   small regression test. Highest-pain because it's a
-   user-visible rendering bug, not an abstraction or
-   architectural concern. Strong candidate for being bundled
-   into the next phase regardless of which intent is locked.
+   above the line plots' default zorder (2.0).~~ ✅ Resolved
+   in Phase 4ah (commit 1, A.1). One-line fix landed —
+   `ax.grid(...)` now passes `zorder=0`. 2 regression tests
+   in `TestUVVisTabGridZOrderPhase4ah`.
 
 2. 🟡 **USER-FLAGGED Axis double-click → axis-properties
    dialog.** User-flagged at end of Phase 4ag step 5
@@ -3215,13 +3218,15 @@ session.**
    dialog button-row vocabulary) and CS-56 (tick_direction
    key may relocate to the new dialog).
 
-3. 🟡 **USER-FLAGGED "Show hidden" toggle should disable
+3. 🟡 ~~**USER-FLAGGED "Show hidden" toggle should disable
    when no hidden rows exist.** Upgraded from Phase 4af
-   friction #5 🟢 by user flag during Phase 4ag step 5.
-   **Cross-ref:** see the new canonical register entry above.
-   Smallest scope of the three new USER-FLAGGED items —
-   would be a fast pick if a session needs a contained
-   polish phase.
+   friction #5 🟢 by user flag during Phase 4ag step 5.~~
+   ✅ Resolved in Phase 4ah (CS-59 Thread A, commit 2). New
+   `_has_hidden_rows()` predicate + `_refresh_show_hidden_
+   button_state()` companion called from `_rebuild`'s tail.
+   Disable-only — no count badge or tooltip. Cascade
+   preserves `_show_hidden` ON when the last hidden row
+   disappears. 11 tests in `TestShowHiddenButtonGatingPhase4ah`.
 
 4. 🟢 **`_can_group_selection` preserved as a thin alias of
    `_classify_selection()["mode"] == "group"` (Claude-
@@ -3285,6 +3290,95 @@ session.**
    a 🟢 polish. Stays deferred until reported in real use
    or until a phase naturally touches that test. No
    register entry.
+
+### Friction points carried forward from Phase 4ah
+
+These are concrete obstacles the next Phase 4 session will hit.
+Phase 4ah was a polish bundle (A.1 grid zorder + A.2 show-
+hidden gating + F TDDFT button relocation + G d²A %T fix)
+that resolved four BACKLOG register entries without
+introducing new architecture beyond CS-59. The user
+contributed TWO new BACKLOG entries at step 5 / session
+start: 🟢 sidebar `«` + "TDDFT Section:" combobox follow
+Open File / Reload into TDDFT chrome (USER-CONFIRMED
+follow-up), and 🟢 per-tab tertiary-y-axis default routing
+schema (USER-FLAGGED design topic raised by the user at
+the start of Phase 4ah — "what counts as tertiary axis
+default per tab"). The Claude-surfaced 🟢 items below are
+polish-level and deferrable. **Do not fix until the
+relevant subsequent Phase 4 session.**
+
+1. 🟢 **Sidebar `«` toggle + "TDDFT Section:" combobox
+   follow Open File / Reload into TDDFT chrome (USER-
+   CONFIRMED follow-up).** Phase 4ah commit 3 (F) moved
+   Open File + Reload into the TDDFT sidebar but left
+   three other pieces of TDDFT-only chrome at the app
+   top level: the `«` sidebar-toggle button, the "TDDFT
+   Section:" combobox, and the "No file loaded" file
+   label. The user confirmed during Phase 4ah step 5 that
+   these should follow in a future phase. **Cross-ref:**
+   see the new canonical register entry above. Pairs
+   with the larger "Refactor uvvis_tab.py — extract host
+   shell" cross-tab generalization entry (the broader
+   tab-chrome lift).
+
+2. 🟢 **Per-tab tertiary-y-axis default routing schema
+   (USER-FLAGGED design topic).** Raised by the user at
+   the START of Phase 4ah ("With regards to default
+   multi-axis functionality, we will need to consider
+   what counts as default behaviour differently in
+   different tabs"). Today `_DEFAULT_Y_AXIS_BY_NODETYPE`
+   is a single flat dict shared across the codebase
+   (CS-44-locked). TDDFT / Compare / future tabs may
+   need their own defaults — TDDFT plausibly wants
+   secondary=oscillator-strength / tertiary=transition-
+   density-or-state-energy; UV/Vis's tertiary default
+   is unclear (Claude recommended keeping d²A on
+   secondary by default rather than moving it to
+   tertiary). **Cross-ref:** see the new canonical
+   register entry above. Dedicated future phase —
+   Claude explicitly recommended NOT bundling into
+   Phase 4ah.
+
+3. 🟢 **`_has_hidden_rows()` walks every graph node every
+   rebuild (Claude-surfaced perf note).** O(N) per
+   `_rebuild`. Fine at the dataset counts the widget
+   targets (tens, per `_rebuild`'s docstring), but if
+   `_rebuild` ever needs optimisation, `_has_hidden_rows`
+   joins `_candidate_nodes` and `_refresh_group_button_
+   state` in the per-rebuild walk cluster. Defer until
+   profiling shows a hot spot. No register entry.
+
+4. 🟢 **Phase 4ah comment block in `binah._build_top_bar`
+   is dead structural commentary (Claude-surfaced /
+   USER-DECIDED-KEEP).** The block at `_build_top_bar`
+   explains why Open File + Reload are NOT there. Future
+   readers may find it useful for ~one phase and noise
+   thereafter. Claude flagged during step 5; user
+   decided "keep it for now". Revisit when a future
+   phase naturally touches `_build_top_bar`. No register
+   entry.
+
+5. 🟢 **Global `<Control-o>` keybinding still bound to
+   `_open_file` even though the button is now TDDFT-
+   only (Claude-surfaced / Phase 4ah Lock 12 deferral).**
+   Phase 4ah Lock 12 explicitly deferred scope-by-tab
+   binding to the keyboard-shortcuts whole-interface
+   USER-FLAGGED pass. Re-cross-refs the keyboard
+   shortcuts register entry. No new register entry.
+
+6. 🟡 **USER-FLAGGED Axis double-click → axis-properties
+   dialog (Phase 4ag carry-over).** Phase 4ag friction
+   #2 — still open. Multi-phase task. Pairs with CS-23
+   (Plot Settings button-row vocabulary) and CS-56
+   (`tick_direction` may relocate to the new dialog).
+   See the canonical register entry. Continues to be
+   the highest-investment open USER-FLAGGED 🟡.
+
+7. 🟢 **`_can_group_selection` thin-alias cleanup
+   (Phase 4ag carry-over).** Phase 4ag friction #4 —
+   still open. Defer until a refactor naturally touches
+   this region. No register entry.
 
 ---
 
@@ -3500,7 +3594,7 @@ the resolving phase + commit SHA appended to the row.
 
 ---
 
-*Document version: 1.32 — May 2026*
+*Document version: 1.33 — May 2026*
 *1.1: Known Bugs register added 2026-04-27 after Phase 4b manual testing.*
 *1.2: Phase 4c — baseline correction lands; B-001 / B-003 / B-004
 resolved; Phase 4c friction points logged.*
@@ -4243,4 +4337,51 @@ exist" (upgraded from Phase 4af friction #5 🟢 by user flag).
 `test_scan_tree_widget.TestScanTreeWidgetNodeGroupsPhase4ag`
 + 2 in `test_persistence_phase_a.TestSaveLoadRoundTrip` for
 the extend+remove and auto-dissolve cascade round-trips).*
+*1.33: Phase 4ah — polish bundle resolving four BACKLOG
+register entries in one phase (CS-59). (A.1) USER-FLAGGED
+Phase 4ag friction #1 "Grid renders in front of data lines"
+— `ax.grid(...)` in `uvvis_tab._redraw` now takes `zorder=0`
+so gridlines paint behind data lines. (A.2 — CS-59 Thread A)
+USER-FLAGGED Phase 4ag friction #3 / Phase 4af friction #5
+chain "'Show hidden' toggle should disable when no hidden
+rows exist" — new `_has_hidden_rows()` predicate +
+`_refresh_show_hidden_button_state()` companion called from
+`_rebuild`'s tail; Checkbutton stored as `self._show_hidden_
+btn`; cascade contract locked (never silently flip
+`_show_hidden`); member-of-collapsed-group counts as hidden
+(avoids whiplash on expand/collapse). (F) USER-FLAGGED Phase
+4t friction #3 "Top-bar Open File / Reload buttons belong to
+TDDFT only" — path (a) chosen: buttons removed from
+`binah._build_top_bar` and re-rendered inside the TDDFT tab's
+left sidebar at the top above "Loaded Files"; flanking
+`ttk.Separator` removed too; the `«` sidebar toggle + "TDDFT
+Section:" combobox + file label stay in the top bar this
+phase (USER-CONFIRMED follow-up queued). (G — CS-59 Thread B)
+Phase 4u friction #9 "`_absorbance_to_y` corrupts d²A on %T"
+— helper signature widened to `_absorbance_to_y(absorbance,
+y_unit, node_type)`; CS-55-frozenset gate short-circuits to
+pass-through for derivative-space NodeTypes (currently
+SECOND_DERIVATIVE); all three `_redraw` call sites updated.
+**Lock decisions taken (Phase 4ah):** (i) hard-code
+`zorder=0`, no Plot Settings key (render correctness, not
+preference); (ii) UV/Vis only this phase; (iii) disable-only
+on Show hidden — no count badge or tooltip; (iv) cascade
+preserves `_show_hidden` ON; (v) member-of-collapsed-group
+counts as hidden; (vi) TDDFT chrome path (a) re-render in
+tab; (vii) `«` + section combobox follow-up queued; (viii)
+global Ctrl+O stays bound (keyboard-shortcuts phase's job);
+(ix) `_absorbance_to_y` extends signature, helper owns the
+rule. **Lock relaxations:** none to CS-55, CS-57, CS-58,
+CS-44; CS-55 invariant 1 explicitly RE-LOCKED here. Two new
+🟢 BACKLOG entries queued at step 5 + session start:
+sidebar `«` toggle + "TDDFT Section:" combobox follow-up
+(USER-CONFIRMED); per-tab tertiary-y-axis default routing
+schema (USER-FLAGGED design topic raised at session start).
+1022 tests, all green (1002 + 20 new across two files: 2 in
+`test_uvvis_tab.TestUVVisTabGridZOrderPhase4ah` + 11 in
+`test_scan_tree_widget.TestShowHiddenButtonGatingPhase4ah` +
+7 in `test_uvvis_tab.TestAbsorbanceToYNodeTypeGatePhase4ah`).
+F intent added no tests — Lock 13 accepted manual smoke for
+the binah.py button-parent move (module has no existing
+test coverage).*
 *Supersedes: BACKLOG.md (original)*

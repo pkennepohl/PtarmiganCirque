@@ -414,6 +414,220 @@ class TestScanTreeWidget(unittest.TestCase):
 
 
 @unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestShowHiddenButtonGatingPhase4ah(unittest.TestCase):
+    """Phase 4ah — 'Show hidden' Checkbutton disables when nothing to reveal.
+
+    USER-FLAGGED at end of Phase 4ag: the toggle reads as responsive
+    but on a fresh workflow no rows are hidden, so clicking it has
+    no visible effect — a false affordance. The toggle now disables
+    iff ``_has_hidden_rows()`` returns False, recomputed at every
+    ``_rebuild`` end (alongside ``_refresh_group_button_state``).
+
+    Cascade lock: if the toggle is currently ON and the user discards
+    the last hidden row, the toggle stays ON and becomes disabled.
+    We never silently flip ``_show_hidden`` to False — the disabled
+    state IS the affordance that the toggle has nothing to act on.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from scan_tree_widget import ScanTreeWidget
+        cls.ScanTreeWidget = ScanTreeWidget
+
+    def setUp(self):
+        self.host = tk.Frame(_root)
+
+    def tearDown(self):
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    def _build_widget(
+        self, graph: ProjectGraph,
+        node_filter=None,
+    ):
+        _, cb = _redraw_calls()
+        widget = self.ScanTreeWidget(
+            self.host, graph,
+            node_filter if node_filter is not None else [NodeType.UVVIS],
+            cb,
+        )
+        widget.update_idletasks()
+        return widget
+
+    # ----------- _has_hidden_rows pure-helper coverage -----------
+
+    def test_has_hidden_rows_false_on_empty_graph(self):
+        widget = self._build_widget(ProjectGraph())
+        self.assertFalse(widget._has_hidden_rows())
+
+    def test_has_hidden_rows_false_when_every_node_is_active(self):
+        graph = ProjectGraph()
+        graph.add_node(_data("a", NodeType.UVVIS,
+                             state=NodeState.COMMITTED))
+        graph.add_node(_data("b", NodeType.UVVIS,
+                             state=NodeState.COMMITTED))
+        widget = self._build_widget(graph)
+        self.assertFalse(widget._has_hidden_rows())
+
+    def test_has_hidden_rows_true_when_one_committed_node_hidden(self):
+        graph = ProjectGraph()
+        graph.add_node(_data("a", NodeType.UVVIS,
+                             state=NodeState.COMMITTED))
+        graph.add_node(_data("b", NodeType.UVVIS,
+                             state=NodeState.COMMITTED))
+        widget = self._build_widget(graph)
+        graph.set_active("a", False)
+        widget.update_idletasks()
+        self.assertTrue(widget._has_hidden_rows())
+
+    def test_has_hidden_rows_ignores_discarded_nodes(self):
+        # Discarded nodes are gone for view purposes; they must not
+        # cause the toggle to enable. Uses a PROVISIONAL node because
+        # ``discard_node`` requires PROVISIONAL state — COMMITTED rows
+        # have no discard path (they're soft-hidden, never discarded).
+        graph = ProjectGraph()
+        graph.add_node(_data("a", NodeType.UVVIS,
+                             state=NodeState.PROVISIONAL,
+                             active=False))
+        graph.discard_node("a")
+        widget = self._build_widget(graph)
+        self.assertFalse(widget._has_hidden_rows())
+
+    def test_has_hidden_rows_ignores_predicate_excluded_nodes(self):
+        # A hidden XANES node in a UVVIS-only widget must NOT enable
+        # the toggle — it's already excluded by the tab predicate.
+        graph = ProjectGraph()
+        graph.add_node(_data("xa", NodeType.XANES,
+                             state=NodeState.COMMITTED,
+                             active=False))
+        widget = self._build_widget(graph, [NodeType.UVVIS])
+        self.assertFalse(widget._has_hidden_rows())
+
+    # ----------- button state mirrors helper -----------
+
+    def test_button_disabled_on_fresh_widget(self):
+        # Fresh workflow, nothing hidden — toggle disabled.
+        widget = self._build_widget(ProjectGraph())
+        self.assertEqual(
+            str(widget._show_hidden_btn.cget("state")), "disabled",
+        )
+
+    def test_button_enables_when_node_becomes_hidden(self):
+        graph = ProjectGraph()
+        graph.add_node(_data("a", NodeType.UVVIS,
+                             state=NodeState.COMMITTED))
+        widget = self._build_widget(graph)
+        self.assertEqual(
+            str(widget._show_hidden_btn.cget("state")), "disabled",
+        )
+        graph.set_active("a", False)
+        widget.update_idletasks()
+        self.assertEqual(
+            str(widget._show_hidden_btn.cget("state")), "normal",
+        )
+
+    def test_button_redisables_when_hidden_node_unhidden(self):
+        # User un-hides the last hidden row → toggle disables again.
+        graph = ProjectGraph()
+        graph.add_node(_data("a", NodeType.UVVIS,
+                             state=NodeState.COMMITTED,
+                             active=False))
+        widget = self._build_widget(graph)
+        self.assertEqual(
+            str(widget._show_hidden_btn.cget("state")), "normal",
+        )
+        graph.set_active("a", True)
+        widget.update_idletasks()
+        self.assertEqual(
+            str(widget._show_hidden_btn.cget("state")), "disabled",
+        )
+
+    # ----------- cascade: discard the last hidden row -----------
+
+    def test_cascade_discard_last_hidden_row_with_toggle_on(self):
+        # Phase 4ah Lock 7. Toggle currently ON; discard the only
+        # hidden row. Toggle stays ON (no silent flip) and becomes
+        # disabled (nothing to reveal anymore). Uses a PROVISIONAL
+        # node since ``discard_node`` only accepts PROVISIONAL state;
+        # the equivalent for a COMMITTED row is ``set_active(True)``,
+        # which is covered by test_button_redisables_when_hidden_node_unhidden.
+        graph = ProjectGraph()
+        graph.add_node(_data("a", NodeType.UVVIS,
+                             state=NodeState.PROVISIONAL,
+                             active=False))
+        widget = self._build_widget(graph)
+        widget._show_hidden.set(True)
+        widget._rebuild()
+        widget.update_idletasks()
+        # Sanity: toggle should be enabled before the discard.
+        self.assertEqual(
+            str(widget._show_hidden_btn.cget("state")), "normal",
+        )
+        self.assertTrue(widget._show_hidden.get())
+
+        graph.discard_node("a")
+        widget.update_idletasks()
+        # After: toggle stays ON, becomes disabled.
+        self.assertTrue(
+            widget._show_hidden.get(),
+            "Phase 4ah Lock 7: _show_hidden must stay ON when the "
+            "last hidden row is discarded — never silently flipped.",
+        )
+        self.assertEqual(
+            str(widget._show_hidden_btn.cget("state")), "disabled",
+        )
+
+    # ----------- NODE_GROUP coverage -----------
+
+    def test_button_enables_for_hidden_node_group(self):
+        # A NODE_GROUP with active=False also counts as a hidden row
+        # — groups always pass the predicate per the CS-57 visual-
+        # layer invariant.
+        graph = ProjectGraph()
+        graph.add_node(_data("a", NodeType.UVVIS,
+                             state=NodeState.COMMITTED))
+        graph.add_node(_data("b", NodeType.UVVIS,
+                             state=NodeState.COMMITTED))
+        graph.create_group(["a", "b"])
+        widget = self._build_widget(graph)
+        self.assertEqual(
+            str(widget._show_hidden_btn.cget("state")), "disabled",
+        )
+        # Find the group id and hide it.
+        group_id = next(
+            n.id for n in graph.nodes.values()
+            if isinstance(n, DataNode) and n.type == NodeType.NODE_GROUP
+        )
+        graph.set_active(group_id, False)
+        widget.update_idletasks()
+        self.assertEqual(
+            str(widget._show_hidden_btn.cget("state")), "normal",
+        )
+
+    def test_button_enables_for_hidden_group_member(self):
+        # A hidden member inside a (collapsed) group still counts —
+        # Phase 4ah Lock 4 rationale: don't whiplash the toggle's
+        # state when the user expands/collapses groups.
+        graph = ProjectGraph()
+        graph.add_node(_data("a", NodeType.UVVIS,
+                             state=NodeState.COMMITTED))
+        graph.add_node(_data("b", NodeType.UVVIS,
+                             state=NodeState.COMMITTED))
+        graph.create_group(["a", "b"])
+        widget = self._build_widget(graph)
+        self.assertEqual(
+            str(widget._show_hidden_btn.cget("state")), "disabled",
+        )
+        graph.set_active("a", False)
+        widget.update_idletasks()
+        self.assertEqual(
+            str(widget._show_hidden_btn.cget("state")), "normal",
+        )
+
+
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
 class TestScanTreeWidgetBugB001(unittest.TestCase):
     """Phase 4c — B-001: history pane must render inline below the row.
 

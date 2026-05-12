@@ -174,10 +174,14 @@ class OrcaTDDFTApp(tk.Tk):
         )
         self._sidebar_btn.pack(side=tk.LEFT, padx=(0, 6))
 
-        tk.Button(bar, text="Open File",  width=10, command=self._open_file).pack(side=tk.LEFT, padx=2)
-        tk.Button(bar, text="Reload",     width=8,  command=self._reload_file).pack(side=tk.LEFT, padx=2)
-
-        ttk.Separator(bar, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=8)
+        # Phase 4ah (USER-FLAGGED, Phase 4t friction #3): the Open
+        # File / Reload buttons used to sit here in the app-level top
+        # bar, but they only ever load ORCA TDDFT .out files — never
+        # XANES, EXAFS, UV/Vis, or Compare data. Rendering them at
+        # app top level gave the user a false signal that they were
+        # cross-tab gestures. The buttons (and the separator that
+        # flanked them) now live inside the TDDFT tab's left sidebar
+        # — see ``_build_main_area``.
 
         tk.Label(bar, text="TDDFT Section:").pack(side=tk.LEFT)
         self._section_var = tk.StringVar()
@@ -213,6 +217,23 @@ class OrcaTDDFTApp(tk.Tk):
         sidebar = tk.Frame(pane, width=230, bd=1, relief=tk.SUNKEN)
         pane.add(sidebar, minsize=180)
         self._sidebar = sidebar
+
+        # Phase 4ah (USER-FLAGGED, Phase 4t friction #3): Open File +
+        # Reload relocated from the app-level top bar to here. They
+        # load ORCA TDDFT .out files — a TDDFT-only operation that
+        # had no business living in the cross-tab chrome row.
+        tddft_files_row = tk.Frame(sidebar)
+        tddft_files_row.pack(fill=tk.X, padx=4, pady=(4, 2))
+        tk.Button(
+            tddft_files_row, text="Open File", width=10,
+            command=self._open_file,
+        ).pack(side=tk.LEFT, padx=(0, 2))
+        tk.Button(
+            tddft_files_row, text="Reload", width=8,
+            command=self._reload_file,
+        ).pack(side=tk.LEFT)
+
+        ttk.Separator(sidebar, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=2)
 
         tk.Label(sidebar, text="Loaded Files", font=("", 9, "bold")).pack(anchor="w", padx=4, pady=2)
 
