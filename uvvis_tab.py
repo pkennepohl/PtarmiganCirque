@@ -46,6 +46,7 @@ from scan_tree_widget import ScanTreeWidget, _SIDEBAR_MIN_WIDTH_PX
 from style_dialog import open_style_dialog
 from tooltip import Tooltip
 import plot_settings_dialog
+import plot_axis_hit_test
 import uvvis_baseline
 import uvvis_normalise
 import uvvis_smoothing
@@ -1413,6 +1414,13 @@ class UVVisTab(tk.Frame):
 
         self._canvas.mpl_connect("button_release_event", self._on_mpl_interact)
         self._canvas.mpl_connect("scroll_event",         self._on_mpl_interact)
+        # CS-60 (Phase 4ai): double-clicking on an axis region opens
+        # the Plot Config dialog pre-selected to that axis's Notebook
+        # tab. Single-clicks and interior clicks fall through silently;
+        # the hit-test classifier handles the dblclick filter.
+        self._canvas.mpl_connect(
+            "button_press_event", self._on_mpl_axis_double_click,
+        )
 
         self._draw_empty()
 
@@ -1793,6 +1801,36 @@ class UVVisTab(tk.Frame):
             self._ylim_hi.set(f"{max(y0, y1):.4g}")
         except Exception:
             pass
+
+    def _on_mpl_axis_double_click(self, event) -> None:
+        """Open the Plot Config dialog on the clicked axis's tab (CS-60).
+
+        Wired to ``button_press_event``; the hit-test classifier
+        ignores non-double-clicks. A click in the plot interior
+        returns ``None`` from the classifier and is a no-op — the
+        existing ⚙ button is still the canonical entry to the Global
+        tab. When the classifier matches an axis region, we open via
+        :func:`plot_settings_dialog.open_plot_config_dialog` with
+        ``tab=<axis-role>``; the factory's "raise existing" path
+        switches the active tab if the dialog is already open.
+
+        The dispatch path is intentionally identical to the ⚙
+        button's: same ``on_apply`` callback, same modal contract,
+        same per-tab registry. Only the entry gesture and the
+        pre-selected tab differ.
+        """
+        hit = plot_axis_hit_test.classify_axis_double_click(
+            event,
+            self._axes_by_role,
+            tertiary_offset_frac=_TERTIARY_AXIS_OFFSET_FRAC,
+        )
+        if hit is None:
+            return
+        plot_settings_dialog.open_plot_config_dialog(
+            self, self._plot_config,
+            on_apply=self._on_plot_config_changed,
+            tab=hit.role,
+        )
 
     def _on_unit_change(self):
         new_unit  = self._x_unit.get()

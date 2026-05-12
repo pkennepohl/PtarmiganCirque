@@ -868,6 +868,197 @@ class TestUVVisTabPlotSettingsIntegration(unittest.TestCase):
         self.assertEqual(self.tab._plot_config["grid"], False)
 
 
+# =====================================================================
+# CS-60 Phase 4ai: double-click on a plot axis opens the dialog tab
+# =====================================================================
+
+
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestUVVisTabAxisDoubleClickPhase4ai(unittest.TestCase):
+    """CS-60 integration: matplotlib double-click on an axis region
+    opens the Plot Config dialog pre-selected to that axis's tab.
+
+    The hit-test classifier is exercised in test_plot_axis_hit_test
+    against a stub axes; this suite drives a real :class:`UVVisTab`
+    with one UVVIS node so the figure is fully laid out and the
+    classifier sees real bbox pixels.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from uvvis_tab import UVVisTab
+        import plot_settings_dialog
+        cls.UVVisTab = UVVisTab
+        cls.psd = plot_settings_dialog
+
+    def setUp(self):
+        self.psd._open_dialogs.clear()
+        self.psd._USER_DEFAULTS.clear()
+        self.host = tk.Frame(_root)
+        self.host.pack()
+        self.graph = ProjectGraph()
+        self.tab = self.UVVisTab(self.host, graph=self.graph)
+        self._populate_plot()
+
+    def tearDown(self):
+        for dlg in list(self.psd._open_dialogs.values()):
+            try:
+                dlg.destroy()
+            except Exception:
+                pass
+        self.psd._open_dialogs.clear()
+        self.psd._USER_DEFAULTS.clear()
+        try:
+            self.tab.destroy()
+        except Exception:
+            pass
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    def _populate_plot(self) -> None:
+        """Add a UVVIS node and force a redraw so the primary axes
+        gets a populated window extent."""
+        wl = np.linspace(300, 600, 10)
+        absorb = np.linspace(0.1, 0.9, 10)
+        self.graph.add_node(DataNode(
+            id="u1",
+            type=NodeType.UVVIS,
+            arrays={"wavelength_nm": wl, "absorbance": absorb},
+            metadata={"source_file": "synthetic"},
+            label="u1",
+            state=NodeState.COMMITTED,
+            style={"color": "#1f77b4", "linestyle": "solid",
+                   "linewidth": 1.5, "alpha": 0.9, "visible": True,
+                   "in_legend": True, "fill": False, "fill_alpha": 0.08},
+        ))
+        self.tab._redraw()
+        self.tab._fig.canvas.draw()
+
+    def _event_at_axes_bbox_edge(self, side: str, dblclick: bool = True):
+        """Build a MouseEvent-like stub at the requested bbox edge.
+
+        ``side`` is one of "bottom" / "top" / "left" / "right",
+        chosen to land in the matching axis-region band that
+        ``classify_axis_double_click`` recognises.
+        """
+        from types import SimpleNamespace
+        bbox = self.tab._ax.get_window_extent()
+        cx = (bbox.x0 + bbox.x1) / 2.0
+        cy = (bbox.y0 + bbox.y1) / 2.0
+        if side == "bottom":
+            ex, ey = cx, bbox.y0 - 2.0
+        elif side == "top":
+            ex, ey = cx, bbox.y1 + 2.0
+        elif side == "left":
+            ex, ey = bbox.x0 - 2.0, cy
+        elif side == "right":
+            ex, ey = bbox.x1 + 2.0, cy
+        elif side == "interior":
+            ex, ey = cx, cy
+        else:
+            raise ValueError(f"unknown side {side!r}")
+        return SimpleNamespace(x=ex, y=ey, dblclick=dblclick)
+
+    # ----- canvas wiring -----
+
+    def test_button_press_event_is_bound(self):
+        # The canvas exposes mpl_connect's registry as
+        # canvas.callbacks; checking the bind via a real
+        # mpl_connect roundtrip is sufficient to confirm the wiring.
+        # We just smoke-test that the handler exists on the tab.
+        self.assertTrue(hasattr(self.tab, "_on_mpl_axis_double_click"))
+        self.assertTrue(callable(self.tab._on_mpl_axis_double_click))
+
+    # ----- double-clicks open the dialog on the right tab -----
+
+    def test_double_click_bottom_opens_primary_x_tab(self):
+        ev = self._event_at_axes_bbox_edge("bottom", dblclick=True)
+        self.tab._on_mpl_axis_double_click(ev)
+        dlg = self.psd._open_dialogs.get(id(self.tab))
+        self.assertIsNotNone(dlg, "axis double-click must open the dialog")
+        self.assertEqual(dlg.current_tab_key(), "primary_x")
+
+    def test_double_click_top_opens_secondary_x_tab(self):
+        ev = self._event_at_axes_bbox_edge("top", dblclick=True)
+        self.tab._on_mpl_axis_double_click(ev)
+        dlg = self.psd._open_dialogs.get(id(self.tab))
+        self.assertIsNotNone(dlg)
+        self.assertEqual(dlg.current_tab_key(), "secondary_x")
+
+    def test_double_click_left_opens_primary_y_tab(self):
+        ev = self._event_at_axes_bbox_edge("left", dblclick=True)
+        self.tab._on_mpl_axis_double_click(ev)
+        dlg = self.psd._open_dialogs.get(id(self.tab))
+        self.assertIsNotNone(dlg)
+        self.assertEqual(dlg.current_tab_key(), "primary_y")
+
+    def test_double_click_right_with_no_twin_opens_primary_y_tab(self):
+        # No SECOND_DERIVATIVE / non-primary node, so no secondary y
+        # axis exists. Right-side click maps to primary_y per the
+        # hit-test classifier's no-twin contract.
+        ev = self._event_at_axes_bbox_edge("right", dblclick=True)
+        self.tab._on_mpl_axis_double_click(ev)
+        dlg = self.psd._open_dialogs.get(id(self.tab))
+        self.assertIsNotNone(dlg)
+        self.assertEqual(dlg.current_tab_key(), "primary_y")
+
+    # ----- non-axis clicks do NOT open the dialog -----
+
+    def test_single_click_does_not_open_dialog(self):
+        ev = self._event_at_axes_bbox_edge("bottom", dblclick=False)
+        self.tab._on_mpl_axis_double_click(ev)
+        self.assertNotIn(id(self.tab), self.psd._open_dialogs)
+
+    def test_double_click_interior_does_not_open_dialog(self):
+        ev = self._event_at_axes_bbox_edge("interior", dblclick=True)
+        self.tab._on_mpl_axis_double_click(ev)
+        self.assertNotIn(id(self.tab), self.psd._open_dialogs)
+
+    # ----- the gear button still opens on Global -----
+
+    def test_gear_button_still_opens_on_global_tab(self):
+        # Sanity check that the CS-23 entry point hasn't drifted —
+        # the ⚙ button continues to open the Global tab.
+        self.tab._open_plot_settings()
+        dlg = self.psd._open_dialogs[id(self.tab)]
+        dlg.update_idletasks()
+        self.assertEqual(dlg.current_tab_key(), "global")
+
+    # ----- second double-click on a different axis switches tab -----
+
+    def test_double_click_switches_tab_of_existing_dialog(self):
+        # Open on primary_x via a bottom click.
+        ev_bottom = self._event_at_axes_bbox_edge("bottom", dblclick=True)
+        self.tab._on_mpl_axis_double_click(ev_bottom)
+        dlg = self.psd._open_dialogs[id(self.tab)]
+        self.assertEqual(dlg.current_tab_key(), "primary_x")
+        # Second double-click on the left side — the dialog must
+        # switch to primary_y rather than create a duplicate.
+        ev_left = self._event_at_axes_bbox_edge("left", dblclick=True)
+        self.tab._on_mpl_axis_double_click(ev_left)
+        # Same dialog still registered.
+        self.assertIs(self.psd._open_dialogs[id(self.tab)], dlg)
+        self.assertEqual(dlg.current_tab_key(), "primary_y")
+
+    # ----- on_apply still wires through ------------------------------
+
+    def test_double_click_dialog_apply_triggers_redraw(self):
+        ev = self._event_at_axes_bbox_edge("bottom", dblclick=True)
+        self.tab._on_mpl_axis_double_click(ev)
+        dlg = self.psd._open_dialogs[id(self.tab)]
+        dlg.update_idletasks()
+        # Edit a global setting and Apply — the on_apply path drives
+        # _redraw because that's the host callback the tab registered.
+        dlg._control_vars["xlabel_font_size"].set(18)
+        dlg.update_idletasks()
+        dlg._do_apply()
+        self.assertAlmostEqual(
+            self.tab._ax.xaxis.label.get_fontsize(), 18.0,
+        )
+
+
 @unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
 class TestUVVisTabBaseline(unittest.TestCase):
     """Phase 4c — UV/Vis baseline correction (CS-15).
