@@ -190,9 +190,9 @@ _TAB_TITLES: dict[str, str] = {
 }
 
 # Per-axis-tab subtitle. The dialog can't introspect the figure today
-# (no figure handle in scope), so commit 3 ships these as static
-# placeholders; commit 5 / Phase 4ak will populate live "(used by N
-# nodes)" / "(unused)" / "(derived)" badges from the host tab's
+# (no figure handle in scope), so Phase 4ai shipped these as static
+# placeholders; Phase 4ak will populate live "(used by N nodes)" /
+# "(unused)" / "(derived)" badges from the host tab's
 # ``_axes_by_role`` plus the graph's nodes.
 _AXIS_TAB_PLACEHOLDER_BADGE: dict[str, str] = {
     "primary_x":   "(spectral x-axis)",
@@ -205,10 +205,20 @@ _AXIS_TAB_PLACEHOLDER_BADGE: dict[str, str] = {
 
 # CS-60 (Phase 4ai): per-setting tab attribution for the modified-tab
 # marker. Every working-copy key resolves to a Notebook tab; the
-# writer helpers tag that tab dirty when the user edits it. Today
-# every key lives in the Global tab; Phase 4aj+ populates this map
-# with per-axis-role keys as per-axis settings land.
-_KEY_TO_TAB: dict[str, str] = {}
+# writer helpers tag that tab dirty when the user edits it. Phase 4aj
+# (CS-61) added the first entry: ``tick_direction`` pins to
+# ``primary_x`` because tick direction is most visually associated
+# with the bottom X-axis ticks in a UV/Vis plot. The widget itself
+# is mirrored across all five per-axis tabs sharing one Tk var;
+# editing on any tab marks only Primary X dirty so the user is not
+# flooded with five bullets per single-setting edit (the dishonest
+# UX is acknowledged friction for 4aj, resolved in 4ak when each
+# axis owns its own ``tick_direction`` slot via the per-axis
+# schema). Phase 4ak+ populates this map with additional per-axis
+# role keys as per-axis settings land.
+_KEY_TO_TAB: dict[str, str] = {
+    "tick_direction": "primary_x",
+}
 
 
 # Suffix appended to a tab's title when it carries uncommitted edits.
@@ -434,8 +444,12 @@ class PlotConfigDialog(tk.Toplevel):
         Pre-CS-60 this was the entire dialog body. Lifted into the
         Global Notebook tab unchanged so the existing section
         widgets (fonts, appearance, legend, title/labels) keep
-        identical behaviour. Phase 4aj will add a mirrored
-        axis-labels row at the top of this tab.
+        identical behaviour. Phase 4aj (CS-61) removed the Tick
+        direction row from the Appearance section and relocated it
+        to the per-axis tabs; the Appearance section now hosts the
+        Grid checkbox, Grid colour swatch, Background swatch, and
+        Tertiary axis offset spinbox (rows 0–3). Phase 4ak's
+        axis-labels mirror lands at the top of this tab.
         """
         for i, name in enumerate(self._sections):
             builder = getattr(self, f"_build_section_{name}", None)
@@ -458,9 +472,9 @@ class PlotConfigDialog(tk.Toplevel):
     def _build_axis_tab_shell(self, parent: tk.Widget, role: str) -> None:
         """Build the per-axis Notebook tab shell (CS-60, Phase 4ai).
 
-        Placeholder layout shipped in commit 3 — real per-axis
-        settings (label override, range/autoscale, tick spacing, etc.)
-        land starting Phase 4aj. Structure:
+        Phase 4ai shipped the layout; Phase 4aj (CS-61) populated the
+        "Settings" LabelFrame with the first real per-axis widget
+        (tick direction). Structure:
 
         * Header row: bold ``"Axis: <Tab Title>"`` on the left,
           italic state badge (placeholder text from
@@ -470,9 +484,11 @@ class PlotConfigDialog(tk.Toplevel):
           scrollable list placeholder. Phase 4ak populates this from
           the host tab's graph + ``y_axis`` style key (CS-50).
         * Separator.
-        * "Settings" LabelFrame containing a single small Label
-          saying "Per-axis settings land in Phase 4aj+." Each
-          subsequent phase swaps in real widgets.
+        * "Settings" LabelFrame populated via
+          :meth:`_build_axis_tab_settings`. Phase 4aj ships the
+          Tick direction Radiobutton row mirrored across all five
+          axis tabs (shared Tk var, flat schema, Primary X dirty
+          pin — CS-61). Each subsequent phase adds widgets here.
         """
         header = tk.Frame(parent)
         header.pack(fill=tk.X)
@@ -507,11 +523,7 @@ class PlotConfigDialog(tk.Toplevel):
             parent, text="Settings", padx=8, pady=6,
         )
         settings_frame.pack(fill=tk.X)
-        tk.Label(
-            settings_frame,
-            text="Per-axis settings land in Phase 4aj+.",
-            font=("", 9), fg="#888888",
-        ).pack(anchor="w")
+        self._build_axis_tab_settings(settings_frame, role)
 
     # ------------------------------------------------------------
     # Tab navigation (CS-60)
@@ -635,31 +647,12 @@ class PlotConfigDialog(tk.Toplevel):
         )
         self._make_colour_swatch(parent, 2, 1, "background_color")
 
-        # Tick direction radio.
-        tk.Label(parent, text="Tick direction:", font=("", 9, "bold")).grid(
-            row=3, column=0, sticky="w", pady=2,
-        )
-        radio_frame = tk.Frame(parent)
-        radio_frame.grid(row=3, column=1, columnspan=2, sticky="w")
-        var = tk.StringVar(
-            value=str(self._working.get("tick_direction", "in")),
-        )
-        self._control_vars["tick_direction"] = var
-        for display, value in (
-            ("In", "in"), ("Out", "out"), ("Both", "inout"),
-        ):
-            tk.Radiobutton(
-                radio_frame, text=display, variable=var, value=value,
-            ).pack(side=tk.LEFT, padx=3)
-        var.trace_add(
-            "write",
-            lambda *_, k="tick_direction", v=var:
-                self._on_var_write(k, v.get()),
-        )
-
-        def _refresh_dir(value, _v=var):
-            _v.set(str(value))
-        self._control_refresh["tick_direction"] = _refresh_dir
+        # CS-61 (Phase 4aj): the "Tick direction" row used to live here
+        # at row 3; it now lives on each per-axis tab (built by
+        # ``_build_axis_tab_settings``). The factory default key and
+        # working-copy storage stay in this module unchanged; only the
+        # widget moved. Tertiary axis offset slides up from row 4 to
+        # row 3 to keep the section dense.
 
         # Tertiary y-axis offset (CS-56 + CS-44 follow-up). Promotes the
         # uvvis_tab._TERTIARY_AXIS_OFFSET_FRAC module-level constant to
@@ -669,7 +662,7 @@ class PlotConfigDialog(tk.Toplevel):
         # practical use rather than matplotlib's full numerical range.
         tk.Label(
             parent, text="Tertiary axis offset:", font=("", 9, "bold"),
-        ).grid(row=4, column=0, sticky="w", pady=2)
+        ).grid(row=3, column=0, sticky="w", pady=2)
         off_var = tk.DoubleVar(
             value=float(self._working.get(
                 "tertiary_axis_offset",
@@ -681,7 +674,7 @@ class PlotConfigDialog(tk.Toplevel):
             parent, from_=1.00, to=1.50, increment=0.01,
             textvariable=off_var, width=6, format="%.2f",
         )
-        off_spin.grid(row=4, column=1, sticky="w", padx=2)
+        off_spin.grid(row=3, column=1, sticky="w", padx=2)
         off_var.trace_add(
             "write",
             lambda *_, k="tertiary_axis_offset", v=off_var:
@@ -694,6 +687,65 @@ class PlotConfigDialog(tk.Toplevel):
             except (tk.TclError, ValueError):
                 pass
         self._control_refresh["tertiary_axis_offset"] = _refresh_off
+
+    # ============================================================
+    # Per-axis tab body — CS-61 (Phase 4aj) tick_direction relocation
+    # ============================================================
+
+    def _build_axis_tab_settings(self, parent: tk.Widget, role: str) -> None:
+        """Populate the per-axis tab's "Settings" LabelFrame (CS-61).
+
+        Phase 4aj ships the first real per-axis widget: a Tick direction
+        Radiobutton row that mirrors across all five axis tabs. Every
+        tab's radio is bound to the SAME ``self._control_vars["tick_direction"]``
+        Tk var, so editing on one tab visually reflects on the other
+        four. The single working-copy key ``tick_direction`` keeps the
+        schema flat (no nested ``_USER_DEFAULTS["axes"][role]`` yet —
+        that schema invention lands in Phase 4ak). The dirty marker
+        pins to Primary X via ``_KEY_TO_TAB["tick_direction"]``, so
+        editing the radio on any axis tab marks ONLY Primary X dirty
+        (not all five). The acknowledged friction — "I edited on Y but
+        X shows the bullet" — clears in 4ak.
+
+        ``parent`` is the inner ``"Settings"`` LabelFrame built by
+        ``_build_axis_tab_shell``. ``role`` is the axis-role tab key
+        (one of ``primary_x``, ``secondary_x``, ``primary_y``,
+        ``secondary_y``, ``tertiary_y``).
+        """
+        row = tk.Frame(parent)
+        row.pack(fill=tk.X, anchor="w", pady=2)
+        tk.Label(
+            row, text="Tick direction:", font=("", 9, "bold"),
+        ).pack(side=tk.LEFT)
+
+        # The first axis tab built (canonical pack order: primary_x)
+        # registers the shared Tk var, trace callback, and refresh
+        # closure. Subsequent tabs reuse the var so all five radios
+        # display the same selection.
+        var = self._control_vars.get("tick_direction")
+        if var is None:
+            var = tk.StringVar(
+                value=str(self._working.get("tick_direction", "in")),
+            )
+            self._control_vars["tick_direction"] = var
+            var.trace_add(
+                "write",
+                lambda *_, k="tick_direction", v=var:
+                    self._on_var_write(k, v.get()),
+            )
+
+            def _refresh_dir(value, _v=var):
+                _v.set(str(value))
+            self._control_refresh["tick_direction"] = _refresh_dir
+
+        radio_frame = tk.Frame(row)
+        radio_frame.pack(side=tk.LEFT, padx=(8, 0))
+        for display, value in (
+            ("In", "in"), ("Out", "out"), ("Both", "inout"),
+        ):
+            tk.Radiobutton(
+                radio_frame, text=display, variable=var, value=value,
+            ).pack(side=tk.LEFT, padx=3)
 
     # ============================================================
     # Section: Legend
