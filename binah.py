@@ -1489,7 +1489,7 @@ class OrcaTDDFTApp(tk.Tk):
             return
 
         # Restore plot defaults (in-place mutate so any open
-        # PlotSettingsDialog sees the new values immediately).
+        # PlotConfigDialog sees the new values immediately).
         psd._USER_DEFAULTS.clear()
         psd._USER_DEFAULTS.update(loaded.plot_defaults)
 
