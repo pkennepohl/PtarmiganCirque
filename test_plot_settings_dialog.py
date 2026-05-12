@@ -851,7 +851,15 @@ class TestPlotConfigDialogNotebookPhase4ai(unittest.TestCase):
                 f"axis tab {key!r} missing placeholder badge",
             )
 
-    def test_axis_tab_shell_carries_phase_4aj_placeholder(self):
+    def test_axis_tab_shell_carries_real_settings_widget_post_phase_4aj(self):
+        # Phase 4ai shipped each axis tab's "Settings" LabelFrame with
+        # a static "Per-axis settings land in Phase 4aj+." placeholder
+        # label. Phase 4aj (CS-61) swapped that placeholder for the
+        # first real per-axis widget — the Tick direction
+        # Radiobutton row. The exhaustive checks live in
+        # TestPlotConfigDialogTickDirectionRelocationPhase4aj; this
+        # test pins the obvious shape so a future regression that
+        # accidentally re-introduces the placeholder fails here too.
         dlg = self.PlotConfigDialog(self.host, self.config)
         dlg.update_idletasks()
         for key in ("primary_x", "secondary_x",
@@ -861,10 +869,15 @@ class TestPlotConfigDialogNotebookPhase4ai(unittest.TestCase):
                 c.cget("text") for c in _all_descendants(frame)
                 if isinstance(c, tk.Label)
             ]
-            self.assertTrue(
+            self.assertFalse(
                 any("Phase 4aj" in t for t in texts),
-                f"axis tab {key!r} missing the 'Per-axis settings land "
-                f"in Phase 4aj+' placeholder; labels were {texts}",
+                f"axis tab {key!r} still carries the pre-4aj "
+                f"placeholder; labels were {texts}",
+            )
+            self.assertIn(
+                "Tick direction:", texts,
+                f"axis tab {key!r} missing the relocated Tick "
+                f"direction label; labels were {texts}",
             )
 
     # ----- tab pre-selection via the tab= argument -------------------
@@ -990,10 +1003,17 @@ class TestPlotConfigDialogStateModelPhase4ai(unittest.TestCase):
     # ----- module-level _KEY_TO_TAB defaults all current keys to global
 
     def test_key_to_tab_defaults_to_global(self):
-        # No factory key has a registered tab today — they all live
-        # on the Global tab. Phase 4aj+ extends _KEY_TO_TAB as
-        # per-axis settings move out of Global.
+        # Keys not explicitly registered in _KEY_TO_TAB resolve to
+        # the Global tab via the default branch of _key_to_tab.
+        # Phase 4aj (CS-61) added the first explicit entry
+        # ("tick_direction" → "primary_x"); keys mapped explicitly
+        # are out of scope for this test (they have their own
+        # per-relocation tests). Future per-axis relocations extend
+        # _KEY_TO_TAB and this test keeps narrowing to the
+        # still-unmapped factory keys.
         for key in self.psd._FACTORY_DEFAULTS:
+            if key in self.psd._KEY_TO_TAB:
+                continue
             self.assertEqual(
                 self.psd._key_to_tab(key), "global",
                 f"key {key!r} should default to the Global tab",
