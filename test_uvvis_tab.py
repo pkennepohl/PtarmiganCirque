@@ -795,7 +795,7 @@ class TestUVVisTabPlotSettingsIntegration(unittest.TestCase):
         self.tab._plot_settings_btn.invoke()
         dlg = self.psd._open_dialogs.get(id(self.tab))
         self.assertIsNotNone(dlg, "dialog must register under the tab id")
-        self.assertIsInstance(dlg, self.psd.PlotSettingsDialog)
+        self.assertIsInstance(dlg, self.psd.PlotConfigDialog)
 
     def test_open_then_apply_calls_back_into_tab(self):
         # The dialog factory enforces one-per-tab; sanity-check that

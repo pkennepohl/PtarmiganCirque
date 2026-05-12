@@ -47,15 +47,15 @@ def _section_titles(dlg) -> list[str]:
 
 
 @unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
-class TestPlotSettingsDialogShell(unittest.TestCase):
+class TestPlotConfigDialogShell(unittest.TestCase):
     """Construction, modal contract, registry, snapshot+cancel revert."""
 
     @classmethod
     def setUpClass(cls):
         import plot_settings_dialog
         cls.psd = plot_settings_dialog
-        cls.PlotSettingsDialog = plot_settings_dialog.PlotSettingsDialog
-        cls.open_dialog = staticmethod(plot_settings_dialog.open_plot_settings_dialog)
+        cls.PlotConfigDialog = plot_settings_dialog.PlotConfigDialog
+        cls.open_dialog = staticmethod(plot_settings_dialog.open_plot_config_dialog)
 
     def setUp(self):
         # Per-test registry and user-defaults reset so a leak from one
@@ -82,7 +82,7 @@ class TestPlotSettingsDialogShell(unittest.TestCase):
     # ----------- construction -----------
 
     def test_constructs_with_empty_config(self):
-        dlg = self.PlotSettingsDialog(self.host, self.config)
+        dlg = self.PlotConfigDialog(self.host, self.config)
         dlg.update_idletasks()
         self.assertEqual(dlg.title(), "Plot Settings")
         # Working copy populated from factory defaults.
@@ -94,7 +94,7 @@ class TestPlotSettingsDialogShell(unittest.TestCase):
     def test_construct_pre_populates_from_config(self):
         self.config["title_font_size"] = 22
         self.config["grid"] = False
-        dlg = self.PlotSettingsDialog(self.host, self.config)
+        dlg = self.PlotConfigDialog(self.host, self.config)
         dlg.update_idletasks()
         self.assertEqual(dlg._working["title_font_size"], 22)
         self.assertEqual(dlg._working["grid"], False)
@@ -106,7 +106,7 @@ class TestPlotSettingsDialogShell(unittest.TestCase):
 
     def test_modal_grab_set_on_visible_window(self):
         """grab_set is part of the modal contract per CS-06."""
-        dlg = self.PlotSettingsDialog(self.host, self.config)
+        dlg = self.PlotConfigDialog(self.host, self.config)
         # ``grab_status`` returns the empty string when no grab is held.
         # When transient + grab_set succeed it returns "local" or
         # "global". Acceptance: anything non-empty.
@@ -136,7 +136,7 @@ class TestPlotSettingsDialogShell(unittest.TestCase):
     # ----------- every section appears for the default config -----------
 
     def test_default_config_shows_all_four_sections(self):
-        dlg = self.PlotSettingsDialog(self.host, self.config)
+        dlg = self.PlotConfigDialog(self.host, self.config)
         dlg.update_idletasks()
         titles = set(_section_titles(dlg))
         expected = {
@@ -149,7 +149,7 @@ class TestPlotSettingsDialogShell(unittest.TestCase):
         )
 
     def test_explicit_sections_argument_filters(self):
-        dlg = self.PlotSettingsDialog(
+        dlg = self.PlotConfigDialog(
             self.host, self.config, sections=("fonts", "legend"),
         )
         dlg.update_idletasks()
@@ -164,7 +164,7 @@ class TestPlotSettingsDialogShell(unittest.TestCase):
         # for which sections to show. Tabs that want to opt out of a
         # section can set this key.
         self.config["_sections"] = ("appearance",)
-        dlg = self.PlotSettingsDialog(self.host, self.config)
+        dlg = self.PlotConfigDialog(self.host, self.config)
         dlg.update_idletasks()
         titles = set(_section_titles(dlg))
         self.assertEqual(titles, {"Appearance"})
@@ -174,7 +174,7 @@ class TestPlotSettingsDialogShell(unittest.TestCase):
     def test_slider_change_does_not_auto_apply(self):
         """Spinbox/checkbox edits update working copy only, not config."""
         self.config["title_font_size"] = 12
-        dlg = self.PlotSettingsDialog(self.host, self.config)
+        dlg = self.PlotConfigDialog(self.host, self.config)
         dlg.update_idletasks()
 
         dlg._control_vars["title_font_size"].set(20)
@@ -187,7 +187,7 @@ class TestPlotSettingsDialogShell(unittest.TestCase):
 
     def test_grid_toggle_does_not_auto_apply(self):
         self.config["grid"] = True
-        dlg = self.PlotSettingsDialog(self.host, self.config)
+        dlg = self.PlotConfigDialog(self.host, self.config)
         dlg.update_idletasks()
 
         dlg._control_vars["grid"].set(False)
@@ -199,7 +199,7 @@ class TestPlotSettingsDialogShell(unittest.TestCase):
     def test_apply_does_not_fire_on_construction(self):
         """on_apply must not be invoked merely because the dialog opened."""
         seen: list = []
-        self.PlotSettingsDialog(
+        self.PlotConfigDialog(
             self.host, self.config, on_apply=lambda: seen.append(1),
         ).update_idletasks()
         self.assertEqual(seen, [])
@@ -209,7 +209,7 @@ class TestPlotSettingsDialogShell(unittest.TestCase):
     def test_apply_commits_working_copy_and_calls_on_apply(self):
         self.config["title_font_size"] = 12
         seen: list = []
-        dlg = self.PlotSettingsDialog(
+        dlg = self.PlotConfigDialog(
             self.host, self.config, on_apply=lambda: seen.append(1),
         )
         dlg.update_idletasks()
@@ -228,7 +228,7 @@ class TestPlotSettingsDialogShell(unittest.TestCase):
         self.assertEqual(seen, [1])
 
     def test_apply_keeps_dialog_open(self):
-        dlg = self.PlotSettingsDialog(self.host, self.config)
+        dlg = self.PlotConfigDialog(self.host, self.config)
         dlg.update_idletasks()
         dlg._do_apply()
         self.assertTrue(bool(dlg.winfo_exists()))
@@ -237,7 +237,7 @@ class TestPlotSettingsDialogShell(unittest.TestCase):
 
     def test_save_button_is_present(self):
         """CS-23: button row is Apply · Save · Cancel."""
-        dlg = self.PlotSettingsDialog(self.host, self.config)
+        dlg = self.PlotConfigDialog(self.host, self.config)
         dlg.update_idletasks()
         self.assertTrue(hasattr(dlg, "_save_btn"))
         self.assertEqual(str(dlg._save_btn.cget("text")), "Save")
@@ -245,7 +245,7 @@ class TestPlotSettingsDialogShell(unittest.TestCase):
     def test_save_commits_working_copy_to_config(self):
         """Save mutates the caller's config in place, like Apply."""
         self.config["title_font_size"] = 12
-        dlg = self.PlotSettingsDialog(self.host, self.config)
+        dlg = self.PlotConfigDialog(self.host, self.config)
         dlg.update_idletasks()
 
         dlg._control_vars["title_font_size"].set(18)
@@ -257,7 +257,7 @@ class TestPlotSettingsDialogShell(unittest.TestCase):
 
     def test_save_fires_on_apply_exactly_once(self):
         seen: list = []
-        dlg = self.PlotSettingsDialog(
+        dlg = self.PlotConfigDialog(
             self.host, self.config, on_apply=lambda: seen.append(1),
         )
         dlg.update_idletasks()
@@ -267,7 +267,7 @@ class TestPlotSettingsDialogShell(unittest.TestCase):
         self.assertEqual(seen, [1])
 
     def test_save_destroys_dialog(self):
-        dlg = self.PlotSettingsDialog(self.host, self.config)
+        dlg = self.PlotConfigDialog(self.host, self.config)
         dlg.update_idletasks()
         dlg._do_save()
         self.assertEqual(int(dlg.winfo_exists()), 0)
@@ -278,7 +278,7 @@ class TestPlotSettingsDialogShell(unittest.TestCase):
         loses information, even when nothing changed."""
         self.config.update({"title_font_size": 14, "grid": True})
         snapshot = dict(self.config)
-        dlg = self.PlotSettingsDialog(self.host, self.config)
+        dlg = self.PlotConfigDialog(self.host, self.config)
         dlg.update_idletasks()
 
         dlg._do_save()
@@ -295,7 +295,7 @@ class TestPlotSettingsDialogShell(unittest.TestCase):
         """Cancel reverts to the __init__ snapshot, even after Apply."""
         self.config["title_font_size"] = 12
         seen: list = []
-        dlg = self.PlotSettingsDialog(
+        dlg = self.PlotConfigDialog(
             self.host, self.config, on_apply=lambda: seen.append(1),
         )
         dlg.update_idletasks()
@@ -314,7 +314,7 @@ class TestPlotSettingsDialogShell(unittest.TestCase):
         self.assertEqual(len(seen), 2)
 
     def test_cancel_destroys_dialog(self):
-        dlg = self.PlotSettingsDialog(self.host, self.config)
+        dlg = self.PlotConfigDialog(self.host, self.config)
         dlg.update_idletasks()
         dlg._do_cancel()
         # winfo_exists is 0 after destroy in this Tk version.
@@ -322,7 +322,7 @@ class TestPlotSettingsDialogShell(unittest.TestCase):
 
     def test_window_close_x_is_treated_as_cancel(self):
         self.config["title_font_size"] = 12
-        dlg = self.PlotSettingsDialog(self.host, self.config)
+        dlg = self.PlotConfigDialog(self.host, self.config)
         dlg.update_idletasks()
 
         dlg._control_vars["title_font_size"].set(20)
@@ -347,14 +347,14 @@ class TestPlotSettingsDialogShell(unittest.TestCase):
 
 
 @unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
-class TestPlotSettingsDialogDefaults(unittest.TestCase):
+class TestPlotConfigDialogDefaults(unittest.TestCase):
     """Save-as-Default / Reset Defaults / Factory Reset semantics."""
 
     @classmethod
     def setUpClass(cls):
         import plot_settings_dialog
         cls.psd = plot_settings_dialog
-        cls.PlotSettingsDialog = plot_settings_dialog.PlotSettingsDialog
+        cls.PlotConfigDialog = plot_settings_dialog.PlotConfigDialog
 
     def setUp(self):
         self.psd._open_dialogs.clear()
@@ -380,7 +380,7 @@ class TestPlotSettingsDialogDefaults(unittest.TestCase):
 
     def test_save_as_default_writes_user_defaults(self):
         self.config["title_font_size"] = 12
-        dlg = self.PlotSettingsDialog(self.host, self.config)
+        dlg = self.PlotConfigDialog(self.host, self.config)
         dlg.update_idletasks()
 
         # User adjusts the working copy.
@@ -400,7 +400,7 @@ class TestPlotSettingsDialogDefaults(unittest.TestCase):
     def test_save_as_default_does_not_apply_to_config(self):
         """Save-as-Default writes to module state, not the tab config."""
         self.config["title_font_size"] = 12
-        dlg = self.PlotSettingsDialog(self.host, self.config)
+        dlg = self.PlotConfigDialog(self.host, self.config)
         dlg.update_idletasks()
 
         dlg._control_vars["title_font_size"].set(20)
@@ -419,7 +419,7 @@ class TestPlotSettingsDialogDefaults(unittest.TestCase):
             "background_color": "#eeeeee",
         })
 
-        dlg = self.PlotSettingsDialog(self.host, self.config)
+        dlg = self.PlotConfigDialog(self.host, self.config)
         dlg.update_idletasks()
 
         # User edits the working copy.
@@ -441,7 +441,7 @@ class TestPlotSettingsDialogDefaults(unittest.TestCase):
         self,
     ):
         # _USER_DEFAULTS empty — Reset Defaults reverts to factory.
-        dlg = self.PlotSettingsDialog(self.host, self.config)
+        dlg = self.PlotConfigDialog(self.host, self.config)
         dlg.update_idletasks()
 
         dlg._control_vars["title_font_size"].set(99)
@@ -462,7 +462,7 @@ class TestPlotSettingsDialogDefaults(unittest.TestCase):
         # them and goes back to the immutable factory values.
         self.psd._USER_DEFAULTS.update({"title_font_size": 14, "grid": False})
 
-        dlg = self.PlotSettingsDialog(self.host, self.config)
+        dlg = self.PlotConfigDialog(self.host, self.config)
         dlg.update_idletasks()
 
         dlg._control_vars["title_font_size"].set(99)
@@ -483,7 +483,7 @@ class TestPlotSettingsDialogDefaults(unittest.TestCase):
     def test_factory_reset_does_not_apply_to_config(self):
         """Factory Reset rewrites the working copy only; Apply commits."""
         self.config["title_font_size"] = 12
-        dlg = self.PlotSettingsDialog(self.host, self.config)
+        dlg = self.PlotConfigDialog(self.host, self.config)
         dlg.update_idletasks()
 
         dlg._do_factory_reset()
@@ -497,7 +497,7 @@ class TestPlotSettingsDialogDefaults(unittest.TestCase):
         # A Factory Reset followed by Apply is the only way the
         # factory values reach the tab.
         self.config["title_font_size"] = 22
-        dlg = self.PlotSettingsDialog(self.host, self.config)
+        dlg = self.PlotConfigDialog(self.host, self.config)
         dlg.update_idletasks()
 
         dlg._do_factory_reset()
@@ -523,7 +523,7 @@ class TestAppearanceSectionPhase4ae(unittest.TestCase):
     def setUpClass(cls):
         import plot_settings_dialog
         cls.psd = plot_settings_dialog
-        cls.PlotSettingsDialog = plot_settings_dialog.PlotSettingsDialog
+        cls.PlotConfigDialog = plot_settings_dialog.PlotConfigDialog
 
     def setUp(self):
         self.psd._open_dialogs.clear()
@@ -579,7 +579,7 @@ class TestAppearanceSectionPhase4ae(unittest.TestCase):
     # ---- dialog widget construction ----
 
     def test_grid_color_swatch_widget_registered(self):
-        dlg = self.PlotSettingsDialog(self.host, self.config)
+        dlg = self.PlotConfigDialog(self.host, self.config)
         dlg.update_idletasks()
         self.assertIn("grid_color", dlg._control_vars)
         self.assertIn("grid_color", dlg._color_swatches)
@@ -588,7 +588,7 @@ class TestAppearanceSectionPhase4ae(unittest.TestCase):
         self.assertEqual(swatch.cget("bg"), "#b0b0b0")
 
     def test_tertiary_axis_offset_spinbox_registered(self):
-        dlg = self.PlotSettingsDialog(self.host, self.config)
+        dlg = self.PlotConfigDialog(self.host, self.config)
         dlg.update_idletasks()
         self.assertIn("tertiary_axis_offset", dlg._control_vars)
         var = dlg._control_vars["tertiary_axis_offset"]
@@ -602,13 +602,13 @@ class TestAppearanceSectionPhase4ae(unittest.TestCase):
         # callback (no trace on the StringVar, mirrors how the existing
         # background_color swatch is wired). Simulate the post-pick
         # call directly.
-        dlg = self.PlotSettingsDialog(self.host, self.config)
+        dlg = self.PlotConfigDialog(self.host, self.config)
         dlg.update_idletasks()
         dlg._on_var_write("grid_color", "#ff0000")
         self.assertEqual(dlg._working["grid_color"], "#ff0000")
 
     def test_tertiary_axis_offset_spinbox_writes_through_to_working(self):
-        dlg = self.PlotSettingsDialog(self.host, self.config)
+        dlg = self.PlotConfigDialog(self.host, self.config)
         dlg.update_idletasks()
         dlg._control_vars["tertiary_axis_offset"].set(1.25)
         dlg.update_idletasks()
@@ -619,7 +619,7 @@ class TestAppearanceSectionPhase4ae(unittest.TestCase):
     # ---- factory reset restores the new keys ----
 
     def test_factory_reset_restores_new_appearance_keys(self):
-        dlg = self.PlotSettingsDialog(self.host, self.config)
+        dlg = self.PlotConfigDialog(self.host, self.config)
         dlg.update_idletasks()
         dlg._control_vars["grid_color"].set("#ff0000")
         dlg._control_vars["tertiary_axis_offset"].set(1.40)
@@ -638,7 +638,7 @@ class TestAppearanceSectionPhase4ae(unittest.TestCase):
     def test_construct_pre_populates_new_keys_from_config(self):
         self.config["grid_color"] = "#00ff00"
         self.config["tertiary_axis_offset"] = 1.30
-        dlg = self.PlotSettingsDialog(self.host, self.config)
+        dlg = self.PlotConfigDialog(self.host, self.config)
         dlg.update_idletasks()
         self.assertEqual(dlg._working["grid_color"], "#00ff00")
         self.assertAlmostEqual(

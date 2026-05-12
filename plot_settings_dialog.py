@@ -49,7 +49,7 @@ Construction
 
 ::
 
-    PlotSettingsDialog(
+    PlotConfigDialog(
         parent,                 # tk.Widget for the Toplevel parent;
                                 # also the registry key
         config,                 # dict — tab-private plot config
@@ -68,7 +68,7 @@ Or via the module-level factory which handles the per-host registry:
 
 ::
 
-    open_plot_settings_dialog(parent, config, on_apply=None,
+    open_plot_config_dialog(parent, config, on_apply=None,
                               sections=None)
 """
 
@@ -87,11 +87,11 @@ _log = logging.getLogger(__name__)
 # Module-level state
 # =====================================================================
 
-# host widget id → live PlotSettingsDialog. CS-06 mandates one dialog
+# host widget id → live PlotConfigDialog. CS-06 mandates one dialog
 # per tab; the registry key is the host widget so each tab's dialog
 # is independent. Entries are cleaned up by ``_on_destroy``. Tests
 # clear this at setUp to avoid cross-test contamination.
-_open_dialogs: "dict[int, PlotSettingsDialog]" = {}
+_open_dialogs: "dict[int, PlotConfigDialog]" = {}
 
 
 _DEFAULT_SECTIONS: tuple[str, ...] = (
@@ -173,19 +173,19 @@ _USER_DEFAULTS: dict[str, Any] = {}
 # Module-level factory
 # =====================================================================
 
-def open_plot_settings_dialog(
+def open_plot_config_dialog(
     parent: tk.Widget,
     config: dict,
     on_apply: Callable[[], None] | None = None,
     sections: tuple[str, ...] | None = None,
-) -> "PlotSettingsDialog":
+) -> "PlotConfigDialog":
     """Open the Plot Settings dialog for a tab, or focus the existing one.
 
     Per CS-06 each tab has at most one open Plot Settings dialog at a
     time. A second request from the same host raises the existing
     Toplevel rather than creating a duplicate.
 
-    Returns the live ``PlotSettingsDialog`` either way.
+    Returns the live ``PlotConfigDialog`` either way.
     """
     key = id(parent)
     existing = _open_dialogs.get(key)
@@ -200,14 +200,14 @@ def open_plot_settings_dialog(
             pass
         # Stale registry entry — fall through to construct fresh.
         _open_dialogs.pop(key, None)
-    return PlotSettingsDialog(parent, config, on_apply, sections)
+    return PlotConfigDialog(parent, config, on_apply, sections)
 
 
 # =====================================================================
 # Dialog
 # =====================================================================
 
-class PlotSettingsDialog(tk.Toplevel):
+class PlotConfigDialog(tk.Toplevel):
     """Modal per-tab plot-settings editor (CS-06).
 
     See module docstring for the design model. The class is a
@@ -284,7 +284,7 @@ class PlotSettingsDialog(tk.Toplevel):
         self.bind("<Destroy>", self._on_destroy, add="+")
         self.protocol("WM_DELETE_WINDOW", self._on_close_requested)
 
-        # Register so a second open_plot_settings_dialog call finds us.
+        # Register so a second open_plot_config_dialog call finds us.
         _open_dialogs[id(parent)] = self
 
         # Construction complete: writes from now on flow into the

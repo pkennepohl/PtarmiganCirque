@@ -1630,7 +1630,7 @@ class UVVisTab(tk.Frame):
         ``self._plot_config`` in place on Apply, then invokes
         ``on_apply`` so the tab repaints.
         """
-        plot_settings_dialog.open_plot_settings_dialog(
+        plot_settings_dialog.open_plot_config_dialog(
             self, self._plot_config,
             on_apply=self._on_plot_config_changed,
         )
