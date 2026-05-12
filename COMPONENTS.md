@@ -7613,9 +7613,366 @@ axis double-click dialog; 🟢 `_can_group_selection` thin-
 alias cleanup). Phase 4af friction #4 ("(N members)" suffix
 relocation) still open.
 
+## CS-60 — Unified PlotConfigDialog Notebook + cross-tab pending-edit state model (Phase 4ai)
+
+**Status:** ✅ foundation implemented; per-axis settings continue Phase 4aj+.
+
+The scientific question
+-----------------------
+
+CS-23 shipped a single-modal Plot Settings dialog with one
+section stack (Fonts / Appearance / Legend / Title-labels) and
+an Apply / Save / Cancel button row. As Phase 4ai
+double-clicking on a plot axis is meant to open a dedicated
+axis-properties dialog — but launching a SECOND modal per axis
+fragments the user's mental model (where do you go to change
+fonts vs primary-y label vs tertiary tick direction?) and
+duplicates plumbing (snapshot, working copy, modal contract).
+
+The user's design call: **one unified configuration dialog**
+with Notebook tabs — one Global tab matching today's
+PlotSettings, plus one tab per axis role (primary X / secondary
+X / primary Y / secondary Y / tertiary Y) reachable both via
+the ⚙ button (Global) and via double-clicking the axis region
+(that axis's tab). Cross-tab pending edits persist across tab
+switches; tab modified state is surfaced as a bullet suffix in
+the tab title; the dialog-level button row owns the commit
+gestures.
+
+The Phase 4ai answer (CS-60)
+----------------------------
+
+Five architectural threads, landed across five commits ahead of
+per-axis settings:
+
+**1. Axis-region double-click hit-test (`plot_axis_hit_test.py`).**
+
+Pure module — duck-types the matplotlib MouseEvent so the
+classifier is test-friendly without standing up a Figure. The
+single public surface is:
+
+```python
+@dataclass(frozen=True)
+class AxisHit:
+    role: str       # "primary_x" | "secondary_x" | "primary_y"
+                    # | "secondary_y" | "tertiary_y"
+    hit_kind: str   # "spine" | "tick_labels" | "axis_label"
+
+def classify_axis_double_click(
+    event,
+    axes_by_role,   # dict keyed by CS-44 names: "primary",
+                    # "secondary", "tertiary"
+    tertiary_offset_frac: float = 1.12,
+) -> Optional[AxisHit]
+```
+
+Five-band bbox-relative classification (rejects non-double-
+clicks, no primary axes, missing/malformed event coords,
+degenerate bbox, plot interior, far-outside clicks). Tertiary
+band tested first so secondary-y's envelope on the right side
+gets clipped at the tertiary spine. When no twinx exists,
+right-side clicks classify as primary_y.
+
+Module-level constants:
+- `AXIS_ROLES` — five-tuple: `("primary_x", "secondary_x",
+  "primary_y", "secondary_y", "tertiary_y")`.
+- `HIT_KINDS` — three-tuple: `("spine", "tick_labels",
+  "axis_label")`.
+- `_TOTAL_BAND_PX = 40` — envelope width around each spine.
+- `_SPINE_BAND_PX = 6` — inner sub-band.
+- `_TICK_BAND_PX = 18` — middle sub-band.
+- `_TERTIARY_BAND_PX = 24` — tertiary spine half-width.
+
+37 pure tests in `TestAxisHitContract`,
+`TestRejectPaths`, `TestPrimaryX`, `TestSecondaryX`,
+`TestPrimaryY`, `TestPrimaryYRightSpine`, `TestSecondaryY`,
+`TestTertiaryY`, `TestSecondaryClippedByTertiary`,
+`TestBoundaryConditions`.
+
+**2. PlotConfigDialog Notebook + 6 tab frames.**
+
+`plot_settings_dialog.PlotConfigDialog` (renamed from
+`PlotSettingsDialog`; factory renamed
+`open_plot_settings_dialog` → `open_plot_config_dialog`).
+The module name `plot_settings_dialog.py` and the module-level
+dicts `_USER_DEFAULTS` / `_FACTORY_DEFAULTS` /
+`_UNIVERSAL_DEFAULTS` are preserved at the same name so
+`binah.py`, `project_io.py`, and `test_persistence_phase_a.py`
+keep their existing imports.
+
+New module-level constants:
+- `_TAB_KEYS` — canonical Notebook pack order: `("global",
+  "primary_x", "secondary_x", "primary_y", "secondary_y",
+  "tertiary_y")`.
+- `_TAB_TITLES` — human-readable tab labels.
+- `_AXIS_TAB_PLACEHOLDER_BADGE` — initial italic badge text
+  per axis role (Phase 4ak swaps in live "(used by N nodes)"
+  / "(unused)" / "(derived)" markers from the host's
+  `_axes_by_role` + graph nodes).
+
+The dialog body is now a `ttk.Notebook` parented to a single
+outer Frame; six `tk.Frame` tab frames are stored in
+`self._tab_frames: dict[str, tk.Frame]`. The Global tab hosts
+the legacy four section LabelFrames unchanged (delegated to
+`_build_global_tab`); each axis tab hosts a placeholder shell
+(`_build_axis_tab_shell`) with bold "Axis: <Title>" header,
+italic placeholder badge, "Plots on this axis" LabelFrame
+("(populated in Phase 4ak)" hint), separator, "Settings"
+LabelFrame ("Per-axis settings land in Phase 4aj+" hint).
+
+API additions on PlotConfigDialog:
+- `__init__(..., tab="global")` — pre-select the active tab.
+  Unknown keys fall back to `"global"`.
+- `select_tab(key)` — runtime tab navigation. Used by the
+  factory's "raise existing" path so a second double-click on
+  a different axis switches the already-open dialog.
+- `current_tab_key() -> str` — for tests and the button row.
+
+19 tests in `TestPlotConfigDialogNotebookPhase4ai`.
+
+**3. CS-60 cross-tab pending-edit state model.**
+
+Per-tab modified marker: `_TAB_TITLES[tab] + " •"` while any
+setting on that tab carries uncommitted edits. The bullet
+(`_MODIFIED_TAB_SUFFIX = " •"`, IntelliJ-style) is the visual
+signal; `_modified_tabs: set[str]` is the source of truth.
+
+Module-level routing map:
+- `_KEY_TO_TAB: dict[str, str]` — every working-copy key
+  resolves to a Notebook tab. Empty in Phase 4ai (every
+  factory key defaults to `"global"` via `_key_to_tab(key)`);
+  Phase 4aj+ populates entries as per-axis settings move out
+  of the Global tab.
+
+PlotConfigDialog state-management methods:
+- `_mark_tab_modified(tab_key)` / `_clear_tab_modified(tab_key)`
+  / `_clear_all_modified_tabs()` — per-tab marker mutators.
+- `_refresh_tab_title(tab_key)` — drives the Notebook
+  tab-text update.
+- `_has_uncommitted_changes() -> bool` — True iff Cancel
+  would discard something. Two paths: pending edits in
+  `_modified_tabs`, or intermediate-Applied edits where
+  `config != snapshot` (the CS-23 Cancel-still-reverts
+  contract).
+
+Writer wiring: `_on_var_write` / `_on_int_var_write` /
+`_on_float_var_write` each call
+`self._mark_tab_modified(_key_to_tab(key))` after a successful
+write (mid-edit garbage in spinboxes still skips the mark by
+returning before tagging).
+
+25 tests in `TestPlotConfigDialogStateModelPhase4ai` +
+`TestPlotConfigDialogButtonRowPhase4ai`.
+
+**4. CS-60 four-button row.**
+
+Replaces the CS-23 Apply / Save / Cancel row with
+**Save · Apply · Apply to All Tabs · Cancel** — right-aligned
+at the Toplevel bottom (outside the Notebook so it applies
+dialog-wide). Per CS-23 the Save-as-Default / Reset Defaults /
+Factory Reset row inside the Fonts section stays in place;
+those buttons affect the working copy only.
+
+- **Save** — `_commit_working_copy` + destroy. Same wording as
+  CS-23, cross-tab scope is new.
+- **Apply** — `_commit_working_copy`; stay open.
+- **Apply to All Tabs** — `_commit_working_copy` first (so the
+  host's replication callback reads the new config), then
+  invoke `on_apply_all_tabs` if wired. Disabled when callback
+  is None. Errors in the callback are logged, not raised.
+- **Cancel** — if `_has_uncommitted_changes()`, prompt
+  `messagebox.askokcancel("Discard changes?")`; only proceed
+  when the user confirms. `_test_silence` returns True so the
+  existing CS-23 always-close-on-Cancel test contract holds
+  unchanged. Reverts config to snapshot, clears markers,
+  destroys.
+
+Constructor extension: `__init__(..., on_apply_all_tabs:
+Callable[[], None] | None = None)`. Factory propagates it.
+
+**5. UV/Vis integration — figure double-click → dialog tab.**
+
+`UVVisTab._on_mpl_axis_double_click` is bound to
+`button_press_event` in `_build_plot` alongside the existing
+`button_release_event` / `scroll_event` wirings. It passes
+`event` and `self._axes_by_role` (CS-44 keys) to
+`plot_axis_hit_test.classify_axis_double_click` with
+`tertiary_offset_frac=_TERTIARY_AXIS_OFFSET_FRAC`. On `None`
+it returns silently (interior / single-click). Otherwise it
+dispatches:
+
+```python
+plot_settings_dialog.open_plot_config_dialog(
+    self, self._plot_config,
+    on_apply=self._on_plot_config_changed,
+    tab=hit.role,
+)
+```
+
+— same `on_apply` callback, same per-host registry, same modal
+contract as the existing ⚙ button. The factory's
+raise-existing path uses `select_tab` to switch the active tab
+when the dialog is already open. The ⚙ button continues to
+open on Global.
+
+10 integration tests in `TestUVVisTabAxisDoubleClickPhase4ai`.
+
+Locks (do not relax without a follow-up CS-N)
+---------------------------------------------
+
+1. **`PlotConfigDialog` class name + `open_plot_config_dialog`
+   factory.** Module file name `plot_settings_dialog.py`
+   preserved; module-level dicts `_USER_DEFAULTS` /
+   `_FACTORY_DEFAULTS` / `_UNIVERSAL_DEFAULTS` preserved at the
+   same name. The legacy `PlotSettingsDialog` class identifier
+   is gone — call sites use the new name. CS-23 subsumed.
+
+2. **`_TAB_KEYS` six-tuple and canonical order.** The Notebook
+   pack order matches this tuple. Tests rely on it.
+
+3. **`_TAB_TITLES` content.** Renaming a tab string is a UX
+   change with no schema impact, but the tests (and the
+   marker logic via `_refresh_tab_title`) pin the exact
+   strings. Update tests in lock-step if titles change.
+
+4. **`_KEY_TO_TAB` defaults to `"global"`.** Adding a key
+   means the dialog marks a different tab dirty on edit. The
+   marker is the source of truth for "what does Cancel
+   discard"; mis-mapping a key would mis-attribute a dirty
+   tab. Phase 4aj+ adds entries deliberately as per-axis
+   settings land.
+
+5. **`_MODIFIED_TAB_SUFFIX = " •"`.** Tests check the literal.
+   Replacing the bullet is a deliberate UX choice; do it once,
+   in coordination with the test pinning it.
+
+6. **`AxisHit` dataclass shape: `(role, hit_kind)`, frozen.**
+   `role` ∈ `AXIS_ROLES`, `hit_kind` ∈ `HIT_KINDS`. Adding a
+   field is a non-breaking append; renaming or removing
+   breaks every call site.
+
+7. **`classify_axis_double_click` signature:**
+   `(event, axes_by_role, tertiary_offset_frac=1.12)`.
+   `axes_by_role` keys use CS-44 names (`"primary"`,
+   `"secondary"`, `"tertiary"` — all referring to y-axes
+   today). The returned `role` uses dialog tab keys
+   (`primary_y`, etc.). The asymmetry is intentional —
+   classifier translates from figure topology to dialog
+   topology.
+
+8. **Five-band hit-test envelope: `_TOTAL_BAND_PX = 40`,
+   `_SPINE_BAND_PX = 6`, `_TICK_BAND_PX = 18`,
+   `_TERTIARY_BAND_PX = 24`.** Tuning candidates if the
+   matplotlib layout ever changes (e.g. wider tick label
+   regions on some platforms). Tests are tolerant of small
+   shifts (use the constants symbolically) but the values
+   themselves are a UX call.
+
+9. **Tertiary spine band tested first** in the classifier.
+   Secondary band gets clipped on the right at
+   `tertiary_spine_x - _TERTIARY_BAND_PX`. Reversing the order
+   would cause secondary-y to swallow the tertiary region.
+
+10. **Button row order: Save / Apply / Apply to All Tabs /
+    Cancel, right-aligned.** Right-side alignment matches
+    OS-convention modal dialogs. Apply-to-All-Tabs sits
+    between Apply and Cancel so it reads as a peer of the
+    other commit gestures, not as a destructive action.
+
+11. **Apply to All Tabs commits locally FIRST**, then invokes
+    `on_apply_all_tabs`. The host's replication callback
+    reads `self._config` to discover what to copy, so the
+    ordering matters. Errors from the callback are logged,
+    not raised — the local commit must complete.
+
+12. **Cancel-with-pending shows
+    `messagebox.askokcancel("Discard changes?")`.** True
+    proceeds (default in `_test_silence`); False keeps the
+    dialog open. `_has_uncommitted_changes` is the predicate.
+
+13. **UV/Vis double-click integration** is wired in
+    `UVVisTab._build_plot` via
+    `self._canvas.mpl_connect("button_press_event",
+    self._on_mpl_axis_double_click)`. The handler passes
+    `self._axes_by_role` directly and uses the module constant
+    `_TERTIARY_AXIS_OFFSET_FRAC`. Other tabs (XANES / EXAFS /
+    TDDFT / Compare) wire equivalently when they adopt the
+    renderer architecture; they're not wired today.
+
+14. **`PlotConfigDialog` is tab-type-agnostic** by design —
+    the host owns `on_apply` and `on_apply_all_tabs` semantics.
+    XANES / EXAFS will each construct the dialog with their
+    own `_plot_config` dict and their own callbacks. Cross-
+    tab-type replication is NOT a thing today; "Apply to All
+    Tabs" replicates only to same-tab-type siblings (e.g.
+    other UV/Vis tabs in the notebook).
+
+Lock relaxations
+----------------
+
+- **CS-23 → CS-60.** CS-23's `_do_save` / `_do_apply` /
+  `_do_cancel` / `_on_close_requested` / `_build_button_row`
+  locks no longer apply — the methods are renamed/restructured
+  on `PlotConfigDialog`. The button-row vocabulary (Apply /
+  Save / Cancel) is broadened to (Save / Apply / Apply to All
+  Tabs / Cancel); the locked "Apply commits and stays open,
+  Save commits and closes, Cancel reverts to snapshot"
+  semantics persists.
+
+Carry-forward
+-------------
+
+- Per-axis settings (label override, range / autoscale, tick
+  spacing, scale linear/log, per-axis tick direction) land in
+  Phase 4aj+.
+- Live "(used by N nodes)" / "(unused)" / "(derived)" axis-tab
+  badge replaces `_AXIS_TAB_PLACEHOLDER_BADGE` in Phase 4ak.
+- "Plots on this axis" list (read-only) populates in 4ak;
+  Move-to picker writes `y_axis` style key in 4al.
+- `_USER_DEFAULTS` tab-type split (universal vs per-tab-type
+  axis-label keys) lands when the dialog wires into a second
+  tab type. Carry-forward register entry added in BACKLOG.
+- Twin-X full wiring (matplotlib `twinx()` with wavelength↔
+  energy transform, bidirectional range coupling) is a
+  separate, larger feature register entry. Today the Notebook
+  has a Secondary X tab and double-clicking the top spine
+  opens it; the tab content is shell-only.
+- `hit_kind` from the classifier is recorded on `AxisHit` but
+  ignored at the dialog level — every band of the same axis
+  opens the same tab. Future phases can branch on it (e.g.
+  tick-label click jumps to the Ticks section once that
+  lands).
+- "Apply to All Tabs" callback is unwired today — Binah needs
+  the notebook-iterator logic before this button does anything.
+  Polish-phase register entry.
+
+Tests
+-----
+
+- 37 pure tests in `test_plot_axis_hit_test`.
+- 19 tests in
+  `test_plot_settings_dialog.TestPlotConfigDialogNotebookPhase4ai`.
+- 25 tests in
+  `test_plot_settings_dialog.TestPlotConfigDialogStateModelPhase4ai` +
+  `TestPlotConfigDialogButtonRowPhase4ai`.
+- 10 integration tests in
+  `test_uvvis_tab.TestUVVisTabAxisDoubleClickPhase4ai`.
+
+Total: 91 new tests; full suite 1113 (was 1022).
+
+See "Friction points carried forward from Phase 4ai" in
+BACKLOG.md. Two new register entries from step 5:
+`_USER_DEFAULTS` tab-type split (USER-FLAGGED — surfaced by
+the user during step 5 of Phase 4ai); Twin-X full feature
+(USER-FLAGGED — same step). Five Claude-surfaced
+notes: Apply-to-All-Tabs unwired; live axis-tab badges
+deferred to 4ak; `hit_kind` ignored at dialog level; tertiary
+x-axis is not classifiable today; band-size tuning if
+matplotlib layout changes.
+
 ---
 
-*Document version: 1.34 — May 2026*
+*Document version: 1.35 — May 2026*
 *1.1: CS-13 implementation notes added in Phase 4a.*
 *1.2: CS-14 Plot Settings Dialog added in Phase 4b.*
 *1.3: CS-15 UV/Vis Baseline Correction + CS-04 implementation
@@ -8428,5 +8785,63 @@ green (1002 + 20 new across two files: 2 in
 No test added for the TDDFT button relocation — Lock 13
 explicitly accepted manual smoke for a one-button-parent
 move on a module that has no existing test coverage.*
+*1.35: Phase 4ai — unified PlotConfigDialog Notebook + cross-tab
+pending-edit state model (CS-60). Foundation for the
+USER-FLAGGED axis double-click feature register entry from
+Phase 4ag: instead of a separate axis-properties dialog, CS-60
+ships a single PlotConfigDialog with a ttk.Notebook hosting six
+tabs — Global (today's PlotSettings content unchanged) plus
+Primary X / Secondary X / Primary Y / Secondary Y / Tertiary Y
+shells. The ⚙ button opens on Global; double-clicking on a
+plot axis region opens on that axis's tab. New
+`plot_axis_hit_test.py` module classifies bbox-relative
+matplotlib events into five axis roles × three hit kinds.
+Cross-tab pending-edit state model: per-tab `" •"` modified
+marker, `_modified_tabs: set[str]` source of truth,
+`_KEY_TO_TAB` routing map (empty today, every key resolves to
+Global). New four-button row Save / Apply / Apply to All Tabs /
+Cancel — Apply to All Tabs disabled unless host wires
+`on_apply_all_tabs`; Cancel-with-pending shows askokcancel
+"Discard changes?" confirm (silenced True preserves CS-23
+test contract). UV/Vis double-click integration:
+`UVVisTab._on_mpl_axis_double_click` binds button_press_event
+and dispatches to `open_plot_config_dialog(..., tab=hit.role)`.
+**Lock decisions taken (Phase 4ai):** (i) one unified dialog
+with axis-tab selector via Notebook, not one dialog per axis
+clicked; (ii) module file name stays `plot_settings_dialog.py`
+(minimises import churn across binah / project_io / persistence
+tests); (iii) cross-tab pending edits persist across tab
+switches (navigation gesture, not commit boundary); (iv)
+modified marker is " •" bullet, IntelliJ-style; (v) Apply to
+All Tabs replicates to same-tab-type siblings only, host-
+defined (cross-tab-type plot-setting replication is not a
+thing); (vi) Cancel-confirm uses `askokcancel` (not
+`askyesno`) so silenced-test default True matches existing
+"Cancel always closes" contract; (vii) hit-test bands
+`_TOTAL_BAND_PX=40` / `_SPINE_BAND_PX=6` / `_TICK_BAND_PX=18`
+/ `_TERTIARY_BAND_PX=24`; (viii) tertiary band tested first
+so secondary-y gets clipped at the offset spine; (ix)
+right-side click with no twinx maps to primary_y (the right
+spine of the primary axes); (x) axis tabs are shells in
+Phase 4ai — placeholder header / badge / "Plots on this axis"
+LabelFrame / "Settings" LabelFrame — real per-axis settings
+start landing Phase 4aj+. **Lock relaxations:** CS-23
+subsumed into CS-60 (class name, factory name, button row
+vocabulary all evolve; the locked semantics persist:
+"Apply commits and stays open, Save commits and closes,
+Cancel reverts to snapshot"). Two new USER-FLAGGED register
+entries from step 5: `_USER_DEFAULTS` tab-type split when the
+dialog wires into a second tab type (XANES axis labels
+≠ UV/Vis); Twin-X full wiring (matplotlib `twinx()` +
+wavelength↔energy transform + bidirectional range coupling).
+Five Claude-surfaced 🟢 polish notes: Apply-to-All-Tabs
+unwired today; live axis-tab badges deferred to 4ak;
+`hit_kind` ignored at dialog level; tertiary x-axis not
+classifiable today (no twin-x machinery yet); band-size
+tuning if matplotlib layout changes. 1113 tests, all green
+(1022 + 91 new across four files: 37 in
+`test_plot_axis_hit_test` + 44 in
+`test_plot_settings_dialog` Phase 4ai classes + 10 in
+`test_uvvis_tab.TestUVVisTabAxisDoubleClickPhase4ai`).*
 *To be updated as Open Questions are resolved and new components
 are specified.*
