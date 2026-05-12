@@ -19,6 +19,7 @@ import unittest
 # (no display, missing tcl/tk), every test in the file is skipped.
 try:
     import tkinter as tk
+    from tkinter import ttk
     _root = tk.Tk()
     _root.withdraw()
     _HAS_DISPLAY = True
@@ -42,8 +43,29 @@ def _label_frames(dlg) -> list[tk.LabelFrame]:
     return [c for c in _all_descendants(dlg) if isinstance(c, tk.LabelFrame)]
 
 
+def _global_tab_label_frames(dlg) -> list[tk.LabelFrame]:
+    """LabelFrames within the Global tab only (CS-60, Phase 4ai).
+
+    Axis tabs ship placeholder LabelFrames ("Plots on this axis",
+    "Settings") that are unrelated to the section system; tests that
+    care about the Global tab's section render scope here.
+    """
+    global_frame = dlg._tab_frames["global"]
+    return [
+        c for c in _all_descendants(global_frame)
+        if isinstance(c, tk.LabelFrame)
+    ]
+
+
 def _section_titles(dlg) -> list[str]:
-    return [lf.cget("text") for lf in _label_frames(dlg)]
+    """Titles of the LabelFrames in the Global tab.
+
+    Always Global-scoped — the pre-CS-60 helper walked the whole
+    Toplevel, but axis-tab placeholder LabelFrames now mingle with
+    section LabelFrames if you don't scope. Tests that need the
+    full descendant walk use :func:`_label_frames` directly.
+    """
+    return [lf.cget("text") for lf in _global_tab_label_frames(dlg)]
 
 
 @unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
@@ -652,6 +674,262 @@ class TestAppearanceSectionPhase4ae(unittest.TestCase):
             dlg._control_vars["tertiary_axis_offset"].get(),
             1.30, places=4,
         )
+
+
+# =====================================================================
+# CS-60 Phase 4ai: Notebook container + 6 tab frames
+# =====================================================================
+
+
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestPlotConfigDialogNotebookPhase4ai(unittest.TestCase):
+    """CS-60 (Phase 4ai): the dialog is a ttk.Notebook with six tabs.
+
+    The Global tab hosts the legacy section LabelFrames; each of the
+    five axis tabs hosts a placeholder shell whose real settings land
+    in Phase 4aj+. The dialog accepts a ``tab=`` argument to
+    pre-select the active tab, and exposes ``select_tab(key)`` for
+    runtime navigation (used by the open-factory's "raise existing"
+    path when the caller wants a different tab).
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import plot_settings_dialog
+        cls.psd = plot_settings_dialog
+        cls.PlotConfigDialog = plot_settings_dialog.PlotConfigDialog
+        cls.open_dialog = staticmethod(plot_settings_dialog.open_plot_config_dialog)
+
+    def setUp(self):
+        self.psd._open_dialogs.clear()
+        self.psd._USER_DEFAULTS.clear()
+        self.host = tk.Frame(_root)
+        self.host.pack()
+        self.config: dict = {}
+
+    def tearDown(self):
+        for dlg in list(self.psd._open_dialogs.values()):
+            try:
+                dlg.destroy()
+            except Exception:
+                pass
+        self.psd._open_dialogs.clear()
+        self.psd._USER_DEFAULTS.clear()
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    # ----- module-level constants ------------------------------------
+
+    def test_tab_keys_constant_shape(self):
+        # Canonical order. The Notebook pack order matches this tuple
+        # and tests downstream rely on it.
+        self.assertEqual(
+            self.psd._TAB_KEYS,
+            ("global", "primary_x", "secondary_x",
+             "primary_y", "secondary_y", "tertiary_y"),
+        )
+
+    def test_tab_titles_contains_every_key(self):
+        for key in self.psd._TAB_KEYS:
+            self.assertIn(key, self.psd._TAB_TITLES)
+            self.assertIsInstance(self.psd._TAB_TITLES[key], str)
+            self.assertTrue(self.psd._TAB_TITLES[key])
+
+    def test_tab_titles_human_readable(self):
+        self.assertEqual(self.psd._TAB_TITLES["global"], "Global")
+        self.assertEqual(self.psd._TAB_TITLES["primary_x"], "Primary X")
+        self.assertEqual(self.psd._TAB_TITLES["secondary_x"], "Secondary X")
+        self.assertEqual(self.psd._TAB_TITLES["primary_y"], "Primary Y")
+        self.assertEqual(self.psd._TAB_TITLES["secondary_y"], "Secondary Y")
+        self.assertEqual(self.psd._TAB_TITLES["tertiary_y"], "Tertiary Y")
+
+    # ----- container shape -------------------------------------------
+
+    def test_dialog_contains_a_notebook(self):
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        notebooks = [
+            c for c in _all_descendants(dlg) if isinstance(c, ttk.Notebook)
+        ]
+        self.assertEqual(len(notebooks), 1)
+        # Notebook handle exposed for downstream tests.
+        self.assertIs(dlg._notebook, notebooks[0])
+
+    def test_notebook_has_six_tabs_in_canonical_order(self):
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        tab_ids = dlg._notebook.tabs()
+        self.assertEqual(len(tab_ids), len(self.psd._TAB_KEYS))
+        text_for_each = [dlg._notebook.tab(t, "text") for t in tab_ids]
+        expected = [self.psd._TAB_TITLES[k] for k in self.psd._TAB_KEYS]
+        self.assertEqual(text_for_each, expected)
+
+    def test_tab_frames_dict_keyed_by_tab_key(self):
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        self.assertEqual(
+            set(dlg._tab_frames.keys()), set(self.psd._TAB_KEYS),
+        )
+        # Every frame is a real tk.Frame inside the dialog.
+        for key, frame in dlg._tab_frames.items():
+            self.assertIsInstance(frame, tk.Frame)
+
+    # ----- Global tab hosts the legacy section LabelFrames -----------
+
+    def test_global_tab_contains_all_four_sections(self):
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        titles = {
+            lf.cget("text")
+            for lf in _global_tab_label_frames(dlg)
+        }
+        expected = {"Fonts", "Appearance", "Legend", "Title and labels"}
+        self.assertTrue(expected.issubset(titles))
+
+    def test_axis_tabs_do_not_contain_section_label_frames(self):
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        for key in ("primary_x", "secondary_x",
+                    "primary_y", "secondary_y", "tertiary_y"):
+            frame = dlg._tab_frames[key]
+            titles = {
+                c.cget("text")
+                for c in _all_descendants(frame)
+                if isinstance(c, tk.LabelFrame)
+            }
+            # No "Fonts" / "Appearance" / "Legend" / "Title and labels"
+            # — only the per-axis shell's "Plots on this axis" and
+            # "Settings" placeholders.
+            self.assertEqual(
+                titles, {"Plots on this axis", "Settings"},
+                f"axis tab {key!r} has unexpected LabelFrames: {titles}",
+            )
+
+    # ----- axis tab shells -------------------------------------------
+
+    def test_axis_tab_shell_header_text(self):
+        # Each axis tab carries a bold "Axis: <Title>" header label.
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        for key in ("primary_x", "secondary_x",
+                    "primary_y", "secondary_y", "tertiary_y"):
+            frame = dlg._tab_frames[key]
+            texts = [
+                c.cget("text") for c in _all_descendants(frame)
+                if isinstance(c, tk.Label)
+            ]
+            expected_header = f"Axis: {self.psd._TAB_TITLES[key]}"
+            self.assertIn(
+                expected_header, texts,
+                f"axis tab {key!r} missing header {expected_header!r}; "
+                f"got {texts}",
+            )
+
+    def test_axis_tab_shell_carries_placeholder_badge(self):
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        for key in ("primary_x", "secondary_x",
+                    "primary_y", "secondary_y", "tertiary_y"):
+            frame = dlg._tab_frames[key]
+            texts = [
+                c.cget("text") for c in _all_descendants(frame)
+                if isinstance(c, tk.Label)
+            ]
+            badge = self.psd._AXIS_TAB_PLACEHOLDER_BADGE[key]
+            self.assertIn(
+                badge, texts,
+                f"axis tab {key!r} missing placeholder badge",
+            )
+
+    def test_axis_tab_shell_carries_phase_4aj_placeholder(self):
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        for key in ("primary_x", "secondary_x",
+                    "primary_y", "secondary_y", "tertiary_y"):
+            frame = dlg._tab_frames[key]
+            texts = [
+                c.cget("text") for c in _all_descendants(frame)
+                if isinstance(c, tk.Label)
+            ]
+            self.assertTrue(
+                any("Phase 4aj" in t for t in texts),
+                f"axis tab {key!r} missing the 'Per-axis settings land "
+                f"in Phase 4aj+' placeholder; labels were {texts}",
+            )
+
+    # ----- tab pre-selection via the tab= argument -------------------
+
+    def test_default_tab_is_global(self):
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        self.assertEqual(dlg.current_tab_key(), "global")
+
+    def test_tab_argument_pre_selects_axis_tab(self):
+        dlg = self.PlotConfigDialog(
+            self.host, self.config, tab="primary_y",
+        )
+        dlg.update_idletasks()
+        self.assertEqual(dlg.current_tab_key(), "primary_y")
+
+    def test_unknown_tab_falls_back_to_global(self):
+        dlg = self.PlotConfigDialog(
+            self.host, self.config, tab="not_a_real_tab",
+        )
+        dlg.update_idletasks()
+        self.assertEqual(dlg.current_tab_key(), "global")
+
+    def test_select_tab_after_construction(self):
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        dlg.select_tab("tertiary_y")
+        dlg.update_idletasks()
+        self.assertEqual(dlg.current_tab_key(), "tertiary_y")
+
+    def test_select_tab_unknown_falls_back_to_global(self):
+        dlg = self.PlotConfigDialog(
+            self.host, self.config, tab="primary_y",
+        )
+        dlg.update_idletasks()
+        dlg.select_tab("not_a_real_tab")
+        dlg.update_idletasks()
+        self.assertEqual(dlg.current_tab_key(), "global")
+
+    # ----- factory propagates tab= and refocuses existing dialogs ----
+
+    def test_factory_propagates_tab_argument(self):
+        dlg = self.open_dialog(self.host, self.config, tab="secondary_y")
+        dlg.update_idletasks()
+        self.assertEqual(dlg.current_tab_key(), "secondary_y")
+
+    def test_factory_focus_existing_switches_tab(self):
+        # First open on Global.
+        first = self.open_dialog(self.host, self.config)
+        first.update_idletasks()
+        self.assertEqual(first.current_tab_key(), "global")
+
+        # Second open with tab="tertiary_y": returns the same dialog,
+        # but the active tab has switched.
+        second = self.open_dialog(self.host, self.config, tab="tertiary_y")
+        second.update_idletasks()
+        self.assertIs(first, second)
+        self.assertEqual(first.current_tab_key(), "tertiary_y")
+
+    # ----- working copy still shared across tabs ---------------------
+
+    def test_global_tab_edits_still_reach_config_on_apply(self):
+        # Sanity check that the lift-into-Global tab didn't break
+        # the existing _do_apply working-copy flow.
+        self.config["title_font_size"] = 12
+        dlg = self.PlotConfigDialog(self.host, self.config, tab="primary_y")
+        dlg.update_idletasks()
+        # Switch to Global to edit the existing widget.
+        dlg.select_tab("global")
+        dlg._control_vars["title_font_size"].set(22)
+        dlg.update_idletasks()
+        dlg._do_apply()
+        self.assertEqual(self.config["title_font_size"], 22)
 
 
 if __name__ == "__main__":

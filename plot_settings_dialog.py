@@ -169,6 +169,40 @@ _UNIVERSAL_DEFAULTS: dict[str, Any] = dict(_FACTORY_DEFAULTS)
 _USER_DEFAULTS: dict[str, Any] = {}
 
 
+# Notebook tab keys (CS-60, Phase 4ai). Canonical order — the Notebook
+# pack order matches this tuple. The first entry is the default tab.
+_TAB_KEYS: tuple[str, ...] = (
+    "global",
+    "primary_x", "secondary_x",
+    "primary_y", "secondary_y", "tertiary_y",
+)
+
+# Human-readable Notebook tab labels. Used as the tab text and as the
+# lookup key for tests that walk `notebook.tabs()`. Modified-edit
+# marker (`" •"`) is appended at runtime by commit 4's state model.
+_TAB_TITLES: dict[str, str] = {
+    "global":      "Global",
+    "primary_x":   "Primary X",
+    "secondary_x": "Secondary X",
+    "primary_y":   "Primary Y",
+    "secondary_y": "Secondary Y",
+    "tertiary_y":  "Tertiary Y",
+}
+
+# Per-axis-tab subtitle. The dialog can't introspect the figure today
+# (no figure handle in scope), so commit 3 ships these as static
+# placeholders; commit 5 / Phase 4ak will populate live "(used by N
+# nodes)" / "(unused)" / "(derived)" badges from the host tab's
+# ``_axes_by_role`` plus the graph's nodes.
+_AXIS_TAB_PLACEHOLDER_BADGE: dict[str, str] = {
+    "primary_x":   "(spectral x-axis)",
+    "secondary_x": "(derived, e.g. wavelength↔energy)",
+    "primary_y":   "(plots routed here by default)",
+    "secondary_y": "(plots routed via y_axis style)",
+    "tertiary_y":  "(plots routed via y_axis style)",
+}
+
+
 # =====================================================================
 # Module-level factory
 # =====================================================================
@@ -178,12 +212,19 @@ def open_plot_config_dialog(
     config: dict,
     on_apply: Callable[[], None] | None = None,
     sections: tuple[str, ...] | None = None,
+    tab: str = "global",
 ) -> "PlotConfigDialog":
-    """Open the Plot Settings dialog for a tab, or focus the existing one.
+    """Open the Plot Config dialog for a host, or focus the existing one.
 
-    Per CS-06 each tab has at most one open Plot Settings dialog at a
-    time. A second request from the same host raises the existing
-    Toplevel rather than creating a duplicate.
+    Per CS-06 (and CS-60 from Phase 4ai onward) each host has at most
+    one open Plot Config dialog at a time. A second request from the
+    same host raises the existing Toplevel rather than creating a
+    duplicate; the existing dialog's active Notebook tab is updated
+    to ``tab`` when the caller asks for a specific one.
+
+    ``tab`` is one of :data:`_TAB_KEYS`; values outside the set fall
+    back to ``"global"``. Used by the Phase 4ai double-click hit-test
+    (CS-60) to pre-select the clicked axis's tab.
 
     Returns the live ``PlotConfigDialog`` either way.
     """
@@ -192,6 +233,7 @@ def open_plot_config_dialog(
     if existing is not None:
         try:
             if bool(existing.winfo_exists()):
+                existing.select_tab(tab)
                 existing.deiconify()
                 existing.lift()
                 existing.focus_force()
@@ -200,7 +242,7 @@ def open_plot_config_dialog(
             pass
         # Stale registry entry — fall through to construct fresh.
         _open_dialogs.pop(key, None)
-    return PlotConfigDialog(parent, config, on_apply, sections)
+    return PlotConfigDialog(parent, config, on_apply, sections, tab=tab)
 
 
 # =====================================================================
@@ -226,6 +268,7 @@ class PlotConfigDialog(tk.Toplevel):
         config: dict,
         on_apply: Callable[[], None] | None = None,
         sections: tuple[str, ...] | None = None,
+        tab: str = "global",
     ) -> None:
         super().__init__(parent)
 
@@ -268,6 +311,14 @@ class PlotConfigDialog(tk.Toplevel):
         # are not bound to a Tk var so they need their own refresh.
         self._color_swatches: dict[str, tk.Button] = {}
 
+        # CS-60: Notebook tab frames keyed by :data:`_TAB_KEYS`. The
+        # Global tab hosts the existing section LabelFrames; each
+        # axis tab hosts the per-axis shell built in
+        # :meth:`_build_axis_tab_shell`. Commit 4 layers a per-tab
+        # modified-edit marker on top.
+        self._notebook: ttk.Notebook | None = None
+        self._tab_frames: dict[str, tk.Frame] = {}
+
         self.title("Plot Settings")
         # Modal: transient + grab_set per CS-06. ``transient`` keeps
         # the dialog above the main window; ``grab_set`` blocks input
@@ -281,6 +332,11 @@ class PlotConfigDialog(tk.Toplevel):
         self._build_body()
         self._build_button_row()
 
+        # Pre-select the requested tab. Falls back to "global" for any
+        # unknown key — the double-click hit-test occasionally passes
+        # roles whose tab is reserved (e.g. ``secondary_x`` today).
+        self.select_tab(tab)
+
         self.bind("<Destroy>", self._on_destroy, add="+")
         self.protocol("WM_DELETE_WINDOW", self._on_close_requested)
 
@@ -292,15 +348,45 @@ class PlotConfigDialog(tk.Toplevel):
         self._suspend_writes = False
 
     # ------------------------------------------------------------
-    # Body construction
+    # Body construction — Notebook + per-tab frames (CS-60)
     # ------------------------------------------------------------
 
     def _build_body(self) -> None:
-        """Build one LabelFrame per section in order, separated by separators."""
-        body = tk.Frame(self, padx=12, pady=8)
+        """Build the Notebook and the six per-tab frames (CS-60).
+
+        The Notebook holds one tab per :data:`_TAB_KEYS` entry. The
+        Global tab hosts the pre-existing section LabelFrames
+        (delegated to :meth:`_build_global_tab`); each axis tab holds
+        a placeholder shell (:meth:`_build_axis_tab_shell`) until
+        per-axis settings land in Phase 4aj+.
+        """
+        body = tk.Frame(self, padx=8, pady=8)
         body.pack(fill=tk.BOTH, expand=True)
         self._body = body
 
+        nb = ttk.Notebook(body)
+        nb.pack(fill=tk.BOTH, expand=True)
+        self._notebook = nb
+
+        for key in _TAB_KEYS:
+            frame = tk.Frame(nb, padx=8, pady=8)
+            nb.add(frame, text=_TAB_TITLES[key])
+            self._tab_frames[key] = frame
+
+            if key == "global":
+                self._build_global_tab(frame)
+            else:
+                self._build_axis_tab_shell(frame, key)
+
+    def _build_global_tab(self, parent: tk.Widget) -> None:
+        """Build the Global tab's LabelFrame stack.
+
+        Pre-CS-60 this was the entire dialog body. Lifted into the
+        Global Notebook tab unchanged so the existing section
+        widgets (fonts, appearance, legend, title/labels) keep
+        identical behaviour. Phase 4aj will add a mirrored
+        axis-labels row at the top of this tab.
+        """
         for i, name in enumerate(self._sections):
             builder = getattr(self, f"_build_section_{name}", None)
             if builder is None:
@@ -309,15 +395,115 @@ class PlotConfigDialog(tk.Toplevel):
                 )
                 continue
             if i > 0:
-                ttk.Separator(body, orient=tk.HORIZONTAL).pack(
+                ttk.Separator(parent, orient=tk.HORIZONTAL).pack(
                     fill=tk.X, pady=(8, 4),
                 )
             frame = tk.LabelFrame(
-                body, text=_SECTION_TITLES[name], padx=8, pady=4,
+                parent, text=_SECTION_TITLES[name], padx=8, pady=4,
             )
             frame.pack(fill=tk.X)
             frame.columnconfigure(1, weight=1)
             builder(frame)
+
+    def _build_axis_tab_shell(self, parent: tk.Widget, role: str) -> None:
+        """Build the per-axis Notebook tab shell (CS-60, Phase 4ai).
+
+        Placeholder layout shipped in commit 3 — real per-axis
+        settings (label override, range/autoscale, tick spacing, etc.)
+        land starting Phase 4aj. Structure:
+
+        * Header row: bold ``"Axis: <Tab Title>"`` on the left,
+          italic state badge (placeholder text from
+          :data:`_AXIS_TAB_PLACEHOLDER_BADGE`) on the right.
+        * Separator.
+        * "Plots on this axis" LabelFrame containing an empty
+          scrollable list placeholder. Phase 4ak populates this from
+          the host tab's graph + ``y_axis`` style key (CS-50).
+        * Separator.
+        * "Settings" LabelFrame containing a single small Label
+          saying "Per-axis settings land in Phase 4aj+." Each
+          subsequent phase swaps in real widgets.
+        """
+        header = tk.Frame(parent)
+        header.pack(fill=tk.X)
+        tk.Label(
+            header, text=f"Axis: {_TAB_TITLES[role]}",
+            font=("", 10, "bold"),
+        ).pack(side=tk.LEFT)
+        tk.Label(
+            header, text=_AXIS_TAB_PLACEHOLDER_BADGE.get(role, ""),
+            font=("", 9, "italic"), fg="#666666",
+        ).pack(side=tk.RIGHT)
+
+        ttk.Separator(parent, orient=tk.HORIZONTAL).pack(
+            fill=tk.X, pady=(6, 4),
+        )
+
+        plots_frame = tk.LabelFrame(
+            parent, text="Plots on this axis", padx=8, pady=6,
+        )
+        plots_frame.pack(fill=tk.X)
+        tk.Label(
+            plots_frame,
+            text="(populated in Phase 4ak)",
+            font=("", 9), fg="#888888",
+        ).pack(anchor="w")
+
+        ttk.Separator(parent, orient=tk.HORIZONTAL).pack(
+            fill=tk.X, pady=(8, 4),
+        )
+
+        settings_frame = tk.LabelFrame(
+            parent, text="Settings", padx=8, pady=6,
+        )
+        settings_frame.pack(fill=tk.X)
+        tk.Label(
+            settings_frame,
+            text="Per-axis settings land in Phase 4aj+.",
+            font=("", 9), fg="#888888",
+        ).pack(anchor="w")
+
+    # ------------------------------------------------------------
+    # Tab navigation (CS-60)
+    # ------------------------------------------------------------
+
+    def select_tab(self, key: str) -> None:
+        """Switch the Notebook to the tab named ``key``.
+
+        ``key`` must be one of :data:`_TAB_KEYS`; an unknown key (or
+        a key whose tab is reserved-but-not-built — none today)
+        falls back silently to ``"global"`` so the double-click
+        hit-test's reserved roles don't crash the dialog.
+        """
+        if self._notebook is None:
+            return
+        if key not in self._tab_frames:
+            key = "global"
+        frame = self._tab_frames[key]
+        try:
+            self._notebook.select(frame)
+        except tk.TclError:
+            # Tab not yet added to the notebook (shouldn't happen
+            # given _build_body); swallow rather than crash.
+            pass
+
+    def current_tab_key(self) -> str:
+        """Return the currently selected tab key (CS-60).
+
+        Useful for tests and for the commit-4 button row that needs
+        to know which tab the user is on when they Apply. Returns
+        ``"global"`` if the Notebook isn't yet wired.
+        """
+        if self._notebook is None:
+            return "global"
+        try:
+            selected = self._notebook.select()
+            for key, frame in self._tab_frames.items():
+                if str(frame) == selected:
+                    return key
+        except tk.TclError:
+            pass
+        return "global"
 
     # ============================================================
     # Section: Fonts
