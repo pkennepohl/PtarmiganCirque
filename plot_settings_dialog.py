@@ -721,11 +721,17 @@ class PlotConfigDialog(tk.Toplevel):
         # The first axis tab built (canonical pack order: primary_x)
         # registers the shared Tk var, trace callback, and refresh
         # closure. Subsequent tabs reuse the var so all five radios
-        # display the same selection.
+        # display the same selection. The fallback when working has
+        # no value goes through ``_FACTORY_DEFAULTS["tick_direction"]``
+        # rather than a literal "in" so a future schema flip cannot
+        # drift between the appearance/per-axis builders.
         var = self._control_vars.get("tick_direction")
         if var is None:
             var = tk.StringVar(
-                value=str(self._working.get("tick_direction", "in")),
+                value=str(self._working.get(
+                    "tick_direction",
+                    _FACTORY_DEFAULTS["tick_direction"],
+                )),
             )
             self._control_vars["tick_direction"] = var
             var.trace_add(
