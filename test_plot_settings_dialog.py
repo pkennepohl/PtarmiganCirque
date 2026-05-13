@@ -1947,18 +1947,21 @@ class TestPlotConfigDialogPerAxisSchemaPhase4ak(unittest.TestCase):
                 f"axis tab {role!r} should show empty placeholder",
             )
 
-    def test_plots_listbox_is_read_only(self):
+    def test_plots_listbox_is_disabled_on_x_axis_tabs(self):
+        # X-axis tabs keep the CS-62 ``state="disabled"`` lock: every
+        # visible plot is necessarily on primary_x and secondary_x
+        # mirrors it, so there is nowhere to route to. Phase 4al's
+        # canonical relaxation applies only to the three Y-axis tabs.
         dlg = self.PlotConfigDialog(
             self.host, self.config,
-            plots_by_role={"primary_y": ("Scan A", "Scan B")},
+            plots_by_role={"primary_x": ("Scan A", "Scan B")},
         )
         dlg.update_idletasks()
-        plots_frame = self._plots_frame(dlg, "primary_y")
+        plots_frame = self._plots_frame(dlg, "primary_x")
         listbox = [
             c for c in _all_descendants(plots_frame)
             if isinstance(c, tk.Listbox)
         ][0]
-        # Read-only: cget("state") returns "disabled".
         self.assertEqual(str(listbox.cget("state")), "disabled")
 
     def test_plots_listbox_height_capped_at_six(self):

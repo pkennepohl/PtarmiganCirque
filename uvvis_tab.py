@@ -1755,12 +1755,15 @@ class UVVisTab(tk.Frame):
         ``on_apply`` so the tab repaints. Phase 4ak (CS-62) threads
         the per-axis plot inventory through ``plots_by_role`` so
         each per-axis Notebook tab can render its "Plots on this
-        axis" list.
+        axis" list. Phase 4al threads ``on_route_plot`` so the
+        Move-to picker on each Y-axis tab can write
+        ``style["y_axis"]`` directly via ``graph.set_style``.
         """
         plot_settings_dialog.open_plot_config_dialog(
             self, self._plot_config,
             on_apply=self._on_plot_config_changed,
             plots_by_role=self._compute_plots_by_role(),
+            on_route_plot=self._on_route_plot_from_dialog,
         )
 
     def _on_plot_config_changed(self) -> None:
@@ -1771,6 +1774,55 @@ class UVVisTab(tk.Frame):
         UI state, so it does not flow through the graph subscription.
         """
         self._redraw()
+
+    def _on_route_plot_from_dialog(
+        self,
+        source_tab_role: str,
+        label: str,
+        target_tab_role: Optional[str],
+    ) -> None:
+        """Phase 4al: Move-to picker callback from the Plot Settings dialog.
+
+        The dialog speaks tab-role-key space (``primary_y`` /
+        ``secondary_y`` / ``tertiary_y``); the host translates into
+        the CS-50 ``style["y_axis"]`` value via the inverse of
+        :data:`_Y_AXIS_ROLE_TO_TAB` and writes it through
+        ``graph.set_style``. ``target_tab_role=None`` clears the
+        override (restoring per-NodeType default routing).
+
+        Label collisions across axes are resolved by the source role:
+        only nodes currently routed to ``source_tab_role`` are
+        eligible. The first matching visible node wins — in the
+        common case where labels are unique within a graph this is
+        deterministic; if a graph carries two visible nodes with
+        the same label on the same axis, the user can rename one
+        through the per-node Style dialog.
+
+        ``set_style`` fires NODE_STYLE_CHANGED, which the tab's
+        subscription consumes and translates into a redraw — no
+        explicit ``_redraw`` call needed here.
+        """
+        tab_to_style = {v: k for k, v in _Y_AXIS_ROLE_TO_TAB.items()}
+        source_style = tab_to_style.get(source_tab_role)
+        target_style = (
+            tab_to_style.get(target_tab_role)
+            if target_tab_role is not None else None
+        )
+        if source_style is None:
+            return
+        for node in (
+            list(self._spectrum_nodes())
+            + list(self._second_derivative_nodes())
+            + list(self._peak_list_nodes())
+        ):
+            if not bool(node.style.get("visible", True)):
+                continue
+            if node.label != label:
+                continue
+            if _resolve_y_axis_role(node.type, node.style) != source_style:
+                continue
+            self._graph.set_style(node.id, {"y_axis": target_style})
+            return
 
     def _compute_plots_by_role(self) -> dict[str, tuple[str, ...]]:
         """Build the ``plots_by_role`` mapping the dialog consumes (Phase 4ak).
@@ -1972,6 +2024,7 @@ class UVVisTab(tk.Frame):
             on_apply=self._on_plot_config_changed,
             tab=hit.role,
             plots_by_role=self._compute_plots_by_role(),
+            on_route_plot=self._on_route_plot_from_dialog,
         )
 
     def _on_unit_change(self):
