@@ -2054,18 +2054,26 @@ class UVVisTab(tk.Frame):
         self._axes_by_role = {"primary": ax}
         first_node_type_per_role: dict[str, NodeType] = {}
 
-        # Phase 4ak (CS-62): tick_direction lives nested per axis after
-        # the schema invention. The renderer reads primary_x's slot as
-        # the canonical value and applies it uniformly to every axis
-        # for now — per-axis differentiation lands in the follow-up
-        # phase. The helper falls back through the legacy flat
-        # ``cfg["tick_direction"]`` to the factory default so a
-        # pre-migration ``_plot_config`` keeps rendering identically.
-        tick_dir = _per_axis_tick_direction(cfg, "primary_x")
+        # Phase 4al: tick_direction reads per axis-role. The schema
+        # invention from Phase 4ak (CS-62) stored a tick_direction per
+        # role in ``cfg["axes"][<role>]``; this phase wires each
+        # tick_params call site to its own role. Primary x/y split via
+        # ``axis="x"`` / ``axis="y"`` calls on ``ax``; twin Y-axes
+        # read their own role at creation time in ``get_axis``; the
+        # secondary_x sibling axis (wavelength↔energy twin) reads
+        # from ``secondary_x`` instead of the previous hardcoded
+        # ``"in"``. The helper's fallback chain still covers
+        # pre-migration ``_plot_config`` shapes via the legacy flat
+        # ``cfg["tick_direction"]`` key.
         tick_size = cfg.get("tick_label_font_size", 9)
         tertiary_offset = float(
             cfg.get("tertiary_axis_offset", _TERTIARY_AXIS_OFFSET_FRAC))
 
+        # CS-44 y-axis role keys ("primary"/"secondary"/"tertiary") map
+        # to the dialog's tab role keys ("primary_y" etc.) — see
+        # :data:`_Y_AXIS_ROLE_TO_TAB`. The twin Y-axis lookup uses
+        # this so a future renamed-axis-role lands as a one-line
+        # table edit rather than scattered string literals.
         def get_axis(role: str):
             """Return (creating if needed) the Axes for ``role``.
 
@@ -2089,7 +2097,11 @@ class UVVisTab(tk.Frame):
                     ("axes", tertiary_offset))
             else:  # pragma: no cover — defensive fallback
                 return ax
-            ax_new.tick_params(direction=tick_dir, labelsize=tick_size)
+            twin_tab_role = _Y_AXIS_ROLE_TO_TAB.get(role)
+            twin_tick_dir = _per_axis_tick_direction(cfg, twin_tab_role) \
+                if twin_tab_role else _per_axis_tick_direction(cfg, "primary_y")
+            ax_new.tick_params(
+                axis="y", direction=twin_tick_dir, labelsize=tick_size)
             self._axes_by_role[role] = ax_new
             return ax_new
 
@@ -2342,9 +2354,22 @@ class UVVisTab(tk.Frame):
                 fontweight=("bold" if cfg.get("title_font_bold", True) else "normal"),
             )
 
-        # Tick direction + tick label size on primary; non-primary
-        # roles already inherited these in ``get_axis`` at creation.
-        ax.tick_params(direction=tick_dir, labelsize=tick_size)
+        # Phase 4al: primary axis tick direction splits per axis-role.
+        # Both x and y of the primary Axes inherit ``tick_label_font_size``
+        # uniformly (it is a Global key), but the direction (in / out /
+        # inout) reads from the per-axis-role slot. Non-primary roles
+        # already inherited their per-role direction in ``get_axis`` at
+        # creation time.
+        ax.tick_params(
+            axis="x",
+            direction=_per_axis_tick_direction(cfg, "primary_x"),
+            labelsize=tick_size,
+        )
+        ax.tick_params(
+            axis="y",
+            direction=_per_axis_tick_direction(cfg, "primary_y"),
+            labelsize=tick_size,
+        )
 
         # ── Secondary λ(nm) axis ──────────────────────────────────────────────
         # This is an x-axis sibling on the *top* spine of the primary
@@ -2364,7 +2389,17 @@ class UVVisTab(tk.Frame):
             # "λ (nm)" string.
             sec_x_override = _axis_label_override(cfg, "secondary_x")
             sec.set_xlabel(sec_x_override or "λ (nm)", fontsize=9)
-            sec.tick_params(axis="x", direction="in", labelsize=8)
+            # Phase 4al: the previously-hardcoded ``direction="in"`` now
+            # reads from the ``secondary_x`` per-axis slot so the user's
+            # Plot Settings choice on the Secondary X tab applies. The
+            # secondary-x tick label font size stays at 8pt (the
+            # original hardcoded value); ``tick_label_font_size``
+            # remains a primary-only key.
+            sec.tick_params(
+                axis="x",
+                direction=_per_axis_tick_direction(cfg, "secondary_x"),
+                labelsize=8,
+            )
 
         # ── Invert nm axis ────────────────────────────────────────────────────
         if unit == "nm":
