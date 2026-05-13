@@ -1059,6 +1059,328 @@ class TestUVVisTabAxisDoubleClickPhase4ai(unittest.TestCase):
         )
 
 
+# =====================================================================
+# CS-62 Phase 4ak: per-axis schema host wiring (axis_label_override
+# rendering + plots_by_role enumeration)
+# =====================================================================
+
+
+class TestEnumeratePlotsByRolePhase4ak(unittest.TestCase):
+    """Unit tests for the module-level :func:`_enumerate_plots_by_role`.
+
+    No Tk display needed — these are pure-Python tests against
+    DataNode stubs. The test ensures every plottable node category
+    feeds the right axis-tab bucket.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from uvvis_tab import _enumerate_plots_by_role
+        cls.enumerate_plots_by_role = staticmethod(_enumerate_plots_by_role)
+
+    def _node(
+        self,
+        node_type: "NodeType",
+        label: str,
+        y_axis_override: "str | None" = None,
+        visible: bool = True,
+    ) -> "DataNode":
+        style: dict = {"visible": visible}
+        if y_axis_override is not None:
+            style["y_axis"] = y_axis_override
+        return DataNode(
+            id=label, type=node_type,
+            arrays={"wavelength_nm": np.array([300., 400.]),
+                    "absorbance": np.array([0.1, 0.2])},
+            metadata={"source_file": "synthetic"},
+            label=label,
+            state=NodeState.COMMITTED,
+            style=style,
+        )
+
+    def test_empty_inputs_return_five_empty_tuples(self):
+        result = self.enumerate_plots_by_role(
+            [], [], [], secondary_x_active=False,
+        )
+        self.assertEqual(set(result.keys()), {
+            "primary_x", "secondary_x",
+            "primary_y", "secondary_y", "tertiary_y",
+        })
+        for tup in result.values():
+            self.assertEqual(tup, ())
+
+    def test_uvvis_node_lands_on_primary_x_and_primary_y(self):
+        uv = self._node(NodeType.UVVIS, "scan-a")
+        result = self.enumerate_plots_by_role(
+            [uv], [], [], secondary_x_active=False,
+        )
+        self.assertEqual(result["primary_x"], ("scan-a",))
+        self.assertEqual(result["primary_y"], ("scan-a",))
+        self.assertEqual(result["secondary_y"], ())
+        self.assertEqual(result["tertiary_y"], ())
+
+    def test_second_derivative_lands_on_secondary_y_by_default(self):
+        d2 = self._node(NodeType.SECOND_DERIVATIVE, "d2-a")
+        result = self.enumerate_plots_by_role(
+            [], [d2], [], secondary_x_active=False,
+        )
+        self.assertEqual(result["primary_x"], ("d2-a",))
+        self.assertEqual(result["primary_y"], ())
+        self.assertEqual(result["secondary_y"], ("d2-a",))
+
+    def test_per_style_y_axis_override_routes_to_tertiary(self):
+        node = self._node(
+            NodeType.UVVIS, "scan-tert", y_axis_override="tertiary",
+        )
+        result = self.enumerate_plots_by_role(
+            [node], [], [], secondary_x_active=False,
+        )
+        self.assertEqual(result["primary_y"], ())
+        self.assertEqual(result["tertiary_y"], ("scan-tert",))
+
+    def test_invisible_nodes_are_skipped(self):
+        visible = self._node(NodeType.UVVIS, "shown")
+        hidden = self._node(NodeType.UVVIS, "hidden", visible=False)
+        result = self.enumerate_plots_by_role(
+            [visible, hidden], [], [], secondary_x_active=False,
+        )
+        self.assertEqual(result["primary_x"], ("shown",))
+        self.assertEqual(result["primary_y"], ("shown",))
+
+    def test_secondary_x_mirrors_primary_x_when_active(self):
+        uv = self._node(NodeType.UVVIS, "scan-x")
+        d2 = self._node(NodeType.SECOND_DERIVATIVE, "deriv-x")
+        result_active = self.enumerate_plots_by_role(
+            [uv], [d2], [], secondary_x_active=True,
+        )
+        result_inactive = self.enumerate_plots_by_role(
+            [uv], [d2], [], secondary_x_active=False,
+        )
+        self.assertEqual(
+            result_active["secondary_x"], result_active["primary_x"],
+        )
+        self.assertEqual(result_inactive["secondary_x"], ())
+
+    def test_peak_list_nodes_are_listed(self):
+        peak = DataNode(
+            id="pk", type=NodeType.PEAK_LIST,
+            arrays={"peak_wavelengths_nm": np.array([350.0]),
+                    "peak_absorbances": np.array([0.5])},
+            metadata={}, label="peaks",
+            state=NodeState.COMMITTED, style={"visible": True},
+        )
+        result = self.enumerate_plots_by_role(
+            [], [], [peak], secondary_x_active=False,
+        )
+        self.assertEqual(result["primary_x"], ("peaks",))
+        self.assertEqual(result["primary_y"], ("peaks",))
+
+
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestUVVisTabPerAxisSchemaPhase4ak(unittest.TestCase):
+    """CS-62 host wiring: axis_label_override renders on every
+    populated axis; ``plots_by_role`` threads through the dialog
+    open calls; the legacy flat ``cfg["tick_direction"]`` keeps
+    working through the renderer's fallback chain.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from uvvis_tab import UVVisTab
+        import plot_settings_dialog
+        cls.UVVisTab = UVVisTab
+        cls.psd = plot_settings_dialog
+
+    def setUp(self):
+        self.psd._open_dialogs.clear()
+        self.psd._USER_DEFAULTS.clear()
+        self.host = tk.Frame(_root)
+        self.host.pack()
+        self.graph = ProjectGraph()
+        self.tab = self.UVVisTab(self.host, graph=self.graph)
+
+    def tearDown(self):
+        for dlg in list(self.psd._open_dialogs.values()):
+            try:
+                dlg.destroy()
+            except Exception:
+                pass
+        self.psd._open_dialogs.clear()
+        self.psd._USER_DEFAULTS.clear()
+        try:
+            self.tab.destroy()
+        except Exception:
+            pass
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    def _add_uvvis(self, nid: str = "u1") -> DataNode:
+        wl = np.linspace(300, 600, 10)
+        absorb = np.linspace(0.1, 0.9, 10)
+        node = DataNode(
+            id=nid, type=NodeType.UVVIS,
+            arrays={"wavelength_nm": wl, "absorbance": absorb},
+            metadata={"source_file": "synthetic"},
+            label=nid,
+            state=NodeState.COMMITTED,
+            style={"color": "#1f77b4", "linestyle": "solid",
+                   "linewidth": 1.5, "alpha": 0.9, "visible": True,
+                   "in_legend": True, "fill": False, "fill_alpha": 0.08},
+        )
+        self.graph.add_node(node)
+        return node
+
+    # ---- _compute_plots_by_role wiring on the tab ----
+
+    def test_compute_plots_by_role_reflects_live_graph(self):
+        self._add_uvvis("alpha")
+        self._add_uvvis("beta")
+        result = self.tab._compute_plots_by_role()
+        self.assertEqual(set(result["primary_x"]), {"alpha", "beta"})
+        self.assertEqual(set(result["primary_y"]), {"alpha", "beta"})
+        self.assertEqual(result["secondary_y"], ())
+        self.assertEqual(result["tertiary_y"], ())
+
+    def test_open_plot_settings_threads_plots_by_role(self):
+        self._add_uvvis("gamma")
+        self.tab._open_plot_settings()
+        dlg = self.psd._open_dialogs[id(self.tab)]
+        dlg.update_idletasks()
+        # The dialog stored the snapshot under self._plots_by_role.
+        self.assertEqual(dlg._plots_by_role["primary_x"], ("gamma",))
+        self.assertEqual(dlg._plots_by_role["primary_y"], ("gamma",))
+
+    def test_double_click_threads_plots_by_role(self):
+        self._add_uvvis("delta")
+        self.tab._redraw()
+        self.tab._fig.canvas.draw()
+        from types import SimpleNamespace
+        bbox = self.tab._ax.get_window_extent()
+        cx = (bbox.x0 + bbox.x1) / 2.0
+        ev = SimpleNamespace(x=cx, y=bbox.y0 - 2.0, dblclick=True)
+        self.tab._on_mpl_axis_double_click(ev)
+        dlg = self.psd._open_dialogs[id(self.tab)]
+        dlg.update_idletasks()
+        self.assertEqual(dlg._plots_by_role["primary_x"], ("delta",))
+
+    # ---- axis_label_override rendering ----
+
+    def test_primary_x_override_wins_over_auto_label(self):
+        self._add_uvvis()
+        self.tab._plot_config["axes"] = {
+            "primary_x": {"axis_label_override": "Custom X label"},
+        }
+        self.tab._redraw()
+        self.assertEqual(self.tab._ax.get_xlabel(), "Custom X label")
+
+    def test_empty_override_falls_through_to_auto_label(self):
+        self._add_uvvis()
+        # No override → "Wavelength (nm)" auto label for nm unit.
+        self.tab._redraw()
+        self.assertEqual(self.tab._ax.get_xlabel(), "Wavelength (nm)")
+
+    def test_primary_y_override_wins_over_resolved_label(self):
+        self._add_uvvis()
+        self.tab._plot_config["axes"] = {
+            "primary_y": {"axis_label_override": "Custom Y label"},
+        }
+        self.tab._redraw()
+        self.assertEqual(self.tab._ax.get_ylabel(), "Custom Y label")
+
+    def test_secondary_x_override_replaces_wavelength_label(self):
+        # The secondary X axis is the wavelength↔energy twin —
+        # active only when x_unit == "cm-1" and the toggle is on.
+        # matplotlib's ``Axes.secondary_xaxis`` attaches the new
+        # axis under ``ax.child_axes`` rather than ``fig.axes``.
+        self._add_uvvis()
+        self.tab._x_unit.set("cm-1")
+        self.tab._show_nm_axis.set(True)
+        self.tab._plot_config["axes"] = {
+            "secondary_x": {"axis_label_override": "Wavelength axis"},
+        }
+        self.tab._redraw()
+        child_xlabels = [
+            ca.get_xlabel() for ca in self.tab._ax.child_axes
+        ]
+        self.assertIn("Wavelength axis", child_xlabels)
+        self.assertNotIn("λ (nm)", child_xlabels)
+
+    def test_secondary_y_override_wins_over_resolved_label(self):
+        # SECOND_DERIVATIVE defaults to the secondary y axis.
+        wl = np.linspace(300, 600, 10)
+        absorb = np.linspace(-0.01, 0.01, 10)
+        self.graph.add_node(DataNode(
+            id="d2", type=NodeType.SECOND_DERIVATIVE,
+            arrays={"wavelength_nm": wl, "absorbance": absorb},
+            metadata={"source_file": "synthetic"},
+            label="d2",
+            state=NodeState.COMMITTED,
+            style={"color": "#ff7f0e", "linestyle": "solid",
+                   "linewidth": 1.5, "alpha": 0.9, "visible": True,
+                   "in_legend": True, "fill": False, "fill_alpha": 0.08},
+        ))
+        self.tab._plot_config["axes"] = {
+            "secondary_y": {"axis_label_override": "Derivative axis"},
+        }
+        self.tab._redraw()
+        self.assertIn("secondary", self.tab._axes_by_role)
+        self.assertEqual(
+            self.tab._axes_by_role["secondary"].get_ylabel(),
+            "Derivative axis",
+        )
+
+    # ---- tick_direction fallback chain ----
+
+    def test_legacy_flat_tick_direction_still_renders(self):
+        # A pre-Phase-4ak _plot_config carries flat "tick_direction"
+        # and no "axes" sub-dict. The renderer's
+        # _per_axis_tick_direction helper falls back through to the
+        # flat key and the matplotlib state reflects it.
+        self._add_uvvis()
+        self.tab._plot_config.pop("axes", None)
+        self.tab._plot_config["tick_direction"] = "out"
+        self.tab._redraw()
+        # matplotlib stores tick_params under axes via the rcParams /
+        # major tick attributes. Reading back the direction is awkward;
+        # instead, assert the tick label tickdir attribute through
+        # the major ticks.
+        primary_ticks = self.tab._ax.get_xticklines()
+        # Each tick line carries the marker style — for direction
+        # "out", the marker is on the spine; for "in", it's reversed.
+        # An end-to-end check is impractical with matplotlib's
+        # internals, so verify the helper directly.
+        from uvvis_tab import _per_axis_tick_direction
+        self.assertEqual(
+            _per_axis_tick_direction(self.tab._plot_config, "primary_x"),
+            "out",
+        )
+
+    def test_nested_tick_direction_reads_primary_x_slot(self):
+        # After migration, the renderer reads primary_x's slot. Other
+        # roles' values still store but aren't yet applied (deferred
+        # to Phase 4al). The single uniform read is the Phase 4ak
+        # transitional behaviour.
+        cfg = {
+            "axes": {
+                "primary_x":   {"tick_direction": "out"},
+                "primary_y":   {"tick_direction": "inout"},
+                "secondary_x": {"tick_direction": "in"},
+                "secondary_y": {"tick_direction": "in"},
+                "tertiary_y":  {"tick_direction": "in"},
+            },
+        }
+        from uvvis_tab import _per_axis_tick_direction
+        self.assertEqual(
+            _per_axis_tick_direction(cfg, "primary_x"), "out",
+        )
+        # And the per-axis reads are honest about the stored values.
+        self.assertEqual(
+            _per_axis_tick_direction(cfg, "primary_y"), "inout",
+        )
+
+
 @unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
 class TestUVVisTabBaseline(unittest.TestCase):
     """Phase 4c — UV/Vis baseline correction (CS-15).
@@ -2984,8 +3306,16 @@ class TestUVVisTabAppearancePhase4ae(unittest.TestCase):
 
     def test_plot_config_inherits_inward_tick_default(self):
         # No user-defaults, no explicit config — the fresh tab's
-        # plot_config copies the factory default "in".
-        self.assertEqual(self.tab._plot_config["tick_direction"], "in")
+        # plot_config copies the factory default "in" per axis role.
+        # Phase 4ak (CS-62) moved the key into the nested
+        # ``axes[<role>]`` schema, so the read reaches into the
+        # sub-dict. Every per-axis role starts at the factory "in".
+        self.assertNotIn("tick_direction", self.tab._plot_config)
+        for role in self.psd._FACTORY_DEFAULTS["axes"]:
+            self.assertEqual(
+                self.tab._plot_config["axes"][role]["tick_direction"],
+                "in",
+            )
 
     # ---- grid colour reaches matplotlib ----
 

@@ -591,12 +591,15 @@ class TestAppearanceSectionPhase4ae(unittest.TestCase):
 
     def test_tick_direction_factory_default_is_in(self):
         # Phase 4ac friction #3 USER-FLAGGED — factory default flipped
-        # from "out" to "in". Existing _USER_DEFAULTS that pin "out"
-        # are unaffected (factory-default-only flip per the decision
-        # lock — no migration).
-        self.assertEqual(
-            self.psd._FACTORY_DEFAULTS["tick_direction"], "in",
-        )
+        # from "out" to "in". Phase 4ak (CS-62) moved the key into the
+        # nested ``axes[<role>]`` sub-dict; the value stays "in" on
+        # every per-axis role. The top-level flat key is gone.
+        self.assertNotIn("tick_direction", self.psd._FACTORY_DEFAULTS)
+        for role in self.psd._FACTORY_DEFAULTS["axes"]:
+            self.assertEqual(
+                self.psd._FACTORY_DEFAULTS["axes"][role]["tick_direction"], "in",
+                f"per-axis tick_direction default drift on role {role!r}",
+            )
 
     def test_universal_defaults_carries_new_keys(self):
         # _UNIVERSAL_DEFAULTS is a shallow copy of _FACTORY_DEFAULTS
@@ -649,11 +652,14 @@ class TestAppearanceSectionPhase4ae(unittest.TestCase):
     # ---- factory reset restores the new keys ----
 
     def test_factory_reset_restores_new_appearance_keys(self):
+        # Phase 4ak (CS-62) moved tick_direction into the nested
+        # ``axes[<role>]`` schema; the reset check now reads per-axis.
         dlg = self.PlotConfigDialog(self.host, self.config)
         dlg.update_idletasks()
         dlg._control_vars["grid_color"].set("#ff0000")
         dlg._control_vars["tertiary_axis_offset"].set(1.40)
-        dlg._control_vars["tick_direction"].set("out")
+        dlg._axis_control_vars[("primary_x", "tick_direction")].set("out")
+        dlg._axis_control_vars[("tertiary_y", "tick_direction")].set("inout")
         dlg.update_idletasks()
         dlg._do_factory_reset()
         dlg.update_idletasks()
@@ -661,7 +667,10 @@ class TestAppearanceSectionPhase4ae(unittest.TestCase):
         self.assertAlmostEqual(
             dlg._working["tertiary_axis_offset"], 1.12, places=4,
         )
-        self.assertEqual(dlg._working["tick_direction"], "in")
+        for role in self.psd._FACTORY_DEFAULTS["axes"]:
+            self.assertEqual(
+                dlg._working["axes"][role]["tick_direction"], "in",
+            )
 
     # ---- pre-population from config ----
 
@@ -1318,9 +1327,18 @@ class TestPlotConfigDialogButtonRowPhase4ai(unittest.TestCase):
 
 @unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
 class TestPlotConfigDialogTickDirectionRelocationPhase4aj(unittest.TestCase):
-    """CS-61 (Phase 4aj): tick_direction widget moves from Plot Settings
-    → Appearance into the "Settings" LabelFrame of each per-axis
-    Notebook tab. Schema stays flat; dirty marker pins to Primary X.
+    """CS-61 (Phase 4aj) — tick_direction widget moved from Plot Settings
+    → Appearance into the per-axis Notebook tabs.
+
+    Phase 4ak (CS-62) is the canonical lock-relaxation: the shared-var
+    + Primary-X-dirty-pin pattern from 4aj inverted to per-axis vars
+    + per-role dirty marking. This class keeps the still-valid
+    relocation invariants (label absent from Appearance, label and
+    three radios present on every per-axis "Settings" frame) and
+    re-asserts the var / write / dirty semantics in their CS-62 form
+    so the relocation thread remains documented across phases. The
+    nested-schema / migration-shim / axis_label_override / Global
+    mirror behaviour lives in TestPlotConfigDialogPerAxisSchemaPhase4ak.
     """
 
     @classmethod
@@ -1374,13 +1392,16 @@ class TestPlotConfigDialogTickDirectionRelocationPhase4aj(unittest.TestCase):
 
     # ---- routing map ----
 
-    def test_key_to_tab_pins_tick_direction_to_primary_x(self):
-        # CS-61 lock: editing tick_direction marks Primary X dirty.
-        # The map's default (any unmapped key → "global") still
-        # applies for keys that have not yet been relocated.
-        self.assertEqual(self.psd._KEY_TO_TAB.get("tick_direction"), "primary_x")
-        self.assertEqual(self.psd._key_to_tab("tick_direction"), "primary_x")
-        # Keys still on Global resolve to "global".
+    def test_tick_direction_no_longer_in_key_to_tab(self):
+        # Phase 4ak (CS-62) emptied _KEY_TO_TAB — per-axis keys live
+        # inside the nested ``axes[<role>]`` sub-dict and route
+        # dirty-marking via :meth:`_on_axis_var_write` with an
+        # explicit role argument, bypassing :func:`_key_to_tab`.
+        self.assertNotIn("tick_direction", self.psd._KEY_TO_TAB)
+        # The dict is empty after the CS-61 entry was removed; every
+        # flat key falls through to "global".
+        self.assertEqual(dict(self.psd._KEY_TO_TAB), {})
+        self.assertEqual(self.psd._key_to_tab("tick_direction"), "global")
         self.assertEqual(self.psd._key_to_tab("title_font_size"), "global")
 
     # ---- widget absence from the old home ----
@@ -1438,108 +1459,565 @@ class TestPlotConfigDialogTickDirectionRelocationPhase4aj(unittest.TestCase):
             total += len(radios)
         self.assertEqual(total, 15)
 
-    # ---- shared Tk var across all five tabs ----
+    # ---- per-axis Tk vars (CS-62 inversion of the CS-61 shared var) ----
 
-    def test_single_control_var_for_tick_direction(self):
-        # Phase 4aj keeps the schema flat: one Tk var, one
-        # working-copy key. The first axis tab built (primary_x in
-        # pack order) is responsible for creating the var.
+    def test_per_axis_tick_direction_vars_registered_for_every_role(self):
+        # Phase 4ak: each per-axis tab owns its own (role,
+        # "tick_direction") Tk var. The flat "tick_direction" entry
+        # in _control_vars is gone.
         dlg = self.PlotConfigDialog(self.host, self.config)
         dlg.update_idletasks()
-        self.assertIn("tick_direction", dlg._control_vars)
-        var = dlg._control_vars["tick_direction"]
-        self.assertIsInstance(var, tk.StringVar)
-        # The factory default is "in"; the var initialises from that
-        # when self._working has no override.
-        self.assertEqual(var.get(), "in")
+        self.assertNotIn("tick_direction", dlg._control_vars)
+        for role in self._AXIS_TAB_KEYS:
+            self.assertIn((role, "tick_direction"), dlg._axis_control_vars)
+            var = dlg._axis_control_vars[(role, "tick_direction")]
+            self.assertIsInstance(var, tk.StringVar)
+            self.assertEqual(var.get(), "in")
 
-    def test_all_radios_across_tabs_share_the_same_var(self):
-        # The radio's ``variable`` option holds a Tk variable name
-        # string. Every radio on every per-axis tab must point at the
-        # same string for the "edit on one tab → all reflect" UX to
-        # hold up.
+    def test_each_tab_radio_set_binds_to_that_tab_s_own_var(self):
+        # Inverted CS-61 invariant: radios on tab N point at the var
+        # for role N, not at a shared var. Five distinct var names,
+        # one per tab.
         dlg = self.PlotConfigDialog(self.host, self.config)
         dlg.update_idletasks()
-        shared_var = dlg._control_vars["tick_direction"]
-        shared_name = str(shared_var)
+        seen_var_names = set()
         for role in self._AXIS_TAB_KEYS:
             frame = self._settings_frame(dlg, role)
-            for radio in self._radiobuttons(frame):
+            radios = self._radiobuttons(frame)
+            self.assertEqual(len(radios), 3)
+            this_var_name = str(
+                dlg._axis_control_vars[(role, "tick_direction")]
+            )
+            for radio in radios:
                 self.assertEqual(
-                    str(radio.cget("variable")), shared_name,
-                    f"axis tab {role!r}: radio var name mismatch",
+                    str(radio.cget("variable")), this_var_name,
+                    f"axis tab {role!r}: radio var should match per-axis var",
                 )
+            seen_var_names.add(this_var_name)
+        # Five distinct vars across five tabs.
+        self.assertEqual(len(seen_var_names), 5)
 
     # ---- write semantics ----
 
-    def test_edit_writes_through_to_working(self):
+    def test_edit_writes_through_to_nested_axes(self):
         dlg = self.PlotConfigDialog(self.host, self.config)
         dlg.update_idletasks()
-        dlg._control_vars["tick_direction"].set("out")
+        dlg._axis_control_vars[("primary_y", "tick_direction")].set("out")
         dlg.update_idletasks()
-        self.assertEqual(dlg._working["tick_direction"], "out")
+        self.assertEqual(
+            dlg._working["axes"]["primary_y"]["tick_direction"], "out",
+        )
+        # Other roles are untouched.
+        self.assertEqual(
+            dlg._working["axes"]["primary_x"]["tick_direction"], "in",
+        )
+        # The flat key is gone post-migration; no shadow value lingers.
+        self.assertNotIn("tick_direction", dlg._working)
 
-    def test_edit_marks_only_primary_x_dirty(self):
-        # CS-61 dirty-pin lock: even though every axis tab shows the
-        # widget, the dirty marker pins to Primary X. The user is not
-        # flooded with five bullets per single edit.
+    def test_edit_marks_role_specific_tab_dirty(self):
+        # CS-62 inversion: edit on Primary Y now marks Primary Y dirty
+        # (not Primary X as in the CS-61 single-pin pattern).
         dlg = self.PlotConfigDialog(self.host, self.config)
         dlg.update_idletasks()
-        # Switch the visible tab to Primary Y first — the user
-        # might be looking at Primary Y while editing. The dirty
-        # marker still pins to Primary X.
         dlg.select_tab("primary_y")
         dlg.update_idletasks()
-        dlg._control_vars["tick_direction"].set("out")
+        dlg._axis_control_vars[("primary_y", "tick_direction")].set("out")
         dlg.update_idletasks()
-        self.assertEqual(dlg._modified_tabs, {"primary_x"})
+        self.assertEqual(dlg._modified_tabs, {"primary_y"})
 
-    def test_factory_reset_restores_in_default_via_relocated_widget(self):
+    def test_factory_reset_restores_in_default_on_every_role(self):
         dlg = self.PlotConfigDialog(self.host, self.config)
         dlg.update_idletasks()
-        dlg._control_vars["tick_direction"].set("out")
+        for role in self._AXIS_TAB_KEYS:
+            dlg._axis_control_vars[(role, "tick_direction")].set("out")
         dlg.update_idletasks()
         dlg._do_factory_reset()
         dlg.update_idletasks()
-        self.assertEqual(dlg._working["tick_direction"], "in")
-        # And every per-axis tab's radio reflects the reset value
-        # via the shared var.
-        self.assertEqual(dlg._control_vars["tick_direction"].get(), "in")
+        for role in self._AXIS_TAB_KEYS:
+            self.assertEqual(
+                dlg._working["axes"][role]["tick_direction"], "in",
+            )
+            self.assertEqual(
+                dlg._axis_control_vars[(role, "tick_direction")].get(), "in",
+            )
 
-    def test_pre_populate_from_config(self):
-        # Construction reads tick_direction out of the passed config
-        # dict, falls back to factory default. The radios on every
-        # axis tab reflect the pre-populated value.
+    def test_legacy_flat_config_migrates_into_nested_on_construction(self):
+        # CS-62 migration shim: a pre-Phase-4ak config carries the
+        # legacy flat ``tick_direction`` key. Dialog construction
+        # runs the shim so every per-axis radio reflects the
+        # migrated value and the flat key is gone.
         self.config["tick_direction"] = "inout"
         dlg = self.PlotConfigDialog(self.host, self.config)
         dlg.update_idletasks()
-        self.assertEqual(dlg._working["tick_direction"], "inout")
-        self.assertEqual(dlg._control_vars["tick_direction"].get(), "inout")
+        self.assertNotIn("tick_direction", dlg._working)
+        for role in self._AXIS_TAB_KEYS:
+            self.assertEqual(
+                dlg._working["axes"][role]["tick_direction"], "inout",
+            )
+            self.assertEqual(
+                dlg._axis_control_vars[(role, "tick_direction")].get(),
+                "inout",
+            )
 
-    def test_apply_commits_tick_direction_into_config(self):
-        # End-to-end: edit on any per-axis tab → click Apply → config
-        # carries the new value. Uses _do_apply (mirrors the Apply
-        # button's command).
+    def test_apply_commits_per_axis_tick_direction_into_config(self):
+        # End-to-end: edit on tab X → click Apply → config carries
+        # the new value under the nested axes[<role>] slot. Other
+        # roles keep their factory default; only the edited role
+        # changes.
         dlg = self.PlotConfigDialog(self.host, self.config)
         dlg.update_idletasks()
-        dlg._control_vars["tick_direction"].set("out")
+        dlg._axis_control_vars[("tertiary_y", "tick_direction")].set("out")
         dlg.update_idletasks()
         dlg._do_apply()
-        self.assertEqual(self.config["tick_direction"], "out")
+        self.assertEqual(
+            self.config["axes"]["tertiary_y"]["tick_direction"], "out",
+        )
+        self.assertEqual(
+            self.config["axes"]["primary_x"]["tick_direction"], "in",
+        )
         # Apply clears every modified marker.
         self.assertEqual(dlg._modified_tabs, set())
 
-    # ---- legacy schema invariants stay locked ----
+    # ---- factory defaults invariants (CS-62 shape) ----
 
-    def test_factory_defaults_tick_direction_unchanged(self):
-        # CS-56's factory-default lock continues to hold: the value
-        # is still "in", just the WIDGET moved.
-        self.assertEqual(
-            self.psd._FACTORY_DEFAULTS.get("tick_direction"), "in",
+    def test_factory_defaults_tick_direction_lives_per_axis(self):
+        # CS-62 lock: factory default is "in" on every per-axis role;
+        # the top-level flat key is gone.
+        self.assertNotIn("tick_direction", self.psd._FACTORY_DEFAULTS)
+        for role in self.psd._FACTORY_DEFAULTS["axes"]:
+            self.assertEqual(
+                self.psd._FACTORY_DEFAULTS["axes"][role]["tick_direction"],
+                "in",
+                f"per-axis tick_direction default drift on role {role!r}",
+            )
+
+    def test_universal_defaults_carries_nested_axes_with_tick_direction(self):
+        # The CS-62 deep copy preserves the per-axis shape — and
+        # mutating _UNIVERSAL_DEFAULTS cannot leak into
+        # _FACTORY_DEFAULTS or vice versa.
+        self.assertNotIn("tick_direction", self.psd._UNIVERSAL_DEFAULTS)
+        self.assertIn("axes", self.psd._UNIVERSAL_DEFAULTS)
+        for role in self.psd._FACTORY_DEFAULTS["axes"]:
+            self.assertEqual(
+                self.psd._UNIVERSAL_DEFAULTS["axes"][role]["tick_direction"],
+                "in",
+            )
+        self.assertIsNot(
+            self.psd._UNIVERSAL_DEFAULTS["axes"],
+            self.psd._FACTORY_DEFAULTS["axes"],
         )
 
-    def test_universal_defaults_still_carries_tick_direction(self):
-        self.assertIn("tick_direction", self.psd._UNIVERSAL_DEFAULTS)
+
+# =====================================================================
+# CS-62 Phase 4ak: nested per-axis schema + axis_label_override mirror
+# =====================================================================
+
+
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestPlotConfigDialogPerAxisSchemaPhase4ak(unittest.TestCase):
+    """CS-62 (Phase 4ak): _FACTORY_DEFAULTS gains a nested
+    ``"axes"`` sub-dict + the new ``axis_label_override`` per-axis
+    key + the Global-tab "Per-axis label overrides" mirror section
+    + the ``plots_by_role`` constructor kwarg + the
+    :func:`migrate_plot_config` legacy-flat-to-nested shim. The
+    CS-61 relocation invariants (label absent from Appearance, label
+    + 3 radios on every per-axis Settings frame) live alongside in
+    TestPlotConfigDialogTickDirectionRelocationPhase4aj — this class
+    covers what Phase 4ak introduced on top of those.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import plot_settings_dialog
+        cls.psd = plot_settings_dialog
+        cls.PlotConfigDialog = plot_settings_dialog.PlotConfigDialog
+
+    def setUp(self):
+        self.psd._open_dialogs.clear()
+        self.psd._USER_DEFAULTS.clear()
+        self.host = tk.Frame(_root)
+        self.host.pack()
+        self.config: dict = {}
+
+    def tearDown(self):
+        for dlg in list(self.psd._open_dialogs.values()):
+            try:
+                dlg.destroy()
+            except Exception:
+                pass
+        self.psd._open_dialogs.clear()
+        self.psd._USER_DEFAULTS.clear()
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    # ---- helpers ----
+
+    _AXIS_TAB_KEYS = (
+        "primary_x", "secondary_x", "primary_y", "secondary_y", "tertiary_y",
+    )
+
+    def _settings_frame(self, dlg, role: str) -> tk.LabelFrame:
+        tab_frame = dlg._tab_frames[role]
+        for child in _all_descendants(tab_frame):
+            if (
+                isinstance(child, tk.LabelFrame)
+                and child.cget("text") == "Settings"
+            ):
+                return child
+        self.fail(f"no Settings LabelFrame on axis tab {role!r}")
+
+    def _plots_frame(self, dlg, role: str) -> tk.LabelFrame:
+        tab_frame = dlg._tab_frames[role]
+        for child in _all_descendants(tab_frame):
+            if (
+                isinstance(child, tk.LabelFrame)
+                and child.cget("text") == "Plots on this axis"
+            ):
+                return child
+        self.fail(f"no Plots LabelFrame on axis tab {role!r}")
+
+    def _global_section_frame(self, dlg, title: str) -> tk.LabelFrame:
+        for lf in _global_tab_label_frames(dlg):
+            if lf.cget("text") == title:
+                return lf
+        self.fail(f"Global tab missing {title!r} section")
+
+    # ---- factory defaults shape ----
+
+    def test_factory_defaults_carries_nested_axes(self):
+        axes = self.psd._FACTORY_DEFAULTS["axes"]
+        self.assertEqual(
+            set(axes.keys()),
+            set(self._AXIS_TAB_KEYS),
+        )
+        for role in self._AXIS_TAB_KEYS:
+            self.assertEqual(axes[role]["tick_direction"], "in")
+            self.assertEqual(axes[role]["axis_label_override"], "")
+
+    def test_axis_keys_registry_matches_factory(self):
+        # _AXIS_KEYS is the canonical per-axis-key registry —
+        # asserting its contents documents the schema growth path
+        # for future phases.
+        self.assertEqual(
+            tuple(self.psd._AXIS_KEYS),
+            ("tick_direction", "axis_label_override"),
+        )
+        # Every per-axis role's sub-dict carries exactly these keys.
+        for role in self._AXIS_TAB_KEYS:
+            self.assertEqual(
+                set(self.psd._FACTORY_DEFAULTS["axes"][role].keys()),
+                set(self.psd._AXIS_KEYS),
+            )
+
+    def test_default_sections_includes_axis_labels(self):
+        self.assertIn("axis_labels", self.psd._DEFAULT_SECTIONS)
+        # The new section comes last in the canonical order.
+        self.assertEqual(self.psd._DEFAULT_SECTIONS[-1], "axis_labels")
+        self.assertEqual(
+            self.psd._SECTION_TITLES["axis_labels"],
+            "Per-axis label overrides",
+        )
+
+    def test_universal_defaults_is_deep_copy_of_factory(self):
+        # Phase 4ak upgraded the copy from shallow to deep so mutating
+        # one cannot leak through the nested "axes" sub-dict into
+        # the other.
+        u = self.psd._UNIVERSAL_DEFAULTS
+        f = self.psd._FACTORY_DEFAULTS
+        self.assertIsNot(u, f)
+        self.assertIsNot(u["axes"], f["axes"])
+        for role in self._AXIS_TAB_KEYS:
+            self.assertIsNot(u["axes"][role], f["axes"][role])
+
+    # ---- migration shim (module-level) ----
+
+    def test_migrate_flat_tick_direction_into_nested(self):
+        cfg = {"tick_direction": "out", "untouched_key": 42}
+        result = self.psd.migrate_plot_config(cfg)
+        self.assertIs(result, cfg, "migration must return same dict")
+        self.assertNotIn("tick_direction", cfg)
+        for role in self._AXIS_TAB_KEYS:
+            self.assertEqual(cfg["axes"][role]["tick_direction"], "out")
+            self.assertEqual(cfg["axes"][role]["axis_label_override"], "")
+        # Unrelated keys are preserved.
+        self.assertEqual(cfg["untouched_key"], 42)
+
+    def test_migrate_is_idempotent(self):
+        cfg = {"tick_direction": "inout"}
+        self.psd.migrate_plot_config(cfg)
+        # Second call is a no-op: every per-role slot is already populated.
+        snapshot = {role: dict(d) for role, d in cfg["axes"].items()}
+        self.psd.migrate_plot_config(cfg)
+        self.psd.migrate_plot_config(cfg)
+        for role in self._AXIS_TAB_KEYS:
+            self.assertEqual(dict(cfg["axes"][role]), snapshot[role])
+
+    def test_migrate_empty_config_populates_factory_axes(self):
+        cfg = {}
+        self.psd.migrate_plot_config(cfg)
+        self.assertIn("axes", cfg)
+        for role in self._AXIS_TAB_KEYS:
+            self.assertEqual(cfg["axes"][role]["tick_direction"], "in")
+            self.assertEqual(cfg["axes"][role]["axis_label_override"], "")
+
+    def test_migrate_partial_nested_fills_gaps(self):
+        # Caller already migrated tick_direction but never set
+        # axis_label_override — the shim fills the missing key.
+        cfg = {
+            "axes": {
+                "primary_y": {"tick_direction": "inout"},
+            },
+        }
+        self.psd.migrate_plot_config(cfg)
+        self.assertEqual(cfg["axes"]["primary_y"]["tick_direction"], "inout")
+        self.assertEqual(cfg["axes"]["primary_y"]["axis_label_override"], "")
+        # Missing roles are populated from factory.
+        self.assertEqual(cfg["axes"]["primary_x"]["tick_direction"], "in")
+
+    # ---- per-axis axis_label_override widget ----
+
+    def test_axis_label_override_entry_present_on_every_axis_tab(self):
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        for role in self._AXIS_TAB_KEYS:
+            frame = self._settings_frame(dlg, role)
+            texts = [
+                c.cget("text") for c in _all_descendants(frame)
+                if isinstance(c, tk.Label)
+            ]
+            self.assertIn(
+                "Axis label override:", texts,
+                f"axis tab {role!r} missing override label",
+            )
+            entries = [
+                c for c in _all_descendants(frame)
+                if isinstance(c, tk.Entry)
+            ]
+            self.assertGreaterEqual(
+                len(entries), 1,
+                f"axis tab {role!r} should have at least one Entry",
+            )
+
+    def test_axis_label_override_var_created_per_role(self):
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        for role in self._AXIS_TAB_KEYS:
+            self.assertIn(
+                (role, "axis_label_override"), dlg._axis_control_vars,
+            )
+            var = dlg._axis_control_vars[(role, "axis_label_override")]
+            self.assertEqual(var.get(), "")
+
+    def test_axis_label_override_edit_writes_through_to_nested(self):
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        var = dlg._axis_control_vars[("tertiary_y", "axis_label_override")]
+        var.set("d²A/dλ² (custom)")
+        dlg.update_idletasks()
+        self.assertEqual(
+            dlg._working["axes"]["tertiary_y"]["axis_label_override"],
+            "d²A/dλ² (custom)",
+        )
+        # Other roles untouched.
+        self.assertEqual(
+            dlg._working["axes"]["primary_x"]["axis_label_override"], "",
+        )
+
+    def test_axis_label_override_edit_marks_role_tab_dirty(self):
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        dlg._axis_control_vars[
+            ("secondary_x", "axis_label_override")
+        ].set("ν̃ (cm⁻¹)")
+        dlg.update_idletasks()
+        self.assertEqual(dlg._modified_tabs, {"secondary_x"})
+
+    # ---- Global "Per-axis label overrides" mirror section ----
+
+    def test_global_axis_labels_section_present(self):
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        # The section LabelFrame lives on the Global tab with the
+        # title declared in _SECTION_TITLES.
+        section = self._global_section_frame(dlg, "Per-axis label overrides")
+        # Five rows → five Entry widgets, one per axis role.
+        entries = [
+            c for c in _all_descendants(section)
+            if isinstance(c, tk.Entry)
+        ]
+        self.assertEqual(len(entries), 5)
+
+    def test_global_mirror_entry_shares_var_with_per_axis_entry(self):
+        # The Global mirror Entry for primary_y and the per-axis tab's
+        # Entry for primary_y must bind to the same Tk variable name
+        # so edits on either surface stay in lockstep.
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+
+        # Pull the per-axis Entry for primary_y.
+        settings_frame = self._settings_frame(dlg, "primary_y")
+        per_axis_entries = [
+            c for c in _all_descendants(settings_frame)
+            if isinstance(c, tk.Entry)
+        ]
+        self.assertEqual(len(per_axis_entries), 1)
+        per_axis_var_name = str(per_axis_entries[0].cget("textvariable"))
+
+        # The Global mirror section's third Entry corresponds to
+        # primary_y (canonical _TAB_KEYS order, minus "global").
+        section = self._global_section_frame(dlg, "Per-axis label overrides")
+        mirror_entries = [
+            c for c in _all_descendants(section)
+            if isinstance(c, tk.Entry)
+        ]
+        # Find the mirror Entry whose var matches.
+        mirror_var_names = [
+            str(e.cget("textvariable")) for e in mirror_entries
+        ]
+        self.assertIn(
+            per_axis_var_name, mirror_var_names,
+            "Global mirror Entry should share a Tk var with the "
+            "per-axis tab Entry for at least one role",
+        )
+
+    def test_edit_on_global_mirror_marks_role_tab_dirty(self):
+        # The mirror surface is on Global but the gesture is
+        # conceptually per-axis: editing should mark the
+        # corresponding role tab, not Global.
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        dlg._axis_control_vars[
+            ("primary_x", "axis_label_override")
+        ].set("Wavelength (nm)")
+        dlg.update_idletasks()
+        self.assertIn("primary_x", dlg._modified_tabs)
+        self.assertNotIn("global", dlg._modified_tabs)
+
+    # ---- plots_by_role constructor kwarg ----
+
+    def test_plots_by_role_renders_listbox_when_populated(self):
+        dlg = self.PlotConfigDialog(
+            self.host, self.config,
+            plots_by_role={"primary_y": ("Scan A", "Scan B", "Scan C")},
+        )
+        dlg.update_idletasks()
+        plots_frame = self._plots_frame(dlg, "primary_y")
+        listboxes = [
+            c for c in _all_descendants(plots_frame)
+            if isinstance(c, tk.Listbox)
+        ]
+        self.assertEqual(len(listboxes), 1)
+        listbox = listboxes[0]
+        contents = [listbox.get(i) for i in range(listbox.size())]
+        self.assertEqual(contents, ["Scan A", "Scan B", "Scan C"])
+
+    def test_plots_by_role_missing_role_renders_placeholder(self):
+        dlg = self.PlotConfigDialog(
+            self.host, self.config,
+            plots_by_role={"primary_y": ("Scan A",)},
+        )
+        dlg.update_idletasks()
+        # secondary_x was not in plots_by_role — placeholder Label.
+        plots_frame = self._plots_frame(dlg, "secondary_x")
+        labels = [
+            c.cget("text") for c in _all_descendants(plots_frame)
+            if isinstance(c, tk.Label)
+        ]
+        self.assertIn("(no plots on this axis)", labels)
+        # No Listbox on the empty role.
+        listboxes = [
+            c for c in _all_descendants(plots_frame)
+            if isinstance(c, tk.Listbox)
+        ]
+        self.assertEqual(listboxes, [])
+
+    def test_plots_by_role_none_defaults_to_placeholder_everywhere(self):
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        for role in self._AXIS_TAB_KEYS:
+            plots_frame = self._plots_frame(dlg, role)
+            labels = [
+                c.cget("text") for c in _all_descendants(plots_frame)
+                if isinstance(c, tk.Label)
+            ]
+            self.assertIn(
+                "(no plots on this axis)", labels,
+                f"axis tab {role!r} should show empty placeholder",
+            )
+
+    def test_plots_listbox_is_read_only(self):
+        dlg = self.PlotConfigDialog(
+            self.host, self.config,
+            plots_by_role={"primary_y": ("Scan A", "Scan B")},
+        )
+        dlg.update_idletasks()
+        plots_frame = self._plots_frame(dlg, "primary_y")
+        listbox = [
+            c for c in _all_descendants(plots_frame)
+            if isinstance(c, tk.Listbox)
+        ][0]
+        # Read-only: cget("state") returns "disabled".
+        self.assertEqual(str(listbox.cget("state")), "disabled")
+
+    def test_plots_listbox_height_capped_at_six(self):
+        many_labels = tuple(f"Scan {i}" for i in range(12))
+        dlg = self.PlotConfigDialog(
+            self.host, self.config,
+            plots_by_role={"primary_y": many_labels},
+        )
+        dlg.update_idletasks()
+        plots_frame = self._plots_frame(dlg, "primary_y")
+        listbox = [
+            c for c in _all_descendants(plots_frame)
+            if isinstance(c, tk.Listbox)
+        ][0]
+        self.assertEqual(int(listbox.cget("height")), 6)
+        # Contents still complete.
+        self.assertEqual(listbox.size(), 12)
+
+    # ---- end-to-end Apply commits nested form into config ----
+
+    def test_apply_commits_nested_axes_block_into_config(self):
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        dlg._axis_control_vars[
+            ("primary_y", "axis_label_override")
+        ].set("Custom label")
+        dlg._axis_control_vars[("tertiary_y", "tick_direction")].set("out")
+        dlg.update_idletasks()
+        dlg._do_apply()
+        # Config carries the full nested form.
+        self.assertEqual(
+            self.config["axes"]["primary_y"]["axis_label_override"],
+            "Custom label",
+        )
+        self.assertEqual(
+            self.config["axes"]["tertiary_y"]["tick_direction"], "out",
+        )
+        # Modified markers cleared.
+        self.assertEqual(dlg._modified_tabs, set())
+
+    # ---- end-to-end Reset Defaults migrates user defaults ----
+
+    def test_reset_defaults_migrates_legacy_user_defaults(self):
+        # Simulate a _USER_DEFAULTS dict saved by a pre-Phase-4ak
+        # session (carries flat tick_direction). Reset Defaults
+        # should run the migration shim so the working copy lands
+        # in nested form and every per-axis var reflects the
+        # migrated value.
+        self.psd._USER_DEFAULTS.clear()
+        self.psd._USER_DEFAULTS.update({"tick_direction": "out"})
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        dlg._do_reset_defaults()
+        dlg.update_idletasks()
+        for role in self._AXIS_TAB_KEYS:
+            self.assertEqual(
+                dlg._working["axes"][role]["tick_direction"], "out",
+            )
+        self.assertNotIn("tick_direction", dlg._working)
 
 
 if __name__ == "__main__":
