@@ -851,7 +851,15 @@ class TestPlotConfigDialogNotebookPhase4ai(unittest.TestCase):
                 f"axis tab {key!r} missing placeholder badge",
             )
 
-    def test_axis_tab_shell_carries_phase_4aj_placeholder(self):
+    def test_axis_tab_shell_carries_real_settings_widget_post_phase_4aj(self):
+        # Phase 4ai shipped each axis tab's "Settings" LabelFrame with
+        # a static "Per-axis settings land in Phase 4aj+." placeholder
+        # label. Phase 4aj (CS-61) swapped that placeholder for the
+        # first real per-axis widget — the Tick direction
+        # Radiobutton row. The exhaustive checks live in
+        # TestPlotConfigDialogTickDirectionRelocationPhase4aj; this
+        # test pins the obvious shape so a future regression that
+        # accidentally re-introduces the placeholder fails here too.
         dlg = self.PlotConfigDialog(self.host, self.config)
         dlg.update_idletasks()
         for key in ("primary_x", "secondary_x",
@@ -861,10 +869,15 @@ class TestPlotConfigDialogNotebookPhase4ai(unittest.TestCase):
                 c.cget("text") for c in _all_descendants(frame)
                 if isinstance(c, tk.Label)
             ]
-            self.assertTrue(
+            self.assertFalse(
                 any("Phase 4aj" in t for t in texts),
-                f"axis tab {key!r} missing the 'Per-axis settings land "
-                f"in Phase 4aj+' placeholder; labels were {texts}",
+                f"axis tab {key!r} still carries the pre-4aj "
+                f"placeholder; labels were {texts}",
+            )
+            self.assertIn(
+                "Tick direction:", texts,
+                f"axis tab {key!r} missing the relocated Tick "
+                f"direction label; labels were {texts}",
             )
 
     # ----- tab pre-selection via the tab= argument -------------------
@@ -990,10 +1003,17 @@ class TestPlotConfigDialogStateModelPhase4ai(unittest.TestCase):
     # ----- module-level _KEY_TO_TAB defaults all current keys to global
 
     def test_key_to_tab_defaults_to_global(self):
-        # No factory key has a registered tab today — they all live
-        # on the Global tab. Phase 4aj+ extends _KEY_TO_TAB as
-        # per-axis settings move out of Global.
+        # Keys not explicitly registered in _KEY_TO_TAB resolve to
+        # the Global tab via the default branch of _key_to_tab.
+        # Phase 4aj (CS-61) added the first explicit entry
+        # ("tick_direction" → "primary_x"); keys mapped explicitly
+        # are out of scope for this test (they have their own
+        # per-relocation tests). Future per-axis relocations extend
+        # _KEY_TO_TAB and this test keeps narrowing to the
+        # still-unmapped factory keys.
         for key in self.psd._FACTORY_DEFAULTS:
+            if key in self.psd._KEY_TO_TAB:
+                continue
             self.assertEqual(
                 self.psd._key_to_tab(key), "global",
                 f"key {key!r} should default to the Global tab",
@@ -1289,6 +1309,237 @@ class TestPlotConfigDialogButtonRowPhase4ai(unittest.TestCase):
         # Modified set was cleared by Apply, but config != snapshot.
         self.assertEqual(dlg._modified_tabs, set())
         self.assertTrue(dlg._has_uncommitted_changes())
+
+
+# =====================================================================
+# CS-61 Phase 4aj: tick_direction relocation to per-axis tabs
+# =====================================================================
+
+
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestPlotConfigDialogTickDirectionRelocationPhase4aj(unittest.TestCase):
+    """CS-61 (Phase 4aj): tick_direction widget moves from Plot Settings
+    → Appearance into the "Settings" LabelFrame of each per-axis
+    Notebook tab. Schema stays flat; dirty marker pins to Primary X.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import plot_settings_dialog
+        cls.psd = plot_settings_dialog
+        cls.PlotConfigDialog = plot_settings_dialog.PlotConfigDialog
+
+    def setUp(self):
+        self.psd._open_dialogs.clear()
+        self.psd._USER_DEFAULTS.clear()
+        self.host = tk.Frame(_root)
+        self.host.pack()
+        self.config: dict = {}
+
+    def tearDown(self):
+        for dlg in list(self.psd._open_dialogs.values()):
+            try:
+                dlg.destroy()
+            except Exception:
+                pass
+        self.psd._open_dialogs.clear()
+        self.psd._USER_DEFAULTS.clear()
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    # ---- helpers ----
+
+    _AXIS_TAB_KEYS = (
+        "primary_x", "secondary_x", "primary_y", "secondary_y", "tertiary_y",
+    )
+
+    def _settings_frame(self, dlg, role: str) -> tk.LabelFrame:
+        """Return the "Settings" LabelFrame inside the axis tab ``role``."""
+        tab_frame = dlg._tab_frames[role]
+        for child in _all_descendants(tab_frame):
+            if (
+                isinstance(child, tk.LabelFrame)
+                and child.cget("text") == "Settings"
+            ):
+                return child
+        self.fail(f"no Settings LabelFrame on axis tab {role!r}")
+
+    def _radiobuttons(self, parent: tk.Widget) -> list[tk.Radiobutton]:
+        return [
+            c for c in _all_descendants(parent)
+            if isinstance(c, tk.Radiobutton)
+        ]
+
+    # ---- routing map ----
+
+    def test_key_to_tab_pins_tick_direction_to_primary_x(self):
+        # CS-61 lock: editing tick_direction marks Primary X dirty.
+        # The map's default (any unmapped key → "global") still
+        # applies for keys that have not yet been relocated.
+        self.assertEqual(self.psd._KEY_TO_TAB.get("tick_direction"), "primary_x")
+        self.assertEqual(self.psd._key_to_tab("tick_direction"), "primary_x")
+        # Keys still on Global resolve to "global".
+        self.assertEqual(self.psd._key_to_tab("title_font_size"), "global")
+
+    # ---- widget absence from the old home ----
+
+    def test_tick_direction_label_not_in_appearance_section(self):
+        # CS-56 lock relaxation: _build_section_appearance no longer
+        # grids a "Tick direction:" label. Walks descendants of the
+        # Appearance LabelFrame and asserts no tk.Label carries the
+        # canonical text.
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        appearance = None
+        for lf in _global_tab_label_frames(dlg):
+            if lf.cget("text") == "Appearance":
+                appearance = lf
+                break
+        self.assertIsNotNone(appearance, "Appearance LabelFrame missing")
+        labels = [
+            c for c in _all_descendants(appearance)
+            if isinstance(c, tk.Label)
+        ]
+        texts = [str(lbl.cget("text")) for lbl in labels]
+        self.assertNotIn("Tick direction:", texts)
+
+    # ---- widget presence on each per-axis tab ----
+
+    def test_tick_direction_label_in_every_per_axis_settings_frame(self):
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        for role in self._AXIS_TAB_KEYS:
+            frame = self._settings_frame(dlg, role)
+            labels = [
+                c for c in _all_descendants(frame)
+                if isinstance(c, tk.Label)
+            ]
+            texts = [str(lbl.cget("text")) for lbl in labels]
+            self.assertIn(
+                "Tick direction:", texts,
+                f"axis tab {role!r} is missing the Tick direction label",
+            )
+
+    def test_three_radio_buttons_per_axis_tab_settings_frame(self):
+        # The radio set is (In, Out, Both) → three buttons per tab,
+        # 15 across the five axis tabs.
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        total = 0
+        for role in self._AXIS_TAB_KEYS:
+            frame = self._settings_frame(dlg, role)
+            radios = self._radiobuttons(frame)
+            self.assertEqual(
+                len(radios), 3,
+                f"axis tab {role!r} should have 3 radios, has {len(radios)}",
+            )
+            total += len(radios)
+        self.assertEqual(total, 15)
+
+    # ---- shared Tk var across all five tabs ----
+
+    def test_single_control_var_for_tick_direction(self):
+        # Phase 4aj keeps the schema flat: one Tk var, one
+        # working-copy key. The first axis tab built (primary_x in
+        # pack order) is responsible for creating the var.
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        self.assertIn("tick_direction", dlg._control_vars)
+        var = dlg._control_vars["tick_direction"]
+        self.assertIsInstance(var, tk.StringVar)
+        # The factory default is "in"; the var initialises from that
+        # when self._working has no override.
+        self.assertEqual(var.get(), "in")
+
+    def test_all_radios_across_tabs_share_the_same_var(self):
+        # The radio's ``variable`` option holds a Tk variable name
+        # string. Every radio on every per-axis tab must point at the
+        # same string for the "edit on one tab → all reflect" UX to
+        # hold up.
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        shared_var = dlg._control_vars["tick_direction"]
+        shared_name = str(shared_var)
+        for role in self._AXIS_TAB_KEYS:
+            frame = self._settings_frame(dlg, role)
+            for radio in self._radiobuttons(frame):
+                self.assertEqual(
+                    str(radio.cget("variable")), shared_name,
+                    f"axis tab {role!r}: radio var name mismatch",
+                )
+
+    # ---- write semantics ----
+
+    def test_edit_writes_through_to_working(self):
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        dlg._control_vars["tick_direction"].set("out")
+        dlg.update_idletasks()
+        self.assertEqual(dlg._working["tick_direction"], "out")
+
+    def test_edit_marks_only_primary_x_dirty(self):
+        # CS-61 dirty-pin lock: even though every axis tab shows the
+        # widget, the dirty marker pins to Primary X. The user is not
+        # flooded with five bullets per single edit.
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        # Switch the visible tab to Primary Y first — the user
+        # might be looking at Primary Y while editing. The dirty
+        # marker still pins to Primary X.
+        dlg.select_tab("primary_y")
+        dlg.update_idletasks()
+        dlg._control_vars["tick_direction"].set("out")
+        dlg.update_idletasks()
+        self.assertEqual(dlg._modified_tabs, {"primary_x"})
+
+    def test_factory_reset_restores_in_default_via_relocated_widget(self):
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        dlg._control_vars["tick_direction"].set("out")
+        dlg.update_idletasks()
+        dlg._do_factory_reset()
+        dlg.update_idletasks()
+        self.assertEqual(dlg._working["tick_direction"], "in")
+        # And every per-axis tab's radio reflects the reset value
+        # via the shared var.
+        self.assertEqual(dlg._control_vars["tick_direction"].get(), "in")
+
+    def test_pre_populate_from_config(self):
+        # Construction reads tick_direction out of the passed config
+        # dict, falls back to factory default. The radios on every
+        # axis tab reflect the pre-populated value.
+        self.config["tick_direction"] = "inout"
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        self.assertEqual(dlg._working["tick_direction"], "inout")
+        self.assertEqual(dlg._control_vars["tick_direction"].get(), "inout")
+
+    def test_apply_commits_tick_direction_into_config(self):
+        # End-to-end: edit on any per-axis tab → click Apply → config
+        # carries the new value. Uses _do_apply (mirrors the Apply
+        # button's command).
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        dlg._control_vars["tick_direction"].set("out")
+        dlg.update_idletasks()
+        dlg._do_apply()
+        self.assertEqual(self.config["tick_direction"], "out")
+        # Apply clears every modified marker.
+        self.assertEqual(dlg._modified_tabs, set())
+
+    # ---- legacy schema invariants stay locked ----
+
+    def test_factory_defaults_tick_direction_unchanged(self):
+        # CS-56's factory-default lock continues to hold: the value
+        # is still "in", just the WIDGET moved.
+        self.assertEqual(
+            self.psd._FACTORY_DEFAULTS.get("tick_direction"), "in",
+        )
+
+    def test_universal_defaults_still_carries_tick_direction(self):
+        self.assertIn("tick_direction", self.psd._UNIVERSAL_DEFAULTS)
 
 
 if __name__ == "__main__":

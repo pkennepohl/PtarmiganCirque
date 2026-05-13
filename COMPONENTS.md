@@ -7972,7 +7972,214 @@ matplotlib layout changes.
 
 ---
 
-*Document version: 1.35 — May 2026*
+## CS-61 — tick_direction relocation to per-axis tabs + `_KEY_TO_TAB` dirty-pin pattern (Phase 4aj)
+
+**Status:** ✅ implemented; first slice of the multi-phase
+per-axis settings ladder (Phase 4aj→4an).
+
+The scientific question
+-----------------------
+
+CS-60 (Phase 4ai) shipped the unified `PlotConfigDialog`
+Notebook with a Global tab and five per-axis shells, but the
+shells carried only a static "(populated in Phase 4ak)" plot
+list and a "Per-axis settings land in Phase 4aj+." placeholder
+label. The user had explicitly requested that per-axis
+settings start landing one slice at a time, smallest-first, so
+the ladder pattern that ships in 4aj propagates cleanly
+through 4ak/4al/4am/4an without committing to schema-invention
+decisions early.
+
+The Phase 4aj answer (CS-61)
+----------------------------
+
+**Pick the smallest possible real relocation:** the existing
+`tick_direction` Radiobutton row from the Plot Settings →
+Appearance section (CS-56). Single setting, three values
+("in" / "out" / "inout"), no schema change (still uses the
+flat `_USER_DEFAULTS["tick_direction"]` slot), and the widget
+is mirrored across all five per-axis tabs so the user sees
+the same control wherever they hover.
+
+**Mirrored-widget / shared-var / dirty-pin pattern.** Three
+architectural locks land together:
+
+1. **The widget exists once per per-axis tab.** Each non-
+   Global Notebook tab's "Settings" `LabelFrame` builds a
+   "Tick direction:" `Label` + a three-`Radiobutton` row
+   (In / Out / Both) via the new
+   `_build_axis_tab_settings(parent, role)` helper called
+   from `_build_axis_tab_shell`.
+
+2. **All five tabs share ONE Tk var.** The first axis tab
+   built (canonical pack order: `primary_x`) creates the
+   `tk.StringVar`, registers the trace callback + refresh
+   closure, and stashes it as
+   `self._control_vars["tick_direction"]`. Each subsequent
+   axis tab calls `self._control_vars.get("tick_direction")`
+   and reuses the same var. Result: editing the radio on
+   one tab visually updates the radios on the other four
+   tabs in real time. The schema stays flat — a single
+   working-copy key `tick_direction`.
+
+3. **The dirty marker pins to one tab.** A new module-level
+   `_KEY_TO_TAB` dict carries the first explicit entry —
+   `"tick_direction": "primary_x"`. The `_key_to_tab(key)`
+   helper resolves the dirty tab for any working-copy key;
+   keys not in the dict default to `"global"` per CS-60.
+   The pin is independent of the user's currently visible
+   tab: editing tick_direction on Primary Y still marks
+   Primary X dirty, and only Primary X (no five-bullet
+   flood).
+
+**Plot Settings → Appearance section changes.** The Tick
+direction `Label` + radio frame at row 3 is removed cleanly;
+`tertiary_axis_offset` slides from row 4 → row 3 to keep the
+section dense. `grid_color` and `tertiary_axis_offset` stay
+in Appearance — the rest of CS-56 is unchanged. The factory
+default key `_FACTORY_DEFAULTS["tick_direction"] = "in"` is
+NOT modified; CS-56's Phase 4ae factory-default flip stays
+locked.
+
+**Default lookup routes through `_FACTORY_DEFAULTS`.** The
+new helper falls back to `_FACTORY_DEFAULTS["tick_direction"]`
+rather than a hard-coded `"in"` literal so a future schema
+flip cannot drift between the Appearance and per-axis
+builders. Same idiom as `_make_int_spinbox` /
+`_make_bool_checkbox` / `_make_colour_swatch` already use.
+
+Locks (CS-61)
+-------------
+
+These invariants are pinned by
+`TestPlotConfigDialogTickDirectionRelocationPhase4aj` and the
+updated Phase 4ai test classes:
+
+1. **`_KEY_TO_TAB` is a `dict[str, str]`** carrying at least
+   the entry `{"tick_direction": "primary_x"}`. Future
+   per-axis relocations extend the dict; the default branch
+   of `_key_to_tab(key)` still returns `"global"` for any
+   unmapped key. Phase 4aj is the canonical relaxation of
+   CS-60 lock 4 (the routing map was empty in 4ai).
+
+2. **`tick_direction` widget exists on every per-axis tab.**
+   Each of the five non-Global tabs builds a Tick direction
+   Radiobutton row in its "Settings" `LabelFrame`. The Global
+   tab does NOT carry the widget (it lived in
+   `_build_section_appearance` pre-4aj). The pre-4aj
+   placeholder Label ("Per-axis settings land in Phase
+   4aj+.") is gone.
+
+3. **All five radios share one Tk var.** Exactly one entry
+   in `self._control_vars` is registered for
+   `"tick_direction"` (a `tk.StringVar`). Every Radiobutton
+   across every per-axis tab references the same var name
+   (matplotlib backend identity check via
+   `str(radio.cget("variable"))`). Schema stays flat:
+   `_USER_DEFAULTS["tick_direction"]` is a single string,
+   not a per-role dict.
+
+4. **Edit on any tab marks ONLY Primary X dirty.** Calling
+   `dlg.select_tab("primary_y")` and then
+   `dlg._control_vars["tick_direction"].set("out")` results
+   in `dlg._modified_tabs == {"primary_x"}`. Not Primary Y;
+   not the full set of five.
+
+5. **`_build_axis_tab_settings(parent, role)` is the per-axis
+   tab body builder.** Lifted out of `_build_axis_tab_shell`;
+   called once per non-Global role. Future per-axis ladder
+   phases extend this helper with additional widgets (axis
+   label override, range/autoscale, tick spacing, etc.).
+
+6. **`_build_section_appearance` no longer grids
+   `tick_direction`.** Row 3 (label + radio frame) is gone.
+   `tertiary_axis_offset` is now row 3 (was row 4). The
+   relaxed CS-56 invariant is: `_build_section_appearance`
+   builds Grid + Grid colour + Background + Tertiary axis
+   offset, in that grid-row order.
+
+7. **`_FACTORY_DEFAULTS["tick_direction"]` value is
+   unchanged.** Still `"in"`. The relocated widget reads
+   from `_FACTORY_DEFAULTS["tick_direction"]` (not a literal)
+   so a future schema flip would propagate without code edit
+   in the per-axis builder.
+
+8. **Apply / Factory Reset preserve the relocated widget's
+   binding.** `_do_apply` commits `self._working["tick_direction"]`
+   into `self._config` and clears `_modified_tabs`.
+   `_do_factory_reset` restores `"in"` via
+   `_refresh_widgets_from_working` → the registered
+   `_control_refresh["tick_direction"]` closure → the shared
+   var → every per-axis tab's radio reflects the reset value.
+
+Lock relaxations (anticipated for Phase 4ak)
+--------------------------------------------
+
+- **Shared-var goes away.** Phase 4ak invents nested
+  `_USER_DEFAULTS["axes"][role]["tick_direction"]` (or
+  equivalent) and each tab gets its own per-axis Tk var.
+  Editing on Primary Y stops updating Primary X visually.
+- **Dirty-pin generalises.** With per-axis vars,
+  `_KEY_TO_TAB["tick_direction"]` either drops out
+  altogether (each radio writes through its tab-scoped
+  helper, marking its own tab dirty) or becomes
+  `_KEY_TO_TAB[("tick_direction", role)] = role` (per-key
+  per-axis routing). The Phase 4aj "edit on Y marks X"
+  friction clears in this step.
+- **Flat schema relaxes.** `_USER_DEFAULTS` grows the
+  `"axes"` sub-dict; the manifest's `plot_defaults` key
+  (CS-46) accordingly evolves. Migration shim translates
+  legacy flat `tick_direction` to `axes.{role}.tick_direction`
+  on load.
+
+Friction points carried forward
+-------------------------------
+
+- **Shared-var UX is dishonest by design (Claude-surfaced).**
+  Editing on Primary Y updates the radio on Primary X (and
+  the other three). Acknowledged trade-off; the brief
+  authorized it for 4aj.
+- **Dirty pin is counterintuitive (Claude-surfaced).** "I
+  edited on Primary Y but the bullet appeared on Primary
+  X" — first-time-user confusion. Folds into the Phase 4ak
+  per-axis schema invention.
+- **`TestAppearanceSectionPhase4ae` class name drift (USER-
+  FLAGGED 🟢).** The class still contains
+  `test_tick_direction_factory_default_is_in` +
+  `test_factory_reset_restores_new_appearance_keys` even
+  though tick_direction no longer lives in Appearance.
+  Tests stay correct (factory-default schema invariants);
+  the class name is the lie. Rename when a future refactor
+  naturally touches the class. No register entry.
+- **`_build_axis_tab_settings` is single-purpose today.**
+  Tick direction is the only widget. Phase 4ak generalises
+  the helper when it adds the second per-axis widget (axis
+  label override mirror).
+
+Tests
+-----
+
+- 13 new tests in
+  `test_plot_settings_dialog.TestPlotConfigDialogTickDirectionRelocationPhase4aj`.
+- 2 pre-existing Phase 4ai tests updated in place
+  (`test_axis_tab_shell_carries_phase_4aj_placeholder`
+  renamed to
+  `test_axis_tab_shell_carries_real_settings_widget_post_phase_4aj`
+  with inverted assertion; `test_key_to_tab_defaults_to_global`
+  narrowed to skip keys in `_KEY_TO_TAB`).
+
+Total: +13 new; full suite 1126 (was 1113).
+
+See "Friction points carried forward from Phase 4aj" in
+BACKLOG.md. One new USER-FLAGGED register entry from step 5:
+external-output plot style presets (J. Am. Chem. Soc. /
+PowerPoint / etc.) with reference Jupyter notebook code the
+user offered to lift from. One USER-FLAGGED 🟢 friction note:
+`TestAppearanceSectionPhase4ae` class-name drift.
+
+---
+
+*Document version: 1.36 — May 2026*
 *1.1: CS-13 implementation notes added in Phase 4a.*
 *1.2: CS-14 Plot Settings Dialog added in Phase 4b.*
 *1.3: CS-15 UV/Vis Baseline Correction + CS-04 implementation
@@ -8843,5 +9050,58 @@ tuning if matplotlib layout changes. 1113 tests, all green
 `test_plot_axis_hit_test` + 44 in
 `test_plot_settings_dialog` Phase 4ai classes + 10 in
 `test_uvvis_tab.TestUVVisTabAxisDoubleClickPhase4ai`).*
+*1.36: Phase 4aj — tick_direction widget relocation to per-axis
+tabs (CS-61). First slice of the per-axis settings ladder
+(Phase 4aj→4an). The widget moves out of Plot Settings →
+Appearance (row 3 vanishes; tertiary_axis_offset slides from
+row 4 → row 3) and into a new "Settings" LabelFrame on each of
+the five per-axis Notebook tabs. All five tabs share one Tk var
+(`_control_vars["tick_direction"]`) so editing on one tab
+visually reflects on the other four. The single flat working-
+copy key `tick_direction` is preserved — Phase 4ak invents the
+per-axis nested schema; Phase 4aj is the smallest possible real
+relocation, no schema change. New `_KEY_TO_TAB` routing map
+(empty in 4ai) gets its first explicit entry —
+`{"tick_direction": "primary_x"}` — so editing the radio on
+ANY per-axis tab marks ONLY Primary X dirty (not the full
+five-tab set). New `_build_axis_tab_settings(parent, role)`
+helper, called from `_build_axis_tab_shell` for each non-Global
+role, is the body builder future per-axis ladder phases extend.
+The fallback in the helper reads from
+`_FACTORY_DEFAULTS["tick_direction"]` not a hard-coded "in"
+literal so a future schema flip can't drift. **Lock relaxations
+(Phase 4aj):** CS-60 lock 4 (`_KEY_TO_TAB` was empty) — the map
+now carries one entry, intentional growth not a lock break.
+CS-56 invariant — `_build_section_appearance` no longer grids
+tick_direction. **Locks held:** every CS-56 / CS-60 lock except
+the two relaxations above; `_FACTORY_DEFAULTS["tick_direction"]
+= "in"` schema invariant; `_USER_DEFAULTS` flat shape; all CS-44
++ CS-49 + CS-50 + CS-55 + CS-57 + CS-58 + CS-59 invariants
+unchanged. Four code commits across the phase: (1) widget
+relocation + routing map entry + Appearance section renumber +
+docstring updates; (2) `TestPlotConfigDialogTickDirectionRelocation
+Phase4aj` with 13 invariants; (3) two pre-existing Phase 4ai
+tests updated for the relocation (`test_axis_tab_shell_carries_
+phase_4aj_placeholder` renamed and inverted;
+`test_key_to_tab_defaults_to_global` narrowed); (4) hard-coded
+"in" fallback in `_build_axis_tab_settings` routed through
+`_FACTORY_DEFAULTS["tick_direction"]`. **Decision lock taken
+(Phase 4aj):** (i) widget mirrors across ALL FIVE per-axis tabs
+sharing one Tk var (not Global tab; not one arbitrary axis tab
+in isolation; not five independent vars — that's 4ak's job);
+(ii) `_KEY_TO_TAB["tick_direction"] = "primary_x"` because tick
+direction is most visually associated with bottom X-axis ticks
+in a UV/Vis plot; (iii) Appearance section row 3 (tick
+direction) deletes cleanly; tertiary_axis_offset moves up to row
+3; grid_color and tertiary_axis_offset stay in Appearance. One
+new USER-FLAGGED 🟡 register entry surfaced at step 5: external-
+output plot style presets (J. Am. Chem. Soc., two-column
+PowerPoint, etc.) — per plot type setting, user has reference
+Jupyter notebook code to lift from. One USER-FLAGGED 🟢
+friction note: `TestAppearanceSectionPhase4ae` class-name drift
+(class still contains tick_direction tests even though the
+widget no longer lives in Appearance). 1126 tests, all green
+(1113 + 13 new in `TestPlotConfigDialogTickDirectionRelocation
+Phase4aj`).*
 *To be updated as Open Questions are resolved and new components
 are specified.*
