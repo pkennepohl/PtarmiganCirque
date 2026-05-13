@@ -780,13 +780,20 @@ class PlotConfigDialog(tk.Toplevel):
         :data:`uvvis_tab._AXIS_ROLES` value.
 
         Selecting a non-empty Combobox value while a Listbox row is
-        selected fires the host's ``on_route_plot(label,
-        target_y_role)`` callback. After the callback returns, the
-        Combobox resets to its empty placeholder so the user can
-        route another plot without re-clicking the dropdown.
-        Selecting a value with no Listbox row selected is a silent
-        no-op (the Combobox still resets so the next attempt starts
-        fresh).
+        selected fires the host's ``on_route_plot(source_tab_role,
+        label, target_tab_role)`` callback. After the callback
+        returns, the Combobox resets to its empty placeholder so
+        the user can route another plot without re-clicking the
+        dropdown. Selecting a value with no Listbox row selected is
+        a silent no-op (the Combobox still resets so the next
+        attempt starts fresh).
+
+        The Combobox-change dispatch is split into a method
+        :meth:`_on_move_to_choose` rather than a closure inside this
+        builder. The split keeps the test surface independent of Tk
+        virtual-event dispatch (which is not reliably synchronous
+        in the full-suite run), so tests drive the routing path by
+        calling the method directly.
         """
         row = tk.Frame(parent)
         row.pack(fill=tk.X, anchor="w", pady=(4, 0))
@@ -802,25 +809,45 @@ class PlotConfigDialog(tk.Toplevel):
             width=22,
         )
         combo.pack(side=tk.LEFT, padx=(6, 0))
+        combo.bind(
+            "<<ComboboxSelected>>",
+            lambda _e, r=role, lb=listbox, v=var: (
+                self._on_move_to_choose(r, lb, v)
+            ),
+        )
 
-        def _on_choose(_event=None):
-            text = var.get()
-            if not text:
-                return
-            selection = listbox.curselection()
-            # Always reset the Combobox so the user can pick the
-            # SAME target again on a different row without first
-            # clearing the dropdown manually.
-            var.set("")
-            if not selection:
-                return
-            if self._on_route_plot is None:
-                return
-            label = listbox.get(selection[0])
-            target = _MOVE_TO_VALUE_BY_LABEL.get(text)
-            self._on_route_plot(role, label, target)
+    def _on_move_to_choose(
+        self,
+        role: str,
+        listbox: tk.Listbox,
+        var: tk.StringVar,
+    ) -> None:
+        """Phase 4al: process a Move-to Combobox selection.
 
-        combo.bind("<<ComboboxSelected>>", _on_choose)
+        ``role`` is the source tab role key (one of
+        :data:`_Y_AXIS_TAB_KEYS`). ``listbox`` and ``var`` are the
+        per-tab widgets the picker mutates: a selection on the
+        Listbox plus a non-empty value on the StringVar is the
+        signal to fire. The Combobox is ALWAYS reset to the empty
+        placeholder when this method runs with a non-empty text —
+        whether or not a callback fires — so the user gets visual
+        feedback regardless of selection state.
+        """
+        text = var.get()
+        if not text:
+            return
+        selection = listbox.curselection()
+        # Always reset the Combobox so the user can pick the SAME
+        # target again on a different row without first clearing
+        # the dropdown manually.
+        var.set("")
+        if not selection:
+            return
+        if self._on_route_plot is None:
+            return
+        label = listbox.get(selection[0])
+        target = _MOVE_TO_VALUE_BY_LABEL.get(text)
+        self._on_route_plot(role, label, target)
 
     # ------------------------------------------------------------
     # Tab navigation (CS-60)

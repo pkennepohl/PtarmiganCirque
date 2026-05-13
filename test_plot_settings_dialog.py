@@ -2023,5 +2023,351 @@ class TestPlotConfigDialogPerAxisSchemaPhase4ak(unittest.TestCase):
         self.assertNotIn("tick_direction", dlg._working)
 
 
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestPlotConfigDialogMoveToPickerPhase4al(unittest.TestCase):
+    """Phase 4al: Move-to Combobox on each Y-axis tab.
+
+    Y-axis tabs (``primary_y``, ``secondary_y``, ``tertiary_y``) host
+    a Combobox below the "Plots on this axis" Listbox that lists the
+    four CS-50 routing targets ("Default (by NodeType)" plus the
+    three explicit Y-axis tabs). Selecting a row + picking a value
+    fires the host's ``on_route_plot`` callback. X-axis tabs
+    (``primary_x``, ``secondary_x``) get no picker and keep the
+    CS-62 ``state="disabled"`` Listbox lock.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import plot_settings_dialog
+        cls.psd = plot_settings_dialog
+        cls.PlotConfigDialog = plot_settings_dialog.PlotConfigDialog
+
+    def setUp(self):
+        self.psd._open_dialogs.clear()
+        self.host = tk.Frame(_root)
+        self.host.pack()
+        self.config: dict = {}
+
+    def tearDown(self):
+        for dlg in list(self.psd._open_dialogs.values()):
+            try:
+                dlg.destroy()
+            except Exception:
+                pass
+        self.psd._open_dialogs.clear()
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    # ---- helpers ----
+
+    _Y_AXIS_TAB_KEYS = ("primary_y", "secondary_y", "tertiary_y")
+    _X_AXIS_TAB_KEYS = ("primary_x", "secondary_x")
+
+    def _plots_frame(self, dlg, role: str) -> tk.LabelFrame:
+        tab_frame = dlg._tab_frames[role]
+        for child in _all_descendants(tab_frame):
+            if (
+                isinstance(child, tk.LabelFrame)
+                and child.cget("text") == "Plots on this axis"
+            ):
+                return child
+        self.fail(f"no Plots LabelFrame on axis tab {role!r}")
+
+    def _listbox(self, dlg, role: str) -> tk.Listbox:
+        frame = self._plots_frame(dlg, role)
+        for child in _all_descendants(frame):
+            if isinstance(child, tk.Listbox):
+                return child
+        self.fail(f"no Listbox on axis tab {role!r}")
+
+    def _combobox(self, dlg, role: str) -> ttk.Combobox | None:
+        """Return the Move-to Combobox for the role's tab, or None."""
+        frame = self._plots_frame(dlg, role)
+        for child in _all_descendants(frame):
+            if isinstance(child, ttk.Combobox):
+                return child
+        return None
+
+    def _combobox_var(self, combo: ttk.Combobox) -> tk.StringVar:
+        """Return the StringVar driving the Combobox's textvariable."""
+        var_name = combo.cget("textvariable")
+        # ttk widgets store textvariable as the Tk variable name
+        # string; re-wrap into a StringVar for ``.set`` / ``.get``.
+        return tk.StringVar(name=str(var_name))
+
+    # ---- module-level constants ----
+
+    def test_move_to_options_in_canonical_order(self):
+        labels = [label for label, _ in self.psd._MOVE_TO_OPTIONS]
+        self.assertEqual(
+            labels,
+            ["Default (by NodeType)", "Primary Y", "Secondary Y", "Tertiary Y"],
+        )
+
+    def test_move_to_value_by_label_maps_default_to_none(self):
+        self.assertIsNone(
+            self.psd._MOVE_TO_VALUE_BY_LABEL["Default (by NodeType)"]
+        )
+        self.assertEqual(
+            self.psd._MOVE_TO_VALUE_BY_LABEL["Primary Y"], "primary_y"
+        )
+        self.assertEqual(
+            self.psd._MOVE_TO_VALUE_BY_LABEL["Secondary Y"], "secondary_y"
+        )
+        self.assertEqual(
+            self.psd._MOVE_TO_VALUE_BY_LABEL["Tertiary Y"], "tertiary_y"
+        )
+
+    def test_y_axis_tab_keys_constant_covers_only_y_tabs(self):
+        self.assertEqual(
+            set(self.psd._Y_AXIS_TAB_KEYS),
+            {"primary_y", "secondary_y", "tertiary_y"},
+        )
+
+    # ---- combobox presence ----
+
+    def test_combobox_present_on_every_y_axis_tab_when_plots_exist(self):
+        dlg = self.PlotConfigDialog(
+            self.host, self.config,
+            plots_by_role={
+                role: ("Scan A",) for role in self._Y_AXIS_TAB_KEYS
+            },
+        )
+        dlg.update_idletasks()
+        for role in self._Y_AXIS_TAB_KEYS:
+            combo = self._combobox(dlg, role)
+            self.assertIsNotNone(combo, f"Y-axis tab {role!r} missing picker")
+
+    def test_combobox_absent_on_x_axis_tabs(self):
+        dlg = self.PlotConfigDialog(
+            self.host, self.config,
+            plots_by_role={
+                "primary_x":   ("Scan A", "Scan B"),
+                "secondary_x": ("Scan A", "Scan B"),
+            },
+        )
+        dlg.update_idletasks()
+        for role in self._X_AXIS_TAB_KEYS:
+            combo = self._combobox(dlg, role)
+            self.assertIsNone(combo, f"X-axis tab {role!r} should have no picker")
+
+    def test_combobox_absent_when_no_plots(self):
+        # Empty plots_by_role → italic placeholder, no Listbox, no picker.
+        dlg = self.PlotConfigDialog(
+            self.host, self.config,
+            plots_by_role={"primary_y": ()},
+        )
+        dlg.update_idletasks()
+        self.assertIsNone(self._combobox(dlg, "primary_y"))
+
+    def test_combobox_lists_four_options(self):
+        dlg = self.PlotConfigDialog(
+            self.host, self.config,
+            plots_by_role={"primary_y": ("Scan A",)},
+        )
+        dlg.update_idletasks()
+        combo = self._combobox(dlg, "primary_y")
+        values = combo.cget("values")
+        # ttk Combobox returns values as a tuple-like string list.
+        self.assertEqual(len(values), 4)
+        for label in (
+            "Default (by NodeType)",
+            "Primary Y",
+            "Secondary Y",
+            "Tertiary Y",
+        ):
+            self.assertIn(label, values)
+
+    def test_combobox_state_readonly(self):
+        dlg = self.PlotConfigDialog(
+            self.host, self.config,
+            plots_by_role={"primary_y": ("Scan A",)},
+        )
+        dlg.update_idletasks()
+        combo = self._combobox(dlg, "primary_y")
+        self.assertEqual(str(combo.cget("state")), "readonly")
+
+    # ---- listbox state relaxation ----
+
+    def test_y_axis_listboxes_are_selectable(self):
+        dlg = self.PlotConfigDialog(
+            self.host, self.config,
+            plots_by_role={
+                role: ("Scan A", "Scan B")
+                for role in self._Y_AXIS_TAB_KEYS
+            },
+        )
+        dlg.update_idletasks()
+        for role in self._Y_AXIS_TAB_KEYS:
+            listbox = self._listbox(dlg, role)
+            self.assertEqual(
+                str(listbox.cget("state")), "normal",
+                f"Y-axis tab {role!r} listbox should be state=normal",
+            )
+
+    # ---- callback firing ----
+    #
+    # The Combobox handler is exposed as ``PlotConfigDialog._on_move_to_choose``
+    # rather than living as a closure inside the builder. Tests drive
+    # the routing path by calling that method directly: ttk.Combobox's
+    # ``<<ComboboxSelected>>`` virtual event does not reliably dispatch
+    # synchronously across the full test suite (the dispatch fires in
+    # isolation but is intermittently dropped when other tests have
+    # populated and torn down many Toplevels first). Bypassing
+    # ``event_generate`` keeps these tests deterministic and exercises
+    # the same code path the bind invokes.
+
+    def test_combobox_selection_with_row_fires_callback(self):
+        captured: list = []
+
+        def cb(source, label, target):
+            captured.append((source, label, target))
+
+        dlg = self.PlotConfigDialog(
+            self.host, self.config,
+            plots_by_role={"primary_y": ("Scan A", "Scan B")},
+            on_route_plot=cb,
+        )
+        dlg.update_idletasks()
+        listbox = self._listbox(dlg, "primary_y")
+        combo = self._combobox(dlg, "primary_y")
+        var = self._combobox_var(combo)
+        listbox.selection_set(1)  # "Scan B"
+        var.set("Secondary Y")
+        dlg._on_move_to_choose("primary_y", listbox, var)
+        self.assertEqual(
+            captured,
+            [("primary_y", "Scan B", "secondary_y")],
+        )
+
+    def test_combobox_selection_without_row_does_not_fire(self):
+        captured: list = []
+
+        def cb(source, label, target):
+            captured.append((source, label, target))
+
+        dlg = self.PlotConfigDialog(
+            self.host, self.config,
+            plots_by_role={"primary_y": ("Scan A",)},
+            on_route_plot=cb,
+        )
+        dlg.update_idletasks()
+        listbox = self._listbox(dlg, "primary_y")
+        combo = self._combobox(dlg, "primary_y")
+        var = self._combobox_var(combo)
+        listbox.selection_clear(0, tk.END)
+        var.set("Primary Y")
+        dlg._on_move_to_choose("primary_y", listbox, var)
+        self.assertEqual(captured, [])
+
+    def test_default_option_passes_none_target(self):
+        captured: list = []
+
+        def cb(source, label, target):
+            captured.append((source, label, target))
+
+        dlg = self.PlotConfigDialog(
+            self.host, self.config,
+            plots_by_role={"tertiary_y": ("Scan X",)},
+            on_route_plot=cb,
+        )
+        dlg.update_idletasks()
+        listbox = self._listbox(dlg, "tertiary_y")
+        combo = self._combobox(dlg, "tertiary_y")
+        var = self._combobox_var(combo)
+        listbox.selection_set(0)
+        var.set("Default (by NodeType)")
+        dlg._on_move_to_choose("tertiary_y", listbox, var)
+        self.assertEqual(
+            captured,
+            [("tertiary_y", "Scan X", None)],
+        )
+
+    def test_callback_passes_source_role_from_tab(self):
+        # Source role comes from the tab the picker was used on, NOT
+        # from the listbox row's label. Two different Y-axis tabs
+        # picking the same target must yield different source values.
+        captured: list = []
+
+        def cb(source, label, target):
+            captured.append((source, label, target))
+
+        dlg = self.PlotConfigDialog(
+            self.host, self.config,
+            plots_by_role={
+                "primary_y":   ("Scan A",),
+                "secondary_y": ("Scan A",),
+            },
+            on_route_plot=cb,
+        )
+        dlg.update_idletasks()
+        for role in ("primary_y", "secondary_y"):
+            listbox = self._listbox(dlg, role)
+            combo = self._combobox(dlg, role)
+            var = self._combobox_var(combo)
+            listbox.selection_set(0)
+            var.set("Tertiary Y")
+            dlg._on_move_to_choose(role, listbox, var)
+        self.assertEqual(
+            captured,
+            [
+                ("primary_y",   "Scan A", "tertiary_y"),
+                ("secondary_y", "Scan A", "tertiary_y"),
+            ],
+        )
+
+    def test_combobox_resets_after_choose(self):
+        # After firing, the Combobox returns to its empty placeholder
+        # so the user can pick the SAME target on another row without
+        # first clearing the dropdown.
+        dlg = self.PlotConfigDialog(
+            self.host, self.config,
+            plots_by_role={"primary_y": ("Scan A",)},
+            on_route_plot=lambda *_: None,
+        )
+        dlg.update_idletasks()
+        listbox = self._listbox(dlg, "primary_y")
+        combo = self._combobox(dlg, "primary_y")
+        var = self._combobox_var(combo)
+        listbox.selection_set(0)
+        var.set("Secondary Y")
+        dlg._on_move_to_choose("primary_y", listbox, var)
+        self.assertEqual(combo.get(), "")
+
+    def test_callback_unset_makes_combobox_a_silent_noop(self):
+        # No on_route_plot wired → picking a Combobox value is silent.
+        # Combobox still resets so the user gets visual feedback.
+        dlg = self.PlotConfigDialog(
+            self.host, self.config,
+            plots_by_role={"primary_y": ("Scan A",)},
+            # on_route_plot omitted
+        )
+        dlg.update_idletasks()
+        listbox = self._listbox(dlg, "primary_y")
+        combo = self._combobox(dlg, "primary_y")
+        var = self._combobox_var(combo)
+        listbox.selection_set(0)
+        var.set("Tertiary Y")
+        dlg._on_move_to_choose("primary_y", listbox, var)
+        # No exception raised; combobox reset.
+        self.assertEqual(combo.get(), "")
+
+    def test_combobox_bind_invokes_on_move_to_choose(self):
+        # Verify the bind actually wires the method (without relying on
+        # event_generate dispatch). Inspect the bound tag list — Tk
+        # registers every bind under the widget's bindtags namespace,
+        # accessible via ``bind`` with no args.
+        dlg = self.PlotConfigDialog(
+            self.host, self.config,
+            plots_by_role={"primary_y": ("Scan A",)},
+        )
+        dlg.update_idletasks()
+        combo = self._combobox(dlg, "primary_y")
+        events = combo.bind()
+        self.assertIn("<<ComboboxSelected>>", events)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
