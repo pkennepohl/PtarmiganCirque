@@ -320,11 +320,16 @@ def migrate_plot_config(config: dict) -> dict:
             role_dict = {}
             axes[role] = role_dict
         for key, default in factory_role.items():
-            if key in role_dict:
-                continue
+            # A non-None legacy flat ``tick_direction`` wins over the
+            # per-role slot the caller already populated — the slot
+            # may carry the factory default that pre-seeded the
+            # dialog's working copy, and the user's legacy intent
+            # ("I set tick_direction to 'out' three sessions ago")
+            # must survive that pre-seed. Other per-axis keys take
+            # the existing slot when present.
             if key == "tick_direction" and legacy_tick_dir is not None:
                 role_dict[key] = legacy_tick_dir
-            else:
+            elif key not in role_dict:
                 role_dict[key] = copy.deepcopy(default)
     return config
 
