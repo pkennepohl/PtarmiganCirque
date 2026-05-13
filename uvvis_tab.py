@@ -20,7 +20,7 @@ from __future__ import annotations
 import copy
 import os
 import uuid
-from typing import Any, Callable, List, Mapping, Optional, Tuple
+from typing import Any, Callable, Iterable, List, Mapping, Optional, Tuple
 
 import numpy as np
 import tkinter as tk
@@ -189,6 +189,18 @@ _DEFAULT_Y_AXIS_BY_NODETYPE: dict[NodeType, str] = {
     NodeType.SECOND_DERIVATIVE: "secondary",
 }
 
+# Phase 4ak (CS-62): mapping from the CS-44 Y-axis role keys
+# (``primary`` / ``secondary`` / ``tertiary``) into the Plot Settings
+# dialog's per-axis tab keys. Used by the renderer to read
+# ``cfg["axes"][<tab_role>]["axis_label_override"]`` for each
+# populated Y-axis, and by the plots-by-role enumerator that feeds
+# the dialog's "Plots on this axis" lists.
+_Y_AXIS_ROLE_TO_TAB: dict[str, str] = {
+    "primary":   "primary_y",
+    "secondary": "secondary_y",
+    "tertiary":  "tertiary_y",
+}
+
 # X-unit-aware y-axis label for nodes routed to a non-primary role.
 # Keyed by ``(NodeType, x_unit)``; the first node of a given NodeType
 # placed on a non-primary role determines that role's label. Unknown
@@ -242,6 +254,110 @@ def _resolve_non_primary_y_label(node_type: NodeType, x_unit: str) -> Optional[s
     caller can leave the role unlabelled rather than guessing.
     """
     return _NON_PRIMARY_Y_LABEL.get((node_type, x_unit))
+
+
+def _axis_label_override(cfg: Mapping[str, Any], tab_role: str) -> str:
+    """Return the per-axis label override string from ``cfg`` (Phase 4ak).
+
+    ``tab_role`` is one of the Plot Settings dialog's per-axis tab
+    keys (``primary_x``, ``secondary_x``, ``primary_y``,
+    ``secondary_y``, ``tertiary_y``). Reads
+    ``cfg["axes"][tab_role]["axis_label_override"]`` defensively —
+    pre-Phase-4ak configs that never round-tripped through the
+    dialog do not carry the ``axes`` sub-dict at all, so the
+    fallback is the empty string (meaning "no override; let the
+    auto/custom resolution downstream handle the label").
+    """
+    axes = cfg.get("axes")
+    if isinstance(axes, dict):
+        role_dict = axes.get(tab_role)
+        if isinstance(role_dict, dict):
+            override = role_dict.get("axis_label_override", "")
+            if isinstance(override, str):
+                return override
+    return ""
+
+
+def _per_axis_tick_direction(cfg: Mapping[str, Any], tab_role: str) -> str:
+    """Resolve the tick_direction for ``tab_role`` with legacy fallback.
+
+    Phase 4ak (CS-62) moved tick_direction into ``cfg["axes"][<role>]``;
+    a pre-migration ``_plot_config`` still carries the flat
+    ``cfg["tick_direction"]`` key. The renderer reads through this
+    helper so both shapes work seamlessly. Falls through to the
+    factory default if neither shape registers a value.
+    """
+    axes = cfg.get("axes")
+    if isinstance(axes, dict):
+        role_dict = axes.get(tab_role)
+        if isinstance(role_dict, dict) and "tick_direction" in role_dict:
+            return str(role_dict["tick_direction"])
+    legacy = cfg.get("tick_direction")
+    if legacy is not None:
+        return str(legacy)
+    return str(
+        plot_settings_dialog._FACTORY_DEFAULTS["axes"][tab_role][
+            "tick_direction"
+        ]
+    )
+
+
+def _enumerate_plots_by_role(
+    spectrum_nodes: Iterable[DataNode],
+    second_derivative_nodes: Iterable[DataNode],
+    peak_list_nodes: Iterable[DataNode],
+    *,
+    secondary_x_active: bool,
+) -> dict[str, tuple[str, ...]]:
+    """Group plottable node labels by Plot Settings axis-tab key (Phase 4ak).
+
+    Builds the ``plots_by_role`` mapping the unified Plot Config
+    dialog consumes for its per-axis "Plots on this axis" lists.
+    Every visible spectrum-shaped node, second-derivative node, and
+    peak-list node feeds in:
+
+    * ``primary_x`` lists every visible plot — they all share the
+      bottom x-axis regardless of which y-axis they sit on.
+    * ``secondary_x`` mirrors ``primary_x`` when the wavelength↔
+      energy twin axis is active, empty otherwise.
+    * ``primary_y`` / ``secondary_y`` / ``tertiary_y`` route via
+      :func:`_resolve_y_axis_role`, which honours each node's
+      ``style["y_axis"]`` override (CS-50).
+
+    Invisible (``style.get("visible", True) == False``) or
+    discarded nodes are skipped silently — they don't render, so
+    they don't appear in the dialog's inventory either.
+    """
+    primary_x: list[str] = []
+    y_buckets: dict[str, list[str]] = {
+        "primary": [],
+        "secondary": [],
+        "tertiary": [],
+    }
+
+    def _consume(node: DataNode) -> None:
+        style = getattr(node, "style", None) or {}
+        if not style.get("visible", True):
+            return
+        label = node.label or "(unnamed)"
+        primary_x.append(label)
+        y_role = _resolve_y_axis_role(node.type, style)
+        y_buckets.setdefault(y_role, y_buckets["primary"]).append(label)
+
+    for node in spectrum_nodes:
+        _consume(node)
+    for node in second_derivative_nodes:
+        _consume(node)
+    for node in peak_list_nodes:
+        _consume(node)
+
+    return {
+        "primary_x":   tuple(primary_x),
+        "secondary_x": tuple(primary_x) if secondary_x_active else (),
+        "primary_y":   tuple(y_buckets["primary"]),
+        "secondary_y": tuple(y_buckets["secondary"]),
+        "tertiary_y":  tuple(y_buckets["tertiary"]),
+    }
 
 
 # Phase 4ad (CS-55): role-agnostic y-axis label resolution.
@@ -1636,11 +1752,15 @@ class UVVisTab(tk.Frame):
 
         The factory enforces one-dialog-per-tab. The dialog mutates
         ``self._plot_config`` in place on Apply, then invokes
-        ``on_apply`` so the tab repaints.
+        ``on_apply`` so the tab repaints. Phase 4ak (CS-62) threads
+        the per-axis plot inventory through ``plots_by_role`` so
+        each per-axis Notebook tab can render its "Plots on this
+        axis" list.
         """
         plot_settings_dialog.open_plot_config_dialog(
             self, self._plot_config,
             on_apply=self._on_plot_config_changed,
+            plots_by_role=self._compute_plots_by_role(),
         )
 
     def _on_plot_config_changed(self) -> None:
@@ -1651,6 +1771,27 @@ class UVVisTab(tk.Frame):
         UI state, so it does not flow through the graph subscription.
         """
         self._redraw()
+
+    def _compute_plots_by_role(self) -> dict[str, tuple[str, ...]]:
+        """Build the ``plots_by_role`` mapping the dialog consumes (Phase 4ak).
+
+        Delegates to :func:`_enumerate_plots_by_role` with the three
+        live-node helpers and a flag indicating whether the
+        wavelength↔energy twin axis is currently visible. Computed
+        once at dialog open — the dialog snapshots the result for
+        its lifetime, so subsequent graph mutations require a fresh
+        open to surface.
+        """
+        secondary_x_active = (
+            self._x_unit.get() == "cm-1"
+            and bool(self._show_nm_axis.get())
+        )
+        return _enumerate_plots_by_role(
+            self._spectrum_nodes(),
+            self._second_derivative_nodes(),
+            self._peak_list_nodes(),
+            secondary_x_active=secondary_x_active,
+        )
 
     # ══════════════════════════════════════════════════════════════════════════
     #  File loading
@@ -1830,6 +1971,7 @@ class UVVisTab(tk.Frame):
             self, self._plot_config,
             on_apply=self._on_plot_config_changed,
             tab=hit.role,
+            plots_by_role=self._compute_plots_by_role(),
         )
 
     def _on_unit_change(self):
@@ -1912,7 +2054,14 @@ class UVVisTab(tk.Frame):
         self._axes_by_role = {"primary": ax}
         first_node_type_per_role: dict[str, NodeType] = {}
 
-        tick_dir = cfg.get("tick_direction", "in")
+        # Phase 4ak (CS-62): tick_direction lives nested per axis after
+        # the schema invention. The renderer reads primary_x's slot as
+        # the canonical value and applies it uniformly to every axis
+        # for now — per-axis differentiation lands in the follow-up
+        # phase. The helper falls back through the legacy flat
+        # ``cfg["tick_direction"]`` to the factory default so a
+        # pre-migration ``_plot_config`` keeps rendering identically.
+        tick_dir = _per_axis_tick_direction(cfg, "primary_x")
         tick_size = cfg.get("tick_label_font_size", 9)
         tertiary_offset = float(
             cfg.get("tertiary_axis_offset", _TERTIARY_AXIS_OFFSET_FRAC))
@@ -2108,6 +2257,13 @@ class UVVisTab(tk.Frame):
         xlabel_text = (auto_xlabels.get(unit, unit)
                        if xlabel_mode == "auto"
                        else cfg.get("xlabel_text", ""))
+        # Phase 4ak (CS-62): a non-empty per-axis override on
+        # primary_x wins over the xlabel_mode/xlabel_text path. Empty
+        # override (the factory default) defers to the existing auto/
+        # custom resolution.
+        primary_x_override = _axis_label_override(cfg, "primary_x")
+        if primary_x_override:
+            xlabel_text = primary_x_override
         ax.set_xlabel(
             xlabel_text,
             fontsize=cfg.get("xlabel_font_size", 10),
@@ -2133,7 +2289,19 @@ class UVVisTab(tk.Frame):
         ylabel_fontweight = "bold" if ylabel_bold else "normal"
         y_unit = self._y_unit.get()
 
-        if ylabel_mode == "custom":
+        # Phase 4ak (CS-62): per-axis label overrides take precedence
+        # over both the custom-text mode and the auto y-axis label
+        # resolution. The primary Y override slots in here so a user
+        # who sets "Custom label" on the primary_y tab gets it on
+        # primary regardless of the legacy ylabel_mode/ylabel_text.
+        primary_y_override = _axis_label_override(cfg, "primary_y")
+        if primary_y_override:
+            ax.set_ylabel(
+                primary_y_override,
+                fontsize=ylabel_font_size,
+                fontweight=ylabel_fontweight,
+            )
+        elif ylabel_mode == "custom":
             ax.set_ylabel(
                 cfg.get("ylabel_text", ""),
                 fontsize=ylabel_font_size,
@@ -2141,7 +2309,18 @@ class UVVisTab(tk.Frame):
             )
 
         for role, first_ntype in first_node_type_per_role.items():
-            if role == "primary" and ylabel_mode == "custom":
+            tab_role = _Y_AXIS_ROLE_TO_TAB.get(role)
+            override = (
+                _axis_label_override(cfg, tab_role) if tab_role else ""
+            )
+            if override:
+                self._axes_by_role[role].set_ylabel(
+                    override,
+                    fontsize=ylabel_font_size,
+                    fontweight=ylabel_fontweight,
+                )
+                continue
+            if role == "primary" and (primary_y_override or ylabel_mode == "custom"):
                 continue
             label_text = _resolve_y_axis_label(first_ntype, unit, y_unit)
             if label_text is None:
@@ -2178,7 +2357,13 @@ class UVVisTab(tk.Frame):
                     return np.where(np.asarray(x, float) > 0,
                                     1e7 / np.asarray(x, float), 0.0)
             sec = ax.secondary_xaxis("top", functions=(_fwd, _fwd))
-            sec.set_xlabel("λ (nm)", fontsize=9)
+            # Phase 4ak (CS-62): the secondary X label has no
+            # historical user-facing control — its override is the
+            # only customisation surface, so a non-empty value wins
+            # outright. Empty (factory default) keeps the canonical
+            # "λ (nm)" string.
+            sec_x_override = _axis_label_override(cfg, "secondary_x")
+            sec.set_xlabel(sec_x_override or "λ (nm)", fontsize=9)
             sec.tick_params(axis="x", direction="in", labelsize=8)
 
         # ── Invert nm axis ────────────────────────────────────────────────────
