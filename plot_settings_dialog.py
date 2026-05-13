@@ -95,7 +95,7 @@ _open_dialogs: "dict[int, PlotConfigDialog]" = {}
 
 
 _DEFAULT_SECTIONS: tuple[str, ...] = (
-    "fonts", "appearance", "legend", "title_labels",
+    "fonts", "appearance", "legend", "title_labels", "axis_labels",
 )
 
 
@@ -106,6 +106,14 @@ _SECTION_TITLES: dict[str, str] = {
     "appearance":   "Appearance",
     "legend":       "Legend",
     "title_labels": "Title and labels",
+    # CS-62 (Phase 4ak): Global-tab mirror of every per-axis label
+    # override. Five rows, one per axis role, each sharing its Tk var
+    # with the corresponding per-axis tab's "Axis label override:"
+    # Entry so edits on either surface stay in sync. Editing a row
+    # marks the corresponding role's per-axis tab dirty (not Global)
+    # — the gesture is conceptually per-axis even when surfaced
+    # globally.
+    "axis_labels":  "Per-axis label overrides",
 }
 
 
@@ -126,7 +134,13 @@ _LEGEND_POSITIONS: tuple[str, ...] = (
 # CS-56 (Phase 4ae) added grid_color + tertiary_axis_offset and flipped
 # tick_direction from "out" to "in". tertiary_axis_offset shadows the
 # CS-44 _TERTIARY_AXIS_OFFSET_FRAC constant in uvvis_tab; a drift pin
-# test asserts the two stay equal.
+# test asserts the two stay equal. CS-62 (Phase 4ak) introduced the
+# nested ``"axes"`` sub-dict housing per-axis settings keyed by the
+# five ``_TAB_KEYS`` axis roles; ``tick_direction`` migrated out of
+# the top-level dict into ``axes[<role>]["tick_direction"]`` and the
+# new ``axes[<role>]["axis_label_override"]`` key (empty string =
+# defer to the renderer's auto/custom label resolution; non-empty
+# string = force the override).
 _FACTORY_DEFAULTS: dict[str, Any] = {
     # Fonts
     "title_font_size":       12,
@@ -141,7 +155,6 @@ _FACTORY_DEFAULTS: dict[str, Any] = {
     "grid":                  True,
     "grid_color":            "#b0b0b0",
     "background_color":      "#ffffff",
-    "tick_direction":        "in",    # "in" | "out" | "inout"
     "tertiary_axis_offset":  1.12,    # right-spine offset for 3rd y-axis
     # Legend
     "legend_show":           True,
@@ -153,15 +166,35 @@ _FACTORY_DEFAULTS: dict[str, Any] = {
     "xlabel_text":           "",
     "ylabel_mode":           "auto",
     "ylabel_text":           "",
+    # CS-62 (Phase 4ak): per-axis settings nested by role. Every entry
+    # in :data:`_TAB_KEYS` minus ``"global"`` appears as a sub-dict.
+    # Migration shim translates legacy flat ``tick_direction`` into
+    # all five per-axis slots; see :func:`migrate_plot_config`.
+    "axes": {
+        "primary_x":   {"tick_direction": "in", "axis_label_override": ""},
+        "secondary_x": {"tick_direction": "in", "axis_label_override": ""},
+        "primary_y":   {"tick_direction": "in", "axis_label_override": ""},
+        "secondary_y": {"tick_direction": "in", "axis_label_override": ""},
+        "tertiary_y":  {"tick_direction": "in", "axis_label_override": ""},
+    },
 }
+
+
+# Per-axis-key registry: every key inside ``_FACTORY_DEFAULTS["axes"][role]``.
+# Builders walk this tuple so adding a new per-axis key in a future
+# phase only touches the factory dict + this registry + the builder
+# helpers — no per-call edit list.
+_AXIS_KEYS: tuple[str, ...] = ("tick_direction", "axis_label_override")
 
 
 # Universal defaults: alias for the factory defaults today, kept as a
 # distinct name so a future design session can split "what every
 # config inherits" from "what Factory Reset writes" without a global
-# rename. The two dicts share keys but are independent shallow
-# copies — mutating one never affects the other.
-_UNIVERSAL_DEFAULTS: dict[str, Any] = dict(_FACTORY_DEFAULTS)
+# rename. The two dicts share keys but are independent — CS-62
+# upgraded this from a shallow ``dict(...)`` copy to a ``deepcopy``
+# because the new ``axes`` sub-dict is mutable: a shallow copy would
+# let mutations to one leak into the other.
+_UNIVERSAL_DEFAULTS: dict[str, Any] = copy.deepcopy(_FACTORY_DEFAULTS)
 
 
 # In-process user defaults written by Save-as-Default. Cleared by
@@ -191,9 +224,10 @@ _TAB_TITLES: dict[str, str] = {
 
 # Per-axis-tab subtitle. The dialog can't introspect the figure today
 # (no figure handle in scope), so Phase 4ai shipped these as static
-# placeholders; Phase 4ak will populate live "(used by N nodes)" /
-# "(unused)" / "(derived)" badges from the host tab's
-# ``_axes_by_role`` plus the graph's nodes.
+# placeholders; Phase 4ak (CS-62) sources live per-axis plot lists
+# from the host via the ``plots_by_role`` constructor kwarg but keeps
+# this placeholder badge as the static descriptor under the bold
+# "Axis: <Tab Title>" header.
 _AXIS_TAB_PLACEHOLDER_BADGE: dict[str, str] = {
     "primary_x":   "(spectral x-axis)",
     "secondary_x": "(derived, e.g. wavelength↔energy)",
@@ -204,21 +238,21 @@ _AXIS_TAB_PLACEHOLDER_BADGE: dict[str, str] = {
 
 
 # CS-60 (Phase 4ai): per-setting tab attribution for the modified-tab
-# marker. Every working-copy key resolves to a Notebook tab; the
-# writer helpers tag that tab dirty when the user edits it. Phase 4aj
-# (CS-61) added the first entry: ``tick_direction`` pins to
-# ``primary_x`` because tick direction is most visually associated
-# with the bottom X-axis ticks in a UV/Vis plot. The widget itself
-# is mirrored across all five per-axis tabs sharing one Tk var;
-# editing on any tab marks only Primary X dirty so the user is not
-# flooded with five bullets per single-setting edit (the dishonest
-# UX is acknowledged friction for 4aj, resolved in 4ak when each
-# axis owns its own ``tick_direction`` slot via the per-axis
-# schema). Phase 4ak+ populates this map with additional per-axis
-# role keys as per-axis settings land.
-_KEY_TO_TAB: dict[str, str] = {
-    "tick_direction": "primary_x",
-}
+# marker. Every flat working-copy key resolves to a Notebook tab via
+# this lookup; the writer helpers tag that tab dirty when the user
+# edits it. Phase 4aj (CS-61) pinned ``tick_direction`` to
+# ``primary_x`` because the radio was mirrored across all five
+# per-axis tabs and a flat key needed a single canonical home.
+# Phase 4ak (CS-62) is the canonical relaxation: ``tick_direction``
+# (and every other per-axis key) lives inside the nested
+# ``axes[<role>]`` sub-dict so each per-axis tab owns its own copy.
+# The dirty marker for a per-axis edit is therefore the role itself,
+# resolved directly in the per-axis writer helpers — never through
+# this map. The map stays a ``dict[str, str]`` for any future
+# Global-only key that needs a non-default tab attribution; today
+# it is empty and the default branch in :func:`_key_to_tab` returns
+# ``"global"`` for every key.
+_KEY_TO_TAB: dict[str, str] = {}
 
 
 # Suffix appended to a tab's title when it carries uncommitted edits.
@@ -228,14 +262,71 @@ _MODIFIED_TAB_SUFFIX: str = " •"
 
 
 def _key_to_tab(key: str) -> str:
-    """Resolve a working-copy key to its owning Notebook tab key.
+    """Resolve a *flat* working-copy key to its owning Notebook tab key.
 
-    Phase 4ai ships every existing setting on the Global tab — the
-    map is empty and the default branch returns ``"global"`` for
-    every key. Phase 4aj+ adds per-axis-role entries as per-axis
-    settings move out of the Global tab.
+    Phase 4ak (CS-62) emptied the override map: every flat key now
+    falls through to ``"global"``. Per-axis keys live inside the
+    nested ``axes[<role>]`` sub-dict and route dirty-marking
+    through their per-axis writer helpers, never through this
+    function (which has no role parameter). The override dict is
+    kept for forward-compatibility — any future Global-only key
+    that needs a different attribution can land here without a
+    signature change.
     """
     return _KEY_TO_TAB.get(key, "global")
+
+
+# =====================================================================
+# Migration shim — flat ``tick_direction`` → nested ``axes[<role>]``
+# =====================================================================
+
+def migrate_plot_config(config: dict) -> dict:
+    """Translate any legacy flat keys into the CS-62 nested schema.
+
+    Phase 4ak introduced the nested ``"axes"`` sub-dict; saves taken
+    pre-Phase-4ak carry a flat ``tick_direction`` key at the top of
+    the plot-config dict. This helper migrates such configs in place
+    and returns the same dict for chaining. It is **idempotent**: a
+    second call on the same dict is a no-op.
+
+    Behaviour:
+
+    * If ``config["tick_direction"]`` exists, its value is copied
+      into every per-axis role's ``tick_direction`` slot inside
+      ``config["axes"]`` (creating nested entries as needed), then
+      the legacy flat key is deleted.
+    * Each per-axis role missing a key declared in
+      :data:`_FACTORY_DEFAULTS["axes"][role]` is filled from the
+      factory default. The renderer always sees a complete shape
+      regardless of how sparse the input was.
+    * Inputs without the ``"axes"`` key gain one populated from
+      factory defaults (after the legacy-key copy above).
+
+    Calling this on a fully-migrated dict (``axes`` present, no
+    legacy flat key) walks the per-role / per-key defaults and
+    leaves the existing values alone.
+    """
+    legacy_tick_dir = config.pop("tick_direction", None)
+
+    axes = config.get("axes")
+    if not isinstance(axes, dict):
+        axes = {}
+        config["axes"] = axes
+
+    factory_axes = _FACTORY_DEFAULTS["axes"]
+    for role, factory_role in factory_axes.items():
+        role_dict = axes.get(role)
+        if not isinstance(role_dict, dict):
+            role_dict = {}
+            axes[role] = role_dict
+        for key, default in factory_role.items():
+            if key in role_dict:
+                continue
+            if key == "tick_direction" and legacy_tick_dir is not None:
+                role_dict[key] = legacy_tick_dir
+            else:
+                role_dict[key] = copy.deepcopy(default)
+    return config
 
 
 # =====================================================================
@@ -249,6 +340,7 @@ def open_plot_config_dialog(
     sections: tuple[str, ...] | None = None,
     tab: str = "global",
     on_apply_all_tabs: Callable[[], None] | None = None,
+    plots_by_role: "dict[str, tuple[str, ...]] | None" = None,
 ) -> "PlotConfigDialog":
     """Open the Plot Config dialog for a host, or focus the existing one.
 
@@ -269,6 +361,14 @@ def open_plot_config_dialog(
     semantics belong to the host (typically Binah) and remain
     out-of-scope for the dialog itself.
 
+    ``plots_by_role`` is the CS-62 (Phase 4ak) per-axis plot inventory.
+    Keys are axis-role strings (members of :data:`_TAB_KEYS` minus
+    ``"global"``); values are tuples of plot labels currently routed
+    to that axis. ``None`` (the default) means "host hasn't computed
+    the inventory" and each per-axis tab shows the italic
+    ``"(no plots on this axis)"`` placeholder. Roles missing from
+    the mapping (or whose tuple is empty) get the same placeholder.
+
     Returns the live ``PlotConfigDialog`` either way.
     """
     key = id(parent)
@@ -288,6 +388,7 @@ def open_plot_config_dialog(
     return PlotConfigDialog(
         parent, config, on_apply, sections,
         tab=tab, on_apply_all_tabs=on_apply_all_tabs,
+        plots_by_role=plots_by_role,
     )
 
 
@@ -316,6 +417,7 @@ class PlotConfigDialog(tk.Toplevel):
         sections: tuple[str, ...] | None = None,
         tab: str = "global",
         on_apply_all_tabs: Callable[[], None] | None = None,
+        plots_by_role: "dict[str, tuple[str, ...]] | None" = None,
     ) -> None:
         super().__init__(parent)
 
@@ -327,6 +429,15 @@ class PlotConfigDialog(tk.Toplevel):
         # "Apply to All Tabs" button shows disabled.
         self._on_apply_all_tabs = on_apply_all_tabs
 
+        # CS-62 (Phase 4ak): per-axis plot inventory. None means the
+        # host didn't compute it; each per-axis tab will fall back to
+        # the italic "(no plots on this axis)" placeholder. Stored
+        # frozen for the lifetime of the dialog — refresh requires a
+        # second open_plot_config_dialog call.
+        self._plots_by_role: "dict[str, tuple[str, ...]]" = dict(
+            plots_by_role or {}
+        )
+
         # Resolve the section set: explicit argument > config["_sections"]
         # > module default. Filtering to known names keeps a stray
         # entry from breaking the build silently.
@@ -337,15 +448,21 @@ class PlotConfigDialog(tk.Toplevel):
         )
 
         # Snapshot for Cancel revert. Deep copy so that nested values
-        # (none today, but future-proof) cannot leak through.
+        # (the CS-62 ``axes`` sub-dict, and future-proof for any
+        # caller's exotic shape) cannot leak through.
         self._snapshot: dict[str, Any] = copy.deepcopy(dict(config))
 
-        # Working copy: starts from the current config, falls back to
-        # _FACTORY_DEFAULTS for any key the config is missing. This
-        # gives every widget a defined value at construction time
-        # regardless of how sparse the caller's config is.
-        self._working: dict[str, Any] = dict(_FACTORY_DEFAULTS)
+        # Working copy: starts from the factory defaults, overwrites
+        # with a deep copy of the caller's config, then runs the
+        # CS-62 migration shim so flat ``tick_direction`` lifts into
+        # the nested ``axes[<role>]`` slots before any widget reads
+        # the value. ``migrate_plot_config`` is idempotent — calling
+        # it on a fully-migrated config (or on the empty starting
+        # state) is a no-op. The deep copy on the factory defaults
+        # is essential since the new ``axes`` sub-dict is mutable.
+        self._working: dict[str, Any] = copy.deepcopy(_FACTORY_DEFAULTS)
         self._working.update(copy.deepcopy(dict(config)))
+        migrate_plot_config(self._working)
 
         # Re-entrancy guard. Set during widget refreshes (Reset
         # Defaults, Factory Reset, _refresh_widgets_from_working) so
@@ -361,6 +478,20 @@ class PlotConfigDialog(tk.Toplevel):
         # Colour swatch buttons. ``set_facecolor``-style controls
         # are not bound to a Tk var so they need their own refresh.
         self._color_swatches: dict[str, tk.Button] = {}
+
+        # CS-62 (Phase 4ak): per-axis Tk variables + refresh closures
+        # keyed by ``(role, key)``. Each per-axis tab populates its
+        # own entries; the "Per-axis label overrides" mirror section
+        # on the Global tab reuses the same Tk var so edits on
+        # either surface sync visually. The split from the flat
+        # ``_control_vars`` is intentional — flat-key writers route
+        # the dirty marker through :func:`_key_to_tab` (no role
+        # parameter), whereas per-axis writers carry the role
+        # directly through :meth:`_on_axis_var_write`.
+        self._axis_control_vars: dict[tuple[str, str], tk.Variable] = {}
+        self._axis_control_refresh: dict[
+            tuple[str, str], Callable[[Any], None]
+        ] = {}
 
         # CS-60: Notebook tab frames keyed by :data:`_TAB_KEYS`. The
         # Global tab hosts the existing section LabelFrames; each
@@ -470,25 +601,31 @@ class PlotConfigDialog(tk.Toplevel):
             builder(frame)
 
     def _build_axis_tab_shell(self, parent: tk.Widget, role: str) -> None:
-        """Build the per-axis Notebook tab shell (CS-60, Phase 4ai).
+        """Build the per-axis Notebook tab shell (CS-60).
 
         Phase 4ai shipped the layout; Phase 4aj (CS-61) populated the
         "Settings" LabelFrame with the first real per-axis widget
-        (tick direction). Structure:
+        (tick direction, mirrored). Phase 4ak (CS-62) replaced the
+        Settings widget's shared Tk var with per-axis vars (each tab
+        owns its own slot in the nested ``axes[<role>]`` schema),
+        added a per-axis ``axis_label_override`` Entry to the
+        Settings frame, and populated the "Plots on this axis"
+        LabelFrame from :attr:`_plots_by_role`. Structure:
 
         * Header row: bold ``"Axis: <Tab Title>"`` on the left,
           italic state badge (placeholder text from
           :data:`_AXIS_TAB_PLACEHOLDER_BADGE`) on the right.
         * Separator.
-        * "Plots on this axis" LabelFrame containing an empty
-          scrollable list placeholder. Phase 4ak populates this from
-          the host tab's graph + ``y_axis`` style key (CS-50).
+        * "Plots on this axis" LabelFrame populated by
+          :meth:`_build_axis_tab_plots` from
+          :attr:`_plots_by_role[role]`. Empty/missing roles render
+          an italic ``"(no plots on this axis)"`` placeholder.
         * Separator.
         * "Settings" LabelFrame populated via
-          :meth:`_build_axis_tab_settings`. Phase 4aj ships the
-          Tick direction Radiobutton row mirrored across all five
-          axis tabs (shared Tk var, flat schema, Primary X dirty
-          pin — CS-61). Each subsequent phase adds widgets here.
+          :meth:`_build_axis_tab_settings`. CS-62 lock: each per-axis
+          tab owns its own Tk vars for tick_direction and
+          axis_label_override; editing marks only that role's tab
+          dirty.
         """
         header = tk.Frame(parent)
         header.pack(fill=tk.X)
@@ -509,11 +646,7 @@ class PlotConfigDialog(tk.Toplevel):
             parent, text="Plots on this axis", padx=8, pady=6,
         )
         plots_frame.pack(fill=tk.X)
-        tk.Label(
-            plots_frame,
-            text="(populated in Phase 4ak)",
-            font=("", 9), fg="#888888",
-        ).pack(anchor="w")
+        self._build_axis_tab_plots(plots_frame, role)
 
         ttk.Separator(parent, orient=tk.HORIZONTAL).pack(
             fill=tk.X, pady=(8, 4),
@@ -524,6 +657,38 @@ class PlotConfigDialog(tk.Toplevel):
         )
         settings_frame.pack(fill=tk.X)
         self._build_axis_tab_settings(settings_frame, role)
+
+    def _build_axis_tab_plots(self, parent: tk.Widget, role: str) -> None:
+        """Populate the "Plots on this axis" LabelFrame (CS-62, Phase 4ak).
+
+        Sources from :attr:`_plots_by_role` (frozen at dialog
+        construction time — the host computes the inventory once per
+        open). When the role's tuple is empty or missing, render the
+        italic ``"(no plots on this axis)"`` fallback so the section
+        is never visually empty. Otherwise render a read-only
+        ``tk.Listbox`` whose height adapts up to six entries — past
+        six the user scrolls.
+        """
+        labels = self._plots_by_role.get(role, ())
+        if not labels:
+            tk.Label(
+                parent,
+                text="(no plots on this axis)",
+                font=("", 9, "italic"), fg="#888888",
+            ).pack(anchor="w")
+            return
+        # height min 1, max 6 so single-plot axes get a tight row and
+        # busy axes scroll instead of pushing the Settings frame off
+        # the visible dialog area.
+        height = max(1, min(6, len(labels)))
+        listbox = tk.Listbox(
+            parent, height=height, exportselection=False,
+            activestyle="none", font=("", 9),
+        )
+        for label in labels:
+            listbox.insert(tk.END, str(label))
+        listbox.config(state=tk.DISABLED)
+        listbox.pack(fill=tk.X, anchor="w")
 
     # ------------------------------------------------------------
     # Tab navigation (CS-60)
@@ -689,69 +854,135 @@ class PlotConfigDialog(tk.Toplevel):
         self._control_refresh["tertiary_axis_offset"] = _refresh_off
 
     # ============================================================
-    # Per-axis tab body — CS-61 (Phase 4aj) tick_direction relocation
+    # Per-axis tab body — CS-62 (Phase 4ak) nested per-axis schema
     # ============================================================
 
     def _build_axis_tab_settings(self, parent: tk.Widget, role: str) -> None:
-        """Populate the per-axis tab's "Settings" LabelFrame (CS-61).
+        """Populate the per-axis tab's "Settings" LabelFrame (CS-62).
 
-        Phase 4aj ships the first real per-axis widget: a Tick direction
-        Radiobutton row that mirrors across all five axis tabs. Every
-        tab's radio is bound to the SAME ``self._control_vars["tick_direction"]``
-        Tk var, so editing on one tab visually reflects on the other
-        four. The single working-copy key ``tick_direction`` keeps the
-        schema flat (no nested ``_USER_DEFAULTS["axes"][role]`` yet —
-        that schema invention lands in Phase 4ak). The dirty marker
-        pins to Primary X via ``_KEY_TO_TAB["tick_direction"]``, so
-        editing the radio on any axis tab marks ONLY Primary X dirty
-        (not all five). The acknowledged friction — "I edited on Y but
-        X shows the bullet" — clears in 4ak.
+        Each per-axis tab owns its own Tk vars stored in
+        :attr:`_axis_control_vars` keyed by ``(role, key)``. There is
+        no shared var across tabs — the Phase 4aj mirroring pattern
+        (CS-61) was the canonical relaxation for the schema-invention
+        phase. Editing a widget marks ``role``'s own per-axis tab
+        dirty via :meth:`_on_axis_var_write`.
+
+        Phase 4ak ships two widgets:
+
+        * Tick direction Radiobutton row (rendered first). Reads/
+          writes ``self._working["axes"][role]["tick_direction"]``.
+        * Axis label override Entry (rendered second). Reads/writes
+          ``self._working["axes"][role]["axis_label_override"]``;
+          empty string = "defer to the renderer's auto/custom label
+          resolution", non-empty = "force this text as the axis
+          label". The Entry's Tk var is reused by the
+          ``"axis_labels"`` Global-tab mirror section so edits on
+          either surface stay in sync.
 
         ``parent`` is the inner ``"Settings"`` LabelFrame built by
         ``_build_axis_tab_shell``. ``role`` is the axis-role tab key
         (one of ``primary_x``, ``secondary_x``, ``primary_y``,
         ``secondary_y``, ``tertiary_y``).
         """
-        row = tk.Frame(parent)
-        row.pack(fill=tk.X, anchor="w", pady=2)
+        # ---- Tick direction row ----
+        tick_row = tk.Frame(parent)
+        tick_row.pack(fill=tk.X, anchor="w", pady=2)
         tk.Label(
-            row, text="Tick direction:", font=("", 9, "bold"),
+            tick_row, text="Tick direction:", font=("", 9, "bold"),
         ).pack(side=tk.LEFT)
 
-        # The first axis tab built (canonical pack order: primary_x)
-        # registers the shared Tk var, trace callback, and refresh
-        # closure. Subsequent tabs reuse the var so all five radios
-        # display the same selection. The fallback when working has
-        # no value goes through ``_FACTORY_DEFAULTS["tick_direction"]``
-        # rather than a literal "in" so a future schema flip cannot
-        # drift between the appearance/per-axis builders.
-        var = self._control_vars.get("tick_direction")
-        if var is None:
-            var = tk.StringVar(
-                value=str(self._working.get(
-                    "tick_direction",
-                    _FACTORY_DEFAULTS["tick_direction"],
-                )),
-            )
-            self._control_vars["tick_direction"] = var
-            var.trace_add(
-                "write",
-                lambda *_, k="tick_direction", v=var:
-                    self._on_var_write(k, v.get()),
-            )
-
-            def _refresh_dir(value, _v=var):
-                _v.set(str(value))
-            self._control_refresh["tick_direction"] = _refresh_dir
-
-        radio_frame = tk.Frame(row)
+        tick_var = self._make_axis_string_var(role, "tick_direction")
+        radio_frame = tk.Frame(tick_row)
         radio_frame.pack(side=tk.LEFT, padx=(8, 0))
         for display, value in (
             ("In", "in"), ("Out", "out"), ("Both", "inout"),
         ):
             tk.Radiobutton(
-                radio_frame, text=display, variable=var, value=value,
+                radio_frame, text=display, variable=tick_var, value=value,
             ).pack(side=tk.LEFT, padx=3)
+
+        # ---- Axis label override row ----
+        label_row = tk.Frame(parent)
+        label_row.pack(fill=tk.X, anchor="w", pady=(8, 2))
+        tk.Label(
+            label_row, text="Axis label override:", font=("", 9, "bold"),
+        ).pack(side=tk.LEFT)
+        # The Global-tab mirror section reads this var by key so the
+        # two surfaces stay in lockstep without a callback hop.
+        override_var = self._make_axis_string_var(role, "axis_label_override")
+        tk.Entry(
+            label_row, textvariable=override_var, width=22, font=("", 9),
+        ).pack(side=tk.LEFT, padx=(8, 0), fill=tk.X, expand=True)
+        tk.Label(
+            label_row, text="(empty = auto)",
+            font=("", 8, "italic"), fg="#888888",
+        ).pack(side=tk.LEFT, padx=(6, 0))
+
+    def _make_axis_string_var(
+        self, role: str, key: str,
+    ) -> tk.StringVar:
+        """Build (or fetch) the per-axis ``StringVar`` for ``(role, key)``.
+
+        The first call for a given pair creates the var, populates
+        it from ``self._working["axes"][role][key]`` (falling back
+        through the factory default), registers the trace handler
+        + refresh closure, and caches the var in
+        :attr:`_axis_control_vars`. Subsequent calls return the
+        cached var — used by the Global-tab "Per-axis label
+        overrides" mirror to share a single Tk var with the
+        per-axis tab's Entry.
+        """
+        cached = self._axis_control_vars.get((role, key))
+        if cached is not None:
+            return cached  # type: ignore[return-value]
+
+        factory_default = _FACTORY_DEFAULTS["axes"][role][key]
+        current = self._working.setdefault("axes", {}).setdefault(
+            role, {}
+        ).setdefault(key, copy.deepcopy(factory_default))
+        var = tk.StringVar(value=str(current))
+        self._axis_control_vars[(role, key)] = var
+        var.trace_add(
+            "write",
+            lambda *_, r=role, k=key, v=var:
+                self._on_axis_var_write(r, k, v.get()),
+        )
+
+        def _refresh(value, _v=var):
+            _v.set(str(value))
+        self._axis_control_refresh[(role, key)] = _refresh
+        return var
+
+    # ============================================================
+    # Section: Per-axis label overrides — CS-62 (Phase 4ak) Global mirror
+    # ============================================================
+
+    def _build_section_axis_labels(self, parent: tk.Widget) -> None:
+        """Global-tab mirror of every per-axis ``axis_label_override``.
+
+        Five rows, one per axis role in :data:`_TAB_KEYS` order. Each
+        row exposes ``"<Tab Title>:"`` plus an Entry whose Tk var
+        IS THE SAME var the per-axis tab's "Axis label override:"
+        Entry uses — :meth:`_make_axis_string_var` is idempotent on
+        the ``(role, key)`` pair, so the second caller reuses the
+        first caller's var rather than building a duplicate. Edits
+        flow through :meth:`_on_axis_var_write` exactly as on the
+        per-axis tab; the dirty marker lands on the corresponding
+        per-axis tab, not on Global (the gesture is conceptually
+        per-axis even when surfaced globally).
+        """
+        for r, role in enumerate(_TAB_KEYS):
+            if role == "global":
+                continue
+            tk.Label(
+                parent, text=f"{_TAB_TITLES[role]}:",
+                font=("", 9, "bold"),
+            ).grid(row=r, column=0, sticky="w", pady=2)
+            var = self._make_axis_string_var(role, "axis_label_override")
+            tk.Entry(
+                parent, textvariable=var, width=24, font=("", 9),
+            ).grid(row=r, column=1, sticky="ew", padx=4)
+        parent.columnconfigure(1, weight=1)
 
     # ============================================================
     # Section: Legend
@@ -1020,6 +1251,26 @@ class PlotConfigDialog(tk.Toplevel):
             return
         self._mark_tab_modified(_key_to_tab(key))
 
+    def _on_axis_var_write(
+        self, role: str, key: str, value: Any,
+    ) -> None:
+        """Update the nested ``axes[role][key]`` slot and mark dirty (CS-62).
+
+        Per-axis writer analogue of :meth:`_on_var_write`. The role
+        argument arrives directly from the per-axis widget closure
+        (or from the Global "axis_labels" mirror row's closure for
+        the same ``(role, key)`` pair) and is the canonical tab
+        attribution for the edit — :func:`_key_to_tab` is bypassed
+        entirely. The ``_suspend_writes`` re-entrancy guard works
+        identically to the flat-key writers.
+        """
+        if self._suspend_writes:
+            return
+        axes = self._working.setdefault("axes", {})
+        role_dict = axes.setdefault(role, {})
+        role_dict[key] = value
+        self._mark_tab_modified(role)
+
     # ------------------------------------------------------------
     # Per-tab modified-edit tracking (CS-60, Phase 4ai)
     # ------------------------------------------------------------
@@ -1273,13 +1524,28 @@ class PlotConfigDialog(tk.Toplevel):
     def _load_into_working(self, source: dict[str, Any]) -> None:
         """Replace the working copy with a deep copy of ``source``.
 
-        Refreshes every widget through its registered ``_control_refresh``
-        closure under ``_suspend_writes`` so the trace callbacks don't
-        write back into the working copy mid-refresh.
+        Phase 4ak (CS-62) routes the deep copy through
+        :func:`migrate_plot_config` so a legacy ``_USER_DEFAULTS``
+        carrying flat ``tick_direction`` (saved before the per-axis
+        schema landed) lifts into the nested ``axes[<role>]`` slots
+        before the widget refresh fires. Migration is idempotent,
+        so an already-nested source is unaffected. Top-level keys
+        missing from ``source`` are backfilled from
+        :data:`_FACTORY_DEFAULTS` to keep every widget defined.
+
+        Refreshes every widget through its registered refresh
+        closure under ``_suspend_writes`` so the trace callbacks
+        don't write back into the working copy mid-refresh.
         """
         self._working = copy.deepcopy(dict(source))
-        # Make sure every key the dialog might touch has a value.
+        migrate_plot_config(self._working)
+        # Make sure every flat key the dialog might touch has a value.
+        # The nested ``axes`` sub-dict is fully populated by
+        # ``migrate_plot_config``; the loop below handles the legacy
+        # flat keys only.
         for k, v in _FACTORY_DEFAULTS.items():
+            if k == "axes":
+                continue
             self._working.setdefault(k, v)
         self._refresh_widgets_from_working()
 
@@ -1288,7 +1554,10 @@ class PlotConfigDialog(tk.Toplevel):
 
         Used by Reset Defaults and Factory Reset. ``_suspend_writes``
         keeps the variable trace callbacks from looping back into
-        ``_on_var_write`` while widgets settle.
+        the writer helpers while widgets settle. Phase 4ak (CS-62)
+        added the per-axis refresh pass — every ``(role, key)``
+        registered in :attr:`_axis_control_refresh` is fed the
+        matching ``self._working["axes"][role][key]`` value.
         """
         self._suspend_writes = True
         try:
@@ -1301,6 +1570,19 @@ class PlotConfigDialog(tk.Toplevel):
                     _log.warning(
                         "plot_settings_dialog: refresh failed for %r",
                         key, exc_info=True,
+                    )
+            axes_working = self._working.get("axes", {})
+            for (role, key), refresh in self._axis_control_refresh.items():
+                role_dict = axes_working.get(role) or {}
+                if key not in role_dict:
+                    continue
+                try:
+                    refresh(role_dict[key])
+                except Exception:
+                    _log.warning(
+                        "plot_settings_dialog: axis refresh failed for "
+                        "(%r, %r)",
+                        role, key, exc_info=True,
                     )
         finally:
             self._suspend_writes = False
