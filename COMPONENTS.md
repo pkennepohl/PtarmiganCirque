@@ -8179,7 +8179,393 @@ user offered to lift from. One USER-FLAGGED 🟢 friction note:
 
 ---
 
-*Document version: 1.36 — May 2026*
+## CS-62 — Per-axis schema invention + axis_label_override + plots_by_role inventory (Phase 4ak)
+
+**Status:** ✅ implemented; second slice of the multi-phase
+per-axis settings ladder (Phase 4aj→4an), the schema-
+invention pivot point.
+
+The scientific question
+-----------------------
+
+Phase 4aj (CS-61) shipped the smallest possible per-axis
+relocation by keeping the schema flat: one Tk var shared
+across all five tabs, dirty marker pinned to Primary X, the
+working-copy key `tick_direction` still a single string. Two
+acknowledged frictions resulted: (a) editing the radio on
+Primary Y visually flipped the Primary X radio (shared-var
+UX dishonesty); (b) the dirty bullet showed on Primary X
+even when the user edited Primary Y (dirty-pin
+counterintuitive). Both were authorised for 4aj and queued
+for 4ak's schema-invention resolution. The per-axis ladder
+also needed: (c) the read-only "Plots on this axis" list
+inside each per-axis tab populated from the host's live
+graph, (d) a new per-axis `axis_label_override` key for
+fine-grained label customisation, and (e) a Global-tab
+mirror surface for the axis-label overrides so the user can
+edit all five from one place.
+
+The Phase 4ak answer (CS-62)
+----------------------------
+
+**Nested schema in `_FACTORY_DEFAULTS["axes"][role][key]`.**
+The factory dict grows a new `"axes"` sub-dict with one
+entry per per-axis role (`primary_x` / `secondary_x` /
+`primary_y` / `secondary_y` / `tertiary_y`); each per-role
+dict carries `tick_direction` (default `"in"`) AND the new
+`axis_label_override` (default `""`). The top-level flat
+`_FACTORY_DEFAULTS["tick_direction"]` is REMOVED. The per-
+axis-key registry `_AXIS_KEYS = ("tick_direction",
+"axis_label_override")` documents the schema growth path
+for future phases.
+
+**Idempotent migration shim.** A new module-level
+`migrate_plot_config(config: dict) -> dict` (returns the
+same dict for chaining) translates legacy flat
+`config["tick_direction"]` into the nested
+`config["axes"][role]["tick_direction"]` slot for every
+role, then deletes the legacy key. Each per-role sub-dict
+missing keys gets backfilled from
+`_FACTORY_DEFAULTS["axes"][role]`. **Idempotency invariant:**
+a non-`None` legacy flat `tick_direction` wins over any
+per-role slot already present (the factory pre-seed always
+populates the slot, but the user's legacy intent must
+override the factory default). Other per-axis keys take the
+existing slot when present.
+
+**Migration runs at dialog construction time + Reset paths.**
+The dialog's `__init__` deep-copies `_FACTORY_DEFAULTS`,
+updates from the caller's config, then calls
+`migrate_plot_config(self._working)`. `_load_into_working`
+(Reset Defaults / Factory Reset) also runs the shim so a
+legacy `_USER_DEFAULTS` saved by an older session migrates
+on every reset gesture. The renderer reads through helpers
+that fall back gracefully — a pre-migration `_plot_config`
+still renders identically because `_per_axis_tick_direction`
+prefers nested > legacy flat > factory default.
+
+**Per-axis Tk vars in `_axis_control_vars[(role, key)]`.**
+The dialog's pre-CS-62 flat `_control_vars` dict gains a
+sibling `_axis_control_vars: dict[tuple[str, str],
+tk.Variable]` keyed by `(role, key)` pairs. Each per-axis
+tab's widget builder calls
+`self._make_axis_string_var(role, key)` which is **idempotent
+on the `(role, key)` pair** — first call builds the var +
+trace + refresh closure; subsequent calls with the same pair
+return the cached var. The Global "Per-axis label
+overrides" mirror section reuses this idempotency to share
+Tk vars with the per-axis tab Entries: when the Global
+section runs first (canonical Notebook pack order, Global is
+tab[0]), the per-axis tab Entries reuse the var the mirror
+section already built.
+
+**Per-axis writer `_on_axis_var_write(role, key, value)`.**
+New writer analogue of `_on_var_write` that carries the
+role directly and marks `self._mark_tab_modified(role)`
+without going through `_key_to_tab`. The `_suspend_writes`
+re-entrancy guard works identically. `_KEY_TO_TAB`'s
+`tick_direction` entry from CS-61 is REMOVED (the dict is
+now empty); per-axis keys never route through `_key_to_tab`.
+
+**New `_build_axis_tab_settings` body — two widgets, inline.**
+The CS-61 helper signature `(parent, role)` is preserved
+(canonical lock relaxation: "the helper either grows
+additional widget builders inline or splits into per-widget
+helpers"). It now builds: (a) Tick direction Radiobutton row
+(unchanged shape, but bound to per-axis var); (b) Axis
+label override Entry with a "(empty = auto)" trailing label.
+Both use `_make_axis_string_var` for the per-axis var.
+
+**New `_build_section_axis_labels` Global section.** Five
+rows, one per `_TAB_KEYS` role (minus `"global"`). Each row:
+bold `"<Tab Title>:"` Label + Entry whose `textvariable`
+shares a Tk var with the per-axis tab's Entry via
+`_make_axis_string_var`'s idempotency. `_DEFAULT_SECTIONS`
+extends to include `"axis_labels"` (appended; canonical
+order is fonts → appearance → legend → title_labels →
+axis_labels). `_SECTION_TITLES["axis_labels"]` =
+`"Per-axis label overrides"`.
+
+**`plots_by_role` constructor kwarg + Listbox rendering.**
+The dialog constructor + `open_plot_config_dialog` factory
+both gain a `plots_by_role: dict[str, tuple[str, ...]] |
+None = None` parameter. None means the host didn't compute
+the inventory; the per-axis tabs fall back to the italic
+`"(no plots on this axis)"` placeholder. Roles whose tuple
+is empty get the same placeholder. For populated roles, a
+read-only `tk.Listbox` (height capped at `min(6, n)`,
+`state="disabled"`) renders the plot labels.
+
+**Renderer wiring in `uvvis_tab._redraw` (visible-effect
+features).** New module-level helpers in `uvvis_tab.py`:
+
+- `_axis_label_override(cfg, tab_role) -> str` returns the
+  per-axis override defensively (handles missing `axes`
+  sub-dict, missing role, missing key). Empty string is
+  the factory default meaning "defer to existing label
+  resolution".
+- `_per_axis_tick_direction(cfg, tab_role) -> str` resolves
+  with nested → legacy flat → factory fallback chain so a
+  pre-migration `_plot_config` keeps rendering.
+- `_enumerate_plots_by_role(spectrum_nodes,
+  second_derivative_nodes, peak_list_nodes, *,
+  secondary_x_active) -> dict[str, tuple[str, ...]]` walks
+  visible plottable nodes, routes Y axes via
+  `_resolve_y_axis_role` (honouring per-style `y_axis`
+  overrides from CS-50), and mirrors primary_x onto
+  secondary_x when the wavelength↔energy twin is active.
+- `_Y_AXIS_ROLE_TO_TAB` translates `_AXIS_ROLES` keys
+  (`primary` / `secondary` / `tertiary`) into the dialog's
+  per-axis tab keys (`primary_y` / `secondary_y` /
+  `tertiary_y`).
+
+Renderer changes at the label-setting points:
+- Primary X label: non-empty `axis_label_override` wins
+  over the legacy `xlabel_mode` auto/custom path.
+- Primary Y label: non-empty override wins over both
+  `ylabel_mode == "custom"` and the auto resolution; the
+  role iteration loop short-circuits primary when an
+  override is active.
+- Secondary X (wavelength↔energy twin): non-empty
+  override replaces the hardcoded `"λ (nm)"` string.
+- Secondary Y / tertiary Y: non-empty override replaces
+  the `_resolve_y_axis_label` result.
+
+Tick direction reads through
+`_per_axis_tick_direction(cfg, "primary_x")` and applies
+uniformly to every axis — **per-axis tick rendering is
+explicitly deferred to Phase 4al** per the decision lock.
+The schema STORES per-axis values but the renderer doesn't
+yet APPLY them per-axis. The user observed this directly
+("Editing the Secondary X tick direction radio moves the
+Primary X axis ticks, not the Secondary X axis"); this is
+honest-but-incomplete and queued for the next ladder slice.
+
+**Host integration on UVVisTab.** New `_compute_plots_by_role`
+method builds the inventory at dialog open time via the
+three live-node helpers + the `_show_nm_axis` +
+`_x_unit.get()` state. Both dialog open paths
+(`_open_plot_settings` for the ⚙ button + `_on_mpl_axis_double_click`
+for the CS-60 double-click hit-test) pass `plots_by_role=`
+into `open_plot_config_dialog`.
+
+**`_UNIVERSAL_DEFAULTS` upgrades from shallow to deep copy.**
+Pre-CS-62 used `dict(_FACTORY_DEFAULTS)`; CS-62 uses
+`copy.deepcopy(_FACTORY_DEFAULTS)` because the new `axes`
+sub-dict is mutable. A shallow copy would let mutations on
+one leak into the other. Test `test_universal_defaults_is_deep_copy_of_factory`
+pins this — every per-role sub-dict is a distinct object.
+
+Locks (CS-62)
+-------------
+
+These invariants are pinned by
+`TestPlotConfigDialogPerAxisSchemaPhase4ak` (new),
+`TestPlotConfigDialogTickDirectionRelocationPhase4aj`
+(inverted from the CS-61 shape),
+`TestEnumeratePlotsByRolePhase4ak` (new, unit tests on
+the enumerator), and `TestUVVisTabPerAxisSchemaPhase4ak`
+(new, host integration):
+
+1. **`_FACTORY_DEFAULTS["axes"]` is a `dict[str, dict[str,
+   Any]]`** keyed by the five per-axis roles (`primary_x`,
+   `secondary_x`, `primary_y`, `secondary_y`,
+   `tertiary_y`). Each role's sub-dict carries exactly the
+   keys in `_AXIS_KEYS`: `tick_direction` (default `"in"`)
+   and `axis_label_override` (default `""`).
+
+2. **Top-level `_FACTORY_DEFAULTS["tick_direction"]` is
+   absent.** The CS-61 schema lock relaxed; the flat key
+   is gone (canonical CS-61 relaxation per its lock-
+   relaxations block). `_UNIVERSAL_DEFAULTS` mirrors this
+   absence.
+
+3. **`_AXIS_KEYS = ("tick_direction", "axis_label_override")`.**
+   The canonical per-axis-key registry. Future phases
+   extend this tuple (range / autoscale / scale type /
+   tick spacing keys land here).
+
+4. **`_UNIVERSAL_DEFAULTS` is a deep copy of
+   `_FACTORY_DEFAULTS`.** Test pins `u is not f`, `u["axes"]
+   is not f["axes"]`, AND `u["axes"][role] is not
+   f["axes"][role]` for every role.
+
+5. **`migrate_plot_config(config)` is idempotent.** Tests:
+   running on a fully-migrated config is a no-op; running
+   on an empty config populates the full nested form;
+   running on a legacy-flat config moves the value into
+   every per-role slot AND deletes the legacy key. A
+   non-`None` legacy `tick_direction` wins over factory-
+   default per-role slots (the factory pre-seed is the
+   bootstrap shape, not the final user state). Test
+   `test_migrate_partial_nested_fills_gaps` pins that
+   nested values present in the input are preserved while
+   missing keys get backfilled.
+
+6. **`_KEY_TO_TAB` dict is empty.** CS-61's
+   `{"tick_direction": "primary_x"}` entry removed.
+   `_key_to_tab(key)` returns `"global"` for every key
+   that resolves through it. Per-axis dirty marking
+   bypasses this map entirely via `_on_axis_var_write`.
+
+7. **Per-axis Tk vars live in `_axis_control_vars[(role,
+   key)]`.** Each per-axis tab owns its own var per key;
+   no shared var. Five distinct `(role, "tick_direction")`
+   var names + five distinct `(role, "axis_label_override")`
+   var names. `self._control_vars` carries no
+   `"tick_direction"` entry post-CS-62.
+
+8. **`_make_axis_string_var(role, key)` is idempotent on
+   the `(role, key)` pair.** Cached lookup returns the
+   existing var. The Global "axis_labels" mirror section
+   reuses this to share Tk vars with the per-axis tab
+   Entries.
+
+9. **`_on_axis_var_write(role, key, value)` marks the
+   role's tab dirty.** Not Global; not Primary X; the
+   role itself. Test
+   `test_edit_marks_role_specific_tab_dirty` and
+   `test_axis_label_override_edit_marks_role_tab_dirty`
+   pin both keys.
+
+10. **`_DEFAULT_SECTIONS` ends with `"axis_labels"`.** The
+    new Global section sits at the bottom of the Global
+    tab below Title and labels. `_SECTION_TITLES["axis_labels"]
+    = "Per-axis label overrides"`.
+
+11. **Global "Per-axis label overrides" section has five
+    Entry widgets** — one per role (excluding Global) in
+    `_TAB_KEYS` canonical order. Each Entry's
+    `textvariable` matches the corresponding per-axis tab
+    Entry's `textvariable` (shared var, idempotency).
+
+12. **`plots_by_role` constructor kwarg accepts `None` or
+    `dict[str, tuple[str, ...]]`.** `None` and any
+    role-missing-or-empty render the italic
+    `"(no plots on this axis)"` placeholder Label.
+    Populated tuples render a `tk.Listbox` with
+    `state="disabled"`, `height=min(6, n)`.
+
+13. **Renderer reads `_axis_label_override(cfg, tab_role)`
+    at every axis label setter** (primary_x, primary_y,
+    secondary_x, secondary_y, tertiary_y). A non-empty
+    string wins over the existing auto/custom resolution.
+
+14. **`_enumerate_plots_by_role` invariants:** primary_x
+    lists every visible plot; secondary_x mirrors
+    primary_x when `secondary_x_active=True`, empty
+    otherwise; Y axes route via `_resolve_y_axis_role`;
+    invisible nodes are skipped silently. Returned dict
+    always has all 5 keys (even if empty tuples).
+
+Lock relaxations (anticipated for Phase 4al onward)
+---------------------------------------------------
+
+- **Per-axis tick rendering.** The renderer reads
+  `_per_axis_tick_direction(cfg, "primary_x")` and applies
+  uniformly today. 4al's canonical relaxation: split
+  `ax.tick_params(direction=...)` into per-axis-role calls
+  reading `axes[<role>]["tick_direction"]` per axis. The
+  hardcoded `sec.tick_params(axis="x", direction="in",
+  labelsize=8)` for the wavelength twin also reads through
+  the helper.
+- **`_AXIS_KEYS` grows.** Phase 4al adds the "Move to ▾"
+  picker for `y_axis` style routing (CS-50 follow-up; may
+  or may not live in `_AXIS_KEYS` depending on whether it
+  becomes a per-axis-tab Plot Settings key or stays a
+  per-style key); Phase 4am adds range / autoscale / scale-
+  type keys; Phase 4an adds tick spacing + per-axis grid +
+  per-axis colour pickers.
+- **Listbox interactivity.** Phase 4ak ships read-only
+  (`state="disabled"`). A future enhancement could enable
+  single-click selection to jump-scroll the sidebar
+  ScanTreeWidget to the corresponding node.
+- **`plots_by_role` freshness.** Today the dialog stores
+  the inventory at construction time. Reactivity is queued
+  with the live-preview register entry (CS-06 / CS-23 /
+  CS-60 working-copy semantics).
+
+Friction points carried forward
+-------------------------------
+
+- 🟠 **USER-FLAGGED bug: Secondary X tick direction
+  changes Primary X, not Secondary X.** Resolution lands
+  in Phase 4al's per-axis tick rendering wire-up. Folds
+  into the canonical per-axis ladder above.
+- 🟡 **USER-FLAGGED Live-preview vs Apply button.** New
+  canonical register entry; meta-UX question across the
+  dialog ecosystem.
+- 🟡 **USER-FLAGGED Apply-to-all icon on per-axis tabs.**
+  New canonical register entry; UI consistency with the
+  ScanTreeWidget per-row send-to-compare icon.
+- 🟡 **USER-FLAGGED Axis nomenclature rename.** New
+  canonical register entry; massive cross-codebase rename
+  (CS-44 / CS-50 / CS-60 / CS-61 / CS-62 locks affected).
+- 🟡 **USER-FLAGGED Rich-text axis labels (mathtext).**
+  New canonical register entry; small enabling phase.
+- 🟢 **Dual-surface primary X / Y label
+  (Claude-surfaced).** `axis_label_override` + the legacy
+  Title-and-labels section's X/Y label rows are two
+  surfaces editing the same label. Override wins via
+  precedence.
+- 🟢 **`plots_by_role` frozen at open time
+  (Claude-surfaced).** Folds into the live-preview
+  register entry above.
+- 🟢 **Listbox `state="disabled"` (Claude-surfaced).**
+  Read-only today; jump-to-node click is a future
+  enhancement.
+- 🟢 **`TestAppearanceSectionPhase4ae` class-name drift
+  (USER-FLAGGED 🟢, Phase 4aj carry-over).** Two tests
+  inside got updated in Phase 4ak for the nested
+  schema — the class stays correct in content, but the
+  name still misleads. Rename when a future Appearance
+  section refactor naturally touches the class.
+
+Tests
+-----
+
+- New `TestPlotConfigDialogPerAxisSchemaPhase4ak` class:
+  26 tests covering nested factory shape, migration shim
+  semantics, per-axis vars, axis_label_override widget,
+  Global mirror section, plots_by_role rendering, and
+  end-to-end Apply / Reset Defaults paths.
+- New `TestEnumeratePlotsByRolePhase4ak` class: 7 unit
+  tests against the module-level `_enumerate_plots_by_role`
+  helper (no Tk needed).
+- New `TestUVVisTabPerAxisSchemaPhase4ak` class: 10
+  integration tests on the host — `_compute_plots_by_role`,
+  the two dialog open paths threading the inventory, and
+  the renderer's axis_label_override application on all
+  five axes.
+- `TestPlotConfigDialogTickDirectionRelocationPhase4aj`
+  (CS-61) inverted in place: shared-var assertions flipped
+  to per-axis-var, dirty-pin-to-primary-x flipped to
+  dirty-mark-the-edited-role, write-to-flat flipped to
+  write-to-nested. Static layout tests (label absent from
+  Appearance, label + 3 radios on every per-axis Settings
+  frame) stay AS-IS.
+- `TestAppearanceSectionPhase4ae`: two tests updated for
+  the nested schema (`test_tick_direction_factory_default_is_in`
+  + `test_factory_reset_restores_new_appearance_keys`).
+- `test_plot_config_inherits_inward_tick_default` in
+  `test_uvvis_tab.py` updated to read the nested form.
+
+Total: +39 new across the four new test classes plus
+inversions. Full suite 1165 (was 1126).
+
+See "Friction points carried forward from Phase 4ak" in
+BACKLOG.md. **Five new USER-FLAGGED register entries from
+step 5:** live-preview vs Apply (meta-UX); apply-to-all
+icon on per-axis tabs (UI consistency); axis nomenclature
+rename to position-based names; rich-text axis labels
+(mathtext); plus ONE user-surfaced bug folded into the
+canonical per-axis ladder (Secondary X tick direction
+mis-applied — resolution lands in Phase 4al per the
+deferred per-axis tick rendering scope).
+
+---
+
+*Document version: 1.37 — May 2026*
 *1.1: CS-13 implementation notes added in Phase 4a.*
 *1.2: CS-14 Plot Settings Dialog added in Phase 4b.*
 *1.3: CS-15 UV/Vis Baseline Correction + CS-04 implementation
@@ -9103,5 +9489,83 @@ friction note: `TestAppearanceSectionPhase4ae` class-name drift
 widget no longer lives in Appearance). 1126 tests, all green
 (1113 + 13 new in `TestPlotConfigDialogTickDirectionRelocation
 Phase4aj`).*
+*1.37: CS-62 — per-axis schema invention + axis_label_override
++ plots_by_role inventory added in Phase 4ak. Schema-invention
+slice of the multi-phase per-axis settings ladder (Phase
+4aj→4an); the CS-61 dirty-pin pattern from 4aj inverts to per-
+axis Tk vars + per-role dirty marking. **Lock relaxations
+taken:** (1) `_FACTORY_DEFAULTS` gains a nested `"axes"` sub-
+dict (one entry per `_TAB_KEYS` axis role), each carrying
+`tick_direction` + the new `axis_label_override` (CS-61 schema
+invariant relaxed — top-level flat `tick_direction` REMOVED;
+CS-23 / CS-60 lock 4 / `_USER_DEFAULTS` shape extended);
+(2) `_UNIVERSAL_DEFAULTS` upgrades from `dict(...)` shallow
+copy to `copy.deepcopy(...)` so the new mutable `axes` sub-
+dict isolation holds; (3) `_KEY_TO_TAB`'s `tick_direction`
+entry removed (canonical CS-61 relaxation; dict is now empty);
+(4) `_build_axis_tab_settings(parent, role)` grows inline
+(canonical CS-61 relaxation: two widget builders inline —
+tick_direction Radiobutton row + axis_label_override Entry);
+(5) `_DEFAULT_SECTIONS` extends to include `"axis_labels"` —
+the new Global "Per-axis label overrides" mirror section;
+(6) `open_plot_config_dialog` + `PlotConfigDialog.__init__`
+gain `plots_by_role: dict[str, tuple[str, ...]] | None` kwarg.
+**New module surface:** `migrate_plot_config(config)`
+idempotent legacy-flat-to-nested shim; `_make_axis_string_var(role,
+key)` idempotent per-axis-var factory; `_on_axis_var_write(role,
+key, value)` per-axis writer routing dirty marking through
+the role argument directly; `_build_section_axis_labels`
+Global mirror section builder; `_build_axis_tab_plots` per-
+axis Listbox renderer; `_axis_label_override(cfg, tab_role)` +
+`_per_axis_tick_direction(cfg, tab_role)` renderer helpers in
+`uvvis_tab.py`; `_enumerate_plots_by_role` module-level
+enumerator + `UVVisTab._compute_plots_by_role` host method;
+`_Y_AXIS_ROLE_TO_TAB` mapping from CS-44 Y-axis role keys to
+dialog per-axis tab keys. **Renderer wiring:** `axis_label_override`
+applied per axis for primary_x, primary_y, secondary_x,
+secondary_y, tertiary_y. Per-axis tick_direction RENDERING
+deferred to Phase 4al (the schema STORES per-axis values but
+the renderer applies primary_x's value uniformly — the user-
+surfaced "Secondary X tick changes Primary X axis" bug is
+honest-but-incomplete and resolved in 4al). **Locks held:**
+every CS-60 / CS-61 lock the canonical relaxations didn't
+touch (`PlotConfigDialog` identity, `_TAB_KEYS` six-tuple +
+order, `_TAB_TITLES`, `_MODIFIED_TAB_SUFFIX = " •"`, `AxisHit`
+dataclass, `classify_axis_double_click` signature, hit-test
+bands, button row order, Apply-to-All semantics); all CS-44 +
+CS-46 + CS-49 + CS-50 + CS-55 + CS-56 + CS-57 + CS-58 + CS-59
+invariants unchanged (project_io's `plot_defaults` manifest
+key serialises the nested form transparently via `_jsonify` —
+no schema code change in `project_io.py`). **Decision lock
+taken (Phase 4ak):** (i) nested `_FACTORY_DEFAULTS["axes"][role][key]`
+shape with `tick_direction` + `axis_label_override` for all
+five roles; (ii) migration shim runs at dialog `__init__` on
+working copy + Reset Defaults / Factory Reset paths;
+(iii) `_KEY_TO_TAB` drops the entry entirely (cleaner than
+generalising to `dict[tuple[str, str], str]`); (iv) per-axis
+Tk vars stored separately from flat-key vars in
+`_axis_control_vars[(role, key)]`; (v) Global mirror section
+appended last in `_DEFAULT_SECTIONS`; (vi) per-axis tick
+rendering deferred to Phase 4al — schema stores per-axis,
+renderer applies primary_x uniformly with helper-based
+fallback chain. **Five new USER-FLAGGED register entries
+surfaced at step 5:** live-preview vs Apply button (meta-UX),
+apply-to-all icon on per-axis tabs (UI consistency with
+data-node settings), axis nomenclature rename to position-
+based names (bottom/top/left/right with `*` suffix for
+offset), rich-text axis labels (matplotlib mathtext
+subscript/superscript/equations), plus the Secondary X tick
+direction bug folded into the canonical per-axis ladder
+register entry (resolution in 4al). Three Claude-surfaced 🟢
+friction notes (dual-surface primary X/Y label, plots_by_role
+frozen at open, Listbox disabled). One USER-FLAGGED 🟢
+friction note carries forward unresolved from Phase 4aj
+(`TestAppearanceSectionPhase4ae` class-name drift — two tests
+inside got updated this phase, but the class name still
+misleads). 1165 tests, all green (1126 + 39 new across
+`TestPlotConfigDialogPerAxisSchemaPhase4ak`,
+`TestEnumeratePlotsByRolePhase4ak`,
+`TestUVVisTabPerAxisSchemaPhase4ak`, plus inversions in
+`TestPlotConfigDialogTickDirectionRelocationPhase4aj`).*
 *To be updated as Open Questions are resolved and new components
 are specified.*
