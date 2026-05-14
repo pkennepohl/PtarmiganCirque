@@ -1443,7 +1443,7 @@ class XASAnalysisTab(tk.Frame):
                     text="Averaged scan created but no add_scan_fn provided.",
                     fg="#885500")
 
-        tk.Button(btn_fr, text="\u2211  Average & Add to Binah",
+        tk.Button(btn_fr, text="\u2211  Average & Add to SpecTRACE",
                   bg="#5c1a5c", fg="white", font=("", 9, "bold"),
                   command=_do_average).pack(side=tk.LEFT, padx=4)
         tk.Button(btn_fr, text="Cancel",

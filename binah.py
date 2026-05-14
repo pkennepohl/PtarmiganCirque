@@ -47,7 +47,7 @@ import project_manager as pm
 class OrcaTDDFTApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Binah")
+        self.title("SpecTRACE")
         self.geometry("1100x720")
         self.minsize(800, 550)
         self._sidebar_visible = True
@@ -344,7 +344,7 @@ class OrcaTDDFTApp(tk.Tk):
 
         choice = messagebox.askyesnocancel(
             "Optional FEFF Setup",
-            "Binah can download FEFF10 from GitHub and try to build it so "
+            "SpecTRACE can download FEFF10 from GitHub and try to build it so "
             "FEFF-backed EXAFS runs are available.\n\n"
             "Yes = set up FEFF now\n"
             "No = do not ask again\n"
@@ -382,7 +382,7 @@ class OrcaTDDFTApp(tk.Tk):
         tk.Label(
             hdr,
             text=(
-                "Binah will download FEFF10 from GitHub and attempt a local build. "
+                "SpecTRACE will download FEFF10 from GitHub and attempt a local build. "
                 "FEFF10 is source code, so a working compiler/toolchain is still required."
             ),
             bg="#003366",
@@ -1208,7 +1208,7 @@ class OrcaTDDFTApp(tk.Tk):
             return
         warnings = pm.restore_project(doc, self)
         self._project_path = path
-        self.title(f"Binah — {os.path.basename(path)}")
+        self.title(f"SpecTRACE — {os.path.basename(path)}")
         self._add_recent(path)
         n_exp  = len(self._plot._exp_scans)
         n_orca = self._file_listbox.size()
@@ -1256,7 +1256,7 @@ class OrcaTDDFTApp(tk.Tk):
         self._xas_tab.refresh_scan_list()
         if hasattr(self, "_exafs_tab"):
             self._exafs_tab.refresh_scan_list()
-        self.title("Binah")
+        self.title("SpecTRACE")
         self._status.set("New project started.")
 
     def _save_project(self):
@@ -1282,7 +1282,7 @@ class OrcaTDDFTApp(tk.Tk):
         try:
             pm.save_project(path, self)
             self._project_path = path
-            self.title(f"Binah — {os.path.basename(path)}")
+            self.title(f"SpecTRACE — {os.path.basename(path)}")
             self._status.set(f"Project saved: {os.path.basename(path)}")
             self._add_recent(path)
         except Exception as exc:
@@ -1309,7 +1309,7 @@ class OrcaTDDFTApp(tk.Tk):
 
         warnings = pm.restore_project(doc, self)
         self._project_path = path
-        self.title(f"Binah — {os.path.basename(path)}")
+        self.title(f"SpecTRACE — {os.path.basename(path)}")
         self._add_recent(path)
 
         n_exp   = len(self._plot._exp_scans)
@@ -1576,8 +1576,8 @@ class OrcaTDDFTApp(tk.Tk):
     # ------------------------------------------------------------------ #
     def _show_about(self):
         messagebox.showinfo(
-            "About Binah",
-            "Binah\n"
+            "About SpecTRACE",
+            "SpecTRACE\n"
             "Parses and interactively plots TDDFT spectra\n"
             "from ORCA quantum chemistry output files.\n\n"
             "Supported TDDFT sections:\n"

@@ -328,7 +328,7 @@ def install_or_update_managed_feff(cfg_path: str, log: Callable[[str], None]) ->
             "repo_dir": str(repo_dir),
             "exe_path": str(build.get("exe_path", "")),
             "source_method": source_method,
-            "message": "FEFF10 is ready to use from Binah.",
+            "message": "FEFF10 is ready to use from SpecTRACE.",
         }
         update_setup_state(
             cfg_path,

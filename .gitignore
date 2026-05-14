@@ -22,6 +22,9 @@ env/
 *.otproj
 .binah_config.json
 
+# ── Claude Code worktrees (local only, never push) ───────────────────────────
+.claude/worktrees/
+
 # ── Archives ──────────────────────────────────────────────────────────────────
 *.zip
 *.tar.gz

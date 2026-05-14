@@ -1798,7 +1798,7 @@ class SGMLoaderApp(tk.Toplevel):
             _btn_bar = tk.Frame(exp_fr, bg="#003366", pady=4)
             _btn_bar.pack(fill='x', side='bottom')
             tk.Button(
-                _btn_bar, text="\u2794  Send to Binah",
+                _btn_bar, text="\u2794  Send to SpecTRACE",
                 font=("", 10, "bold"), bg="#FFB347", fg="black",
                 activebackground="#FFA000",
                 command=self._send_to_binah
@@ -2042,7 +2042,7 @@ class SGMLoaderApp(tk.Toplevel):
 
         if not to_send:
             messagebox.showwarning("No data",
-                                   "Process some stacks first, then send to Binah.",
+                                   "Process some stacks first, then send to SpecTRACE.",
                                    parent=self)
             return
 
@@ -2086,9 +2086,9 @@ class SGMLoaderApp(tk.Toplevel):
                                      parent=self)
 
         if n:
-            self._set_status(f"Sent {n} spectrum/spectra to Binah.")
-            messagebox.showinfo("Sent to Binah",
-                                f"{n} spectrum/spectra added to Binah.\n"
+            self._set_status(f"Sent {n} spectrum/spectra to SpecTRACE.")
+            messagebox.showinfo("Sent to SpecTRACE",
+                                f"{n} spectrum/spectra added to SpecTRACE.\n"
                                 "Check the Spectra tab.",
                                 parent=self)
 
