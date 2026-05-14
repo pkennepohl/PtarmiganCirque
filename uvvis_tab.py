@@ -278,6 +278,78 @@ def _axis_label_override(cfg: Mapping[str, Any], tab_role: str) -> str:
     return ""
 
 
+def _per_axis_range(
+    cfg: Mapping[str, Any], tab_role: str, key: str,
+) -> str:
+    """Read ``cfg["axes"][tab_role][key]`` for ``range_lo`` / ``range_hi``.
+
+    CS-64 (Phase 4am): both keys are StringVar-backed; an empty
+    string means "no bound on this end". Defensive: pre-Phase-4am
+    configs that lack the nested key return ``""``.
+    """
+    axes = cfg.get("axes")
+    if isinstance(axes, dict):
+        role_dict = axes.get(tab_role)
+        if isinstance(role_dict, dict):
+            value = role_dict.get(key, "")
+            if isinstance(value, str):
+                return value
+            # Tolerate non-str legacy values by coercing.
+            return str(value)
+    return ""
+
+
+def _per_axis_autoscale(cfg: Mapping[str, Any], tab_role: str) -> bool:
+    """Read ``cfg["axes"][tab_role]["autoscale"]`` (CS-64, Phase 4am).
+
+    Default-True when missing. ``True`` makes the renderer ignore the
+    per-axis range bounds; ``False`` means "clamp where bounds are
+    non-empty".
+    """
+    axes = cfg.get("axes")
+    if isinstance(axes, dict):
+        role_dict = axes.get(tab_role)
+        if isinstance(role_dict, dict) and "autoscale" in role_dict:
+            return bool(role_dict["autoscale"])
+    return True
+
+
+def _per_axis_scale(cfg: Mapping[str, Any], tab_role: str) -> str:
+    """Read ``cfg["axes"][tab_role]["scale"]`` (CS-64, Phase 4am).
+
+    Returns one of ``{"linear", "log"}``. Defaults to ``"linear"``
+    when missing or when the stored value is not in the canonical
+    set (defensive fallback for pre-Phase-4am configs).
+    """
+    axes = cfg.get("axes")
+    if isinstance(axes, dict):
+        role_dict = axes.get(tab_role)
+        if isinstance(role_dict, dict):
+            value = role_dict.get("scale")
+            if value in ("linear", "log"):
+                return value
+    return "linear"
+
+
+def _parse_lim_str(text: str) -> "Optional[float]":
+    """Parse a per-axis range Entry value (CS-64).
+
+    Returns ``None`` for empty / whitespace-only / unparseable input —
+    callers treat ``None`` as "no bound on this end". Mirrors the
+    behaviour of :meth:`UVVisTab._parse_lim` but takes a raw string
+    rather than a Tk variable.
+    """
+    if not isinstance(text, str):
+        return None
+    stripped = text.strip()
+    if not stripped:
+        return None
+    try:
+        return float(stripped)
+    except (TypeError, ValueError):
+        return None
+
+
 def _per_axis_tick_direction(cfg: Mapping[str, Any], tab_role: str) -> str:
     """Resolve the tick_direction for ``tab_role`` with legacy fallback.
 
@@ -2466,12 +2538,33 @@ class UVVisTab(tk.Frame):
                             for n in wl_nodes)
                 ax.set_xlim(hi_nm, lo_nm)
 
-        # ── Apply stored x-limits ─────────────────────────────────────────────
-        # x-limits are applied to primary; twin axes share the x-axis
-        # with primary via matplotlib's ``twinx`` mechanics, so they
-        # inherit automatically.
-        lo_x = self._parse_lim(self._xlim_lo)
-        hi_x = self._parse_lim(self._xlim_hi)
+        # ── Apply per-axis scale + range (CS-64 Phase 4am) ────────────────────
+        # Each axis role reads its own ``cfg["axes"][role]`` slot:
+        # * ``scale`` ∈ {"linear", "log"} applied via set_xscale /
+        #   set_yscale (linear = no-op effectively, matches default).
+        # * ``autoscale=True`` (default) → renderer ignores schema
+        #   range bounds; for primary_x / primary_y the legacy
+        #   top-bar Tk vars (``_xlim_lo`` / ``_xlim_hi`` /
+        #   ``_ylim_lo`` / ``_ylim_hi``) remain the fallback so the
+        #   existing top-bar UX keeps working without a sync trace.
+        # * ``autoscale=False`` → schema range_lo / range_hi clamp
+        #   where non-empty; empty = leave bound as-is.
+        # Twin Y-axes (secondary_y, tertiary_y) live in
+        # ``self._axes_by_role`` keyed by CS-44 role ("secondary",
+        # "tertiary"); their schema slots use the dialog's tab-role
+        # keys ("secondary_y", "tertiary_y") — mapped through
+        # :data:`_Y_AXIS_ROLE_TO_TAB`. Secondary X (wavelength-nm
+        # sibling, ``sec``) is local to this block when active.
+
+        # ---- Primary X ----
+        ax.set_xscale(_per_axis_scale(cfg, "primary_x"))
+        if _per_axis_autoscale(cfg, "primary_x"):
+            # Legacy top-bar Entry fallback.
+            lo_x = self._parse_lim(self._xlim_lo)
+            hi_x = self._parse_lim(self._xlim_hi)
+        else:
+            lo_x = _parse_lim_str(_per_axis_range(cfg, "primary_x", "range_lo"))
+            hi_x = _parse_lim_str(_per_axis_range(cfg, "primary_x", "range_hi"))
         if lo_x is not None or hi_x is not None:
             cur = ax.get_xlim()
             if unit == "nm":
@@ -2481,18 +2574,55 @@ class UVVisTab(tk.Frame):
                 ax.set_xlim(lo_x if lo_x is not None else cur[0],
                             hi_x if hi_x is not None else cur[1])
 
-        # ── Apply stored y-limits ─────────────────────────────────────────────
-        # Phase 4u (CS-44): the existing _ylim_lo / _ylim_hi Tk vars
-        # apply to the primary y-axis only this phase. Per-role limit
-        # rows are explicitly out of scope (Decision 4 in the Phase 4u
-        # design lock); friction note carried forward for the next
-        # phase that needs to clamp the secondary derivative trace.
-        lo_y = self._parse_lim(self._ylim_lo)
-        hi_y = self._parse_lim(self._ylim_hi)
+        # ---- Primary Y ----
+        ax.set_yscale(_per_axis_scale(cfg, "primary_y"))
+        if _per_axis_autoscale(cfg, "primary_y"):
+            lo_y = self._parse_lim(self._ylim_lo)
+            hi_y = self._parse_lim(self._ylim_hi)
+        else:
+            lo_y = _parse_lim_str(_per_axis_range(cfg, "primary_y", "range_lo"))
+            hi_y = _parse_lim_str(_per_axis_range(cfg, "primary_y", "range_hi"))
         if lo_y is not None or hi_y is not None:
             cur = ax.get_ylim()
             ax.set_ylim(lo_y if lo_y is not None else cur[0],
                         hi_y if hi_y is not None else cur[1])
+
+        # ---- Twin Y-axes (secondary_y, tertiary_y) ----
+        for y_role, tab_role in _Y_AXIS_ROLE_TO_TAB.items():
+            if y_role == "primary":
+                continue
+            twin_ax = self._axes_by_role.get(y_role)
+            if twin_ax is None:
+                continue
+            twin_ax.set_yscale(_per_axis_scale(cfg, tab_role))
+            if _per_axis_autoscale(cfg, tab_role):
+                continue
+            lo_t = _parse_lim_str(_per_axis_range(cfg, tab_role, "range_lo"))
+            hi_t = _parse_lim_str(_per_axis_range(cfg, tab_role, "range_hi"))
+            if lo_t is not None or hi_t is not None:
+                cur = twin_ax.get_ylim()
+                twin_ax.set_ylim(
+                    lo_t if lo_t is not None else cur[0],
+                    hi_t if hi_t is not None else cur[1],
+                )
+
+        # ---- Secondary X (wavelength-nm sibling) ----
+        # Local ``sec`` only exists when the cm-1 → nm twin block ran
+        # above. The schema lookup is safe regardless; the apply is
+        # guarded.
+        if 'sec' in locals():
+            sec.set_xscale(_per_axis_scale(cfg, "secondary_x"))
+            if not _per_axis_autoscale(cfg, "secondary_x"):
+                lo_sx = _parse_lim_str(
+                    _per_axis_range(cfg, "secondary_x", "range_lo"))
+                hi_sx = _parse_lim_str(
+                    _per_axis_range(cfg, "secondary_x", "range_hi"))
+                if lo_sx is not None or hi_sx is not None:
+                    cur = sec.get_xlim()
+                    sec.set_xlim(
+                        lo_sx if lo_sx is not None else cur[0],
+                        hi_sx if hi_sx is not None else cur[1],
+                    )
 
         # ── Legend (Plot Settings → Legend) ──────────────────────────────────
         # Phase 4u (CS-44): merge handles + labels across every

@@ -170,12 +170,27 @@ _FACTORY_DEFAULTS: dict[str, Any] = {
     # in :data:`_TAB_KEYS` minus ``"global"`` appears as a sub-dict.
     # Migration shim translates legacy flat ``tick_direction`` into
     # all five per-axis slots; see :func:`migrate_plot_config`.
+    # CS-64 (Phase 4am): per-axis range / autoscale / scale keys added;
+    # ``range_lo`` / ``range_hi`` are StringVar-friendly (empty = "no
+    # bound on this end"), ``autoscale=True`` makes the renderer ignore
+    # the range pair (pure matplotlib autoscale), ``scale`` is one of
+    # ``{"linear", "log"}``.
     "axes": {
-        "primary_x":   {"tick_direction": "in", "axis_label_override": ""},
-        "secondary_x": {"tick_direction": "in", "axis_label_override": ""},
-        "primary_y":   {"tick_direction": "in", "axis_label_override": ""},
-        "secondary_y": {"tick_direction": "in", "axis_label_override": ""},
-        "tertiary_y":  {"tick_direction": "in", "axis_label_override": ""},
+        "primary_x":   {"tick_direction": "in", "axis_label_override": "",
+                        "range_lo": "", "range_hi": "",
+                        "autoscale": True, "scale": "linear"},
+        "secondary_x": {"tick_direction": "in", "axis_label_override": "",
+                        "range_lo": "", "range_hi": "",
+                        "autoscale": True, "scale": "linear"},
+        "primary_y":   {"tick_direction": "in", "axis_label_override": "",
+                        "range_lo": "", "range_hi": "",
+                        "autoscale": True, "scale": "linear"},
+        "secondary_y": {"tick_direction": "in", "axis_label_override": "",
+                        "range_lo": "", "range_hi": "",
+                        "autoscale": True, "scale": "linear"},
+        "tertiary_y":  {"tick_direction": "in", "axis_label_override": "",
+                        "range_lo": "", "range_hi": "",
+                        "autoscale": True, "scale": "linear"},
     },
 }
 
@@ -184,7 +199,14 @@ _FACTORY_DEFAULTS: dict[str, Any] = {
 # Builders walk this tuple so adding a new per-axis key in a future
 # phase only touches the factory dict + this registry + the builder
 # helpers — no per-call edit list.
-_AXIS_KEYS: tuple[str, ...] = ("tick_direction", "axis_label_override")
+# CS-64 (Phase 4am): registry grew from 2 → 6 entries.
+_AXIS_KEYS: tuple[str, ...] = (
+    "tick_direction", "axis_label_override",
+    "range_lo", "range_hi", "autoscale", "scale",
+)
+
+# Valid scale-type values; surfaced by the per-axis "Scale" Combobox.
+_AXIS_SCALE_OPTIONS: tuple[str, ...] = ("linear", "log")
 
 
 # Universal defaults: alias for the factory defaults today, kept as a
@@ -1077,6 +1099,65 @@ class PlotConfigDialog(tk.Toplevel):
             font=("", 8, "italic"), fg="#888888",
         ).pack(side=tk.LEFT, padx=(6, 0))
 
+        # ---- Range row (CS-64 Phase 4am) ----
+        # range_lo / range_hi are StringVar-backed; an empty Entry
+        # means "no bound on this end" (preserves Phase 4u
+        # empty-Entry-no-clamp semantics carried over by the renderer).
+        range_row = tk.Frame(parent)
+        range_row.pack(fill=tk.X, anchor="w", pady=(8, 2))
+        tk.Label(
+            range_row, text="Range:", font=("", 9, "bold"),
+        ).pack(side=tk.LEFT)
+        lo_var = self._make_axis_string_var(role, "range_lo")
+        tk.Entry(
+            range_row, textvariable=lo_var, width=8, font=("", 9),
+        ).pack(side=tk.LEFT, padx=(8, 2))
+        tk.Label(range_row, text="to", font=("", 9)).pack(side=tk.LEFT)
+        hi_var = self._make_axis_string_var(role, "range_hi")
+        tk.Entry(
+            range_row, textvariable=hi_var, width=8, font=("", 9),
+        ).pack(side=tk.LEFT, padx=(2, 0))
+        tk.Label(
+            range_row, text="(empty = no bound)",
+            font=("", 8, "italic"), fg="#888888",
+        ).pack(side=tk.LEFT, padx=(6, 0))
+
+        # ---- Autoscale row (CS-64 Phase 4am) ----
+        # When True (default), the renderer ignores range_lo / range_hi
+        # and lets matplotlib autoscale; when False, non-empty bounds
+        # clamp. The Checkbutton's BooleanVar is registered in the
+        # same _axis_control_vars / _axis_control_refresh registries
+        # as the string vars; the trace handler routes through
+        # :meth:`_on_axis_var_write` exactly the same way.
+        autoscale_row = tk.Frame(parent)
+        autoscale_row.pack(fill=tk.X, anchor="w", pady=(8, 2))
+        autoscale_var = self._make_axis_bool_var(role, "autoscale")
+        tk.Checkbutton(
+            autoscale_row, text="Autoscale", variable=autoscale_var,
+            font=("", 9, "bold"),
+        ).pack(side=tk.LEFT)
+        tk.Label(
+            autoscale_row,
+            text="(off = use Range bounds above)",
+            font=("", 8, "italic"), fg="#888888",
+        ).pack(side=tk.LEFT, padx=(6, 0))
+
+        # ---- Scale row (CS-64 Phase 4am) ----
+        # Readonly Combobox: 'linear' or 'log'. Applied at the per-role
+        # set_xscale / set_yscale call site in the renderer (BEFORE
+        # the range clamp so log + bounds clamp in log space).
+        scale_row = tk.Frame(parent)
+        scale_row.pack(fill=tk.X, anchor="w", pady=(8, 2))
+        tk.Label(
+            scale_row, text="Scale:", font=("", 9, "bold"),
+        ).pack(side=tk.LEFT)
+        scale_var = self._make_axis_string_var(role, "scale")
+        ttk.Combobox(
+            scale_row, textvariable=scale_var,
+            values=list(_AXIS_SCALE_OPTIONS),
+            state="readonly", width=8, font=("", 9),
+        ).pack(side=tk.LEFT, padx=(8, 0))
+
     def _make_axis_string_var(
         self, role: str, key: str,
     ) -> tk.StringVar:
@@ -1109,6 +1190,39 @@ class PlotConfigDialog(tk.Toplevel):
 
         def _refresh(value, _v=var):
             _v.set(str(value))
+        self._axis_control_refresh[(role, key)] = _refresh
+        return var
+
+    def _make_axis_bool_var(
+        self, role: str, key: str,
+    ) -> tk.BooleanVar:
+        """Build (or fetch) the per-axis ``BooleanVar`` for ``(role, key)``.
+
+        Mirrors :meth:`_make_axis_string_var` but for bool-typed
+        per-axis keys (CS-64 / Phase 4am introduced ``autoscale``).
+        The cached var lives in the same :attr:`_axis_control_vars`
+        registry; lookups are cross-typed (a BooleanVar returned from
+        here CANNOT be reused as a StringVar by a later
+        ``_make_axis_string_var`` call on the same ``(role, key)``).
+        """
+        cached = self._axis_control_vars.get((role, key))
+        if cached is not None:
+            return cached  # type: ignore[return-value]
+
+        factory_default = _FACTORY_DEFAULTS["axes"][role][key]
+        current = self._working.setdefault("axes", {}).setdefault(
+            role, {}
+        ).setdefault(key, bool(factory_default))
+        var = tk.BooleanVar(value=bool(current))
+        self._axis_control_vars[(role, key)] = var
+        var.trace_add(
+            "write",
+            lambda *_, r=role, k=key, v=var:
+                self._on_axis_var_write(r, k, v.get()),
+        )
+
+        def _refresh(value, _v=var):
+            _v.set(bool(value))
         self._axis_control_refresh[(role, key)] = _refresh
         return var
 
