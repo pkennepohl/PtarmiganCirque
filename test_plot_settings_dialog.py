@@ -1858,19 +1858,19 @@ class TestPlotConfigDialogPerAxisSchemaPhase4ak(unittest.TestCase):
 
     def test_global_mirror_entry_shares_var_with_per_axis_entry(self):
         # The Global mirror Entry for primary_y and the per-axis tab's
-        # Entry for primary_y must bind to the same Tk variable name
-        # so edits on either surface stay in lockstep.
+        # axis_label_override Entry must bind to the same Tk variable
+        # name so edits on either surface stay in lockstep.
+        # CS-64 (Phase 4am) added two more Entries per per-axis tab
+        # (range_lo + range_hi); the mirror covers axis_label_override
+        # only, so we resolve THAT Entry via the registered Tk var
+        # rather than indexing into the widget tree.
         dlg = self.PlotConfigDialog(self.host, self.config)
         dlg.update_idletasks()
 
-        # Pull the per-axis Entry for primary_y.
-        settings_frame = self._settings_frame(dlg, "primary_y")
-        per_axis_entries = [
-            c for c in _all_descendants(settings_frame)
-            if isinstance(c, tk.Entry)
+        expected_var = dlg._axis_control_vars[
+            ("primary_y", "axis_label_override")
         ]
-        self.assertEqual(len(per_axis_entries), 1)
-        per_axis_var_name = str(per_axis_entries[0].cget("textvariable"))
+        per_axis_var_name = str(expected_var)
 
         # The Global mirror section's third Entry corresponds to
         # primary_y (canonical _TAB_KEYS order, minus "global").

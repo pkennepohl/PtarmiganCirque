@@ -8788,7 +8788,261 @@ by the extract-to-method refactor).
 
 ---
 
-*Document version: 1.38 — May 2026*
+## CS-64 — Per-axis range / autoscale / scale (linear/log) (Phase 4am)
+
+The third slice of the per-axis settings ladder (after CS-62's
+schema invention and CS-63's per-axis tick rendering + Move-to
+picker). Adds four new keys per axis role, the matching widgets
+on every per-axis tab, and the renderer wiring that reads them.
+
+### Schema growth
+
+`_AXIS_KEYS` grew from `("tick_direction", "axis_label_override")`
+to `("tick_direction", "axis_label_override", "range_lo",
+"range_hi", "autoscale", "scale")` — a 6-tuple. Every role's
+sub-dict in `_FACTORY_DEFAULTS["axes"]` gained four new entries:
+
+| Key | Type | Default | Semantics |
+|---|---|---|---|
+| `range_lo` | `str` | `""` | Empty = no bound on this end. StringVar-backed (`_make_axis_string_var`). |
+| `range_hi` | `str` | `""` | Empty = no bound on this end. |
+| `autoscale` | `bool` | `True` | When `True`, renderer ignores schema range; when `False`, schema range_lo / range_hi clamp where non-empty. |
+| `scale` | `str` | `"linear"` | One of `{"linear", "log"}`. Applied via `set_xscale` / `set_yscale` at the per-role site. |
+
+New module-level `_AXIS_SCALE_OPTIONS = ("linear", "log")`
+canonicalises the Scale Combobox value set; tests pin this tuple
+so future extensions (symlog, function) declare themselves
+explicitly.
+
+### `_FACTORY_DEFAULTS` shape
+
+```python
+"axes": {
+    "primary_x":   {"tick_direction": "in", "axis_label_override": "",
+                    "range_lo": "", "range_hi": "",
+                    "autoscale": True, "scale": "linear"},
+    "secondary_x": {"tick_direction": "in", ...},
+    "primary_y":   {"tick_direction": "in", ...},
+    "secondary_y": {"tick_direction": "in", ...},
+    "tertiary_y":  {"tick_direction": "in", ...},
+}
+```
+
+### Migration shim
+
+`migrate_plot_config(config)` (CS-62) required NO code change for
+the schema growth — the existing per-role per-key fill loop walks
+`_FACTORY_DEFAULTS["axes"][role].items()` and back-fills missing
+keys from factory defaults. Legacy configs (pre-Phase-4am)
+gain the four new keys per role transparently on first dialog
+open. The shim remains idempotent.
+
+### Widgets per per-axis tab
+
+`_build_axis_tab_settings(parent, role)` was extended with three
+new rows below the existing tick-direction + axis-label-override
+rows, on ALL FIVE per-axis tabs (primary_x, secondary_x,
+primary_y, secondary_y, tertiary_y) — uniform schema, uniform
+surface:
+
+* **Range row**: two `tk.Entry` widgets with `width=8`, separated
+  by a "to" label and tailed with an italic "(empty = no bound)"
+  hint. Both Entries bind to per-axis StringVars (`range_lo`,
+  `range_hi`).
+* **Autoscale row**: `tk.Checkbutton` bound to a per-axis
+  BooleanVar (`autoscale`), label "Autoscale", with an inline
+  italic "(off = use Range bounds above)" hint.
+* **Scale row**: readonly `ttk.Combobox` bound to a per-axis
+  StringVar (`scale`), values from `_AXIS_SCALE_OPTIONS`.
+
+### `_make_axis_bool_var(role, key)`
+
+Parallel to CS-62's `_make_axis_string_var`. Same idempotency
+contract on the `(role, key)` pair; same registration in
+`_axis_control_vars` (cross-typed registry) and
+`_axis_control_refresh`; same trace handler routing through
+`_on_axis_var_write(role, key, value)`. The refresh closure
+coerces via `bool(value)` so a stored "True" / "False" / 0 / 1
+round-trips correctly through Load Defaults / Factory Reset /
+Cancel revert paths.
+
+`_on_axis_var_write`'s `value: Any` signature accepts the bool
+without change.
+
+### Renderer wiring
+
+Four new module-level helpers in `uvvis_tab.py`:
+
+```python
+_per_axis_range(cfg, tab_role, key) -> str       # "" if missing
+_per_axis_autoscale(cfg, tab_role) -> bool       # True if missing
+_per_axis_scale(cfg, tab_role) -> str            # "linear" if missing/unknown
+_parse_lim_str(text) -> Optional[float]          # None for empty/garbage
+```
+
+All four are defensive against malformed configs (pre-Phase-4am
+shapes that lack the nested `axes` sub-dict) and against unknown
+values (`_per_axis_scale` clamps to `{"linear", "log"}`,
+defaulting to `"linear"` otherwise).
+
+The renderer (`UVVisTab._redraw`) reads each axis's own
+`cfg["axes"][role][...]` slot at its limit-application site:
+
+* **Primary X** (`ax.set_xscale` / `ax.set_xlim`): scale always
+  applied; when `autoscale=True` (default), the legacy top-bar
+  `_xlim_lo` / `_xlim_hi` Tk vars provide the fallback bound;
+  when `autoscale=False`, the schema range_lo / range_hi win.
+* **Primary Y** (`ax.set_yscale` / `ax.set_ylim`): same pattern
+  via `_ylim_lo` / `_ylim_hi`.
+* **Twin Y-axes** (secondary_y, tertiary_y): iterate
+  `_axes_by_role` + `_Y_AXIS_ROLE_TO_TAB`; `set_yscale` always,
+  `set_ylim` only when `autoscale=False` and at least one bound
+  is set. No legacy Tk-var fallback — twins are schema-only.
+* **Secondary X** (wavelength-nm sibling, when active):
+  `set_xscale` always; `set_xlim` only when `autoscale=False`
+  and at least one bound is set.
+
+Scale applies BEFORE range so log + clamp lands in log space.
+
+### Backward compatibility
+
+The legacy top-bar `_xlim_lo` / `_xlim_hi` / `_ylim_lo` /
+`_ylim_hi` Tk vars remain the renderer's fallback for primary_x
+and primary_y when `autoscale=True` (default). This is a
+deliberate decision (D7 in the Phase 4am decision lock): adding
+a sync trace from the top-bar Entries into
+`cfg["axes"]["primary_x"]["range_lo"]` would have doubled the
+write surface for no user-visible benefit. The user can type in
+either surface and see correct behaviour as long as the schema's
+autoscale flag stays True. `autoscale=False` makes the schema
+the only source of truth.
+
+### Locks
+
+* **`_AXIS_KEYS` is a 6-tuple** in the canonical order shown
+  above. Future per-axis ladder phases extend it; the migration
+  shim handles legacy configs without code change.
+* **`_FACTORY_DEFAULTS["axes"][role]` carries exactly these six
+  keys** for all five roles. Adding a new key requires extending
+  `_AXIS_KEYS` AND every role's sub-dict in lock-step.
+* **`_AXIS_SCALE_OPTIONS = ("linear", "log")`** — the renderer
+  rejects unknown values defensively.
+* **`_make_axis_bool_var(role, key)`** signature + idempotency
+  contract; mirrors `_make_axis_string_var`. The cached var lives
+  in the shared `_axis_control_vars` registry (cross-typed).
+* **`_per_axis_range` / `_per_axis_autoscale` / `_per_axis_scale`
+  / `_parse_lim_str`** module-level helpers' signatures and
+  default-return semantics. The renderer's per-call-site reads
+  go through these — a future schema relaxation that changes
+  defaults updates the helpers in one place.
+* **`_Y_AXIS_ROLE_TO_TAB` iteration order** at the twin-Y range
+  application site is deterministic via the dict's insertion
+  order (Python 3.7+). The renderer applies secondary_y BEFORE
+  tertiary_y.
+* **Legacy top-bar Tk vars (`_xlim_lo` / `_xlim_hi` /
+  `_ylim_lo` / `_ylim_hi`)** remain the renderer's
+  primary-axis fallback when `autoscale=True`. This is an
+  intentional decision — see "Backward compatibility" above.
+* **Apply scale BEFORE range** at every per-role limit-
+  application site so log + clamp interact correctly.
+
+### Lock relaxations vs CS-62 / CS-63
+
+* `_AXIS_KEYS` grew from `("tick_direction",
+  "axis_label_override")` to a 6-tuple. CS-62 explicitly named
+  this as the canonical relaxation target for the per-axis
+  ladder.
+* `_FACTORY_DEFAULTS["axes"][role]` shape grew additively.
+  CS-62's "shape is `dict[str, dict[str, Any]]` keyed by the
+  five per-axis roles" invariant remains; the inner dict gained
+  four entries.
+* CS-62's "fully migrated dict… leaves the existing values alone"
+  invariant still holds — the migration shim doesn't overwrite
+  user-set values; it only fills missing keys.
+
+### Decision lock (Phase 4am)
+
+D1. New `_AXIS_KEYS` entries are `range_lo` (str) / `range_hi`
+(str) / `autoscale` (bool) / `scale` (str ∈ `{"linear",
+"log"}`). Order is canonical; tests pin the tuple shape.
+
+D2. Factory defaults: empty range, autoscale=True, scale=linear
+for all five roles. Rationale: matches matplotlib's default
+behaviour exactly, so a fresh config and a config with all
+factory-default per-axis slots render identically.
+
+D3. Widgets land on ALL FIVE per-axis tabs, not just Y. Schema
+is uniformly per-role per CS-62; consistent surface; X-axis
+range control is genuinely useful (e.g. wavelength axis clamp
+on a Compare tab).
+
+D4. Renderer reads per-role at the axis's own limit-application
+site. Twin Y-axes are applied AFTER the primary plot loop via
+`_axes_by_role` iteration; secondary X is applied inline inside
+the `unit == "cm-1" and self._show_nm_axis.get()` block.
+
+D5. Autoscale-True is the renderer-ignore semantic — pure
+matplotlib autoscale, matches the empty-Entry pre-Phase-4am
+default. Autoscale-False makes schema range_lo / range_hi clamp
+where non-empty; empty bound = "no bound on this end".
+
+D6. Scale applies via `set_xscale` / `set_yscale` BEFORE the
+range clamp so log + clamp interact correctly (log-scale axis
+clamped to (0.01, 100) is meaningful; clamp-then-scale could
+hit non-positive values).
+
+D7. Legacy top-bar `_xlim_lo` / `_xlim_hi` / `_ylim_lo` /
+`_ylim_hi` Tk vars remain the renderer's primary-axis fallback
+when `autoscale=True`. Schema autoscale=False overrides.
+Decision: NO sync trace from top-bar to schema this phase —
+adds surface area for no user-visible win.
+
+### Tests added
+
+* `TestPlotConfigDialogPerAxisRangeScaleSchemaPhase4am` (6
+  tests): registry tuple growth, `_AXIS_SCALE_OPTIONS` enum,
+  migration fill of missing keys, migration preservation of
+  user-set values, idempotency on Phase 4am keys,
+  `_UNIVERSAL_DEFAULTS` round-trip.
+* `TestPlotConfigDialogPerAxisRangeScaleWidgetsPhase4am` (13
+  tests): var-registry coverage per key per role (StringVar for
+  range / scale, BooleanVar for autoscale), make-bool-var
+  idempotency, write-through to `_working["axes"][role][...]`,
+  widget surface (Range label / Autoscale Checkbutton / Scale
+  Combobox per tab), Apply round-trip to `config`,
+  legacy-config fill-on-load.
+* `TestUVVisTabPerAxisRangeScalePhase4am` (20 tests): helper
+  read paths (defaults, garbage rejection, unknown-scale
+  rejection), primary_y autoscale-on vs autoscale-off
+  semantics, legacy top-bar fallback when autoscale=True,
+  primary_x / primary_y scale=log, twin Y-axis range + scale
+  application, only-one-bound clamp semantics, missing-axes
+  defensive guard.
+* 2 Phase 4ak tests updated in place
+  (`test_factory_defaults_carries_nested_axes` and
+  `test_axis_keys_registry_matches_factory` to assert the new
+  6-tuple shape and the new per-role default values).
+
+Net suite count after Phase 4am: 1236 (up from 1197).
+
+### Step 5 elicitation (Phase 4am)
+
+User had nothing to add. Four Claude-surfaced 🟢 polish notes
+documented in BACKLOG's "Friction points carried forward from
+Phase 4am" section: (θ) Range Entry edits don't trigger immediate
+`_redraw` (working-copy model — folds into the USER-FLAGGED
+live-preview register entry); (ι) top-bar legacy Tk vars and
+schema range bounds can drift silently when the user toggles
+autoscale after editing the top-bar (folds into per-axis ladder
+— tooltip suggested); (κ) Secondary X range Entries silent-no-op
+without active wavelength↔energy twin (folds into the USER-FLAGGED
+Twin-X register entry); (l) `_do_apply` vs `_apply` naming
+discoverability cliff for tests (polish; surface if it bites
+again).
+
+---
+
+*Document version: 1.39 — May 2026*
 *1.1: CS-13 implementation notes added in Phase 4a.*
 *1.2: CS-14 Plot Settings Dialog added in Phase 4b.*
 *1.3: CS-15 UV/Vis Baseline Correction + CS-04 implementation
