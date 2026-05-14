@@ -27,6 +27,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
 import matplotlib
+from matplotlib.ticker import MultipleLocator
 matplotlib.use("TkAgg")
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
@@ -2716,6 +2717,75 @@ class UVVisTab(tk.Frame):
                         hi_sx if hi_sx is not None else cur[1],
                     )
 
+        # ── Apply per-axis polish (CS-65 Phase 4an) ──────────────────────────
+        # Tick spacing: empty / garbage / non-positive → keep
+        # matplotlib's auto-locator (helpers return ``None``).
+        # Non-empty positive float → ``MultipleLocator(value)``.
+        # Axis colour: hex string applied to the per-role spine,
+        # tick params (colour), and axis label colour. Applied AFTER
+        # range/scale so the colour change doesn't get reset by a
+        # subsequent set_xscale/set_yscale call.
+        #
+        # Primary X.
+        major = _per_axis_tick_major(cfg, "primary_x")
+        if major is not None:
+            ax.xaxis.set_major_locator(MultipleLocator(major))
+        minor = _per_axis_tick_minor(cfg, "primary_x")
+        if minor is not None:
+            ax.xaxis.set_minor_locator(MultipleLocator(minor))
+        color_px = _per_axis_color(cfg, "primary_x")
+        ax.spines["bottom"].set_color(color_px)
+        ax.tick_params(axis="x", colors=color_px)
+        ax.xaxis.label.set_color(color_px)
+
+        # Primary Y.
+        major = _per_axis_tick_major(cfg, "primary_y")
+        if major is not None:
+            ax.yaxis.set_major_locator(MultipleLocator(major))
+        minor = _per_axis_tick_minor(cfg, "primary_y")
+        if minor is not None:
+            ax.yaxis.set_minor_locator(MultipleLocator(minor))
+        color_py = _per_axis_color(cfg, "primary_y")
+        ax.spines["left"].set_color(color_py)
+        ax.tick_params(axis="y", colors=color_py)
+        ax.yaxis.label.set_color(color_py)
+
+        # Twin Y-axes (secondary_y, tertiary_y). Each twin has its
+        # own right spine; tertiary's spine was already offset in
+        # ``get_axis`` (CS-44).
+        for y_role, tab_role in _Y_AXIS_ROLE_TO_TAB.items():
+            if y_role == "primary":
+                continue
+            twin_ax = self._axes_by_role.get(y_role)
+            if twin_ax is None:
+                continue
+            major = _per_axis_tick_major(cfg, tab_role)
+            if major is not None:
+                twin_ax.yaxis.set_major_locator(MultipleLocator(major))
+            minor = _per_axis_tick_minor(cfg, tab_role)
+            if minor is not None:
+                twin_ax.yaxis.set_minor_locator(MultipleLocator(minor))
+            color_t = _per_axis_color(cfg, tab_role)
+            try:
+                twin_ax.spines["right"].set_color(color_t)
+            except (KeyError, AttributeError):
+                pass
+            twin_ax.tick_params(axis="y", colors=color_t)
+            twin_ax.yaxis.label.set_color(color_t)
+
+        # Secondary X (wavelength-nm sibling). Only present when the
+        # cm-1 → nm twin block ran above.
+        if 'sec' in locals():
+            major = _per_axis_tick_major(cfg, "secondary_x")
+            if major is not None:
+                sec.xaxis.set_major_locator(MultipleLocator(major))
+            minor = _per_axis_tick_minor(cfg, "secondary_x")
+            if minor is not None:
+                sec.xaxis.set_minor_locator(MultipleLocator(minor))
+            color_sx = _per_axis_color(cfg, "secondary_x")
+            sec.tick_params(axis="x", colors=color_sx)
+            sec.xaxis.label.set_color(color_sx)
+
         # ── Legend (Plot Settings → Legend) ──────────────────────────────────
         # Phase 4u (CS-44): merge handles + labels across every
         # populated role so a single legend on the primary axis
@@ -2747,9 +2817,25 @@ class UVVisTab(tk.Frame):
         # lines — matplotlib's default grid zorder (2.5) is above the
         # line collection's (2.0) and produces visually distracting
         # cross-hatching on dense overlays.
+        # CS-65 (Phase 4an): the global ``cfg["grid"]`` master switch
+        # still wins (False → no grid anywhere); when True, the per-axis
+        # ``grid_show`` keys on ``primary_x`` and ``primary_y`` control
+        # the x- and y-grid independently. Twin Y axes share the
+        # primary's grid (matplotlib paints gridlines only on the host
+        # Axes), so the renderer doesn't consult ``secondary_y`` /
+        # ``tertiary_y`` ``grid_show`` even though the schema carries
+        # them. CS-28 ``zorder=0`` invariant preserved on every
+        # ``visible=True`` call so gridlines paint BEHIND data lines.
         if cfg.get("grid", True):
             ax.grid(
-                True, linestyle=":", alpha=0.4,
+                visible=_per_axis_grid(cfg, "primary_x"),
+                axis="x", linestyle=":", alpha=0.4,
+                color=cfg.get("grid_color", "#b0b0b0"),
+                zorder=0,
+            )
+            ax.grid(
+                visible=_per_axis_grid(cfg, "primary_y"),
+                axis="y", linestyle=":", alpha=0.4,
                 color=cfg.get("grid_color", "#b0b0b0"),
                 zorder=0,
             )
