@@ -2835,5 +2835,169 @@ class TestUVVisTabPerAxisPolishHelpersPhase4an(unittest.TestCase):
         self.assertEqual(self.ut._per_axis_color(cfg, "primary_x"), "#000000")
 
 
+@unittest.skipUnless(_root is not None, "Tk root unavailable")
+class TestPlotConfigDialogPerAxisPolishWidgetsPhase4an(unittest.TestCase):
+    """CS-65 (Phase 4an) — per-axis tick-spacing Entries, grid_show
+    Checkbutton, and axis_color colour picker on every per-axis tab.
+
+    Each per-axis tab grows four widget rows below the Phase 4am Range /
+    Autoscale / Scale rows. The Tk vars register through the existing
+    ``_axis_control_vars`` registry (cross-typed: StringVar for the
+    tick / colour keys, BooleanVar for ``grid_show``).
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import plot_settings_dialog
+        cls.psd = plot_settings_dialog
+        cls.PlotConfigDialog = plot_settings_dialog.PlotConfigDialog
+
+    _AXIS_TAB_KEYS = (
+        "primary_x", "secondary_x", "primary_y", "secondary_y", "tertiary_y",
+    )
+
+    def setUp(self):
+        self.psd._open_dialogs.clear()
+        self.host = tk.Frame(_root)
+        self.host.pack()
+        self.config: dict = {}
+
+    def tearDown(self):
+        for dlg in list(self.psd._open_dialogs.values()):
+            try:
+                dlg.destroy()
+            except Exception:
+                pass
+        self.psd._open_dialogs.clear()
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    # ---- registry coverage ----
+
+    def test_axis_control_vars_registered_for_tick_major(self):
+        dlg = self.psd.open_plot_config_dialog(self.host, self.config)
+        for role in self._AXIS_TAB_KEYS:
+            self.assertIn((role, "tick_major"), dlg._axis_control_vars)
+            var = dlg._axis_control_vars[(role, "tick_major")]
+            self.assertIsInstance(var, tk.StringVar)
+            self.assertEqual(var.get(), "")
+
+    def test_axis_control_vars_registered_for_tick_minor(self):
+        dlg = self.psd.open_plot_config_dialog(self.host, self.config)
+        for role in self._AXIS_TAB_KEYS:
+            self.assertIn((role, "tick_minor"), dlg._axis_control_vars)
+
+    def test_axis_control_vars_registered_for_grid_show_as_bool(self):
+        dlg = self.psd.open_plot_config_dialog(self.host, self.config)
+        for role in self._AXIS_TAB_KEYS:
+            self.assertIn((role, "grid_show"), dlg._axis_control_vars)
+            var = dlg._axis_control_vars[(role, "grid_show")]
+            self.assertIsInstance(var, tk.BooleanVar)
+            # Default split: True for primaries, False otherwise.
+            expected = role in ("primary_x", "primary_y")
+            self.assertIs(var.get(), expected)
+
+    def test_axis_control_vars_registered_for_axis_color(self):
+        dlg = self.psd.open_plot_config_dialog(self.host, self.config)
+        for role in self._AXIS_TAB_KEYS:
+            self.assertIn((role, "axis_color"), dlg._axis_control_vars)
+            var = dlg._axis_control_vars[(role, "axis_color")]
+            self.assertEqual(var.get(), "#000000")
+
+    # ---- write-through behaviour ----
+
+    def test_setting_tick_major_writes_to_working(self):
+        dlg = self.psd.open_plot_config_dialog(self.host, self.config)
+        dlg._axis_control_vars[("primary_x", "tick_major")].set("0.5")
+        self.assertEqual(
+            dlg._working["axes"]["primary_x"]["tick_major"], "0.5",
+        )
+        # Other roles untouched.
+        self.assertEqual(
+            dlg._working["axes"]["primary_y"]["tick_major"], "",
+        )
+
+    def test_setting_grid_show_false_writes_bool_to_working(self):
+        dlg = self.psd.open_plot_config_dialog(self.host, self.config)
+        dlg._axis_control_vars[("primary_y", "grid_show")].set(False)
+        self.assertIs(
+            dlg._working["axes"]["primary_y"]["grid_show"], False,
+        )
+        # primary_x still True (default).
+        self.assertIs(
+            dlg._working["axes"]["primary_x"]["grid_show"], True,
+        )
+
+    def test_setting_axis_color_writes_hex_to_working(self):
+        dlg = self.psd.open_plot_config_dialog(self.host, self.config)
+        dlg._axis_control_vars[("tertiary_y", "axis_color")].set("#ff8800")
+        self.assertEqual(
+            dlg._working["axes"]["tertiary_y"]["axis_color"], "#ff8800",
+        )
+
+    # ---- migration + working-copy seeding ----
+
+    def test_working_copy_seeded_from_existing_phase_4an_values(self):
+        self.config = {
+            "axes": {
+                "primary_x": {"tick_major": "0.5", "tick_minor": "0.1"},
+                "primary_y": {"grid_show": False, "axis_color": "#cc0000"},
+            },
+        }
+        dlg = self.psd.open_plot_config_dialog(self.host, self.config)
+        self.assertEqual(
+            dlg._axis_control_vars[("primary_x", "tick_major")].get(),
+            "0.5",
+        )
+        self.assertEqual(
+            dlg._axis_control_vars[("primary_x", "tick_minor")].get(),
+            "0.1",
+        )
+        self.assertIs(
+            dlg._axis_control_vars[("primary_y", "grid_show")].get(),
+            False,
+        )
+        self.assertEqual(
+            dlg._axis_control_vars[("primary_y", "axis_color")].get(),
+            "#cc0000",
+        )
+
+    def test_factory_reset_restores_phase_4an_defaults(self):
+        dlg = self.psd.open_plot_config_dialog(self.host, self.config)
+        # Dirty the polish keys on one role.
+        dlg._axis_control_vars[("primary_y", "tick_major")].set("0.25")
+        dlg._axis_control_vars[("primary_y", "grid_show")].set(False)
+        dlg._axis_control_vars[("primary_y", "axis_color")].set("#00ff00")
+        # Trigger Factory Reset.
+        dlg._do_factory_reset()
+        self.assertEqual(
+            dlg._axis_control_vars[("primary_y", "tick_major")].get(), "",
+        )
+        self.assertIs(
+            dlg._axis_control_vars[("primary_y", "grid_show")].get(), True,
+        )
+        self.assertEqual(
+            dlg._axis_control_vars[("primary_y", "axis_color")].get(),
+            "#000000",
+        )
+
+    def test_dialog_opens_on_every_per_axis_tab_without_error(self):
+        # Smoke test: building the dialog should successfully construct
+        # the four new widget rows on every per-axis tab. Without the
+        # new rows wired through _make_axis_string_var / _make_axis_bool_var,
+        # the registry assertions above would have failed; this one
+        # additionally catches Tk widget-construction errors (colour
+        # swatch Frame, Checkbutton, etc.).
+        for tab in self._AXIS_TAB_KEYS:
+            dlg = self.psd.open_plot_config_dialog(
+                self.host, self.config, tab=tab,
+            )
+            self.assertTrue(bool(dlg.winfo_exists()))
+            dlg.destroy()
+            self.psd._open_dialogs.clear()
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
