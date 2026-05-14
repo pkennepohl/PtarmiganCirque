@@ -1705,11 +1705,13 @@ class TestPlotConfigDialogPerAxisSchemaPhase4ak(unittest.TestCase):
     def test_axis_keys_registry_matches_factory(self):
         # _AXIS_KEYS is the canonical per-axis-key registry —
         # asserting its contents documents the schema growth path
-        # for future phases. CS-64 (Phase 4am) grew this from 2 → 6.
+        # for future phases. CS-64 (Phase 4am) grew this from 2 → 6;
+        # CS-65 (Phase 4an) grew it from 6 → 10 with the polish keys.
         self.assertEqual(
             tuple(self.psd._AXIS_KEYS),
             ("tick_direction", "axis_label_override",
-             "range_lo", "range_hi", "autoscale", "scale"),
+             "range_lo", "range_hi", "autoscale", "scale",
+             "tick_major", "tick_minor", "grid_show", "axis_color"),
         )
         # Every per-axis role's sub-dict carries exactly these keys.
         for role in self._AXIS_TAB_KEYS:
@@ -2396,7 +2398,11 @@ class TestPlotConfigDialogPerAxisRangeScaleSchemaPhase4am(unittest.TestCase):
     )
 
     def test_axis_keys_grew_to_six(self):
-        self.assertEqual(len(self.psd._AXIS_KEYS), 6)
+        # CS-65 (Phase 4an): registry grew from 6 → 10. The original
+        # Phase 4am assertion (== 6) became a lower bound; the four
+        # range/scale keys this test was written to defend still live
+        # in the tuple, just alongside the new tick/grid/colour keys.
+        self.assertGreaterEqual(len(self.psd._AXIS_KEYS), 6)
         for k in ("range_lo", "range_hi", "autoscale", "scale"):
             self.assertIn(k, self.psd._AXIS_KEYS)
 
@@ -2656,6 +2662,177 @@ class TestPlotConfigDialogPerAxisRangeScaleWidgetsPhase4am(unittest.TestCase):
         self.assertEqual(slot["range_hi"], "")
         self.assertIs(slot["autoscale"], True)
         self.assertEqual(slot["scale"], "linear")
+
+
+class TestPlotConfigDialogPerAxisPolishSchemaPhase4an(unittest.TestCase):
+    """CS-65 (Phase 4an) — tick spacing + per-axis grid + axis colour
+    schema growth.
+
+    ``_AXIS_KEYS`` grew from 6 → 10 with ``tick_major`` / ``tick_minor`` /
+    ``grid_show`` / ``axis_color``. ``grid_show`` defaults differ per
+    role (True for the two primaries, False elsewhere) — the renderer
+    only reads it for the primary roles (twin Y axes share the primary
+    grid), but the schema stores it on every role for shape consistency
+    (CS-62 invariant).
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import plot_settings_dialog
+        cls.psd = plot_settings_dialog
+
+    _AXIS_TAB_KEYS = (
+        "primary_x", "secondary_x", "primary_y", "secondary_y", "tertiary_y",
+    )
+
+    def test_axis_keys_grew_to_ten(self):
+        self.assertEqual(len(self.psd._AXIS_KEYS), 10)
+        for k in ("tick_major", "tick_minor", "grid_show", "axis_color"):
+            self.assertIn(k, self.psd._AXIS_KEYS)
+
+    def test_factory_defaults_carry_phase_4an_keys(self):
+        for role in self._AXIS_TAB_KEYS:
+            slot = self.psd._FACTORY_DEFAULTS["axes"][role]
+            self.assertEqual(slot["tick_major"], "")
+            self.assertEqual(slot["tick_minor"], "")
+            self.assertEqual(slot["axis_color"], "#000000")
+            # grid_show defaults split: True for primaries only.
+            if role in ("primary_x", "primary_y"):
+                self.assertIs(slot["grid_show"], True)
+            else:
+                self.assertIs(slot["grid_show"], False)
+
+    def test_universal_defaults_carry_phase_4an_keys(self):
+        for role in self._AXIS_TAB_KEYS:
+            slot = self.psd._UNIVERSAL_DEFAULTS["axes"][role]
+            self.assertEqual(slot["tick_major"], "")
+            self.assertEqual(slot["tick_minor"], "")
+            self.assertEqual(slot["axis_color"], "#000000")
+
+    def test_migration_fills_missing_phase_4an_keys(self):
+        cfg: dict = {}
+        self.psd.migrate_plot_config(cfg)
+        for role in self._AXIS_TAB_KEYS:
+            slot = cfg["axes"][role]
+            self.assertEqual(slot["tick_major"], "")
+            self.assertEqual(slot["tick_minor"], "")
+            self.assertEqual(slot["axis_color"], "#000000")
+            self.assertIn("grid_show", slot)
+
+    def test_migration_preserves_user_set_phase_4an_values(self):
+        cfg: dict = {
+            "axes": {
+                "primary_y": {
+                    "tick_major": "0.25", "tick_minor": "0.05",
+                    "grid_show": False, "axis_color": "#ff0000",
+                },
+            },
+        }
+        self.psd.migrate_plot_config(cfg)
+        slot = cfg["axes"]["primary_y"]
+        self.assertEqual(slot["tick_major"], "0.25")
+        self.assertEqual(slot["tick_minor"], "0.05")
+        self.assertIs(slot["grid_show"], False)
+        self.assertEqual(slot["axis_color"], "#ff0000")
+        # Other roles get factory defaults for the new keys.
+        self.assertEqual(cfg["axes"]["primary_x"]["axis_color"], "#000000")
+
+    def test_migration_is_idempotent_on_phase_4an_keys(self):
+        cfg: dict = {
+            "axes": {
+                "secondary_y": {
+                    "tick_major": "10", "tick_minor": "2",
+                    "grid_show": True, "axis_color": "#0000ff",
+                },
+            },
+        }
+        self.psd.migrate_plot_config(cfg)
+        snapshot = copy.deepcopy(cfg)
+        self.psd.migrate_plot_config(cfg)
+        self.assertEqual(cfg, snapshot)
+
+
+class TestUVVisTabPerAxisPolishHelpersPhase4an(unittest.TestCase):
+    """CS-65 (Phase 4an) — module-level renderer helpers for the new
+    polish keys: ``_parse_tick_str`` / ``_per_axis_tick_major`` /
+    ``_per_axis_tick_minor`` / ``_per_axis_grid`` / ``_per_axis_color``.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import uvvis_tab
+        cls.ut = uvvis_tab
+
+    def test_parse_tick_str_accepts_positive_floats(self):
+        self.assertEqual(self.ut._parse_tick_str("0.25"), 0.25)
+        self.assertEqual(self.ut._parse_tick_str("10"), 10.0)
+        self.assertEqual(self.ut._parse_tick_str("  3.5 "), 3.5)
+
+    def test_parse_tick_str_rejects_empty_and_garbage(self):
+        for bad in ("", "   ", "abc", "1.2.3", None):
+            self.assertIsNone(self.ut._parse_tick_str(bad))  # type: ignore[arg-type]
+
+    def test_parse_tick_str_rejects_non_positive(self):
+        # Negative + zero spacings would crash MultipleLocator;
+        # silently rejecting in the helper keeps the renderer clean.
+        self.assertIsNone(self.ut._parse_tick_str("0"))
+        self.assertIsNone(self.ut._parse_tick_str("-1"))
+        self.assertIsNone(self.ut._parse_tick_str("inf"))
+        self.assertIsNone(self.ut._parse_tick_str("nan"))
+
+    def test_per_axis_tick_major_reads_nested_slot(self):
+        cfg = {"axes": {"primary_x": {"tick_major": "0.5"}}}
+        self.assertEqual(
+            self.ut._per_axis_tick_major(cfg, "primary_x"), 0.5,
+        )
+
+    def test_per_axis_tick_major_defaults_none(self):
+        self.assertIsNone(self.ut._per_axis_tick_major({}, "primary_x"))
+        self.assertIsNone(
+            self.ut._per_axis_tick_major(
+                {"axes": {"primary_x": {}}}, "primary_x",
+            ),
+        )
+
+    def test_per_axis_tick_minor_reads_nested_slot(self):
+        cfg = {"axes": {"primary_y": {"tick_minor": "0.05"}}}
+        self.assertAlmostEqual(
+            self.ut._per_axis_tick_minor(cfg, "primary_y"), 0.05,
+        )
+
+    def test_per_axis_grid_role_default(self):
+        # Missing key → default differs per role.
+        self.assertIs(self.ut._per_axis_grid({}, "primary_x"), True)
+        self.assertIs(self.ut._per_axis_grid({}, "primary_y"), True)
+        self.assertIs(self.ut._per_axis_grid({}, "secondary_x"), False)
+        self.assertIs(self.ut._per_axis_grid({}, "secondary_y"), False)
+        self.assertIs(self.ut._per_axis_grid({}, "tertiary_y"), False)
+
+    def test_per_axis_grid_explicit_overrides_default(self):
+        cfg = {"axes": {"primary_x": {"grid_show": False},
+                        "secondary_y": {"grid_show": True}}}
+        self.assertIs(self.ut._per_axis_grid(cfg, "primary_x"), False)
+        self.assertIs(self.ut._per_axis_grid(cfg, "secondary_y"), True)
+
+    def test_per_axis_color_reads_nested_slot(self):
+        cfg = {"axes": {"primary_x": {"axis_color": "#ff8800"}}}
+        self.assertEqual(
+            self.ut._per_axis_color(cfg, "primary_x"), "#ff8800",
+        )
+
+    def test_per_axis_color_defaults_black(self):
+        self.assertEqual(self.ut._per_axis_color({}, "primary_x"), "#000000")
+        self.assertEqual(
+            self.ut._per_axis_color({"axes": {"primary_x": {}}}, "primary_x"),
+            "#000000",
+        )
+
+    def test_per_axis_color_rejects_non_string(self):
+        # Defensive: pre-Phase-4an configs that somehow injected a
+        # non-string into the slot fall back to the default rather
+        # than propagating a bad value into matplotlib.
+        cfg = {"axes": {"primary_x": {"axis_color": 0xff8800}}}
+        self.assertEqual(self.ut._per_axis_color(cfg, "primary_x"), "#000000")
 
 
 if __name__ == "__main__":
