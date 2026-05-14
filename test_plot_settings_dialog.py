@@ -13,6 +13,7 @@ Run with the project venv:
 
 from __future__ import annotations
 
+import copy
 import unittest
 
 # Silence Tk messageboxes so the CS-60 Cancel-with-pending confirm
@@ -1695,14 +1696,20 @@ class TestPlotConfigDialogPerAxisSchemaPhase4ak(unittest.TestCase):
         for role in self._AXIS_TAB_KEYS:
             self.assertEqual(axes[role]["tick_direction"], "in")
             self.assertEqual(axes[role]["axis_label_override"], "")
+            # CS-64 (Phase 4am): per-axis range / autoscale / scale.
+            self.assertEqual(axes[role]["range_lo"], "")
+            self.assertEqual(axes[role]["range_hi"], "")
+            self.assertIs(axes[role]["autoscale"], True)
+            self.assertEqual(axes[role]["scale"], "linear")
 
     def test_axis_keys_registry_matches_factory(self):
         # _AXIS_KEYS is the canonical per-axis-key registry —
         # asserting its contents documents the schema growth path
-        # for future phases.
+        # for future phases. CS-64 (Phase 4am) grew this from 2 → 6.
         self.assertEqual(
             tuple(self.psd._AXIS_KEYS),
-            ("tick_direction", "axis_label_override"),
+            ("tick_direction", "axis_label_override",
+             "range_lo", "range_hi", "autoscale", "scale"),
         )
         # Every per-axis role's sub-dict carries exactly these keys.
         for role in self._AXIS_TAB_KEYS:
@@ -2367,6 +2374,84 @@ class TestPlotConfigDialogMoveToPickerPhase4al(unittest.TestCase):
         combo = self._combobox(dlg, "primary_y")
         events = combo.bind()
         self.assertIn("<<ComboboxSelected>>", events)
+
+
+class TestPlotConfigDialogPerAxisRangeScaleSchemaPhase4am(unittest.TestCase):
+    """CS-64 (Phase 4am) — per-axis range / autoscale / scale schema.
+
+    ``_AXIS_KEYS`` grew from 2 → 6 with ``range_lo`` / ``range_hi`` /
+    ``autoscale`` / ``scale``. The migration shim's existing per-role
+    per-key fill loop handles the new keys transparently; this class
+    pins the fill behaviour for legacy configs and the idempotency
+    invariant.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import plot_settings_dialog
+        cls.psd = plot_settings_dialog
+
+    _AXIS_TAB_KEYS = (
+        "primary_x", "secondary_x", "primary_y", "secondary_y", "tertiary_y",
+    )
+
+    def test_axis_keys_grew_to_six(self):
+        self.assertEqual(len(self.psd._AXIS_KEYS), 6)
+        for k in ("range_lo", "range_hi", "autoscale", "scale"):
+            self.assertIn(k, self.psd._AXIS_KEYS)
+
+    def test_scale_options_are_linear_and_log(self):
+        self.assertEqual(self.psd._AXIS_SCALE_OPTIONS, ("linear", "log"))
+
+    def test_migration_fills_missing_range_lo_range_hi_autoscale_scale(self):
+        cfg: dict = {}
+        self.psd.migrate_plot_config(cfg)
+        for role in self._AXIS_TAB_KEYS:
+            slot = cfg["axes"][role]
+            self.assertEqual(slot["range_lo"], "")
+            self.assertEqual(slot["range_hi"], "")
+            self.assertIs(slot["autoscale"], True)
+            self.assertEqual(slot["scale"], "linear")
+
+    def test_migration_preserves_user_set_range_values(self):
+        cfg: dict = {
+            "axes": {
+                "primary_y": {
+                    "range_lo": "0.05", "range_hi": "1.2",
+                    "autoscale": False, "scale": "log",
+                },
+            },
+        }
+        self.psd.migrate_plot_config(cfg)
+        slot = cfg["axes"]["primary_y"]
+        self.assertEqual(slot["range_lo"], "0.05")
+        self.assertEqual(slot["range_hi"], "1.2")
+        self.assertIs(slot["autoscale"], False)
+        self.assertEqual(slot["scale"], "log")
+        # Other roles still get factory defaults.
+        self.assertIs(cfg["axes"]["primary_x"]["autoscale"], True)
+
+    def test_migration_is_idempotent_on_phase_4am_keys(self):
+        cfg: dict = {
+            "axes": {
+                "secondary_y": {
+                    "range_lo": "-1", "range_hi": "1",
+                    "autoscale": False, "scale": "log",
+                },
+            },
+        }
+        self.psd.migrate_plot_config(cfg)
+        snapshot = copy.deepcopy(cfg)
+        self.psd.migrate_plot_config(cfg)
+        self.assertEqual(cfg, snapshot)
+
+    def test_universal_defaults_carries_phase_4am_keys(self):
+        for role in self._AXIS_TAB_KEYS:
+            slot = self.psd._UNIVERSAL_DEFAULTS["axes"][role]
+            self.assertEqual(slot["range_lo"], "")
+            self.assertEqual(slot["range_hi"], "")
+            self.assertIs(slot["autoscale"], True)
+            self.assertEqual(slot["scale"], "linear")
 
 
 if __name__ == "__main__":

@@ -170,12 +170,27 @@ _FACTORY_DEFAULTS: dict[str, Any] = {
     # in :data:`_TAB_KEYS` minus ``"global"`` appears as a sub-dict.
     # Migration shim translates legacy flat ``tick_direction`` into
     # all five per-axis slots; see :func:`migrate_plot_config`.
+    # CS-64 (Phase 4am): per-axis range / autoscale / scale keys added;
+    # ``range_lo`` / ``range_hi`` are StringVar-friendly (empty = "no
+    # bound on this end"), ``autoscale=True`` makes the renderer ignore
+    # the range pair (pure matplotlib autoscale), ``scale`` is one of
+    # ``{"linear", "log"}``.
     "axes": {
-        "primary_x":   {"tick_direction": "in", "axis_label_override": ""},
-        "secondary_x": {"tick_direction": "in", "axis_label_override": ""},
-        "primary_y":   {"tick_direction": "in", "axis_label_override": ""},
-        "secondary_y": {"tick_direction": "in", "axis_label_override": ""},
-        "tertiary_y":  {"tick_direction": "in", "axis_label_override": ""},
+        "primary_x":   {"tick_direction": "in", "axis_label_override": "",
+                        "range_lo": "", "range_hi": "",
+                        "autoscale": True, "scale": "linear"},
+        "secondary_x": {"tick_direction": "in", "axis_label_override": "",
+                        "range_lo": "", "range_hi": "",
+                        "autoscale": True, "scale": "linear"},
+        "primary_y":   {"tick_direction": "in", "axis_label_override": "",
+                        "range_lo": "", "range_hi": "",
+                        "autoscale": True, "scale": "linear"},
+        "secondary_y": {"tick_direction": "in", "axis_label_override": "",
+                        "range_lo": "", "range_hi": "",
+                        "autoscale": True, "scale": "linear"},
+        "tertiary_y":  {"tick_direction": "in", "axis_label_override": "",
+                        "range_lo": "", "range_hi": "",
+                        "autoscale": True, "scale": "linear"},
     },
 }
 
@@ -184,7 +199,14 @@ _FACTORY_DEFAULTS: dict[str, Any] = {
 # Builders walk this tuple so adding a new per-axis key in a future
 # phase only touches the factory dict + this registry + the builder
 # helpers — no per-call edit list.
-_AXIS_KEYS: tuple[str, ...] = ("tick_direction", "axis_label_override")
+# CS-64 (Phase 4am): registry grew from 2 → 6 entries.
+_AXIS_KEYS: tuple[str, ...] = (
+    "tick_direction", "axis_label_override",
+    "range_lo", "range_hi", "autoscale", "scale",
+)
+
+# Valid scale-type values; surfaced by the per-axis "Scale" Combobox.
+_AXIS_SCALE_OPTIONS: tuple[str, ...] = ("linear", "log")
 
 
 # Universal defaults: alias for the factory defaults today, kept as a
