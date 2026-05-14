@@ -78,7 +78,7 @@ import copy
 import logging
 import tkinter as tk
 from tkinter import colorchooser, messagebox, ttk
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
 _log = logging.getLogger(__name__)
 
@@ -261,6 +261,43 @@ _KEY_TO_TAB: dict[str, str] = {}
 _MODIFIED_TAB_SUFFIX: str = " •"
 
 
+# Phase 4al: Y-axis tab keys carrying the Move-to picker. The X-axis
+# tabs (``primary_x`` / ``secondary_x``) do NOT show a picker — every
+# visible plot necessarily sits on primary_x, and the secondary_x
+# sibling axis mirrors it; there is nowhere to route to. Restricting
+# the picker to these three roles also keeps the X-axis tabs'
+# ``Listbox`` ``state="disabled"`` lock from CS-62 intact.
+_Y_AXIS_TAB_KEYS: frozenset[str] = frozenset(
+    {"primary_y", "secondary_y", "tertiary_y"}
+)
+
+
+# Phase 4al: Move-to picker target options. Maps the user-facing
+# Combobox text to the dialog's tab role key for the target axis.
+# ``None`` clears any per-style override, restoring the per-NodeType
+# default routing on the host side (the host translates ``None`` →
+# ``style["y_axis"] = None``, which lets
+# ``_resolve_y_axis_role`` fall back to
+# :data:`uvvis_tab._DEFAULT_Y_AXIS_BY_NODETYPE`). Order matches the
+# Combobox dropdown order; the "Default" option is first because
+# that is the resting state for nodes the user has not customised.
+#
+# The dialog speaks tab-role-key throughout (``primary_y`` etc.)
+# rather than the CS-50 style-value space (``primary`` etc.) — the
+# host owns the translation when it writes ``style["y_axis"]``.
+# Keeping the dialog in one namespace prevents a future refactor
+# from drifting between the two.
+_MOVE_TO_OPTIONS: tuple[tuple[str, Optional[str]], ...] = (
+    ("Default (by NodeType)", None),
+    ("Primary Y",             "primary_y"),
+    ("Secondary Y",           "secondary_y"),
+    ("Tertiary Y",            "tertiary_y"),
+)
+
+_MOVE_TO_LABELS: tuple[str, ...] = tuple(label for label, _ in _MOVE_TO_OPTIONS)
+_MOVE_TO_VALUE_BY_LABEL: dict[str, Optional[str]] = dict(_MOVE_TO_OPTIONS)
+
+
 def _key_to_tab(key: str) -> str:
     """Resolve a *flat* working-copy key to its owning Notebook tab key.
 
@@ -346,6 +383,7 @@ def open_plot_config_dialog(
     tab: str = "global",
     on_apply_all_tabs: Callable[[], None] | None = None,
     plots_by_role: "dict[str, tuple[str, ...]] | None" = None,
+    on_route_plot: Callable[[str, str, Optional[str]], None] | None = None,
 ) -> "PlotConfigDialog":
     """Open the Plot Config dialog for a host, or focus the existing one.
 
@@ -394,6 +432,7 @@ def open_plot_config_dialog(
         parent, config, on_apply, sections,
         tab=tab, on_apply_all_tabs=on_apply_all_tabs,
         plots_by_role=plots_by_role,
+        on_route_plot=on_route_plot,
     )
 
 
@@ -423,6 +462,7 @@ class PlotConfigDialog(tk.Toplevel):
         tab: str = "global",
         on_apply_all_tabs: Callable[[], None] | None = None,
         plots_by_role: "dict[str, tuple[str, ...]] | None" = None,
+        on_route_plot: Callable[[str, str, Optional[str]], None] | None = None,
     ) -> None:
         super().__init__(parent)
 
@@ -442,6 +482,24 @@ class PlotConfigDialog(tk.Toplevel):
         self._plots_by_role: "dict[str, tuple[str, ...]]" = dict(
             plots_by_role or {}
         )
+
+        # Phase 4al: Move-to picker callback. None means the host did
+        # not wire routing — the picker still renders on Y-axis tabs
+        # but selection is a silent no-op. Stored frozen alongside
+        # ``_plots_by_role``; a fresh routing closure requires a
+        # second open_plot_config_dialog call.
+        #
+        # Signature: ``on_route_plot(source_tab_role, label,
+        # target_tab_role)``. Both role arguments use the dialog's
+        # tab-role-key space (``primary_y`` / ``secondary_y`` /
+        # ``tertiary_y``); ``target_tab_role`` is ``None`` for the
+        # "Default (by NodeType)" picker option. ``source_tab_role``
+        # is always one of the three Y-axis keys (the X-axis tabs do
+        # not surface a picker). The host owns the translation into
+        # the CS-50 ``style["y_axis"]`` value when it writes.
+        self._on_route_plot: (
+            Callable[[str, str, Optional[str]], None] | None
+        ) = on_route_plot
 
         # Resolve the section set: explicit argument > config["_sections"]
         # > module default. Filtering to known names keeps a stray
@@ -670,9 +728,18 @@ class PlotConfigDialog(tk.Toplevel):
         construction time — the host computes the inventory once per
         open). When the role's tuple is empty or missing, render the
         italic ``"(no plots on this axis)"`` fallback so the section
-        is never visually empty. Otherwise render a read-only
-        ``tk.Listbox`` whose height adapts up to six entries — past
-        six the user scrolls.
+        is never visually empty. Otherwise render a ``tk.Listbox``
+        whose height adapts up to six entries — past six the user
+        scrolls.
+
+        Phase 4al: Y-axis tabs (``primary_y``, ``secondary_y``,
+        ``tertiary_y``) relax the CS-62 ``state="disabled"`` lock to
+        ``state="normal"`` so the user can select a row, and append
+        a Move-to Combobox below the Listbox that writes the CS-50
+        ``style["y_axis"]`` value via the host's ``on_route_plot``
+        callback. X-axis tabs keep ``state="disabled"`` — every
+        visible plot is necessarily on primary_x, so there is
+        nowhere to route to.
         """
         labels = self._plots_by_role.get(role, ())
         if not labels:
@@ -682,6 +749,7 @@ class PlotConfigDialog(tk.Toplevel):
                 font=("", 9, "italic"), fg="#888888",
             ).pack(anchor="w")
             return
+        is_y_axis_tab = role in _Y_AXIS_TAB_KEYS
         # height min 1, max 6 so single-plot axes get a tight row and
         # busy axes scroll instead of pushing the Settings frame off
         # the visible dialog area.
@@ -692,8 +760,94 @@ class PlotConfigDialog(tk.Toplevel):
         )
         for label in labels:
             listbox.insert(tk.END, str(label))
-        listbox.config(state=tk.DISABLED)
+        listbox.config(state=tk.NORMAL if is_y_axis_tab else tk.DISABLED)
         listbox.pack(fill=tk.X, anchor="w")
+        if is_y_axis_tab:
+            self._build_move_to_picker(parent, role, listbox)
+
+    def _build_move_to_picker(
+        self,
+        parent: tk.Widget,
+        role: str,
+        listbox: tk.Listbox,
+    ) -> None:
+        """Build the "Move selected plot to:" Combobox row (Phase 4al).
+
+        Renders below the per-axis tab's Listbox on the three Y-axis
+        tabs. The Combobox lists the four CS-50 routing targets from
+        :data:`_MOVE_TO_OPTIONS`: a "Default (by NodeType)" option
+        that clears the per-style override, and one entry per
+        :data:`uvvis_tab._AXIS_ROLES` value.
+
+        Selecting a non-empty Combobox value while a Listbox row is
+        selected fires the host's ``on_route_plot(source_tab_role,
+        label, target_tab_role)`` callback. After the callback
+        returns, the Combobox resets to its empty placeholder so
+        the user can route another plot without re-clicking the
+        dropdown. Selecting a value with no Listbox row selected is
+        a silent no-op (the Combobox still resets so the next
+        attempt starts fresh).
+
+        The Combobox-change dispatch is split into a method
+        :meth:`_on_move_to_choose` rather than a closure inside this
+        builder. The split keeps the test surface independent of Tk
+        virtual-event dispatch (which is not reliably synchronous
+        in the full-suite run), so tests drive the routing path by
+        calling the method directly.
+        """
+        row = tk.Frame(parent)
+        row.pack(fill=tk.X, anchor="w", pady=(4, 0))
+        tk.Label(
+            row, text="Move selected to:", font=("", 9),
+        ).pack(side=tk.LEFT)
+        var = tk.StringVar(value="")
+        combo = ttk.Combobox(
+            row,
+            textvariable=var,
+            values=_MOVE_TO_LABELS,
+            state="readonly",
+            width=22,
+        )
+        combo.pack(side=tk.LEFT, padx=(6, 0))
+        combo.bind(
+            "<<ComboboxSelected>>",
+            lambda _e, r=role, lb=listbox, v=var: (
+                self._on_move_to_choose(r, lb, v)
+            ),
+        )
+
+    def _on_move_to_choose(
+        self,
+        role: str,
+        listbox: tk.Listbox,
+        var: tk.StringVar,
+    ) -> None:
+        """Phase 4al: process a Move-to Combobox selection.
+
+        ``role`` is the source tab role key (one of
+        :data:`_Y_AXIS_TAB_KEYS`). ``listbox`` and ``var`` are the
+        per-tab widgets the picker mutates: a selection on the
+        Listbox plus a non-empty value on the StringVar is the
+        signal to fire. The Combobox is ALWAYS reset to the empty
+        placeholder when this method runs with a non-empty text —
+        whether or not a callback fires — so the user gets visual
+        feedback regardless of selection state.
+        """
+        text = var.get()
+        if not text:
+            return
+        selection = listbox.curselection()
+        # Always reset the Combobox so the user can pick the SAME
+        # target again on a different row without first clearing
+        # the dropdown manually.
+        var.set("")
+        if not selection:
+            return
+        if self._on_route_plot is None:
+            return
+        label = listbox.get(selection[0])
+        target = _MOVE_TO_VALUE_BY_LABEL.get(text)
+        self._on_route_plot(role, label, target)
 
     # ------------------------------------------------------------
     # Tab navigation (CS-60)

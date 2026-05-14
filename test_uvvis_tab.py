@@ -1382,6 +1382,357 @@ class TestUVVisTabPerAxisSchemaPhase4ak(unittest.TestCase):
 
 
 @unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestUVVisTabPerAxisTickRenderingPhase4al(unittest.TestCase):
+    """Phase 4al — per-axis tick direction wiring in ``_redraw``.
+
+    Phase 4ak (CS-62) invented ``cfg["axes"][<role>]["tick_direction"]``
+    but the renderer read primary_x's slot uniformly. This phase
+    splits the reads: each tick_params call site reads its own
+    axis-role. Tests patch ``_per_axis_tick_direction`` to capture
+    the role argument the renderer passes at each call site, plus an
+    end-to-end check that distinct values land on distinct matplotlib
+    Axis tick params.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from uvvis_tab import UVVisTab
+        cls.UVVisTab = UVVisTab
+
+    def setUp(self):
+        self.host = tk.Frame(_root)
+        self.host.pack()
+        self.graph = ProjectGraph()
+        self.tab = self.UVVisTab(self.host, graph=self.graph)
+
+    def tearDown(self):
+        try:
+            self.tab.destroy()
+        except Exception:
+            pass
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    def _add_uvvis(self, nid: str = "u1") -> DataNode:
+        wl = np.linspace(300, 600, 10)
+        absorb = np.linspace(0.1, 0.9, 10)
+        node = DataNode(
+            id=nid, type=NodeType.UVVIS,
+            arrays={"wavelength_nm": wl, "absorbance": absorb},
+            metadata={"source_file": "synthetic"},
+            label=nid,
+            state=NodeState.COMMITTED,
+            style={"color": "#1f77b4", "linestyle": "solid",
+                   "linewidth": 1.5, "alpha": 0.9, "visible": True,
+                   "in_legend": True, "fill": False, "fill_alpha": 0.08},
+        )
+        self.graph.add_node(node)
+        return node
+
+    def _add_second_derivative(self, nid: str = "d1") -> DataNode:
+        wl = np.linspace(300, 600, 10)
+        absorb = np.linspace(-0.01, 0.01, 10)
+        node = DataNode(
+            id=nid, type=NodeType.SECOND_DERIVATIVE,
+            arrays={"wavelength_nm": wl, "absorbance": absorb},
+            metadata={"source_file": "synthetic"},
+            label=nid,
+            state=NodeState.COMMITTED,
+            style={"color": "#ff7f0e", "linestyle": "solid",
+                   "linewidth": 1.5, "alpha": 0.9, "visible": True,
+                   "in_legend": True, "fill": False, "fill_alpha": 0.08},
+        )
+        self.graph.add_node(node)
+        return node
+
+    # ---- per-call-site role argument ----
+
+    def test_renderer_reads_primary_x_for_x_ticks(self):
+        from unittest import mock
+        self._add_uvvis()
+        with mock.patch(
+            "uvvis_tab._per_axis_tick_direction", return_value="in",
+        ) as m:
+            self.tab._redraw()
+        roles = [call.args[1] for call in m.call_args_list]
+        self.assertIn("primary_x", roles)
+
+    def test_renderer_reads_primary_y_for_y_ticks(self):
+        from unittest import mock
+        self._add_uvvis()
+        with mock.patch(
+            "uvvis_tab._per_axis_tick_direction", return_value="in",
+        ) as m:
+            self.tab._redraw()
+        roles = [call.args[1] for call in m.call_args_list]
+        self.assertIn("primary_y", roles)
+
+    def test_renderer_reads_secondary_y_when_twin_active(self):
+        # SECOND_DERIVATIVE defaults to the secondary axis (CS-44), so
+        # adding one materialises the twinx() and triggers the
+        # secondary_y read inside get_axis.
+        from unittest import mock
+        self._add_uvvis()
+        self._add_second_derivative()
+        with mock.patch(
+            "uvvis_tab._per_axis_tick_direction", return_value="in",
+        ) as m:
+            self.tab._redraw()
+        roles = [call.args[1] for call in m.call_args_list]
+        self.assertIn("secondary_y", roles)
+
+    def test_renderer_reads_tertiary_y_when_twin_active(self):
+        # Force a tertiary twin by setting style["y_axis"]="tertiary"
+        # on a visible UVVIS node (CS-50 override).
+        from unittest import mock
+        node = self._add_uvvis()
+        node.style["y_axis"] = "tertiary"
+        with mock.patch(
+            "uvvis_tab._per_axis_tick_direction", return_value="in",
+        ) as m:
+            self.tab._redraw()
+        roles = [call.args[1] for call in m.call_args_list]
+        self.assertIn("tertiary_y", roles)
+
+    def test_renderer_reads_secondary_x_when_wavelength_twin_active(self):
+        # Activating cm-1 + nm-axis toggle creates the secondary_xaxis
+        # sibling that hosts the wavelength↔energy twin. Phase 4al
+        # rewired its tick_params direction from the hardcoded "in"
+        # to a per-axis read on the secondary_x role.
+        from unittest import mock
+        self._add_uvvis()
+        self.tab._x_unit.set("cm-1")
+        self.tab._show_nm_axis.set(True)
+        with mock.patch(
+            "uvvis_tab._per_axis_tick_direction", return_value="in",
+        ) as m:
+            self.tab._redraw()
+        roles = [call.args[1] for call in m.call_args_list]
+        self.assertIn("secondary_x", roles)
+
+    # ---- end-to-end: distinct per-axis values land on distinct axes ----
+
+    def test_distinct_directions_per_axis_land_on_matplotlib(self):
+        # Set different directions per role, redraw, and read back via
+        # matplotlib's public Axis.get_tick_params API.
+        self._add_uvvis()
+        self.tab._plot_config["axes"] = {
+            "primary_x":   {"tick_direction": "out",   "axis_label_override": ""},
+            "primary_y":   {"tick_direction": "inout", "axis_label_override": ""},
+            "secondary_x": {"tick_direction": "in",    "axis_label_override": ""},
+            "secondary_y": {"tick_direction": "in",    "axis_label_override": ""},
+            "tertiary_y":  {"tick_direction": "in",    "axis_label_override": ""},
+        }
+        self.tab._redraw()
+        x_params = self.tab._ax.xaxis.get_tick_params(which="major")
+        y_params = self.tab._ax.yaxis.get_tick_params(which="major")
+        self.assertEqual(x_params.get("direction"), "out")
+        self.assertEqual(y_params.get("direction"), "inout")
+
+    def test_secondary_x_distinct_from_primary_x(self):
+        # The hardcoded direction="in" on the wavelength twin is gone.
+        # If Secondary X's slot says "out", the wavelength twin should
+        # render with "out" ticks regardless of Primary X's "in".
+        self._add_uvvis()
+        self.tab._x_unit.set("cm-1")
+        self.tab._show_nm_axis.set(True)
+        self.tab._plot_config["axes"] = {
+            "primary_x":   {"tick_direction": "in",  "axis_label_override": ""},
+            "primary_y":   {"tick_direction": "in",  "axis_label_override": ""},
+            "secondary_x": {"tick_direction": "out", "axis_label_override": ""},
+            "secondary_y": {"tick_direction": "in",  "axis_label_override": ""},
+            "tertiary_y":  {"tick_direction": "in",  "axis_label_override": ""},
+        }
+        self.tab._redraw()
+        # The secondary_xaxis sibling lives under ax.child_axes.
+        self.assertTrue(self.tab._ax.child_axes)
+        sec = self.tab._ax.child_axes[0]
+        sec_params = sec.xaxis.get_tick_params(which="major")
+        self.assertEqual(sec_params.get("direction"), "out")
+        # And primary_x still reads "in".
+        x_params = self.tab._ax.xaxis.get_tick_params(which="major")
+        self.assertEqual(x_params.get("direction"), "in")
+
+
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestUVVisTabMoveToPickerPhase4al(unittest.TestCase):
+    """Phase 4al — host wiring for the Plot Settings Move-to picker.
+
+    The dialog passes ``(source_tab_role, label, target_tab_role)`` to
+    the host; the host translates into the CS-50
+    ``style["y_axis"]`` value and writes via ``graph.set_style``.
+    Source role disambiguates label collisions across axes.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from uvvis_tab import UVVisTab
+        import plot_settings_dialog
+        cls.UVVisTab = UVVisTab
+        cls.psd = plot_settings_dialog
+
+    def setUp(self):
+        self.psd._open_dialogs.clear()
+        self.host = tk.Frame(_root)
+        self.host.pack()
+        self.graph = ProjectGraph()
+        self.tab = self.UVVisTab(self.host, graph=self.graph)
+
+    def tearDown(self):
+        for dlg in list(self.psd._open_dialogs.values()):
+            try:
+                dlg.destroy()
+            except Exception:
+                pass
+        self.psd._open_dialogs.clear()
+        try:
+            self.tab.destroy()
+        except Exception:
+            pass
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    def _add_uvvis(self, nid: str, label: str, y_axis=None) -> DataNode:
+        wl = np.linspace(300, 600, 10)
+        absorb = np.linspace(0.1, 0.9, 10)
+        style = {
+            "color": "#1f77b4", "linestyle": "solid", "linewidth": 1.5,
+            "alpha": 0.9, "visible": True, "in_legend": True,
+            "fill": False, "fill_alpha": 0.08,
+        }
+        if y_axis is not None:
+            style["y_axis"] = y_axis
+        node = DataNode(
+            id=nid, type=NodeType.UVVIS,
+            arrays={"wavelength_nm": wl, "absorbance": absorb},
+            metadata={"source_file": "synthetic"},
+            label=label,
+            state=NodeState.COMMITTED,
+            style=style,
+        )
+        self.graph.add_node(node)
+        return node
+
+    # ---- dialog threading ----
+
+    def test_open_plot_settings_threads_on_route_plot_callback(self):
+        self._add_uvvis("u1", "alpha")
+        self.tab._open_plot_settings()
+        dlg = self.psd._open_dialogs[id(self.tab)]
+        dlg.update_idletasks()
+        # The callback stored on the dialog must be the host's bound method.
+        self.assertEqual(
+            dlg._on_route_plot, self.tab._on_route_plot_from_dialog,
+        )
+
+    def test_double_click_threads_on_route_plot_callback(self):
+        self._add_uvvis("u1", "alpha")
+        self.tab._redraw()
+        self.tab._fig.canvas.draw()
+        from types import SimpleNamespace
+        bbox = self.tab._ax.get_window_extent()
+        cx = (bbox.x0 + bbox.x1) / 2.0
+        ev = SimpleNamespace(x=cx, y=bbox.y0 - 2.0, dblclick=True)
+        self.tab._on_mpl_axis_double_click(ev)
+        dlg = self.psd._open_dialogs[id(self.tab)]
+        dlg.update_idletasks()
+        self.assertEqual(
+            dlg._on_route_plot, self.tab._on_route_plot_from_dialog,
+        )
+
+    # ---- routing writes style["y_axis"] ----
+
+    def test_route_writes_y_axis_style_via_set_style(self):
+        self._add_uvvis("u1", "alpha")
+        self.tab._on_route_plot_from_dialog(
+            "primary_y", "alpha", "secondary_y",
+        )
+        node = self.graph.get_node("u1")
+        self.assertEqual(node.style.get("y_axis"), "secondary")
+
+    def test_route_to_default_clears_y_axis_override(self):
+        # Start with an override; routing to Default (None) should
+        # write style["y_axis"]=None so _resolve_y_axis_role falls
+        # back to the per-NodeType default.
+        self._add_uvvis("u1", "alpha", y_axis="tertiary")
+        self.tab._on_route_plot_from_dialog(
+            "tertiary_y", "alpha", None,
+        )
+        node = self.graph.get_node("u1")
+        self.assertIsNone(node.style.get("y_axis"))
+
+    def test_route_disambiguates_by_source_role(self):
+        # Two visible nodes share label "twin": one on primary_y (UVVIS
+        # default), one on secondary_y (style override). Picker on
+        # primary_y → only the primary_y-routed node moves.
+        self._add_uvvis("u_prim", "twin")  # primary_y by default
+        self._add_uvvis("u_sec",  "twin", y_axis="secondary")
+        self.tab._on_route_plot_from_dialog(
+            "primary_y", "twin", "tertiary_y",
+        )
+        prim = self.graph.get_node("u_prim")
+        sec = self.graph.get_node("u_sec")
+        self.assertEqual(prim.style.get("y_axis"), "tertiary")
+        self.assertEqual(sec.style.get("y_axis"), "secondary")
+
+    def test_route_unknown_label_is_silent_noop(self):
+        self._add_uvvis("u1", "alpha")
+        # No exception; no style change on the existing node.
+        self.tab._on_route_plot_from_dialog(
+            "primary_y", "no_such_label", "secondary_y",
+        )
+        node = self.graph.get_node("u1")
+        self.assertIsNone(node.style.get("y_axis"))
+
+    def test_route_skips_invisible_nodes(self):
+        # An invisible node with a matching label must not be routed —
+        # the picker's listbox only shows visible plots, so the host
+        # must filter consistently.
+        node = self._add_uvvis("u1", "alpha")
+        node.style["visible"] = False
+        self.tab._on_route_plot_from_dialog(
+            "primary_y", "alpha", "secondary_y",
+        )
+        self.assertIsNone(node.style.get("y_axis"))
+
+    def test_route_unknown_source_tab_is_silent_noop(self):
+        # Defensive guard: a malformed source_tab_role (not in
+        # _Y_AXIS_ROLE_TO_TAB's values) is ignored.
+        self._add_uvvis("u1", "alpha")
+        self.tab._on_route_plot_from_dialog(
+            "global", "alpha", "secondary_y",
+        )
+        node = self.graph.get_node("u1")
+        self.assertIsNone(node.style.get("y_axis"))
+
+    # ---- end-to-end through the renderer ----
+
+    def test_route_triggers_redraw_via_graph_event(self):
+        # set_style fires NODE_STYLE_CHANGED; the tab's subscription
+        # consumes it and calls _redraw. After routing, the resolver
+        # should report the new role.
+        from uvvis_tab import _resolve_y_axis_role
+        node = self._add_uvvis("u1", "alpha")
+        # Sanity: default routing is primary for UVVIS.
+        self.assertEqual(
+            _resolve_y_axis_role(node.type, node.style), "primary",
+        )
+        self.tab._on_route_plot_from_dialog(
+            "primary_y", "alpha", "secondary_y",
+        )
+        # Re-fetch the node — set_style returns a NEW DataNode (CS-04
+        # immutability), so the local ``node`` reference is stale.
+        fresh = self.graph.get_node("u1")
+        self.assertEqual(
+            _resolve_y_axis_role(fresh.type, fresh.style), "secondary",
+        )
+
+
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
 class TestUVVisTabBaseline(unittest.TestCase):
     """Phase 4c — UV/Vis baseline correction (CS-15).
 

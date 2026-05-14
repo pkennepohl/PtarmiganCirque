@@ -1670,7 +1670,7 @@ subsequent Phase 4 session.**
 | ⏳ | 🟡 | **Keyboard shortcuts — whole-interface evaluation pass (USER-FLAGGED)** | USER-FLAGGED at end of Phase 4af (step 5 elicitation). User noted while reviewing Phase 4af friction list: "We'll need to evaluate keyboard shortcuts for the whole interface at some point. Not sure if it's better to do that sooner or later. Either way, let's put that into the list." Today the app exposes essentially no keyboard accelerators — gestures are mouse-driven (right-click context menus, footer buttons, dialog Apply/Cancel via mouse). Power-user workflows would benefit from a coherent shortcut vocabulary, but the design needs to be planned holistically rather than gesture-by-gesture so collisions don't compound. **Scope is a design pass before any implementation:** (a) inventory every active gesture (every ScanTreeWidget row gesture, every Plot Settings dialog action, every StyleDialog action, every tab-switch / file-open / save-workflow, every panel Apply, every Combine/Ungroup); (b) propose a shortcut table grouped by surface (App-global vs tab-scoped vs dialog-modal); (c) review for collisions with Tk's built-in bindings (Ctrl+C copy, Ctrl+W close window, F-keys); (d) review for platform consistency (Cmd vs Ctrl — currently Windows-only, but a XANES/EXAFS Mac contributor is plausible). Concrete first candidates the user-facing experience would benefit from: Ctrl+G "Group selected", Ctrl+Shift+G "Ungroup", Ctrl+S "Save workflow" (already present?), Ctrl+O "Open workflow", Delete "Discard selected" (with confirmation if any are COMMITTED), F2 "Rename" (matches the Windows convention CS-33's double-click started from), Enter "Apply" in the active panel. **Lock decisions for the implementing session:** (i) does the table live in `KEYBINDINGS.md` (separate doc, audit-friendly) or in `COMPONENTS.md` as a CS section, or both? (ii) is the implementation a single `key_bindings.py` module that registers all `bind_all` / per-tab `bind` calls at construction, or per-component bindings co-located with the gesture? (iii) does the app surface a "Keyboard shortcuts…" Help menu entry that opens a Toplevel with the table? Cross-refs every prior friction item that ended "would benefit from a keyboard shortcut" deferral (none today — the user has not previously surfaced this, which is why it's a fresh register entry). Multi-phase task; the design pass + a first batch of 3–5 shortcuts is a reasonable first phase. |
 | ✅ | 🟡 | ~~**"Add to existing group" gesture — extend an existing NODE_GROUP without dissolve-and-recreate (USER-FLAGGED)**~~ ✅ Resolved in Phase 4ag (CS-58). USER-FLAGGED at end of Phase 4af (step 5 elicitation; "Definitely want that"). Phase 4af shipped only create + dissolve, so once a group existed the only way to add members was dissolve + recreate (losing any user-edited label). **Phase 4ag (CS-58) ships the v2 extend path + a symmetric remove path:** two new graph-layer methods (`ProjectGraph.extend_group(group_id, member_ids)` + `remove_from_group(node_id)`) with validation invariants mirroring CS-57's `create_group`; one new event type (`NODE_GROUP_MEMBERS_CHANGED` payload `{"group_id", "added", "removed"}`) routed to the scan tree's structural-rebuild branch; three new ScanTreeWidget surfaces: footer button now switches its text + click-target on selection (`"Group selected (N)"` in group mode, `"Add to <group label>"` in extend mode, baseline `"Group selected"` disabled otherwise — also closes Phase 4af friction #6); group-row context menu grows a fourth entry `"Add selected to this group (N)"`; data-row context menu grows two sibling entries `"Add selected to <group label> (N)"` + per-row `"Remove from group"`. **Lock decisions taken (Phase 4ag):** (i) **both surfaces** — context menu AND footer button (matches CS-57's two-surface symmetry); (ii) **append** (preserve caller order); (iii) **new event type `NODE_GROUP_MEMBERS_CHANGED`** — rejected NODE_LABEL_CHANGED because the scan tree routes label-changed to targeted row refresh while member changes are structural (rows move between top-level and group-nested rendering); (iv) **yes — symmetric `remove_from_group` ships in the same phase**, reusing CS-57's auto-dissolve threshold (<2 active members) via `discard_node`. **Lock relaxations:** CS-57's `text="Group selected"` initial-label lock is broadened — the button now mutates its text per selection classification (Phase 4af friction #6 polish trigger). The CS-57 narrow "any group in selection → disabled" semantics is also deliberately relaxed: a `1 group + ≥1 ungrouped` selection now routes to the extend gesture (test pinning the old semantics was updated in the same commit). 53 new tests across `test_graph.py` (27 in `TestNodeGroupExtendRemoveOps`), `test_scan_tree_widget.py` (24 in `TestScanTreeWidgetNodeGroupsPhase4ag`), `test_persistence_phase_a.py` (2 round-trip — extend+remove sequence, auto-dissolve cascade). Net suite count: 1002 (up from 949). |
 | ✅ | 🟡 | **Grid renders in front of data lines, not behind (USER-FLAGGED bug)** | USER-FLAGGED at end of Phase 4ag (step 5 elicitation). `uvvis_tab._redraw` called `ax.grid(True, linestyle=":", alpha=0.4, color=cfg.get("grid_color", "#b0b0b0"))` without specifying `zorder`; matplotlib's default zorder for the grid is 2.5 while line plots use 2.0, so gridlines painted ON TOP of the data. **Resolved Phase 4ah (commit 1, A.1):** one keyword arg added — `zorder=0` on the `ax.grid(...)` call. Other tabs migrate when they adopt the renderer architecture. **Lock decisions taken:** (i) hard-code `zorder=0`, no Plot Settings key — render-correctness fix, not a user preference; no plausible user wants the grid in front of data. (ii) UV/Vis only this phase — Compare, XANES, EXAFS, TDDFT migrate on renderer adoption. 2 new tests in `TestUVVisTabGridZOrderPhase4ah`: relational invariant (every gridline zorder < every data-line zorder) and the literal value pin (`get_zorder() == 0`). No CS-N section needed — render bug fix, not architecture. |
-| ⏳ | 🟡 | **Axis double-click → axis-properties dialog (USER-FLAGGED feature)** | USER-FLAGGED at end of Phase 4ag (step 5 elicitation). User asked: "Double-click a plot axis in order to open a window to change axis-specific parameters? (including min, max, spacing, axis label, fonts, font sizes, axis colour, tick size, etc.)" Today axis-level controls are scattered: x-min / x-max / y-min / y-max sit on the UV/Vis top toolbar (read by `uvvis_tab._on_xmin_changed` etc.); y-axis label is rendered through CS-50 / CS-52 / CS-55 via `_resolve_y_axis_label`; tick direction lives in Plot Settings → Appearance (CS-56); font / font size / axis colour / tick size are NOT user-configurable today (matplotlib defaults). **Architecture proposal (lock pending):** new `axis_settings_dialog.py` modal Toplevel opened by a `<Double-Button-1>` binding on the matplotlib Axes (specifically on the axis-label and tick-label regions; clicking inside the plot area should NOT open it — that conflicts with the existing zoom-box gesture). Dialog covers: limits (min/max + autoscale toggle), tick spacing (major + minor), tick direction (CS-56 lives here too — relocate), tick size, axis label text, axis label font + font size + colour, tick label font + font size + colour, axis line colour. **Lock decisions for the implementing session:** (i) one dialog with primary/secondary/tertiary y selectors, or one dialog *per axis* opened by which axis was double-clicked? (ii) which settings move from Plot Settings → Appearance into the new dialog (avoid duplication) — CS-56 `grid_color` and `tertiary_axis_offset` should probably stay in Plot Settings (figure-level), but `tick_direction` is genuinely per-axis. (iii) Are axis settings per-tab or per-axis-role (left/right/secondary)? Likely per-axis-role for symmetry with how the renderer already constructs them. (iv) Does the dialog respect the existing Apply / ∀ Apply to All / Save / Cancel button row pattern (CS-23 lock)? **Affected:** new `axis_settings_dialog.py`, `uvvis_tab._redraw` (reads per-axis style keys), `_on_canvas_double_click` event hook, regression tests for the double-click region detection + the round-trip of every new style key. Pairs with the existing Plot Settings dialog (some keys may relocate). Multi-phase task — the design pass + the dialog shell + a first batch of 3–4 controls is a reasonable first phase. **Phase 4ai partial (CS-60):** lock decision (i) **closed — one unified dialog with Notebook tabs**, NOT one per axis. The implementation lifts the existing `PlotSettingsDialog` into `PlotConfigDialog` with a `ttk.Notebook` hosting six tabs: Global (today's PlotSettings content unchanged) plus Primary X / Secondary X / Primary Y / Secondary Y / Tertiary Y shells. The ⚙ button opens on Global; double-clicking on a plot axis region opens on that axis's tab via a new `plot_axis_hit_test.classify_axis_double_click(event, axes_by_role, tertiary_offset_frac)` classifier that translates a matplotlib MouseEvent into one of five axis roles × three hit kinds. Lock decision (iv) **closed but broadened — Save · Apply · Apply to All Tabs · Cancel** at the dialog level (CS-23 subsumed into CS-60); existing CS-23 semantics persist (Apply commits and stays open, Save commits and closes, Cancel reverts to snapshot). New cross-tab pending-edit state model: per-tab `" •"` modified marker, `_modified_tabs: set[str]`, `_KEY_TO_TAB` routing map (empty today, every key resolves to Global; populated by 4aj+ as per-axis settings move out of Global). Cancel-with-pending shows `askokcancel("Discard changes?")` confirm. Lock decisions (ii) and (iii) **deferred** — (ii) `tick_direction` likely moves to per-axis tabs in 4aj; `grid_color` and `tertiary_axis_offset` stay Global; (iii) per-axis-role schema invented in 4ak with migration shim from today's flat dict. Each axis tab in Phase 4ai is a shell (placeholder header + "(populated in Phase 4ak)" plot-list + "Per-axis settings land in Phase 4aj+" body); real per-axis settings start landing 4aj. 91 new tests (37 hit-test + 19 Notebook + 25 state model + 10 integration). **Carry-forward:** (a) `tick_direction` relocation to per-axis tabs (Phase 4aj — lock decision (ii) closure); (b) per-axis-role schema invention with migration shim (Phase 4ak — lock decision (iii) closure); (c) axis label override + plot-list (read) + plot routing (write) + range/autoscale + tick spacing — each Phase 4aj→4an step lands one slice. **Phase 4aj partial (CS-61):** lock decision (ii) **partially closed for `tick_direction`** — the widget moves out of Plot Settings → Appearance into a new "Settings" `LabelFrame` on each of the five per-axis Notebook tabs. All five tabs share one Tk var (`_control_vars["tick_direction"]`) so edits on any tab visually update all five radios; the working-copy key stays flat (single `tick_direction` string in `_USER_DEFAULTS`) — no per-axis schema invention (that remains Phase 4ak). `grid_color` and `tertiary_axis_offset` stay in Appearance per the original lock-decision-(ii) reasoning. New module-level `_KEY_TO_TAB` dict (CS-60 lock 4 relaxation — was empty in 4ai) gets its first explicit entry, `{"tick_direction": "primary_x"}`, so editing the radio on ANY per-axis tab marks ONLY Primary X dirty (not the full five-tab flood). The dirty-pin is intentionally independent of the visible tab: tick direction is most visually associated with bottom X-axis ticks in a UV/Vis plot. New `_build_axis_tab_settings(parent, role)` helper, called from `_build_axis_tab_shell`, is the body builder future per-axis ladder phases extend with additional widgets. The fallback reads from `_FACTORY_DEFAULTS["tick_direction"]` not a hard-coded "in" literal (CS-56 schema invariant preserved). **Carry-forward narrows:** (a) is now PARTIAL — only tick_direction has moved; future per-axis settings (axis label override, range/autoscale, tick spacing) still queue. Two acknowledged frictions for 4aj resolved by 4ak: (α) shared-var UX dishonesty (editing on Primary Y updates Primary X's radio); (β) dirty-pin counterintuitive (edit on Primary Y marks Primary X dirty). Both clear when 4ak invents per-axis schema and gives each tab its own slot. 13 new tests in `TestPlotConfigDialogTickDirectionRelocationPhase4aj`; 2 Phase 4ai tests updated in place. **Phase 4ak partial (CS-62):** lock decision (iii) **closed for the schema** — `_FACTORY_DEFAULTS` gains a nested `"axes": {role: {key: value}}` sub-dict housing per-axis `tick_direction` + the new `axis_label_override` key; top-level flat `tick_direction` is removed; `_UNIVERSAL_DEFAULTS` upgrades to a deep copy. Module-level `migrate_plot_config(config)` idempotent shim lifts legacy flat `tick_direction` into all five per-axis slots and back-fills missing keys from factory defaults; runs at dialog `__init__` on the working copy + Reset Defaults / Factory Reset paths. `_KEY_TO_TAB`'s `tick_direction` entry drops out (canonical CS-61 relaxation); per-axis writer `_on_axis_var_write(role, key, value)` carries the role directly and marks that tab dirty without going through `_key_to_tab`. New `self._axis_control_vars: dict[tuple[str, str], tk.Variable]` + `self._axis_control_refresh` analog store per-axis vars keyed by `(role, key)`; `_make_axis_string_var` is idempotent on the `(role, key)` pair so the Global "Per-axis label overrides" mirror section and the per-axis tab Entries share one Tk var. New `_build_section_axis_labels` Global section adds a five-row mirror (one Entry per role) plus `_DEFAULT_SECTIONS` extends to `"axis_labels"` with `_SECTION_TITLES["axis_labels"] = "Per-axis label overrides"`. `plots_by_role: dict[str, tuple[str, ...]] | None` constructor + factory kwarg threads the per-axis inventory; the per-axis tab's "Plots on this axis" `LabelFrame` renders a read-only `tk.Listbox` (height capped at 6) for populated roles, italic "(no plots on this axis)" otherwise — replacing the "(populated in Phase 4ak)" placeholder. Renderer wiring in `uvvis_tab._redraw`: new `_axis_label_override(cfg, tab_role)` helper resolves the per-axis override defensively; primary_x / primary_y / secondary_x / secondary_y / tertiary_y label setters now prefer a non-empty override over the auto/custom logic. Tick direction renders uniformly via `_per_axis_tick_direction(cfg, "primary_x")` — per-axis tick rendering is **explicitly deferred to Phase 4al** so the user observation "editing tick direction on Secondary X changes primary X but not secondary X" is honest about the transitional state. New `_enumerate_plots_by_role` module-level helper + `UVVisTab._compute_plots_by_role` host method feed the inventory at dialog open time (frozen for the dialog's lifetime — re-open to refresh). 39 net new tests (`TestPlotConfigDialogPerAxisSchemaPhase4ak`, `TestEnumeratePlotsByRolePhase4ak`, `TestUVVisTabPerAxisSchemaPhase4ak` plus inversions in `TestPlotConfigDialogTickDirectionRelocationPhase4aj`). **Carry-forward narrows further:** (a) is now narrower still — per-axis tick rendering, range / autoscale (4am), tick spacing (4an), and the "Move to ▾" picker writing `y_axis` style (4al) remain queued. Several frictions for 4ak: (γ) deferred per-axis tick rendering (user-surfaced specifically for Secondary X); (δ) dual-surface primary X/Y label (`axis_label_override` + legacy Title-and-labels section); (ε) `plots_by_role` frozen at open time; (ζ) Listbox is `state="disabled"` — could be clickable for jump-to-node. |
+| ⏳ | 🟡 | **Axis double-click → axis-properties dialog (USER-FLAGGED feature)** | USER-FLAGGED at end of Phase 4ag (step 5 elicitation). User asked: "Double-click a plot axis in order to open a window to change axis-specific parameters? (including min, max, spacing, axis label, fonts, font sizes, axis colour, tick size, etc.)" Today axis-level controls are scattered: x-min / x-max / y-min / y-max sit on the UV/Vis top toolbar (read by `uvvis_tab._on_xmin_changed` etc.); y-axis label is rendered through CS-50 / CS-52 / CS-55 via `_resolve_y_axis_label`; tick direction lives in Plot Settings → Appearance (CS-56); font / font size / axis colour / tick size are NOT user-configurable today (matplotlib defaults). **Architecture proposal (lock pending):** new `axis_settings_dialog.py` modal Toplevel opened by a `<Double-Button-1>` binding on the matplotlib Axes (specifically on the axis-label and tick-label regions; clicking inside the plot area should NOT open it — that conflicts with the existing zoom-box gesture). Dialog covers: limits (min/max + autoscale toggle), tick spacing (major + minor), tick direction (CS-56 lives here too — relocate), tick size, axis label text, axis label font + font size + colour, tick label font + font size + colour, axis line colour. **Lock decisions for the implementing session:** (i) one dialog with primary/secondary/tertiary y selectors, or one dialog *per axis* opened by which axis was double-clicked? (ii) which settings move from Plot Settings → Appearance into the new dialog (avoid duplication) — CS-56 `grid_color` and `tertiary_axis_offset` should probably stay in Plot Settings (figure-level), but `tick_direction` is genuinely per-axis. (iii) Are axis settings per-tab or per-axis-role (left/right/secondary)? Likely per-axis-role for symmetry with how the renderer already constructs them. (iv) Does the dialog respect the existing Apply / ∀ Apply to All / Save / Cancel button row pattern (CS-23 lock)? **Affected:** new `axis_settings_dialog.py`, `uvvis_tab._redraw` (reads per-axis style keys), `_on_canvas_double_click` event hook, regression tests for the double-click region detection + the round-trip of every new style key. Pairs with the existing Plot Settings dialog (some keys may relocate). Multi-phase task — the design pass + the dialog shell + a first batch of 3–4 controls is a reasonable first phase. **Phase 4ai partial (CS-60):** lock decision (i) **closed — one unified dialog with Notebook tabs**, NOT one per axis. The implementation lifts the existing `PlotSettingsDialog` into `PlotConfigDialog` with a `ttk.Notebook` hosting six tabs: Global (today's PlotSettings content unchanged) plus Primary X / Secondary X / Primary Y / Secondary Y / Tertiary Y shells. The ⚙ button opens on Global; double-clicking on a plot axis region opens on that axis's tab via a new `plot_axis_hit_test.classify_axis_double_click(event, axes_by_role, tertiary_offset_frac)` classifier that translates a matplotlib MouseEvent into one of five axis roles × three hit kinds. Lock decision (iv) **closed but broadened — Save · Apply · Apply to All Tabs · Cancel** at the dialog level (CS-23 subsumed into CS-60); existing CS-23 semantics persist (Apply commits and stays open, Save commits and closes, Cancel reverts to snapshot). New cross-tab pending-edit state model: per-tab `" •"` modified marker, `_modified_tabs: set[str]`, `_KEY_TO_TAB` routing map (empty today, every key resolves to Global; populated by 4aj+ as per-axis settings move out of Global). Cancel-with-pending shows `askokcancel("Discard changes?")` confirm. Lock decisions (ii) and (iii) **deferred** — (ii) `tick_direction` likely moves to per-axis tabs in 4aj; `grid_color` and `tertiary_axis_offset` stay Global; (iii) per-axis-role schema invented in 4ak with migration shim from today's flat dict. Each axis tab in Phase 4ai is a shell (placeholder header + "(populated in Phase 4ak)" plot-list + "Per-axis settings land in Phase 4aj+" body); real per-axis settings start landing 4aj. 91 new tests (37 hit-test + 19 Notebook + 25 state model + 10 integration). **Carry-forward:** (a) `tick_direction` relocation to per-axis tabs (Phase 4aj — lock decision (ii) closure); (b) per-axis-role schema invention with migration shim (Phase 4ak — lock decision (iii) closure); (c) axis label override + plot-list (read) + plot routing (write) + range/autoscale + tick spacing — each Phase 4aj→4an step lands one slice. **Phase 4aj partial (CS-61):** lock decision (ii) **partially closed for `tick_direction`** — the widget moves out of Plot Settings → Appearance into a new "Settings" `LabelFrame` on each of the five per-axis Notebook tabs. All five tabs share one Tk var (`_control_vars["tick_direction"]`) so edits on any tab visually update all five radios; the working-copy key stays flat (single `tick_direction` string in `_USER_DEFAULTS`) — no per-axis schema invention (that remains Phase 4ak). `grid_color` and `tertiary_axis_offset` stay in Appearance per the original lock-decision-(ii) reasoning. New module-level `_KEY_TO_TAB` dict (CS-60 lock 4 relaxation — was empty in 4ai) gets its first explicit entry, `{"tick_direction": "primary_x"}`, so editing the radio on ANY per-axis tab marks ONLY Primary X dirty (not the full five-tab flood). The dirty-pin is intentionally independent of the visible tab: tick direction is most visually associated with bottom X-axis ticks in a UV/Vis plot. New `_build_axis_tab_settings(parent, role)` helper, called from `_build_axis_tab_shell`, is the body builder future per-axis ladder phases extend with additional widgets. The fallback reads from `_FACTORY_DEFAULTS["tick_direction"]` not a hard-coded "in" literal (CS-56 schema invariant preserved). **Carry-forward narrows:** (a) is now PARTIAL — only tick_direction has moved; future per-axis settings (axis label override, range/autoscale, tick spacing) still queue. Two acknowledged frictions for 4aj resolved by 4ak: (α) shared-var UX dishonesty (editing on Primary Y updates Primary X's radio); (β) dirty-pin counterintuitive (edit on Primary Y marks Primary X dirty). Both clear when 4ak invents per-axis schema and gives each tab its own slot. 13 new tests in `TestPlotConfigDialogTickDirectionRelocationPhase4aj`; 2 Phase 4ai tests updated in place. **Phase 4ak partial (CS-62):** lock decision (iii) **closed for the schema** — `_FACTORY_DEFAULTS` gains a nested `"axes": {role: {key: value}}` sub-dict housing per-axis `tick_direction` + the new `axis_label_override` key; top-level flat `tick_direction` is removed; `_UNIVERSAL_DEFAULTS` upgrades to a deep copy. Module-level `migrate_plot_config(config)` idempotent shim lifts legacy flat `tick_direction` into all five per-axis slots and back-fills missing keys from factory defaults; runs at dialog `__init__` on the working copy + Reset Defaults / Factory Reset paths. `_KEY_TO_TAB`'s `tick_direction` entry drops out (canonical CS-61 relaxation); per-axis writer `_on_axis_var_write(role, key, value)` carries the role directly and marks that tab dirty without going through `_key_to_tab`. New `self._axis_control_vars: dict[tuple[str, str], tk.Variable]` + `self._axis_control_refresh` analog store per-axis vars keyed by `(role, key)`; `_make_axis_string_var` is idempotent on the `(role, key)` pair so the Global "Per-axis label overrides" mirror section and the per-axis tab Entries share one Tk var. New `_build_section_axis_labels` Global section adds a five-row mirror (one Entry per role) plus `_DEFAULT_SECTIONS` extends to `"axis_labels"` with `_SECTION_TITLES["axis_labels"] = "Per-axis label overrides"`. `plots_by_role: dict[str, tuple[str, ...]] | None` constructor + factory kwarg threads the per-axis inventory; the per-axis tab's "Plots on this axis" `LabelFrame` renders a read-only `tk.Listbox` (height capped at 6) for populated roles, italic "(no plots on this axis)" otherwise — replacing the "(populated in Phase 4ak)" placeholder. Renderer wiring in `uvvis_tab._redraw`: new `_axis_label_override(cfg, tab_role)` helper resolves the per-axis override defensively; primary_x / primary_y / secondary_x / secondary_y / tertiary_y label setters now prefer a non-empty override over the auto/custom logic. Tick direction renders uniformly via `_per_axis_tick_direction(cfg, "primary_x")` — per-axis tick rendering is **explicitly deferred to Phase 4al** so the user observation "editing tick direction on Secondary X changes primary X but not secondary X" is honest about the transitional state. New `_enumerate_plots_by_role` module-level helper + `UVVisTab._compute_plots_by_role` host method feed the inventory at dialog open time (frozen for the dialog's lifetime — re-open to refresh). 39 net new tests (`TestPlotConfigDialogPerAxisSchemaPhase4ak`, `TestEnumeratePlotsByRolePhase4ak`, `TestUVVisTabPerAxisSchemaPhase4ak` plus inversions in `TestPlotConfigDialogTickDirectionRelocationPhase4aj`). **Carry-forward narrows further:** (a) is now narrower still — per-axis tick rendering, range / autoscale (4am), tick spacing (4an), and the "Move to ▾" picker writing `y_axis` style (4al) remain queued. Several frictions for 4ak: (γ) deferred per-axis tick rendering (user-surfaced specifically for Secondary X); (δ) dual-surface primary X/Y label (`axis_label_override` + legacy Title-and-labels section); (ε) `plots_by_role` frozen at open time; (ζ) Listbox is `state="disabled"` — could be clickable for jump-to-node. **Phase 4al partial (CS-63):** (γ) **closed** — `uvvis_tab._redraw` splits its tick_params calls into five per-axis-role invocations: `ax.tick_params(axis="x", direction=_per_axis_tick_direction(cfg, "primary_x"), …)` and the corresponding `axis="y"` call on primary; `get_axis` reads `_per_axis_tick_direction(cfg, "secondary_y" or "tertiary_y")` (via `_Y_AXIS_ROLE_TO_TAB`) at twin-creation time and applies it via `tick_params(axis="y", direction=…)`; the wavelength↔energy secondary_xaxis sibling drops its previously-hardcoded `direction="in"` in favour of `_per_axis_tick_direction(cfg, "secondary_x")`. The user-surfaced Secondary-X bug from Phase 4ak step 5 resolves — editing the radio on the Secondary X tab now visually moves only the secondary X axis ticks. The "Move to ▾" picker lands as a `ttk.Combobox` below the Listbox on the three Y-axis tabs (primary_y / secondary_y / tertiary_y). New module-level `_Y_AXIS_TAB_KEYS` frozenset + `_MOVE_TO_OPTIONS` 4-tuple (Default(None) / Primary Y / Secondary Y / Tertiary Y) + `_MOVE_TO_LABELS` + `_MOVE_TO_VALUE_BY_LABEL` constants drive the Combobox. The dialog speaks tab-role-key space throughout; the host (`UVVisTab._on_route_plot_from_dialog`) translates `target_tab_role` → CS-50 style value via the inverse of `_Y_AXIS_ROLE_TO_TAB` and writes through `graph.set_style`. Lock relaxations vs CS-62: Y-axis tab Listboxes promote `state="disabled"` → `state="normal"` so rows are selectable (X-axis tabs keep `state="disabled"` — no picker there); `_AXIS_KEYS` stays unchanged (the picker writes a per-NODE style key, not a per-axis schema slot). Picker fires immediately on Combobox value change — bypasses dialog Apply because it's a per-node style edit (consistent with the existing CS-50 Style-dialog path), not a per-plot-config edit. Source role disambiguates label collisions across axes: only nodes currently routed to `source_tab_role` are eligible targets. Combobox handler is extracted from a closure into `PlotConfigDialog._on_move_to_choose(role, listbox, var)` so tests can drive the routing path directly without relying on Tk virtual-event dispatch (which is not reliably synchronous in the full-suite run). 31 net new tests (`TestPlotConfigDialogMoveToPickerPhase4al`, `TestUVVisTabPerAxisTickRenderingPhase4al`, `TestUVVisTabMoveToPickerPhase4al`); 1 CS-62 test renamed (`test_plots_listbox_is_read_only` → `test_plots_listbox_is_disabled_on_x_axis_tabs`, pivoted onto the X-axis tab where the lock survives). **Carry-forward narrows further:** range / autoscale / scale-type widgets (4am); tick spacing + per-axis grid + per-axis colour pickers (4an). The Secondary X tab's tick_direction now applies but the rest of the per-axis ladder (range, tick spacing) still queues. One Phase 4al friction: (η) Cancel-with-pending semantics for routing edits — the picker mutates style immediately, so Cancel does NOT revert routing decisions. This is by design (CS-50 style edits commit on pick across the whole app), but a future "live-preview vs Apply" reconciliation phase could revisit. |
 | ⏳ | 🟡 | **`_USER_DEFAULTS` tab-type split — universal vs per-tab-type axis-label keys (USER-FLAGGED, Phase 4ai)** | USER-FLAGGED at end of Phase 4ai (step 5 elicitation). User confirmed the design taxonomy: "for plot and axis settings, these really are tab-dependent. For example, the primary axis label for XANES will definitely NOT be the same as that for UV/Vis. The behaviour of 'Apply to All' therefore also needs to be limited to that tab." Today `plot_settings_dialog._USER_DEFAULTS` is a single module-level flat dict — UV/Vis is the only host that uses it. As XANES / EXAFS / Compare get their own `PlotConfigDialog` wiring, the dict will leak axis labels across tab types (e.g. XANES inherits UV/Vis's "Absorbance (A)" axis label on first construction). **Architecture proposal (lock pending):** two viable shapes — (a) tab-type-namespaced nested dict (`_USER_DEFAULTS["uvvis"]`, `_USER_DEFAULTS["xanes"]`, etc.) with the dialog reading a `tab_type=` argument to pick the right sub-dict, OR (b) split the dict into a universal half (fonts, grid, background — tab-type-agnostic) and a tab-specific half (axis labels, axis label modes — tab-type-scoped). Option (b) is more discoverable but adds complexity in `_FACTORY_DEFAULTS` (which keys belong where). **Lock decisions for the implementing session:** (i) which shape; (ii) does `Save as Default` persist into the universal slot, the per-tab-type slot, or both depending on which key the user touched? (iii) does the `project_io` round-trip schema mirror the new shape (CS-46 manifest `plot_defaults` key)? **Affected:** `plot_settings_dialog._USER_DEFAULTS` shape + `_do_save_as_default` write path; `uvvis_tab.__init__` read path (and equivalents in future tabs); `project_io.save_project` / `load_project` for `plot_defaults` round-trip (CS-46-locked but relaxable for schema evolution); `binah._do_save_workflow` / `_do_open_workflow` mirroring writes. Cross-refs CS-46 (persistence manifest), CS-60 (the dialog that consumes the defaults), the "Refactor uvvis_tab.py — extract host shell" register entry (cross-tab generalization is the same broader effort). Becomes urgent when the dialog gets wired into a second tab type; not urgent today since only UV/Vis uses it. |
 | ⏳ | 🟡 | **Twin-X axis — wavelength↔energy with bidirectional range coupling (USER-FLAGGED, Phase 4ai)** | USER-FLAGGED at end of Phase 4ai (step 5 elicitation). User: "Let's wire the Twin-X as a tab as well... we still want to be able to control its behaviour (but in a more limited way since it's mostly tied to the primary x-axis). [Best scenario is that we could pick limits to xmin and xmax in either the primary or twin-x and then an appropriate choice is made for the partner x-axis (future development?)]". Phase 4ai's CS-60 Notebook already includes a Secondary X tab as a shell (double-clicking the top spine opens it); this register entry covers the actual matplotlib machinery for the twin-x axis itself. **Architecture proposal (lock pending):** new `_secondary_x_ax = self._ax.twiny()` in `_build_plot`; a transform function `_x_primary_to_secondary(x_primary, primary_unit, secondary_unit) -> x_secondary` and inverse, keyed on whichever pair of units the user has selected (wavelength_nm ↔ energy_eV, wavenumber_cm-1 ↔ wavelength_nm, etc.). On every `_redraw`, set the secondary axis's xlim from the primary's xlim via the transform. Range coupling is bidirectional in the sense that the Secondary X tab's range entries (when they land in Phase 4am or later) edit either side, with the partner side recomputed automatically. **Lock decisions for the implementing session:** (i) what unit pair routes to the twin-x — fixed (wavelength ↔ energy only), or user-configurable; (ii) does the twin-x exist always (when the primary axis is wavelength_nm) or only when the user explicitly enables it via a Plot Settings checkbox? (iii) does the secondary-x label autoderive ("Energy (eV)" when primary is "Wavelength (nm)") or accept a user override; (iv) which side is the "source of truth" for limits — primary always wins, or last-edited wins? **Affected:** `uvvis_tab._build_plot` (twin-x construction), `_redraw` (transform + xlim sync), new `_X_UNIT_PAIRS: dict` for the transform table, `plot_settings_dialog`'s Secondary X tab content (range / autoscale / label / show-toggle), tests for the transform round-trip and range coupling. Cross-refs CS-60 (the Notebook tab the dialog content lives on), the existing `_convert_xlim` helper in `uvvis_tab.py` (the same transform machinery probably lifts into a shared `x_unit_transforms.py` module). Becomes actionable when Phase 4am-ish range controls land (the tab needs widgets before the wiring matters). |
 | ⏳ | 🟢 | **Per-tab tertiary-y-axis default routing schema (USER-FLAGGED design topic)** | USER-FLAGGED at the START of Phase 4ah ("With regards to default multi-axis functionality, we will need to consider what counts as default behaviour differently in different tabs. For UV/Vis, we know that the derivative goes to secondary. Not sure what would need to default to the tertiary y-axis (if anything)."). Today `_DEFAULT_Y_AXIS_BY_NODETYPE` (CS-44-locked, in `uvvis_tab.py`) is a single flat dict mapping `NodeType → axis_role` shared across the codebase. As more tabs adopt the renderer architecture (TDDFT pending UV/Vis-style migration; Compare planned), per-tab routing diverges: UV/Vis derivative → secondary is clear, but TDDFT might want primary=spectrum / secondary=oscillator-strength / tertiary=transition-density-or-state-energy; Compare might be primary-only. **Architecture proposal (lock pending):** (a) extend `_DEFAULT_Y_AXIS_BY_NODETYPE` into `_DEFAULT_Y_AXIS_BY_NODETYPE: dict[str_tab_name, dict[NodeType, role]]` and have each tab read its sub-dict; (b) introduce a per-tab registry pattern where each Tab class owns its own `DEFAULT_Y_AXIS_BY_NODETYPE` class attribute (the renderer reads from `self.DEFAULT_Y_AXIS_BY_NODETYPE` instead of the module-level constant); (c) status quo + per-NodeType-uniqueness invariant (each NodeType belongs to exactly one tab, so the flat dict suffices — only ambiguous if two tabs render the same NodeType). **Lock decisions for the implementing session:** (i) which option (a/b/c); (ii) does d²A stay on secondary by default (current behaviour) or move to tertiary (separate magnitude from d¹A) — Claude's recommendation during the Phase 4ah elicitation was "keep both derivatives on secondary, let users move d²A explicitly"; (iii) TDDFT tertiary candidates — transition density vs state energy vs none; (iv) does this phase relocate CS-44 invariants into a registry, or layer on top. **Affected:** `uvvis_tab._DEFAULT_Y_AXIS_BY_NODETYPE` (CS-44 lock needs deliberate relaxation), every tab's renderer, COMPONENTS.md CS-44 update. Cross-refs the multi-axis routing CS-44 register entries above and the "Refactor uvvis_tab.py — extract host shell" cross-tab generalization entry. Dedicated future phase — Claude recommended NOT bundling into Phase 4ah; queued here for explicit pickup. |
@@ -1681,6 +1681,9 @@ subsequent Phase 4 session.**
 | ⏳ | 🟡 | **Apply-to-all icon on per-axis Plot Settings tabs — UI consistency with data-node settings (USER-FLAGGED, Phase 4ak)** | USER-FLAGGED at end of Phase 4ak (step 5 elicitation). User: "Use same apply-to-all icon used for data node settings in the axis setting popups." Data-node settings (the per-row → icon on `ScanTreeWidget` rows surfaced by CS-27 / Phase 4n) carry a recognisable "Apply to all" affordance; Plot Settings → per-axis tabs offer only the dialog-level "Apply to All Tabs" button at the bottom (CS-60 button row). The per-axis tabs lack an in-tab "Apply this axis's settings to every other axis" gesture — useful for cases like "apply this tick direction to every axis at once" or "broadcast this axis label override to every Y axis". **Architecture proposal (lock pending):** add a small icon button next to each per-axis widget (or at the per-axis tab top) labelled with the same icon used by `ScanTreeWidget`'s send-to-compare row icon (the → symbol per CS-27). Click → confirm dialog → write the widget's value into every other per-axis role's slot in `self._working`, mark every other per-axis tab dirty. **Lock decisions for the implementing session:** (i) per-widget icon (one per widget on the per-axis tab) or per-tab icon (one icon broadcasts every widget on the tab)? (ii) does the broadcast respect axis-shape semantics (e.g. an X-axis tab's value broadcast to other X tabs only, not Y)? (iii) does the broadcast write through `_USER_DEFAULTS["axes"][role]` directly or stage through `_on_axis_var_write` per-widget (the latter is consistent with the existing dirty-marker contract)? (iv) does the icon match `_send_to_compare_btn`'s exact glyph or use a slightly different one to distinguish axis-to-axis from tab-to-compare? **Affected:** `plot_settings_dialog.py` (new icon widget + broadcast handler; CS-62 `_axis_control_vars` walk), CS-61 / CS-62 layout (icon adds a row or column to the Settings frame), tests for the broadcast path. Cross-refs CS-27 (the existing per-row send-to-compare icon pattern), CS-60 (the dialog-level Apply to All Tabs button — different scope), CS-62 (per-axis Tk var registry). Small-medium phase; depends on having more than one populated per-axis widget (Phase 4ak ships two: tick_direction + axis_label_override, so this is actionable from 4al onward). |
 | ⏳ | 🟡 | **Axis nomenclature rename: primary/secondary/tertiary → bottom/top/left/right with `*` suffix for offset (USER-FLAGGED, Phase 4ak)** | USER-FLAGGED at end of Phase 4ak (step 5 elicitation). User: "Maybe we should not use primary, secondary, tertiary for axes and use clear location designations such as bottom/top for the main x-axes and something like bottom* and top* for offset secondary axes for a total of 4 possible axes along x. Similar structure for y with left/right/left*/right*. Open to better nomenclature." The current taxonomy (CS-44: `primary` / `secondary` / `tertiary`; CS-60: `primary_x` / `secondary_x` / `primary_y` / `secondary_y` / `tertiary_y`) is renderer-internal and dialog-facing. Position-based names ("bottom", "top", "left", "right", with `*` for offset/secondary instance) are more discoverable for the user — a UV/Vis researcher doesn't need to know that "secondary" specifically means twinx. The proposal also opens the door to a fourth axis on each side (currently `*` suffix denotes offset, but the rename allows growth to "right*" being a tertiary-stack-style offset on top of "right"). **Architecture proposal (lock pending):** rename across the codebase. Affects: `_AXIS_ROLES = ("primary", "secondary", "tertiary")` (CS-44 lock), `_TAB_KEYS = ("global", "primary_x", "secondary_x", "primary_y", "secondary_y", "tertiary_y")` (CS-60 lock), `_TAB_TITLES` strings (CS-60 lock), `_DEFAULT_Y_AXIS_BY_NODETYPE`'s values (CS-44 lock), `_resolve_y_axis_role`'s return values (CS-44 lock), every test asserting any of the above, plot_settings_dialog's per-axis tab keys, `_Y_AXIS_ROLE_TO_TAB` (CS-62 lock), the `y_axis` style key's value set (CS-50 lock), the manifest's nested `axes` sub-dict keys (round-trip across `_USER_DEFAULTS` via project_io). **Lock decisions for the implementing session:** (i) exact name set — is the `*` suffix preserved or replaced with something more keyboard-friendly (e.g. `"bottom_offset"`)? `*` reads well in UI but parses awkwardly in code paths. (ii) does the rename happen all-at-once (one massive sweep phase) or incrementally with an alias dict mapping old → new during transition? (iii) does the `y_axis` style key's value set (CS-50: `"primary"` / `"secondary"` / `"tertiary"`) rename in lockstep — yes for consistency but increases blast radius. (iv) does the manifest schema gain a migration shim for projects saved with old names (yes, since `.ptmg` files can be years old). (v) what about the existing `_axes_by_role` dict key names (used by tests + matplotlib introspection)? **Affected:** Massive cross-codebase rename. CS-44 / CS-50 / CS-60 / CS-61 / CS-62 locks all need deliberate relaxation. Carries through to manifest round-trip migration shim + every test pinning role names. Multi-phase task — the cleanest path is one phase for the schema rename + migration shim, one phase for the dialog labels + tab titles, one phase for the renderer's internal names, with a final cleanup pass. **Risk:** high blast radius. Could combine with the "Refactor uvvis_tab.py — extract host shell" register entry since both touch axis-handling code paths. |
 | ⏳ | 🟡 | **Rich-text axis labels — subscript / superscript / equation markup (USER-FLAGGED, Phase 4ak)** | USER-FLAGGED at end of Phase 4ak (step 5 elicitation). User: "Allow for subscript/superscript and equations in axis labels. How can we do that?" Today axis labels are plain strings written through matplotlib's `set_xlabel` / `set_ylabel` (CS-62's `axis_label_override` is a plain `str`). matplotlib supports a `mathtext` subset of LaTeX inline (e.g. `r"$d^2 A / d\lambda^2$"`) AND the full `usetex=True` LaTeX rendering when a LaTeX installation is on `$PATH`. The user wants the override Entry to accept LaTeX-style markup and render it in the figure. **Architecture proposal (lock pending):** enable matplotlib's mathtext on every axis label setter. Simplest path: change `set_xlabel(text, ...)` → `set_xlabel(text, ...)` with matplotlib's default mathtext parser (no extra config needed — `$...$` is parsed automatically). User types `$d^2 A / d\lambda^2$` into the Plot Settings → Primary Y axis label override Entry → matplotlib renders the math expression. **Lock decisions for the implementing session:** (i) does the Entry widget need any preprocessing or do we trust the user to type `$...$` directly? (ii) is there a "Markup help" tooltip or pop-up showing example expressions (`$\alpha$`, `$d^2A/d\lambda^2$`, `$\Delta E$`)? (iii) does we expose mathtext only, or also the full LaTeX path (`usetex=True`) which requires a LaTeX install? (iv) does the manifest round-trip preserve the raw markup string (yes — it's a plain `str` already). (v) does the same support extend to title (`title_text`) and the legacy xlabel/ylabel custom text path? (likely yes for consistency). **Affected:** `plot_settings_dialog.py` per-axis Entry widgets + the legacy Title-and-labels section's Entry widgets — the markup goes in transparently since `set_xlabel` already supports it. Possibly a tooltip module for the markup help. New test asserting `set_xlabel($d^2A$)` renders without error. Small phase — enabling mathtext is essentially free; the lift is testing + documenting the gesture for users. Cross-refs CS-62 (`axis_label_override` Entry widgets), the legacy "Title and labels" section. **Caveat:** matplotlib's mathtext is a SUBSET of LaTeX (most math symbols work, but `\text{}`, fancy spacing, and some packages don't). Decision (iii) determines whether power users get full LaTeX. |
+| ⏳ | 🟡 | **Accessibility features (USER-FLAGGED, Phase 4al)** | USER-FLAGGED at end of Phase 4al (step 5 elicitation). User: "can we implement any accessibility features in the software?" Open-ended architectural question with multiple sub-axes. Today the app has effectively zero accessibility support: no keyboard navigation in the unified PlotConfigDialog or StyleDialog beyond Tab/Enter (no chord shortcuts, no menu mnemonics), no screen-reader hints, no high-contrast / dark mode (background is hardcoded `#ffffff` in `_FACTORY_DEFAULTS["background_color"]`), no colour-blind-safe palette toggle on `node_styles.SPECTRUM_PALETTE` (CS-21 — 10-colour palette with several red/green near-collisions), no large-text / scaling override on the matplotlib font sizes, no focus-visible outline polish for keyboard navigation. **Architecture proposal (lock pending):** scope a first batch by impact-vs-cost. Likely high-impact / low-cost: (1) keyboard shortcuts for common gestures (already a USER-FLAGGED register entry from Phase 4ah — pairs naturally); (2) colour-blind-safe palette as an opt-in `SPECTRUM_PALETTE` swap (e.g. Wong's 8-colour palette or the matplotlib `tab10` deuteranopia-safe variant); (3) global tk option/theme that enlarges font sizes by an `accessibility.scale` multiplier (touches every `font=("", N, ...)` literal across the dialog modules); (4) dialog dismiss via Escape (some dialogs already wire it; auditing for consistency). Lower priority but worth recording: (5) screen reader hints via `accessibility.title` on widgets (Tk has limited a11y story; depends on platform — Windows via UIA, macOS via AX, Linux via AT-SPI); (6) high-contrast mode (toggle that swaps background + grid + spine colours); (7) dyslexia-friendly font option. **Lock decisions for the implementing session:** (i) does accessibility get a new top-level Settings section (e.g. an "Accessibility" tab in PlotConfigDialog or a new app-level Preferences dialog), or live as scattered toggles? (ii) does the colour-blind palette swap commit on click (immediate redraw of every scan) or stage as a working-copy edit? (iii) which dialogs are in scope for the keyboard-nav audit — every modal, or just the high-traffic Plot Settings / Style? (iv) does the font-scale multiplier round-trip through `_USER_DEFAULTS` (yes — it's a persistent preference)? (v) which platforms / screen readers are in the supported matrix? **Affected:** Wide — `node_styles.py` (palette), `plot_settings_dialog.py` (font sizes, possibly a new Accessibility section), `style_dialog.py`, every dialog with `grab_set` (Escape audit), possibly new `accessibility.py` module. Cross-refs CS-21 (SPECTRUM_PALETTE), CS-06 / CS-23 / CS-60 (dialog patterns), existing Keyboard shortcuts USER-FLAGGED register entry (pairs). Multi-phase task — design + scope decision is one phase; first batch (palette + Escape audit + keyboard shortcuts) one phase; broader rollout follows. **Risk:** screen reader support has the highest cost-per-platform; defer until the rest of the batch lands. |
+| ⏳ | 🟡 | **Modeless dialogs — relax CS-06 / CS-60 `grab_set` so the main window stays interactive (USER-FLAGGED, Phase 4al)** | USER-FLAGGED at end of Phase 4al (step 5 elicitation). User: "Is it possible for pop ups to not 'lock out' the main window? It would be nice sometimes to be able to have a pop up open (e.g. the Plot Settings window) while also being able to work on the main window." Today CS-06 / CS-23 / CS-60 enforce a modal contract on the Plot Settings dialog (`tk.Toplevel` with `transient(parent)` + `grab_set()` — `plot_settings_dialog.py:584`). The grab makes the main window non-interactive until the dialog is dismissed. **`StyleDialog` is already modeless per CS-05** (`style_dialog.py:553`: "Modeless: no transient / no grab_set"), so the pattern the user wants already exists in the codebase — Plot Settings just chose modal. The user's request is essentially: relax CS-06 / CS-60's modal lock to match CS-05's modeless behaviour. **Architecture proposal (lock pending):** drop `grab_set()` from `PlotConfigDialog.__init__`, keep `transient(parent)` so the dialog stays atop the main window but doesn't block input. The dialog already lives in `_open_dialogs` per-host registry (CS-06: one dialog per tab) — re-opening focuses the existing one rather than constructing a new one, which is exactly what modeless dialogs need. **Lock decisions for the implementing session:** (i) which dialogs are in scope — Plot Settings only (CS-06 / CS-60), or every CS-23 modal (project-load mismatch dialog, Save As, etc.)? (ii) what happens when the user mutates the underlying graph (e.g. adds a node) while Plot Settings is open — does the dialog's `_plots_by_role` need to refresh (pairs with the existing "plots_by_role frozen at open time" Claude-surfaced friction note from Phase 4ak), or is "re-open to refresh" still acceptable? (iii) does Cancel still revert via `_snapshot` (CS-23 semantic preserved), or does live-preview (USER-FLAGGED Phase 4ak register entry) become the natural follow-on? (iv) does the StyleDialog modeless precedent give us a clean playbook to copy, or are there CS-06-specific complications (e.g. cross-tab pending-edit state model from CS-60)? **Affected:** `plot_settings_dialog.py` (`grab_set()` call + module docstring), CS-06 / CS-23 / CS-60 lock relaxations, tests asserting modal behaviour (search `test_plot_settings_dialog.py` for any `grab_set`-aware assertion — likely none today), the load-time project-mismatch dialog (separate question — it SHOULD probably stay modal because it represents an error needing acknowledgement). Cross-refs CS-05 (existing modeless precedent), CS-06 (current modal lock), CS-23 (button row + Cancel semantics), CS-60 (unified PlotConfigDialog), the existing "Live-preview vs Apply button" register entry (pairs — modeless + live-preview together would be the most natural CS-06 evolution), and the Phase 4ak "plots_by_role frozen at open time" friction note (becomes urgent if dialog is modeless and graph mutations happen during open). Small phase if scoped to Plot Settings only (one-line change + test sweep); medium if scoped to all CS-23 modals; pairs with live-preview for a larger meta-UX phase. |
+| ⏳ | 🟢 | **Retire the global "Baseline curves" top-bar checkbox — per-node toggle has subsumed it (USER-FLAGGED, Phase 4al)** | USER-FLAGGED at end of Phase 4al (step 5 elicitation). User: "the baseline curves checkbox is probably no longer needed since we've moved that control to the data panel." Today `uvvis_tab.py:686` packs a `tk.Checkbutton("Baseline curves", variable=self._show_baseline_curves)` into the top bar; default off (CS-29). The renderer (`_redraw` line 2232) gates the dashed-baseline overlay loop on BOTH (a) the global `_show_baseline_curves` checkbox AND (b) the per-node `style["show_baseline_curve"]` (CS-36, default True). The per-node gate was added in Phase 4r alongside the data-panel surface for it — the user's observation is correct: the global checkbox is now redundant when every per-node row exposes the same control. Retiring the global gate is a small cleanup: delete the Checkbutton + the `_show_baseline_curves` BooleanVar + the outer `if self._show_baseline_curves.get():` guard in `_redraw`. The per-node `bn.style.get("show_baseline_curve", True)` filter inside the loop is the new single-source-of-truth. **Lock decisions for the implementing session:** (i) does the new default flip from "off globally, on per-node" to "on per-node out of the box" — i.e. baseline overlays appear immediately when a baseline is committed, with the user explicitly hiding via the per-node toggle? (today's off-by-default global gate hides ALL baselines until the user opts in.) Likely yes for consistency with the per-node default of True. (ii) does removal cascade through any test asserting the global checkbox's existence (`grep _show_baseline_curves test_uvvis_tab.py` first; likely a few tests need their setup updated). (iii) does the manifest (CS-46) carry the global `_show_baseline_curves` state? (no — it's tab-private UI state, not in `_plot_config` or the graph). (iv) does CS-29 invariant doc text need updating to reflect the per-node-only model? **Affected:** `uvvis_tab.py` (3 sites: BooleanVar init line 446, Checkbutton lines 686-691, `_redraw` gate line 2232); test_uvvis_tab.py (any test referencing `_show_baseline_curves` or `_baseline_curves_cb` needs its setup adjusted); COMPONENTS.md CS-29 / CS-36 invariant texts. Small phase — half a day at most. Cross-refs CS-29 (the original Phase 4o baseline overlay feature), CS-36 (the Phase 4r per-node toggle), Phase 4r friction context. **Quality-of-life win:** removes one top-bar widget AND clarifies that baseline visibility is per-node concern, not a global toggle. |
 
 ### Friction points carried forward from Phase 4r
 
@@ -3410,13 +3413,14 @@ polish-level and deferrable. **Do not fix until the relevant
 subsequent Phase 4 session.**
 
 1. 🟡 **USER-FLAGGED Per-axis settings ladder — ~~Phase 4aj
-   through~~ ~~Phase 4ak through~~ Phase 4al through 4an.**
-   CS-60 is the foundation only. ~~The next five phases each
-   ship one slice: 4aj relocates `tick_direction` from Plot
-   Settings → per-axis tabs (CS-56 relaxation, smallest
-   possible first relocation);~~ ✅ Phase 4aj slot closed
-   (CS-61): `tick_direction` widget mirrored across all five
-   per-axis tabs sharing one Tk var; new
+   through~~ ~~Phase 4ak through~~ ~~Phase 4al through 4an~~
+   Phase 4am through 4an.** CS-60 is the foundation only.
+   ~~The next five phases each ship one slice: 4aj
+   relocates `tick_direction` from Plot Settings → per-axis
+   tabs (CS-56 relaxation, smallest possible first
+   relocation);~~ ✅ Phase 4aj slot closed (CS-61):
+   `tick_direction` widget mirrored across all five per-axis
+   tabs sharing one Tk var; new
    `_KEY_TO_TAB["tick_direction"] = "primary_x"` dirty pin;
    flat schema preserved. ~~4ak invents the per-axis-role
    nested schema in `_USER_DEFAULTS` with migration shim +
@@ -3429,23 +3433,29 @@ subsequent Phase 4 session.**
    slot); Global "Per-axis label overrides" mirror section
    sharing Tk vars with per-axis tab Entries; `plots_by_role`
    constructor kwarg + `tk.Listbox` rendering for populated
-   roles. Per-axis tick_direction RENDERING is deferred to
-   Phase 4al (the schema stores per-axis values; the renderer
-   still applies primary_x's value uniformly across all
-   axes). axis_label_override RENDERING is wired this phase
-   for all five roles. The remaining three phases each ship
-   one slice: 4al adds per-axis tick_direction rendering AND
-   the "Move to ▾" picker on each plot-list row that writes
-   `y_axis` style key (CS-50); 4am adds range / autoscale /
+   roles. ~~Per-axis tick_direction RENDERING is deferred to
+   Phase 4al (the schema stores per-axis values; the
+   renderer still applies primary_x's value uniformly across
+   all axes).~~ ✅ Phase 4al slot closed (CS-63): the
+   renderer splits its tick_params calls into five per-axis-
+   role invocations (primary_x / primary_y / secondary_x
+   sibling / secondary_y twin / tertiary_y twin); the
+   wavelength twin's previously-hardcoded `direction="in"`
+   reads through `_per_axis_tick_direction(cfg,
+   "secondary_x")`; the Move-to Combobox lands on each of
+   the three Y-axis tabs writing `style["y_axis"]` via
+   `graph.set_style`. axis_label_override RENDERING was
+   wired in Phase 4ak for all five roles. The remaining two
+   phases each ship one slice: 4am adds range / autoscale /
    scale (linear/log); 4an handles tick spacing + polish.
    **Cross-ref:** see the canonical axis-double-click
    register entry above for the multi-phase plan AND the
-   Phase 4aj + 4ak partial annotations. Reasoning level
-   ~~for 4ak is extra-high (schema invention + migration
-   shim + dual-surface UI);~~ for 4al is now slightly higher
-   than originally scoped (mechanical against the locked
-   schema PLUS per-axis tick rendering wire-up); 4am / 4an
-   stay normal.
+   Phase 4aj + 4ak + 4al partial annotations. Reasoning
+   level ~~for 4ak is extra-high (schema invention +
+   migration shim + dual-surface UI);~~ ~~for 4al is now
+   slightly higher than originally scoped (mechanical
+   against the locked schema PLUS per-axis tick rendering
+   wire-up);~~ 4am / 4an stay normal.
 
 2. 🟡 **USER-FLAGGED `_USER_DEFAULTS` tab-type split.**
    See the new canonical register entry above. Becomes
@@ -3535,19 +3545,15 @@ Claude-surfaced 🟢 items below are polish-level and
 deferrable. **Do not fix until the relevant subsequent
 Phase 4 session.**
 
-1. 🟡 **USER-FLAGGED Per-axis settings ladder continues
-   (Phase 4ak through 4an).** Cross-ref Phase 4ai friction
-   #1 above (canonical multi-phase plan with the Phase 4aj
-   slot now ✅). 4ak is the next slice: invents the per-
-   axis-role nested schema in `_USER_DEFAULTS` with a
-   migration shim from the current flat dict, mirrors axis
-   label override on Global, and populates the read-only
-   "Plots on this axis" list inside each per-axis tab.
-   Reasoning level for 4ak is **extra-high or max** —
-   schema invention + migration shim + dual-surface UI
-   (axis label mirror) + plot-list population in one phase.
-   The 4ak schema flip ALSO resolves the two friction items
-   below (items 2 + 3) as a natural side-effect.
+1. 🟡 **USER-FLAGGED Per-axis settings ladder continues —
+   ~~Phase 4ak through 4an~~ Phase 4am through 4an.**
+   Cross-ref Phase 4ai friction #1 above (canonical
+   multi-phase plan with the Phase 4aj + 4ak + 4al slots
+   now ✅). ~~4ak is the next slice~~ ✅ Phase 4ak (CS-62):
+   per-axis schema invention + migration shim + axis label
+   mirror + plots_by_role inventory. ✅ Phase 4al (CS-63):
+   per-axis tick rendering + Move-to Combobox writing
+   `style["y_axis"]`. 4am / 4an remain.
 
 2. 🟢 ~~**Shared-var UX is dishonest by design (Claude-
    surfaced, Phase 4aj artifact).** Editing the
@@ -3677,46 +3683,29 @@ unresolved from Phase 4aj. **Do not fix until the
 relevant subsequent Phase 4 session.**
 
 1. 🟡 **USER-FLAGGED Per-axis settings ladder continues
-   (Phase 4al through 4an).** Cross-ref Phase 4ai friction
+   (Phase 4am through 4an).** Cross-ref Phase 4ai friction
    #1 above (canonical multi-phase plan with the Phase 4aj
-   + 4ak slots now ✅). 4al is the next slice: wires
-   per-axis tick_direction rendering (CS-62 stores per-
-   axis values but the renderer applies primary_x's slot
-   uniformly today — deferred friction #2 below) AND adds
-   the "Move to ▾" picker on each plot-list row that
-   writes the `y_axis` style key (CS-50 already locked).
-   4am adds range / autoscale / scale (linear/log); 4an
-   handles tick spacing + polish. Reasoning level for 4al
-   is **normal** (mechanical against the now-locked
-   schema PLUS the per-axis tick rendering wire-up — the
-   helper `_per_axis_tick_direction(cfg, tab_role)`
-   already exists in `uvvis_tab.py`, the loose end is
-   threading per-role calls through `_redraw`'s
-   `tick_params` invocations).
+   + 4ak + 4al slots now ✅). ~~4al is the next slice~~ ✅ Resolved in Phase 4al (CS-63):
+   wires per-axis tick rendering (five tick_params call
+   sites split per role) AND adds the Move-to Combobox on
+   the three Y-axis Plot Settings tabs (writes
+   `style["y_axis"]` via `graph.set_style`). 4am adds
+   range / autoscale / scale (linear/log); 4an handles
+   tick spacing + polish.
 
-2. 🟠 **USER-FLAGGED bug: changing Secondary X tick
-   direction affects Primary X but not Secondary X.** User
-   observed: editing the tick_direction radio on the
-   Secondary X per-axis tab (the wavelength↔energy twin)
-   visually moves the primary X axis ticks instead of the
-   secondary one. **Root cause:** CS-62 stores per-axis
-   tick_direction values in `axes[<role>]["tick_direction"]`,
-   but `_redraw` reads `_per_axis_tick_direction(cfg,
-   "primary_x")` and applies it uniformly across every
-   axis — the renderer's per-axis differentiation is
-   explicitly deferred to Phase 4al per the CS-62
-   decision lock. The user's Secondary X edit IS stored
-   correctly in `axes["secondary_x"]["tick_direction"]`,
-   but the renderer doesn't read it yet; the canonical
-   primary_x value is what hits matplotlib. The hardcoded
-   `sec.tick_params(axis="x", direction="in",
-   labelsize=8)` at the wavelength-twin construction
-   point also ignores the per-axis schema entirely (the
-   "in" is hardcoded, not read from
-   `axes["secondary_x"]["tick_direction"]`). **Cross-ref:**
-   resolution lands in Phase 4al's per-axis tick rendering
-   wire-up. No new register entry — folds into the
-   canonical per-axis ladder above.
+2. ~~🟠 **USER-FLAGGED bug: changing Secondary X tick
+   direction affects Primary X but not Secondary X.**~~
+   ✅ Resolved in Phase 4al (CS-63). The renderer now
+   splits `ax.tick_params(direction=...)` into five
+   per-axis-role calls (primary_x / primary_y / secondary_x
+   sibling / secondary_y twin / tertiary_y twin) and the
+   wavelength twin's previously-hardcoded `direction="in"`
+   reads from `_per_axis_tick_direction(cfg,
+   "secondary_x")`. Editing the Secondary X tick direction
+   radio in Plot Settings now visually moves only the
+   secondary X axis ticks. Test
+   `test_secondary_x_distinct_from_primary_x` pins the
+   non-collision.
 
 3. 🟡 **USER-FLAGGED Live-preview vs Apply button**
    continues. See the new canonical register entry above
@@ -3815,6 +3804,160 @@ relevant subsequent Phase 4 session.**
     content reasons (e.g. a future Appearance section
     refactor). No register entry — folds in alongside
     the per-axis ladder above.
+
+### Friction points carried forward from Phase 4al
+
+These are concrete obstacles the next Phase 4 session will hit.
+Phase 4al shipped CS-63 — the second slice of the per-axis
+settings ladder after CS-62's schema invention: the renderer
+splits `ax.tick_params(direction=...)` into five per-axis-role
+calls (primary_x / primary_y / secondary_x sibling / secondary_y
+twin / tertiary_y twin), the wavelength↔energy twin's
+previously-hardcoded `direction="in"` reads through
+`_per_axis_tick_direction(cfg, "secondary_x")`, and the three
+Y-axis tabs gain a Move-to Combobox below their plot-list
+Listbox that writes the CS-50 `style["y_axis"]` value via
+`graph.set_style`. The Phase 4ak USER-FLAGGED bug (editing
+Secondary X tick direction visually moved Primary X instead) is
+resolved. The user contributed THREE new USER-FLAGGED register
+entries at step 5 (accessibility features umbrella; modeless
+dialogs / drop `grab_set` from Plot Settings; retire the global
+"Baseline curves" top-bar checkbox now that the per-node
+toggle has subsumed it). FOUR Claude-surfaced 🟢 items below
+are polish-level and deferrable. **Do not fix until the
+relevant subsequent Phase 4 session.**
+
+1. 🟡 **USER-FLAGGED Per-axis settings ladder continues
+   (Phase 4am through 4an).** Cross-ref Phase 4ai friction
+   #1 above (canonical multi-phase plan with the Phase 4aj
+   + 4ak + 4al slots now ✅). 4am adds range / autoscale /
+   scale (linear/log); 4an handles tick spacing + polish.
+   Reasoning level for both: **normal** (mechanical against
+   the locked CS-62 schema; the renderer + dialog wiring
+   patterns from CS-63 generalise cleanly to the additional
+   per-axis keys).
+
+2. 🟡 **USER-FLAGGED Accessibility features umbrella.** See
+   the new canonical register entry above (added in Phase
+   4al step 5). Open-ended architectural question — first
+   batch likely keyboard shortcuts (pairs with the existing
+   USER-FLAGGED register entry) + colour-blind-safe palette
+   swap + Escape-dismiss audit + font-scale multiplier.
+   Becomes actionable any time; reasoning level **extra-high**
+   for the first design pass (scope decision + lock decisions
+   span ~5 sub-axes), **normal** for individual sub-batches
+   thereafter.
+
+3. 🟡 **USER-FLAGGED Modeless dialogs — drop `grab_set` from
+   Plot Settings.** See the new canonical register entry
+   above (added in Phase 4al step 5). One-line change to
+   `plot_settings_dialog.py:584`; lock relaxation across
+   CS-06 / CS-23 / CS-60. StyleDialog already modeless per
+   CS-05 — playbook exists. Pairs naturally with the
+   existing Phase 4ak USER-FLAGGED "Live-preview vs Apply"
+   register entry; together they form the most natural
+   evolution of CS-06's modal contract. Reasoning level:
+   **normal** if scoped to Plot Settings only; **extra-high**
+   if scoped to all CS-23 modals.
+
+4. 🟡 **USER-FLAGGED Retire global "Baseline curves" top-bar
+   checkbox.** See the new canonical register entry above
+   (added in Phase 4al step 5). Per-node CS-36 toggle in
+   the data panel has subsumed the global CS-29 toggle.
+   Small phase — half a day at most. Reasoning level:
+   **normal**.
+
+5. 🟡 **USER-FLAGGED Live-preview vs Apply button**
+   continues. Cross-ref Phase 4ak friction #3 (becomes more
+   actionable now that 4al has shipped routing-as-immediate-
+   commit — that asymmetry is exactly the kind of CS-06
+   working-copy edge case the live-preview phase needs to
+   address). See canonical register entry "Live-preview vs
+   Apply button" above.
+
+6. 🟡 **USER-FLAGGED Apply-to-all icon on per-axis tabs**
+   continues. Cross-ref Phase 4ak friction #4. Now more
+   actionable: per-axis tabs carry three real widgets
+   (tick_direction + axis_label_override from Phase 4ak +
+   the Phase 4al Move-to Combobox). See canonical register
+   entry "Apply-to-all icon on per-axis Plot Settings tabs"
+   above.
+
+7. 🟡 **USER-FLAGGED Axis nomenclature rename** continues.
+   Cross-ref Phase 4ak friction #5. Phase 4al's CS-63
+   inherits CS-62's locks unchanged for axis role names —
+   the rename's blast radius (CS-44 / CS-50 / CS-60 / CS-61
+   / CS-62 / CS-63) grows by one CS-section per ladder
+   phase. See canonical register entry "Axis nomenclature
+   rename" above.
+
+8. 🟡 **USER-FLAGGED Rich-text axis labels (mathtext)**
+   continues. Cross-ref Phase 4ak friction #6. Independent
+   of the per-axis ladder. See canonical register entry
+   "Rich-text axis labels" above.
+
+9. 🟢 **Cancel-with-pending semantics for routing edits
+   (Claude-surfaced, Phase 4al artifact).** The Move-to
+   Combobox writes `style["y_axis"]` immediately via
+   `graph.set_style` — bypassing the dialog's working-copy
+   model. Consistent with CS-50 Style-dialog behaviour
+   (per-node style edits commit on pick across the whole
+   app) but ASYMMETRIC with the rest of Plot Settings'
+   Apply/Save/Cancel contract: the user can route a plot
+   from primary_y to secondary_y, click Cancel, and the
+   routing change persists. The asymmetry is intentional
+   (working-copy makes no sense for per-node style edits)
+   but worth documenting for users. Folds naturally into
+   the USER-FLAGGED Live-preview register entry above —
+   the reconciliation that phase ships should explicitly
+   address per-node-style edits' commits-on-pick model.
+   No register entry; folds into live-preview.
+
+10. 🟢 **Move-to picker silent-no-op without listbox row
+    (Claude-surfaced, Phase 4al artifact).** Selecting a
+    Combobox value with no Listbox row selected silently
+    no-ops — the combobox resets to its empty placeholder
+    but no toast / tooltip / hint label says "Select a
+    plot first". A user accustomed to error feedback might
+    be briefly confused. Polish-level; could surface a
+    Tooltip via the existing `tooltip.py` (CS-42) or an
+    inline status label below the Combobox. No register
+    entry; folds into the per-axis ladder above.
+
+11. 🟢 **Label-collision tie-breaker is first-match-wins
+    (Claude-surfaced, Phase 4al artifact).** If two visible
+    nodes on the same source axis share a label, the
+    `_on_route_plot_from_dialog` host method routes only
+    the first match (in `_spectrum_nodes()` →
+    `_second_derivative_nodes()` → `_peak_list_nodes()`
+    iteration order). Rare in practice (labels are
+    typically unique within a graph) but could surprise a
+    user. Mitigations: (a) require unique labels via a
+    sidebar validation (existing CS-33 label-edit gate
+    already enforces some discipline); (b) walk EVERY
+    match and route them all (current label-collision
+    model is "first match" — could become "all matches");
+    (c) prompt the user with a node-ID picker. Polish-
+    level; no register entry; folds into the per-axis
+    ladder above.
+
+12. 🟢 **Combobox virtual event dispatch unreliable in suite
+    mode (Claude-surfaced, Phase 4al testing artifact).**
+    During Phase 4al test development, `event_generate("<<ComboboxSelected>>")`
+    fired synchronously in isolation but intermittently
+    dropped when the full suite had populated/destroyed
+    many Toplevels first (5 tests originally failed).
+    Refactor: extracted the closure handler into
+    `PlotConfigDialog._on_move_to_choose(role, listbox,
+    var)` so tests call the method directly. The
+    underlying Tk event dispatch behaviour was not
+    investigated — could be a Tk version interaction or
+    matplotlib TkAgg canvas grab leakage from prior test
+    classes. The refactored testing pattern (extract
+    closure → method; tests bypass event system) is
+    worth applying to any other event-driven UI tests
+    that exhibit similar flakiness. No register entry;
+    surface if it bites again.
 
 ---
 
@@ -4030,7 +4173,7 @@ the resolving phase + commit SHA appended to the row.
 
 ---
 
-*Document version: 1.36 — May 2026*
+*Document version: 1.37 — May 2026*
 *1.1: Known Bugs register added 2026-04-27 after Phase 4b manual testing.*
 *1.2: Phase 4c — baseline correction lands; B-001 / B-003 / B-004
 resolved; Phase 4c friction points logged.*

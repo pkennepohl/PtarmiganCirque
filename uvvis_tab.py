@@ -1755,12 +1755,15 @@ class UVVisTab(tk.Frame):
         ``on_apply`` so the tab repaints. Phase 4ak (CS-62) threads
         the per-axis plot inventory through ``plots_by_role`` so
         each per-axis Notebook tab can render its "Plots on this
-        axis" list.
+        axis" list. Phase 4al threads ``on_route_plot`` so the
+        Move-to picker on each Y-axis tab can write
+        ``style["y_axis"]`` directly via ``graph.set_style``.
         """
         plot_settings_dialog.open_plot_config_dialog(
             self, self._plot_config,
             on_apply=self._on_plot_config_changed,
             plots_by_role=self._compute_plots_by_role(),
+            on_route_plot=self._on_route_plot_from_dialog,
         )
 
     def _on_plot_config_changed(self) -> None:
@@ -1771,6 +1774,55 @@ class UVVisTab(tk.Frame):
         UI state, so it does not flow through the graph subscription.
         """
         self._redraw()
+
+    def _on_route_plot_from_dialog(
+        self,
+        source_tab_role: str,
+        label: str,
+        target_tab_role: Optional[str],
+    ) -> None:
+        """Phase 4al: Move-to picker callback from the Plot Settings dialog.
+
+        The dialog speaks tab-role-key space (``primary_y`` /
+        ``secondary_y`` / ``tertiary_y``); the host translates into
+        the CS-50 ``style["y_axis"]`` value via the inverse of
+        :data:`_Y_AXIS_ROLE_TO_TAB` and writes it through
+        ``graph.set_style``. ``target_tab_role=None`` clears the
+        override (restoring per-NodeType default routing).
+
+        Label collisions across axes are resolved by the source role:
+        only nodes currently routed to ``source_tab_role`` are
+        eligible. The first matching visible node wins — in the
+        common case where labels are unique within a graph this is
+        deterministic; if a graph carries two visible nodes with
+        the same label on the same axis, the user can rename one
+        through the per-node Style dialog.
+
+        ``set_style`` fires NODE_STYLE_CHANGED, which the tab's
+        subscription consumes and translates into a redraw — no
+        explicit ``_redraw`` call needed here.
+        """
+        tab_to_style = {v: k for k, v in _Y_AXIS_ROLE_TO_TAB.items()}
+        source_style = tab_to_style.get(source_tab_role)
+        target_style = (
+            tab_to_style.get(target_tab_role)
+            if target_tab_role is not None else None
+        )
+        if source_style is None:
+            return
+        for node in (
+            list(self._spectrum_nodes())
+            + list(self._second_derivative_nodes())
+            + list(self._peak_list_nodes())
+        ):
+            if not bool(node.style.get("visible", True)):
+                continue
+            if node.label != label:
+                continue
+            if _resolve_y_axis_role(node.type, node.style) != source_style:
+                continue
+            self._graph.set_style(node.id, {"y_axis": target_style})
+            return
 
     def _compute_plots_by_role(self) -> dict[str, tuple[str, ...]]:
         """Build the ``plots_by_role`` mapping the dialog consumes (Phase 4ak).
@@ -1972,6 +2024,7 @@ class UVVisTab(tk.Frame):
             on_apply=self._on_plot_config_changed,
             tab=hit.role,
             plots_by_role=self._compute_plots_by_role(),
+            on_route_plot=self._on_route_plot_from_dialog,
         )
 
     def _on_unit_change(self):
@@ -2054,18 +2107,26 @@ class UVVisTab(tk.Frame):
         self._axes_by_role = {"primary": ax}
         first_node_type_per_role: dict[str, NodeType] = {}
 
-        # Phase 4ak (CS-62): tick_direction lives nested per axis after
-        # the schema invention. The renderer reads primary_x's slot as
-        # the canonical value and applies it uniformly to every axis
-        # for now — per-axis differentiation lands in the follow-up
-        # phase. The helper falls back through the legacy flat
-        # ``cfg["tick_direction"]`` to the factory default so a
-        # pre-migration ``_plot_config`` keeps rendering identically.
-        tick_dir = _per_axis_tick_direction(cfg, "primary_x")
+        # Phase 4al: tick_direction reads per axis-role. The schema
+        # invention from Phase 4ak (CS-62) stored a tick_direction per
+        # role in ``cfg["axes"][<role>]``; this phase wires each
+        # tick_params call site to its own role. Primary x/y split via
+        # ``axis="x"`` / ``axis="y"`` calls on ``ax``; twin Y-axes
+        # read their own role at creation time in ``get_axis``; the
+        # secondary_x sibling axis (wavelength↔energy twin) reads
+        # from ``secondary_x`` instead of the previous hardcoded
+        # ``"in"``. The helper's fallback chain still covers
+        # pre-migration ``_plot_config`` shapes via the legacy flat
+        # ``cfg["tick_direction"]`` key.
         tick_size = cfg.get("tick_label_font_size", 9)
         tertiary_offset = float(
             cfg.get("tertiary_axis_offset", _TERTIARY_AXIS_OFFSET_FRAC))
 
+        # CS-44 y-axis role keys ("primary"/"secondary"/"tertiary") map
+        # to the dialog's tab role keys ("primary_y" etc.) — see
+        # :data:`_Y_AXIS_ROLE_TO_TAB`. The twin Y-axis lookup uses
+        # this so a future renamed-axis-role lands as a one-line
+        # table edit rather than scattered string literals.
         def get_axis(role: str):
             """Return (creating if needed) the Axes for ``role``.
 
@@ -2089,7 +2150,11 @@ class UVVisTab(tk.Frame):
                     ("axes", tertiary_offset))
             else:  # pragma: no cover — defensive fallback
                 return ax
-            ax_new.tick_params(direction=tick_dir, labelsize=tick_size)
+            twin_tab_role = _Y_AXIS_ROLE_TO_TAB.get(role)
+            twin_tick_dir = _per_axis_tick_direction(cfg, twin_tab_role) \
+                if twin_tab_role else _per_axis_tick_direction(cfg, "primary_y")
+            ax_new.tick_params(
+                axis="y", direction=twin_tick_dir, labelsize=tick_size)
             self._axes_by_role[role] = ax_new
             return ax_new
 
@@ -2342,9 +2407,22 @@ class UVVisTab(tk.Frame):
                 fontweight=("bold" if cfg.get("title_font_bold", True) else "normal"),
             )
 
-        # Tick direction + tick label size on primary; non-primary
-        # roles already inherited these in ``get_axis`` at creation.
-        ax.tick_params(direction=tick_dir, labelsize=tick_size)
+        # Phase 4al: primary axis tick direction splits per axis-role.
+        # Both x and y of the primary Axes inherit ``tick_label_font_size``
+        # uniformly (it is a Global key), but the direction (in / out /
+        # inout) reads from the per-axis-role slot. Non-primary roles
+        # already inherited their per-role direction in ``get_axis`` at
+        # creation time.
+        ax.tick_params(
+            axis="x",
+            direction=_per_axis_tick_direction(cfg, "primary_x"),
+            labelsize=tick_size,
+        )
+        ax.tick_params(
+            axis="y",
+            direction=_per_axis_tick_direction(cfg, "primary_y"),
+            labelsize=tick_size,
+        )
 
         # ── Secondary λ(nm) axis ──────────────────────────────────────────────
         # This is an x-axis sibling on the *top* spine of the primary
@@ -2364,7 +2442,17 @@ class UVVisTab(tk.Frame):
             # "λ (nm)" string.
             sec_x_override = _axis_label_override(cfg, "secondary_x")
             sec.set_xlabel(sec_x_override or "λ (nm)", fontsize=9)
-            sec.tick_params(axis="x", direction="in", labelsize=8)
+            # Phase 4al: the previously-hardcoded ``direction="in"`` now
+            # reads from the ``secondary_x`` per-axis slot so the user's
+            # Plot Settings choice on the Secondary X tab applies. The
+            # secondary-x tick label font size stays at 8pt (the
+            # original hardcoded value); ``tick_label_font_size``
+            # remains a primary-only key.
+            sec.tick_params(
+                axis="x",
+                direction=_per_axis_tick_direction(cfg, "secondary_x"),
+                labelsize=8,
+            )
 
         # ── Invert nm axis ────────────────────────────────────────────────────
         if unit == "nm":
