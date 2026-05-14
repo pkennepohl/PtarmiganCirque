@@ -605,10 +605,13 @@ class UVVisTab(tk.Frame):
         self._x_unit_prev = "nm"
         self._y_unit      = tk.StringVar(value="A")
         self._show_nm_axis = tk.BooleanVar(value=True)
-        # Phase 4o (CS-29): toggle for the dashed baseline-curve
-        # overlay. Off by default — opt-in review aid; existing flows
-        # render as before until the user enables it.
-        self._show_baseline_curves = tk.BooleanVar(value=False)
+        # Phase 4ao (CS-67) retired the global ``_show_baseline_curves``
+        # BooleanVar and its top-bar Checkbutton. Baseline-curve
+        # visibility is now per-node via CS-36's
+        # ``style["show_baseline_curve"]`` (default True), surfaced as
+        # the per-row ``~`` toggle in ScanTreeWidget. The renderer's
+        # outer global guard is removed; the per-node filter inside
+        # the overlay loop is the single source of truth.
 
         # ── Axis limits (empty string = auto) ────────────────────────────────
         self._xlim_lo = tk.StringVar(value="")
@@ -844,16 +847,9 @@ class UVVisTab(tk.Frame):
                                      command=self._redraw, font=F9)
         self._nm_cb.pack(side=tk.LEFT, padx=2)
 
-        # Phase 4o (CS-29): "Baseline curves" toggle — when on, every
-        # visible BASELINE node gets a dashed overlay of its fitted
-        # baseline (parent_absorbance - corrected_absorbance) so the
-        # user can judge fit quality before committing.
-        self._baseline_curves_cb = tk.Checkbutton(
-            bar, text="Baseline curves",
-            variable=self._show_baseline_curves,
-            command=self._redraw, font=F9,
-        )
-        self._baseline_curves_cb.pack(side=tk.LEFT, padx=2)
+        # Phase 4ao (CS-67) retired the global "Baseline curves"
+        # Checkbutton — CS-36's per-node ``~`` row toggle is now the
+        # single source of truth for dashed-overlay visibility.
 
         # Phase 4n CS-27 retired the top-bar "+ Add to TDDFT Overlay"
         # bulk button. Each ScanTreeWidget row now carries a per-row
@@ -2375,14 +2371,13 @@ class UVVisTab(tk.Frame):
                                     color=colour,
                                     alpha=style.get("fill_alpha", 0.08))
 
-        # ── Baseline-curve overlays (CS-29, Phase 4o) ─────────────────
-        # Opt-in dashed overlay: for every visible BASELINE node,
-        # walk one hop in the graph to recover the fitted baseline
-        # function and plot it in the BASELINE node's colour with a
-        # dashed linestyle. Drawn after the main spectrum loop so the
-        # dashed line sits visually on top of its parent. Helper is
-        # silent on every failure path (returns None) so a malformed
-        # graph cannot crash this branch.
+        # ── Baseline-curve overlays (CS-36, Phase 4ao / CS-67) ────────
+        # For every visible BASELINE node, walk one hop in the graph
+        # to recover the fitted baseline function and plot it in the
+        # BASELINE node's colour with a dashed linestyle. Drawn after
+        # the main spectrum loop so the dashed line sits visually on
+        # top of its parent. Helper is silent on every failure path
+        # (returns None) so a malformed graph cannot crash this branch.
         # Phase 4u (CS-44): the overlay is routed via
         # ``_resolve_y_axis_role`` for consistency with the main
         # loop. BASELINE → "primary" today by NodeType default, so
@@ -2394,42 +2389,40 @@ class UVVisTab(tk.Frame):
         # the main BASELINE render (otherwise the main curve and
         # its overlay would land on different axes — visually
         # broken).
-        if self._show_baseline_curves.get():
-            for bn in self._spectrum_nodes():
-                if bn.type != NodeType.BASELINE:
-                    continue
-                if not bool(bn.style.get("visible", True)):
-                    continue
-                # Phase 4r (CS-36): per-node baseline-curve gate. The
-                # global ``_show_baseline_curves`` toggle is the
-                # master switch (already checked above); this is the
-                # downstream filter so the user can hide individual
-                # overlays without dimming all of them. Default True
-                # — backwards compat for existing graphs that
-                # predate the key.
-                if not bool(bn.style.get("show_baseline_curve", True)):
-                    continue
-                pair = uvvis_baseline.compute_baseline_curve(self._graph, bn)
-                if pair is None:
-                    continue
-                bwl, bcurve = pair
-                bx = _wavelength_to_x(bwl, unit)
-                by = _absorbance_to_y(bcurve, self._y_unit.get(), bn.type)
-                border = np.argsort(bx)
-                bx, by = bx[border], by[border]
-                bcolour = bn.style.get("color", "#333333")
-                blabel = (f"{bn.label} (baseline)"
-                          if bn.style.get("in_legend", True) else None)
-                baseline_target = get_axis(
-                    _resolve_y_axis_role(bn.type, bn.style)
-                )
-                baseline_target.plot(
-                    bx, by,
-                    color=bcolour,
-                    linestyle="--",
-                    linewidth=bn.style.get("linewidth", 1.5),
-                    alpha=0.7,
-                    label=blabel)
+        # Phase 4ao (CS-67) retired the global ``_show_baseline_curves``
+        # outer guard — CS-36's per-node ``style["show_baseline_curve"]``
+        # is now the single source of truth (default True per CS-36,
+        # so existing graphs that predate the key render their overlays
+        # by default; users hide individual overlays via the per-row
+        # ``~`` toggle in ScanTreeWidget).
+        for bn in self._spectrum_nodes():
+            if bn.type != NodeType.BASELINE:
+                continue
+            if not bool(bn.style.get("visible", True)):
+                continue
+            if not bool(bn.style.get("show_baseline_curve", True)):
+                continue
+            pair = uvvis_baseline.compute_baseline_curve(self._graph, bn)
+            if pair is None:
+                continue
+            bwl, bcurve = pair
+            bx = _wavelength_to_x(bwl, unit)
+            by = _absorbance_to_y(bcurve, self._y_unit.get(), bn.type)
+            border = np.argsort(bx)
+            bx, by = bx[border], by[border]
+            bcolour = bn.style.get("color", "#333333")
+            blabel = (f"{bn.label} (baseline)"
+                      if bn.style.get("in_legend", True) else None)
+            baseline_target = get_axis(
+                _resolve_y_axis_role(bn.type, bn.style)
+            )
+            baseline_target.plot(
+                bx, by,
+                color=bcolour,
+                linestyle="--",
+                linewidth=bn.style.get("linewidth", 1.5),
+                alpha=0.7,
+                label=blabel)
 
         # ── Peak list overlays (CS-19, Phase 4h) ──────────────────────
         # Render every visible PEAK_LIST node as a scatter on top of
