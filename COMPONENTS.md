@@ -8565,7 +8565,230 @@ deferred per-axis tick rendering scope).
 
 ---
 
-*Document version: 1.37 — May 2026*
+## CS-63 — Per-axis tick rendering + Move-to picker on Y-axis tabs (Phase 4al)
+
+### Responsibility
+
+Second slice of the per-axis settings ladder (CS-60 → CS-61 →
+CS-62 → CS-63 → CS-64 → CS-65). Wires the renderer to consume
+the per-axis `tick_direction` slots CS-62 invented, AND adds the
+Plot Settings dialog's Y-axis-tab Move-to Combobox that mutates
+the CS-50 `style["y_axis"]` value via the host's
+`graph.set_style`. Resolves the Phase 4ak step-5 USER-FLAGGED
+"Secondary X tick direction changes Primary X" bug.
+
+### Renderer changes — `uvvis_tab._redraw`
+
+The single uniform `tick_dir = _per_axis_tick_direction(cfg,
+"primary_x")` read (CS-62 transitional behaviour) splits into
+five per-axis-role reads at the call sites:
+
+| Call site | Reads slot | Applies to |
+|---|---|---|
+| `ax.tick_params(axis="x", ...)` | `primary_x` | Primary x-axis ticks |
+| `ax.tick_params(axis="y", ...)` | `primary_y` | Primary y-axis ticks |
+| `ax_new.tick_params(axis="y", ...)` in `get_axis` for secondary twin | `secondary_y` | Right-side secondary y-axis |
+| `ax_new.tick_params(axis="y", ...)` in `get_axis` for tertiary twin | `tertiary_y` | Offset right-side tertiary y-axis |
+| `sec.tick_params(axis="x", ...)` for the wavelength↔energy sibling | `secondary_x` | Top secondary x-axis (was hardcoded `"in"`) |
+
+The `tick_label_font_size` (a Global key) still applies
+uniformly to every tick_params call as `labelsize`. The
+secondary_x sibling axis keeps its 8pt labelsize (separate from
+the Global `tick_label_font_size` per the existing CS-29 / CS-62
+convention).
+
+### Dialog changes — `plot_settings_dialog`
+
+* New module constants:
+  * `_Y_AXIS_TAB_KEYS: frozenset[str]` = `{"primary_y", "secondary_y", "tertiary_y"}`.
+  * `_MOVE_TO_OPTIONS: tuple[tuple[str, Optional[str]], ...]`
+    — four `(label, tab_role_key | None)` pairs: `"Default
+    (by NodeType)"` → `None`; `"Primary Y"` → `"primary_y"`;
+    `"Secondary Y"` → `"secondary_y"`; `"Tertiary Y"` →
+    `"tertiary_y"`.
+  * `_MOVE_TO_LABELS: tuple[str, ...]` + `_MOVE_TO_VALUE_BY_LABEL:
+    dict[str, Optional[str]]` derived helpers.
+* `_build_axis_tab_plots` walks `_Y_AXIS_TAB_KEYS` to decide
+  Listbox `state`: Y-axis tabs use `tk.NORMAL` (selectable
+  rows); X-axis tabs keep `tk.DISABLED` (CS-62 lock preserved
+  for the X tabs).
+* New helper `_build_move_to_picker(parent, role, listbox)`
+  renders a `"Move selected to:"` Label + `ttk.Combobox` row
+  below the Listbox on the three Y-axis tabs. The Combobox is
+  `state="readonly"` listing the four `_MOVE_TO_LABELS` entries.
+* New method `_on_move_to_choose(role, listbox, var)` extracted
+  from the closure so tests can drive the routing path directly
+  without relying on Tk's `<<ComboboxSelected>>` virtual event
+  dispatch (the dispatch turned out to be flaky in suite mode —
+  fired synchronously in isolation but intermittently dropped
+  when many Toplevels lived in the same root). The bind on
+  `<<ComboboxSelected>>` invokes the method via a one-line
+  trampoline.
+* Constructor + module factory `open_plot_config_dialog` gain
+  `on_route_plot: Callable[[str, str, Optional[str]], None] | None`
+  kwarg. Signature: `(source_tab_role, label, target_tab_role)`.
+  Both role arguments live in the dialog's tab-role-key space
+  throughout; the host owns the translation into the CS-50
+  `style["y_axis"]` value when it writes.
+
+### Host wiring — `uvvis_tab`
+
+* Both `_open_plot_settings` (⚙ button) and
+  `_on_mpl_axis_double_click` (axis double-click hit-test)
+  thread `on_route_plot=self._on_route_plot_from_dialog` through
+  `open_plot_config_dialog`.
+* New host method `_on_route_plot_from_dialog(source_tab_role,
+  label, target_tab_role)`:
+  * Translates `target_tab_role` ∈ {`"primary_y"`, `"secondary_y"`,
+    `"tertiary_y"`, `None`} into the CS-50 style value
+    (`"primary"`, `"secondary"`, `"tertiary"`, `None`) via the
+    inverse of `_Y_AXIS_ROLE_TO_TAB`.
+  * Walks visible spectrum + second-derivative + peak-list
+    nodes; finds the first match whose `node.label == label` AND
+    whose `_resolve_y_axis_role(node.type, node.style) ==
+    source_style` (source disambiguates label collisions across
+    axes).
+  * Writes `style["y_axis"] = target_style` via `graph.set_style`.
+  * Defensive silent no-ops on: unknown source role, no matching
+    visible node, invisible node match.
+* `set_style` fires `NODE_STYLE_CHANGED` which the tab's
+  subscription consumes → `_redraw`. No manual redraw call.
+
+### Locks taken (Phase 4al)
+
+* Renderer signature of `_per_axis_tick_direction(cfg,
+  tab_role)` unchanged (CS-62 lock preserved); only call-site
+  ROLE arguments change.
+* `get_axis(role)` signature + lazy-twin creation order
+  unchanged. The new per-role tick read is internal to the
+  closure body.
+* Module factory `open_plot_config_dialog` signature gains an
+  ADDITIVE kwarg; existing call sites stay backward-compatible
+  (default `None`).
+* `PlotConfigDialog.__init__` signature gains an ADDITIVE kwarg.
+* `_AXIS_KEYS` stays `("tick_direction", "axis_label_override")`
+  — the Move-to picker writes a per-NODE style key, NOT a
+  per-axis schema slot.
+* `_MOVE_TO_OPTIONS` tuple shape + four-entry value set
+  (`None`, `"primary_y"`, `"secondary_y"`, `"tertiary_y"`).
+* `_Y_AXIS_TAB_KEYS` frozen set of three keys (the three
+  CS-44 Y-axis roles mapped through `_Y_AXIS_ROLE_TO_TAB`).
+* Callback signature `on_route_plot(source_tab_role, label,
+  target_tab_role)` — three positional, tab-role-key space
+  throughout, `None` only valid for `target_tab_role`.
+* `_on_move_to_choose(role, listbox, var)` method signature on
+  `PlotConfigDialog` — tests rely on calling it directly.
+
+### Locks relaxed (canonical from CS-62 for Phase 4al only)
+
+* The CS-62 Listbox `state="disabled"` lock relaxes on the
+  three Y-axis tabs (now `state="normal"` so rows are
+  selectable). X-axis tabs preserve `state="disabled"`.
+* The "single uniform `_per_axis_tick_direction(cfg, 'primary_x')`
+  read" transitional behaviour is replaced by per-axis-role
+  reads at every call site (CS-62 deferred per-axis tick
+  rendering ✅).
+* The previously-hardcoded `sec.tick_params(axis="x",
+  direction="in", labelsize=8)` for the wavelength twin now
+  reads `direction=_per_axis_tick_direction(cfg, "secondary_x")`.
+
+### Locks held (no canonical relaxation)
+
+Every CS-60 / CS-61 / CS-62 lock the relaxations above didn't
+touch: `PlotConfigDialog` class identity + `open_plot_config_dialog`
+factory name; `_TAB_KEYS` six-tuple + canonical order;
+`_TAB_TITLES` content; `_MODIFIED_TAB_SUFFIX = " •"`; `AxisHit`
+dataclass; `classify_axis_double_click` signature + hit-test
+band constants; button row order; Apply-to-All-Tabs commits-
+locally-first contract; Cancel-with-pending confirm dialog;
+`_axis_control_vars[(role, key)]` registry idempotency on the
+`(role, key)` pair; `_on_axis_var_write(role, key, value)`
+signature; `_build_section_axis_labels` mirror section's
+five-row shape; `_DEFAULT_SECTIONS` ending with `"axis_labels"`;
+`plots_by_role` kwarg's `dict[str, tuple[str, ...]] | None`
+type; the `(no plots on this axis)` placeholder text; Listbox
+height ≤ 6 cap.
+
+All CS-44 + CS-50 invariants unchanged. CS-46 manifest schema
+unchanged — Phase 4al touches no persistence schema (the
+NODE_STYLE_CHANGED gesture rides the existing graph round-trip).
+
+### Decision lock taken (Phase 4al)
+
+(i) **Move-to picker UX**: Combobox below Listbox on Y-axis
+tabs only (X-axis tabs get no picker — every visible plot
+necessarily sits on primary_x); auto-applies on
+`<<ComboboxSelected>>` (with the dispatch-bypass refactor noted
+above); resets to empty placeholder after every choose so the
+user can route another plot without first clearing the dropdown.
+(ii) **Tab-role-key space throughout the dialog**: both the
+combobox values and the callback parameters use tab keys
+(`"primary_y"` etc.) rather than CS-50 style values (`"primary"`
+etc.); the host owns the translation. Keeps the dialog in one
+namespace; future axis-nomenclature-rename (USER-FLAGGED
+register entry) touches one space, not two. (iii) **Source role
+disambiguates label collisions**: the picker fires
+`(source_tab_role, label, target_tab_role)` — the host filters
+to nodes currently routed to `source_tab_role`. First match
+wins (rare-case tie-breaker documented in BACKLOG.md friction
+#11). (iv) **Picker fires immediately, NOT on dialog Apply**:
+per-node style edits commit on pick (consistent with CS-50
+Style-dialog behaviour). Bypasses Plot Settings' working-copy
+Cancel semantics for these edits — asymmetry intentional;
+documented in BACKLOG.md friction #9 as a candidate for the
+USER-FLAGGED Live-preview register entry to address. (v) **Bind
+trampoline + extracted method** rather than inline closure: the
+flaky-in-suite Tk virtual-event dispatch motivated the refactor;
+the method-direct test pattern bypasses event_generate
+entirely.
+
+### Tests
+
+* New `TestUVVisTabPerAxisTickRenderingPhase4al` (7 tests):
+  mock-patched `_per_axis_tick_direction` captures the role
+  argument at each renderer call site; end-to-end "distinct
+  per-axis values land on distinct matplotlib axis tick params"
+  via `Axis.get_tick_params`; the explicit "Secondary X
+  distinct from Primary X" case the Phase 4ak user-flagged bug
+  demanded.
+* New `TestPlotConfigDialogMoveToPickerPhase4al` (16 tests):
+  module constants; Combobox presence on Y-axis tabs / absence
+  on X-axis tabs / absence when no plots; four-option list;
+  readonly state; Y-axis listbox state="normal"; callback firing
+  with row + combobox; no-fire without row; Default→None target;
+  source role from tab not row; combobox reset after choose;
+  silent no-op when callback unset; bind registration.
+* New `TestUVVisTabMoveToPickerPhase4al` (9 tests): both
+  dialog-open paths thread `on_route_plot`;
+  `_on_route_plot_from_dialog` writes `style["y_axis"]` via
+  `graph.set_style`; Default option clears the override;
+  source-role disambiguates label collisions across axes;
+  unknown label / invisible node / unknown source tab are
+  silent no-ops; routing-induced NODE_STYLE_CHANGED event drives
+  `_redraw` which re-resolves the role correctly.
+* The CS-62 test `test_plots_listbox_is_read_only` renamed to
+  `test_plots_listbox_is_disabled_on_x_axis_tabs` and pivoted
+  onto an X-axis tab (where the `state="disabled"` lock
+  survives Phase 4al's canonical relaxation).
+
+Total: +32 new across the three new test classes plus the
+rename. Full suite 1197 (was 1165).
+
+See "Friction points carried forward from Phase 4al" in
+BACKLOG.md. **Three new USER-FLAGGED register entries from
+step 5:** accessibility features umbrella; modeless dialogs
+(drop `grab_set` from Plot Settings to match CS-05 StyleDialog
+modeless precedent); retire the global "Baseline curves"
+top-bar checkbox now that the per-node CS-36 toggle has
+subsumed it. Four Claude-surfaced 🟢 polish notes documented
+inline (cancel-with-pending asymmetry on routing edits;
+silent-no-op without listbox row; label-collision first-match
+tie-breaker; Combobox virtual-event dispatch flakiness fixed
+by the extract-to-method refactor).
+
+---
+
+*Document version: 1.38 — May 2026*
 *1.1: CS-13 implementation notes added in Phase 4a.*
 *1.2: CS-14 Plot Settings Dialog added in Phase 4b.*
 *1.3: CS-15 UV/Vis Baseline Correction + CS-04 implementation
@@ -9567,5 +9790,70 @@ misleads). 1165 tests, all green (1126 + 39 new across
 `TestEnumeratePlotsByRolePhase4ak`,
 `TestUVVisTabPerAxisSchemaPhase4ak`, plus inversions in
 `TestPlotConfigDialogTickDirectionRelocationPhase4aj`).*
+*1.38: CS-63 — per-axis tick rendering + Move-to picker on
+Y-axis tabs added in Phase 4al. Second slice of the per-axis
+settings ladder; consumes the CS-62 schema slots invented in
+Phase 4ak. **Lock relaxations taken:** (1) the CS-62 single
+uniform `_per_axis_tick_direction(cfg, "primary_x")` read in
+`uvvis_tab._redraw` splits into five per-axis-role reads at the
+five tick_params call sites (primary x / primary y / secondary
+twin / tertiary twin / wavelength-twin sibling); (2) the
+previously-hardcoded `sec.tick_params(axis="x",
+direction="in", labelsize=8)` for the wavelength↔energy
+sibling axis now reads `direction=_per_axis_tick_direction(cfg,
+"secondary_x")`; (3) the CS-62 Listbox `state="disabled"` lock
+relaxes on the three Y-axis tabs to `state="normal"` so rows are
+selectable (X-axis tabs keep `state="disabled"` — no picker
+there); (4) `open_plot_config_dialog` + `PlotConfigDialog.__init__`
+gain `on_route_plot: Callable[[str, str, Optional[str]], None]
+| None` kwarg (additive). **New module surface:**
+`_Y_AXIS_TAB_KEYS` frozenset; `_MOVE_TO_OPTIONS`/`_MOVE_TO_LABELS`/
+`_MOVE_TO_VALUE_BY_LABEL` Combobox vocabularies;
+`_build_move_to_picker(parent, role, listbox)` Combobox row
+renderer; `PlotConfigDialog._on_move_to_choose(role, listbox,
+var)` extracted from the closure so tests bypass the flaky
+`<<ComboboxSelected>>` virtual-event dispatch in suite mode;
+`UVVisTab._on_route_plot_from_dialog(source_tab_role, label,
+target_tab_role)` host handler that walks visible plot nodes,
+disambiguates label collisions by source role, and writes
+`style["y_axis"]` via `graph.set_style`. **Renderer wiring:**
+`primary_x` / `primary_y` reads at `ax.tick_params(axis="x"/"y")`;
+`secondary_y` / `tertiary_y` reads at twin-creation time inside
+`get_axis`; `secondary_x` read at the wavelength-sibling
+`sec.tick_params` site. Resolves Phase 4ak USER-FLAGGED bug:
+editing Secondary X tick direction no longer reroutes through
+Primary X. **Locks held:** CS-62 `_AXIS_KEYS` =
+`("tick_direction", "axis_label_override")` unchanged (Move-to
+picker writes per-NODE `style["y_axis"]`, NOT per-axis-tab
+schema); `_per_axis_tick_direction(cfg, tab_role)` signature
+unchanged; `get_axis(role)` signature + lazy-creation order
+unchanged; every CS-60 / CS-61 / CS-62 / CS-44 / CS-50
+invariant the relaxations didn't touch. **Decision lock taken
+(Phase 4al):** (i) Move-to picker UX = Combobox below Listbox
+on Y-axis tabs only; auto-applies on choose; resets after
+choose; (ii) tab-role-key namespace throughout the dialog —
+host owns the translation to CS-50 style values; (iii) source
+role disambiguates label collisions (first-match-wins, rare-
+case documented); (iv) picker fires immediately, bypassing
+the Plot Settings working-copy Cancel semantics — consistent
+with CS-50 Style-dialog precedent; (v) bind trampoline +
+extracted method instead of inline closure (testing
+determinism). **Three new USER-FLAGGED register entries from
+step 5:** accessibility features umbrella (open-ended;
+keyboard shortcuts + colour-blind palette + Escape audit +
+font scaling as first batch); modeless dialogs (drop
+`grab_set` from Plot Settings to match CS-05 StyleDialog
+modeless precedent); retire the global "Baseline curves"
+top-bar checkbox (per-node CS-36 toggle in the data panel
+has subsumed it). Four Claude-surfaced 🟢 polish notes
+folded into existing register entries. Phase 4ak's "Secondary
+X tick direction" user-flagged bug ✅ resolved; Phase 4ai
+friction #1 "per-axis ladder continues" cross-referenced into
+the new Phase 4al friction section. 1197 tests, all green
+(1165 + 32 new across `TestPlotConfigDialogMoveToPickerPhase4al`,
+`TestUVVisTabPerAxisTickRenderingPhase4al`,
+`TestUVVisTabMoveToPickerPhase4al`, plus the rename of
+`TestPlotConfigDialogPerAxisSchemaPhase4ak.test_plots_listbox_is_read_only`
+→ `…_is_disabled_on_x_axis_tabs`).*
 *To be updated as Open Questions are resolved and new components
 are specified.*
