@@ -6161,5 +6161,303 @@ class TestUVVisTabPerAxisRangeScalePhase4am(unittest.TestCase):
         self.tab._redraw()
 
 
+@unittest.skipUnless(_root is not None, "Tk root unavailable")
+class TestUVVisTabPerAxisPolishPhase4an(unittest.TestCase):
+    """CS-65 (Phase 4an) — per-axis tick spacing + grid + colour
+    renderer wiring.
+
+    Tick spacing applies via matplotlib.ticker.MultipleLocator; empty
+    string / garbage / non-positive values fall back to matplotlib's
+    auto-locator. Per-axis grid_show toggles x- and y- grids on the
+    primary independently. Axis colour applies to the per-role spine
+    + tick params + axis-label.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from uvvis_tab import UVVisTab
+        cls.UVVisTab = UVVisTab
+
+    def setUp(self):
+        self.host = tk.Frame(_root)
+        self.host.pack()
+        self.graph = ProjectGraph()
+        self.tab = self.UVVisTab(self.host, graph=self.graph)
+
+    def tearDown(self):
+        try:
+            self.tab.destroy()
+        except Exception:
+            pass
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    def _add_uvvis(self, nid: str = "u1") -> DataNode:
+        wl = np.linspace(300, 600, 10)
+        absorb = np.linspace(0.1, 0.9, 10)
+        node = DataNode(
+            id=nid, type=NodeType.UVVIS,
+            arrays={"wavelength_nm": wl, "absorbance": absorb},
+            metadata={"source_file": "synthetic"},
+            label=nid,
+            state=NodeState.COMMITTED,
+            style={"color": "#1f77b4", "linestyle": "solid",
+                   "linewidth": 1.5, "alpha": 0.9, "visible": True,
+                   "in_legend": True, "fill": False, "fill_alpha": 0.08},
+        )
+        self.graph.add_node(node)
+        return node
+
+    def _add_second_derivative(self, nid: str = "d1") -> DataNode:
+        wl = np.linspace(300, 600, 10)
+        absorb = np.linspace(-0.01, 0.01, 10)
+        node = DataNode(
+            id=nid, type=NodeType.SECOND_DERIVATIVE,
+            arrays={"wavelength_nm": wl, "absorbance": absorb},
+            metadata={"source_file": "synthetic"},
+            label=nid,
+            state=NodeState.COMMITTED,
+            style={"color": "#ff7f0e", "linestyle": "solid",
+                   "linewidth": 1.5, "alpha": 0.9, "visible": True,
+                   "in_legend": True, "fill": False, "fill_alpha": 0.08},
+        )
+        self.graph.add_node(node)
+        return node
+
+    # ---- tick spacing ----
+
+    def test_primary_x_tick_major_applies_multiplelocator(self):
+        from matplotlib.ticker import MultipleLocator
+        self._add_uvvis()
+        self.tab._plot_config = {
+            "axes": {"primary_x": {"tick_major": "50"}},
+        }
+        self.tab._redraw()
+        ax = self.tab._axes_by_role["primary"]
+        locator = ax.xaxis.get_major_locator()
+        self.assertIsInstance(locator, MultipleLocator)
+        # MultipleLocator picks ticks at integer multiples of its
+        # base; tick_values(0, 200) returns [0, 50, 100, 150, 200].
+        ticks = locator.tick_values(0, 200)
+        self.assertAlmostEqual(float(ticks[1] - ticks[0]), 50.0)
+
+    def test_primary_y_tick_minor_applies_multiplelocator(self):
+        from matplotlib.ticker import MultipleLocator
+        self._add_uvvis()
+        self.tab._plot_config = {
+            "axes": {"primary_y": {"tick_minor": "0.05"}},
+        }
+        self.tab._redraw()
+        ax = self.tab._axes_by_role["primary"]
+        locator = ax.yaxis.get_minor_locator()
+        self.assertIsInstance(locator, MultipleLocator)
+
+    def test_empty_tick_major_keeps_auto_locator(self):
+        from matplotlib.ticker import MultipleLocator
+        self._add_uvvis()
+        self.tab._plot_config = {
+            "axes": {"primary_x": {"tick_major": ""}},
+        }
+        self.tab._redraw()
+        ax = self.tab._axes_by_role["primary"]
+        # Auto-locator is NOT MultipleLocator.
+        self.assertNotIsInstance(
+            ax.xaxis.get_major_locator(), MultipleLocator,
+        )
+
+    def test_garbage_tick_major_keeps_auto_locator(self):
+        from matplotlib.ticker import MultipleLocator
+        self._add_uvvis()
+        self.tab._plot_config = {
+            "axes": {"primary_x": {"tick_major": "not a number"}},
+        }
+        self.tab._redraw()
+        ax = self.tab._axes_by_role["primary"]
+        self.assertNotIsInstance(
+            ax.xaxis.get_major_locator(), MultipleLocator,
+        )
+
+    def test_non_positive_tick_major_keeps_auto_locator(self):
+        from matplotlib.ticker import MultipleLocator
+        self._add_uvvis()
+        for bad in ("0", "-3.5"):
+            self.tab._plot_config = {
+                "axes": {"primary_x": {"tick_major": bad}},
+            }
+            self.tab._redraw()
+            ax = self.tab._axes_by_role["primary"]
+            self.assertNotIsInstance(
+                ax.xaxis.get_major_locator(), MultipleLocator,
+                msg=f"tick_major={bad!r} should reject",
+            )
+
+    def test_secondary_y_tick_major_applies_to_twin_axis(self):
+        from matplotlib.ticker import MultipleLocator
+        self._add_uvvis()
+        self._add_second_derivative()
+        self.tab._plot_config = {
+            "axes": {"secondary_y": {"tick_major": "0.005"}},
+        }
+        self.tab._redraw()
+        twin = self.tab._axes_by_role.get("secondary")
+        self.assertIsNotNone(twin)
+        self.assertIsInstance(
+            twin.yaxis.get_major_locator(), MultipleLocator,
+        )
+
+    # ---- per-axis grid ----
+
+    def test_primary_x_grid_default_true_paints_x_grid(self):
+        self._add_uvvis()
+        self.tab._plot_config = {}
+        self.tab._redraw()
+        ax = self.tab._axes_by_role["primary"]
+        # Default: grid_show=True for primary_x → x-grid major gridlines
+        # are visible.
+        x_visible = any(
+            gl.get_visible() for gl in ax.xaxis.get_gridlines()
+        )
+        self.assertTrue(x_visible)
+
+    def test_primary_x_grid_show_false_disables_x_grid(self):
+        self._add_uvvis()
+        self.tab._plot_config = {
+            "axes": {"primary_x": {"grid_show": False}},
+            "grid": True,
+        }
+        self.tab._redraw()
+        ax = self.tab._axes_by_role["primary"]
+        x_visible = any(
+            gl.get_visible() for gl in ax.xaxis.get_gridlines()
+        )
+        self.assertFalse(x_visible)
+
+    def test_primary_y_grid_show_false_keeps_x_grid(self):
+        # Independence: turning off the y-grid leaves the x-grid alone.
+        self._add_uvvis()
+        self.tab._plot_config = {
+            "axes": {
+                "primary_x": {"grid_show": True},
+                "primary_y": {"grid_show": False},
+            },
+            "grid": True,
+        }
+        self.tab._redraw()
+        ax = self.tab._axes_by_role["primary"]
+        x_visible = any(
+            gl.get_visible() for gl in ax.xaxis.get_gridlines()
+        )
+        y_visible = any(
+            gl.get_visible() for gl in ax.yaxis.get_gridlines()
+        )
+        self.assertTrue(x_visible)
+        self.assertFalse(y_visible)
+
+    def test_global_grid_false_overrides_per_axis_true(self):
+        # Master switch wins.
+        self._add_uvvis()
+        self.tab._plot_config = {
+            "axes": {
+                "primary_x": {"grid_show": True},
+                "primary_y": {"grid_show": True},
+            },
+            "grid": False,
+        }
+        self.tab._redraw()
+        ax = self.tab._axes_by_role["primary"]
+        x_visible = any(
+            gl.get_visible() for gl in ax.xaxis.get_gridlines()
+        )
+        y_visible = any(
+            gl.get_visible() for gl in ax.yaxis.get_gridlines()
+        )
+        self.assertFalse(x_visible)
+        self.assertFalse(y_visible)
+
+    # ---- axis colour ----
+
+    def test_primary_x_axis_color_sets_bottom_spine(self):
+        self._add_uvvis()
+        self.tab._plot_config = {
+            "axes": {"primary_x": {"axis_color": "#ff0000"}},
+        }
+        self.tab._redraw()
+        ax = self.tab._axes_by_role["primary"]
+        spine_color = ax.spines["bottom"].get_edgecolor()
+        # matplotlib returns RGBA tuple; compare R/G/B components.
+        self.assertAlmostEqual(spine_color[0], 1.0, places=2)
+        self.assertAlmostEqual(spine_color[1], 0.0, places=2)
+        self.assertAlmostEqual(spine_color[2], 0.0, places=2)
+
+    def test_primary_y_axis_color_sets_left_spine(self):
+        self._add_uvvis()
+        self.tab._plot_config = {
+            "axes": {"primary_y": {"axis_color": "#00cc00"}},
+        }
+        self.tab._redraw()
+        ax = self.tab._axes_by_role["primary"]
+        spine_color = ax.spines["left"].get_edgecolor()
+        self.assertAlmostEqual(spine_color[0], 0.0, places=2)
+        self.assertGreater(spine_color[1], 0.5)
+        self.assertAlmostEqual(spine_color[2], 0.0, places=2)
+
+    def test_secondary_y_axis_color_sets_right_spine(self):
+        self._add_uvvis()
+        self._add_second_derivative()
+        self.tab._plot_config = {
+            "axes": {"secondary_y": {"axis_color": "#0000ff"}},
+        }
+        self.tab._redraw()
+        twin = self.tab._axes_by_role.get("secondary")
+        self.assertIsNotNone(twin)
+        spine_color = twin.spines["right"].get_edgecolor()
+        self.assertAlmostEqual(spine_color[2], 1.0, places=2)
+
+    def test_axis_color_sets_axis_label_color(self):
+        self._add_uvvis()
+        self.tab._plot_config = {
+            "axes": {"primary_y": {"axis_color": "#aa00aa"}},
+        }
+        self.tab._redraw()
+        ax = self.tab._axes_by_role["primary"]
+        label_color = ax.yaxis.label.get_color()
+        self.assertEqual(label_color, "#aa00aa")
+
+    # ---- order: scale BEFORE colour preserves the colour ----
+
+    def test_scale_then_colour_order_preserves_colour(self):
+        # Re-set scale at the call site doesn't reset the spine
+        # colour because colour is applied AFTER scale.
+        self._add_uvvis()
+        self.tab._plot_config = {
+            "axes": {
+                "primary_y": {
+                    "scale": "log", "axis_color": "#ff8800",
+                    "range_lo": "0.1", "range_hi": "1.0",
+                    "autoscale": False,
+                },
+            },
+        }
+        self.tab._redraw()
+        ax = self.tab._axes_by_role["primary"]
+        self.assertEqual(ax.get_yscale(), "log")
+        spine_color = ax.spines["left"].get_edgecolor()
+        self.assertAlmostEqual(spine_color[0], 1.0, places=2)
+        self.assertGreater(spine_color[1], 0.3)
+
+    # ---- defensive ----
+
+    def test_missing_polish_keys_do_not_crash(self):
+        self._add_uvvis()
+        # No "axes" sub-dict at all.
+        self.tab._plot_config = {}
+        self.tab._redraw()
+        # axes sub-dict present but polish keys missing.
+        self.tab._plot_config = {"axes": {"primary_x": {}}}
+        self.tab._redraw()
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

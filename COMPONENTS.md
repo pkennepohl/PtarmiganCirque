@@ -9040,9 +9040,315 @@ Twin-X register entry); (l) `_do_apply` vs `_apply` naming
 discoverability cliff for tests (polish; surface if it bites
 again).
 
+## CS-65 — Per-axis tick spacing + per-axis grid + per-axis axis colour (Phase 4an)
+
+The **fifth and final canonical slice** of the per-axis settings
+ladder (after CS-61 / CS-62 / CS-63 / CS-64). Adds four polish
+keys per axis role, the matching widgets on every per-axis tab,
+and the renderer wiring that reads them. With this phase the
+ladder is complete: every plot-level setting that mattered for
+per-axis precision in Phase 4ai's original USER-FLAGGED scope
+now lives in the per-axis schema.
+
+### Schema growth
+
+`_AXIS_KEYS` grew from the 6-tuple of Phase 4am to a 10-tuple:
+
+```python
+("tick_direction", "axis_label_override",
+ "range_lo", "range_hi", "autoscale", "scale",
+ "tick_major", "tick_minor", "grid_show", "axis_color")
+```
+
+Every role's sub-dict in `_FACTORY_DEFAULTS["axes"]` gained four
+new entries:
+
+| Key | Type | Default | Semantics |
+|---|---|---|---|
+| `tick_major` | `str` | `""` | Empty = matplotlib auto-locator. Non-empty positive float = `MultipleLocator(value)`. Negative / zero / `inf` / `nan` / garbage silently rejected → auto-locator. |
+| `tick_minor` | `str` | `""` | Same rules as `tick_major`. |
+| `grid_show` | `bool` | `True` for `primary_x` / `primary_y`, `False` for the three non-primary roles | Renderer reads this only for `primary_x` / `primary_y` (twin axes share the primary grid). Per-role default differs from every other key so the Plot Settings checkbox starts visually consistent with what the renderer paints. |
+| `axis_color` | `str` | `"#000000"` | Hex colour string. Applied to the per-role spine + tick params (colour) + axis-label colour. Non-string values fall back to `"#000000"` defensively. |
+
+### `_FACTORY_DEFAULTS` shape
+
+```python
+"axes": {
+    "primary_x":   {"tick_direction": "in", "axis_label_override": "",
+                    "range_lo": "", "range_hi": "",
+                    "autoscale": True, "scale": "linear",
+                    "tick_major": "", "tick_minor": "",
+                    "grid_show": True, "axis_color": "#000000"},
+    "secondary_x": {... "grid_show": False, ...},
+    "primary_y":   {... "grid_show": True, ...},
+    "secondary_y": {... "grid_show": False, ...},
+    "tertiary_y":  {... "grid_show": False, ...},
+}
+```
+
+### Migration shim
+
+`migrate_plot_config(config)` required NO code change — the
+existing per-role per-key fill loop walks
+`_FACTORY_DEFAULTS["axes"][role].items()` and back-fills missing
+keys from factory defaults. Pre-Phase-4an configs gain the four
+new keys per role transparently on first dialog open. The shim
+remains idempotent and preserves user-set values.
+
+### Widgets per per-axis tab
+
+`_build_section_axis_settings(parent, role)` was extended with
+four new rows below the Phase 4am Scale Combobox row, on ALL
+FIVE per-axis tabs:
+
+* **Tick spacing row**: two side-by-side Entries (major / minor),
+  `width=6`, StringVar-backed. Italic "(empty = auto)" hint
+  trails. No validate logic — the renderer's `_parse_tick_str`
+  silently rejects garbage / non-positive / inf / nan, matching
+  the Phase 4am Range Entry convention.
+* **Show gridlines row**: Checkbutton bound to a per-axis
+  BooleanVar (`grid_show`). On non-primary tabs an italic
+  "(twin axes share the primary grid)" hint trails the box,
+  indicating the checkbox is schema-only there.
+* **Axis colour row**: a `tk.Frame` swatch (22×14 px, `bd=1`,
+  `relief="solid"`, `bg=current_hex`) + a `tk.Button("Choose…")`
+  that opens `tkinter.colorchooser.askcolor(parent=...,
+  title=...)` seeded with the current value. The Button writes
+  any successful pick back into the StringVar; a per-widget
+  trace updates the swatch's `bg` whenever the var changes (Tk
+  colour-string errors are swallowed so the trace can't blow
+  up the dialog).
+
+Tk var wiring uses the existing `_make_axis_string_var` (tick
++ colour keys) and `_make_axis_bool_var` (`grid_show`) helpers
+from earlier phases — no new registry machinery; idempotency
+on `(role, key)` pairs continues to hold.
+
+### Renderer wiring
+
+Five new module-level helpers in `uvvis_tab.py`:
+
+```python
+_parse_tick_str(text) -> Optional[float]            # positive-float-only; None for empty / garbage / non-positive / inf / nan
+_per_axis_tick_major(cfg, tab_role) -> Optional[float]
+_per_axis_tick_minor(cfg, tab_role) -> Optional[float]
+_per_axis_grid(cfg, tab_role) -> bool               # role-default split: True for primaries, False otherwise
+_per_axis_color(cfg, tab_role) -> str               # "#000000" default; non-string returns the default
+```
+
+`UVVisTab._redraw` adds a per-axis polish application block AFTER
+the Phase 4am scale/range block, applied at five call sites:
+
+* **Primary X** (`ax.xaxis`): `set_major_locator` /
+  `set_minor_locator` from MultipleLocator when helper returns
+  non-None; `spines["bottom"].set_color`; `tick_params(axis="x",
+  colors=...)`; `xaxis.label.set_color`.
+* **Primary Y** (`ax.yaxis`): same as primary X but for the y
+  axis, spine `"left"`.
+* **Twin Y-axes** (secondary_y, tertiary_y): iterate
+  `_Y_AXIS_ROLE_TO_TAB`; locator on `twin_ax.yaxis`; spine
+  `"right"` (guarded with try/except for malformed twins);
+  matching tick params + axis label colour.
+* **Secondary X** (wavelength-nm sibling, when active): locator
+  on `sec.xaxis`; tick params + axis label colour. NO spine
+  adjustment — `secondary_xaxis` manages its own spine.
+
+Order matters: colour application happens AFTER `set_xscale` /
+`set_yscale` at every site so the scale change doesn't reset
+the colour. Tick spacing uses `matplotlib.ticker.MultipleLocator`
+(new top-level import).
+
+The existing global `ax.grid(...)` block was rewritten to honour
+`_per_axis_grid(cfg, "primary_x")` and `_per_axis_grid(cfg,
+"primary_y")` independently on the X / Y axes:
+
+```python
+if cfg.get("grid", True):
+    grid_color = cfg.get("grid_color", "#b0b0b0")
+    if _per_axis_grid(cfg, "primary_x"):
+        ax.grid(True, axis="x", linestyle=":", alpha=0.4,
+                color=grid_color, zorder=0)
+    else:
+        ax.grid(False, axis="x")
+    if _per_axis_grid(cfg, "primary_y"):
+        ax.grid(True, axis="y", linestyle=":", alpha=0.4,
+                color=grid_color, zorder=0)
+    else:
+        ax.grid(False, axis="y")
+else:
+    ax.grid(False)
+```
+
+Two important invariants here:
+
+1. **`cfg["grid"]` master switch wins**: `False` disables
+   everything regardless of per-axis values.
+2. **CS-28 `zorder=0` invariant preserved**: every `visible=True`
+   call passes `zorder=0` so gridlines paint BEHIND data lines.
+
+**matplotlib quirk discovered (Phase 4an commit 5 integration
+tests)**: passing styling kwargs (`linestyle` / `alpha` / `color`)
+alongside `visible=False` ENABLES the grid because matplotlib
+interprets the styling presence as "you must have meant
+visible=True", overriding the explicit `False`. The disable
+branch above calls `ax.grid(False, axis=...)` with NO styling
+kwargs to dodge this trap. Documented inline in the renderer.
+
+### `grid_show` precedence rules
+
+* `cfg["grid"] = False` → no grid anywhere; per-axis `grid_show`
+  values are ignored.
+* `cfg["grid"] = True` AND `grid_show=True` on primary_x → x-grid
+  painted.
+* `cfg["grid"] = True` AND `grid_show=False` on primary_x → x-grid
+  hidden, y-grid follows its own per-axis setting.
+* `grid_show` on non-primary roles is schema-only — the renderer
+  doesn't consult it because matplotlib paints gridlines only on
+  the host axes (twin axes share the primary's grid).
+
+### Locks
+
+* **`_AXIS_KEYS` is a 10-tuple** in the canonical order shown
+  above. The migration shim handles legacy configs without code
+  change.
+* **`_FACTORY_DEFAULTS["axes"][role]` carries exactly these ten
+  keys** for all five roles with the canonical default values
+  (note `grid_show`'s per-role split).
+* **`_parse_tick_str(text) -> Optional[float]`** signature +
+  positive-float-only contract (rejects empty / garbage /
+  non-positive / non-finite). Renderer's
+  `MultipleLocator(value)` call site depends on this; a future
+  relaxation to permit zero/negative would also need to update
+  the locator strategy.
+* **`_per_axis_tick_major` / `_per_axis_tick_minor` /
+  `_per_axis_grid` / `_per_axis_color`** module-level helpers'
+  signatures and default-return semantics. The renderer's per-
+  call-site reads go through these.
+* **`_per_axis_grid` default split** (`True` for `primary_x` /
+  `primary_y`; `False` otherwise) when the schema slot is
+  missing — keeps the Plot Settings checkbox visually
+  consistent with what the renderer actually paints.
+* **`_per_axis_color` defensive defaults** — non-string slot
+  values return `"#000000"` so a malformed config (e.g. an
+  integer 0xff8800 instead of `"#ff8800"`) can't propagate a
+  bad value into matplotlib.
+* **Apply order at every per-role site**: scale → range → tick
+  spacing → grid → colour. Colour last so spine recreation /
+  scale changes don't reset the chosen colour.
+* **CS-28 `ax.grid(..., zorder=0)` invariant preserved** on
+  every `visible=True` per-axis grid call.
+* **Global `cfg["grid"]` remains the master switch** — per-axis
+  `grid_show` cannot enable gridlines if the global key is
+  `False`.
+
+### Lock relaxations vs CS-64
+
+* `_AXIS_KEYS` grew from 6 → 10. CS-64 explicitly named this as
+  the canonical relaxation target for Phase 4an.
+* `_FACTORY_DEFAULTS["axes"][role]` shape grew additively. CS-62
+  / CS-64 "shape is `dict[str, dict[str, Any]]` keyed by the
+  five per-axis roles" invariant remains; the inner dict gained
+  four entries.
+* The Phase 4ah global `ax.grid(...)` call was rewritten into the
+  four-branch shape above, preserving the CS-28 `zorder=0`
+  invariant. The `linestyle=":"`, `alpha=0.4`, and `grid_color`
+  fallback all carry forward unchanged on the `visible=True`
+  branches.
+
+### Decision lock (Phase 4an)
+
+D1. Four new `_AXIS_KEYS` entries: `tick_major` (str) /
+`tick_minor` (str) / `grid_show` (bool) / `axis_color` (str hex).
+Order is canonical; tests pin the 10-tuple shape.
+
+D2. `grid_show` defaults split per role: `True` for the two
+primaries, `False` for the three non-primary roles. Rationale:
+the renderer only consults `grid_show` for the primaries, so a
+non-primary default of `True` would lie to the user about what
+the Checkbutton state means. The split keeps the Plot Settings
+surface visually honest.
+
+D3. Widgets land on ALL FIVE per-axis tabs, not just primaries.
+Schema is uniformly per-role per CS-62 / CS-64; consistent
+surface; consistent reasoning. The non-primary `grid_show`
+checkbox is rendered with an inline "(twin axes share the
+primary grid)" hint label to signal the schema-only status.
+
+D4. Colour picker uses `tkinter.colorchooser.askcolor` — the
+stdlib choice; no third-party dependency. Hex string round-
+trips trivially through `_jsonify` for CS-46 persistence (no
+project_io changes needed).
+
+D5. Apply order: scale → range → tick spacing → grid → colour
+at every per-role site. Colour last because spine recreation or
+`set_yscale` calls reset spine styling on some matplotlib paths;
+colour at the tail of the chain is the safe place. Tests in
+`test_scale_then_colour_order_preserves_colour` pin this
+ordering.
+
+D6. Tick-spacing parser rejects non-positive and non-finite
+values silently. `MultipleLocator(0)` raises; `MultipleLocator
+(-1)` produces incoherent ticks; `MultipleLocator(inf)` and
+`MultipleLocator(nan)` produce nothing useful. Silent rejection
+in `_parse_tick_str` keeps the renderer free of try/except
+clutter and matches the Phase 4am Range Entry "empty = no
+override" convention.
+
+### Tests added
+
+* `TestPlotConfigDialogPerAxisPolishSchemaPhase4an` (6 tests):
+  registry tuple growth to 10, factory-default values per role
+  (with the `grid_show` per-role split), universal-defaults
+  round-trip, migration fill, migration preservation of user-set
+  values, idempotency on Phase 4an keys.
+* `TestUVVisTabPerAxisPolishHelpersPhase4an` (11 tests):
+  `_parse_tick_str` accepts positive floats, rejects empty /
+  garbage / non-positive / inf / nan; `_per_axis_tick_major` /
+  `_per_axis_tick_minor` read nested slot + default None;
+  `_per_axis_grid` per-role default split + explicit override;
+  `_per_axis_color` reads nested slot + defaults black + rejects
+  non-string defensively.
+* `TestPlotConfigDialogPerAxisPolishWidgetsPhase4an` (10 tests):
+  var-registry coverage per key per role (StringVar for tick +
+  colour, BooleanVar for grid_show), `grid_show` default-split
+  per role, default colour `"#000000"`, write-through to
+  `_working["axes"][role][...]`, working-copy seeding from
+  existing values, Factory Reset round-trip, dialog opens on
+  every per-axis tab without raising.
+* `TestUVVisTabPerAxisPolishPhase4an` (16 tests): tick spacing
+  applies as MultipleLocator with expected step, twin Y picks up
+  per-role spacing, empty / garbage / non-positive keep the
+  auto-locator; primary X / Y grid_show False disables the
+  respective grid axis, independence of x- and y-grid toggles,
+  global `cfg["grid"]=False` master switch wins; axis_color
+  sets bottom / left / right spines correctly, axis label
+  colour follows the hex; scale-then-colour ordering
+  preservation; defensive empty-config / missing-keys.
+* 2 pre-existing tests updated in place
+  (`test_axis_keys_grew_to_six` relaxed `==` to `>=`,
+  `test_axis_keys_registry_matches_factory` expected tuple
+  extended).
+
+Net suite count after Phase 4an: 1279 (up from 1236).
+
+### Step 5 elicitation (Phase 4an)
+
+User had nothing to add. Five Claude-surfaced notes carried
+forward into the BACKLOG "Friction points carried forward from
+Phase 4an" section: (μ) matplotlib grid-styling override quirk
+(renderer-bug-fix surfaced by integration tests, already fixed
+in commit 5); (ν) `grid_show` on non-primary tabs is schema-
+only (hint label in place; defer until reported); (ο)
+`tick_minor` doesn't force minor ticks to render (folds into
+future tick-rendering polish or accessibility visibility audit);
+(π) `_AXIS_KEYS` readability cliff approaching at 10 entries
+(consider nested sub-dicts when adding more keys; pairs with
+`_USER_DEFAULTS` tab-type split); (ρ) Colour swatch is a
+`tk.Frame`, not a ttk widget (cross-platform feedback pending).
+
 ---
 
-*Document version: 1.39 — May 2026*
+*Document version: 1.40 — May 2026*
 *1.1: CS-13 implementation notes added in Phase 4a.*
 *1.2: CS-14 Plot Settings Dialog added in Phase 4b.*
 *1.3: CS-15 UV/Vis Baseline Correction + CS-04 implementation
@@ -10109,5 +10415,58 @@ the new Phase 4al friction section. 1197 tests, all green
 `TestUVVisTabMoveToPickerPhase4al`, plus the rename of
 `TestPlotConfigDialogPerAxisSchemaPhase4ak.test_plots_listbox_is_read_only`
 → `…_is_disabled_on_x_axis_tabs`).*
+*1.40: CS-65 — per-axis tick spacing + per-axis grid + per-axis
+axis colour added in Phase 4an. **Fifth and final canonical
+slice** of the per-axis settings ladder (after CS-61 / CS-62 /
+CS-63 / CS-64); the ladder is now complete. **Lock relaxations
+taken:** (1) `_AXIS_KEYS` grew from the 6-tuple of CS-64 to a
+10-tuple with `tick_major` / `tick_minor` / `grid_show` /
+`axis_color`; (2) `_FACTORY_DEFAULTS["axes"][role]` carries the
+four new keys per role with `grid_show` defaulting True for the
+two primaries and False for the three non-primary roles; (3) the
+Phase 4ah global `ax.grid(...)` call rewrote into a four-branch
+shape honouring `_per_axis_grid` on `primary_x` and `primary_y`
+independently while preserving the CS-28 `zorder=0` invariant on
+every `visible=True` call. **New module surface:**
+`matplotlib.ticker.MultipleLocator` import in `uvvis_tab.py`;
+five new module-level helpers (`_parse_tick_str`,
+`_per_axis_tick_major`, `_per_axis_tick_minor`, `_per_axis_grid`,
+`_per_axis_color`); four new widget rows per per-axis tab in
+`_build_section_axis_settings` (tick-spacing Entry pair, Show
+gridlines Checkbutton, Axis colour swatch + `tkinter.colorchooser`
+picker Button). **Renderer wiring:** per-axis polish block
+applied at five call sites (primary X, primary Y, both twin Y
+axes, secondary X wavelength sibling) after the Phase 4am scale
++ range block; tick locators via `MultipleLocator(value)` when
+helper returns non-None; colour applied to per-role spine + tick
+params + axis label; per-axis grid override applied to the
+existing global grid call. **Bugfix surfaced by integration
+tests:** matplotlib enables the grid when styling kwargs are
+passed alongside `visible=False`; per-axis-disable branch now
+calls `ax.grid(False, axis=...)` with no styling kwargs.
+**Locks held:** every CS-62 / CS-63 / CS-64 invariant unchanged;
+CS-28 `zorder=0` grid invariant preserved; CS-46 manifest
+round-trip works without project_io edits (`_jsonify` already
+handles the nested per-axis dict shape). **Decision lock taken
+(Phase 4an):** (D1) four new keys with the canonical order
+above; (D2) `grid_show` default split per role; (D3) widgets
+on ALL FIVE per-axis tabs with hint label on non-primary tabs;
+(D4) `tkinter.colorchooser.askcolor` stdlib choice; (D5) apply
+order at every site is scale → range → tick spacing → grid →
+colour (colour last so spine recreation doesn't reset it); (D6)
+`_parse_tick_str` silently rejects non-positive / non-finite.
+User had nothing to add at step 5. Five Claude-surfaced notes
+documented in BACKLOG's "Friction points carried forward from
+Phase 4an" section: matplotlib grid-styling override quirk
+(fixed); `grid_show` schema-only on non-primaries (hint label in
+place); `tick_minor` doesn't force minor ticks on (defer); 10-key
+`_AXIS_KEYS` readability cliff (consider nested sub-dicts);
+swatch is `tk.Frame` not ttk (cross-platform polish). 1279 tests,
+all green (1236 + 43 new across
+`TestPlotConfigDialogPerAxisPolishSchemaPhase4an`,
+`TestUVVisTabPerAxisPolishHelpersPhase4an`,
+`TestPlotConfigDialogPerAxisPolishWidgetsPhase4an`,
+`TestUVVisTabPerAxisPolishPhase4an`, plus two pre-existing
+test sweeps for the registry growth).*
 *To be updated as Open Questions are resolved and new components
 are specified.*

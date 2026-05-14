@@ -27,6 +27,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
 import matplotlib
+from matplotlib.ticker import MultipleLocator
 matplotlib.use("TkAgg")
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
@@ -372,6 +373,98 @@ def _per_axis_tick_direction(cfg: Mapping[str, Any], tab_role: str) -> str:
             "tick_direction"
         ]
     )
+
+
+def _parse_tick_str(text: str) -> "Optional[float]":
+    """Parse a per-axis tick-spacing Entry value (CS-65, Phase 4an).
+
+    Returns ``None`` for empty / whitespace-only / unparseable input AND
+    for non-positive values — callers treat ``None`` as "let matplotlib
+    pick the locator". Negative or zero spacings are silently rejected
+    because ``MultipleLocator`` would raise; rejecting in the helper
+    keeps the renderer free of try/except cluttering.
+    """
+    if not isinstance(text, str):
+        return None
+    stripped = text.strip()
+    if not stripped:
+        return None
+    try:
+        value = float(stripped)
+    except (TypeError, ValueError):
+        return None
+    if value <= 0.0 or not np.isfinite(value):
+        return None
+    return value
+
+
+def _per_axis_tick_major(
+    cfg: Mapping[str, Any], tab_role: str,
+) -> "Optional[float]":
+    """Read ``cfg["axes"][tab_role]["tick_major"]`` (CS-65, Phase 4an).
+
+    Returns the parsed float spacing, or ``None`` for "let matplotlib's
+    auto-locator decide". Defensive: pre-Phase-4an configs without the
+    nested key return ``None``.
+    """
+    axes = cfg.get("axes")
+    if isinstance(axes, dict):
+        role_dict = axes.get(tab_role)
+        if isinstance(role_dict, dict):
+            value = role_dict.get("tick_major", "")
+            if isinstance(value, str):
+                return _parse_tick_str(value)
+    return None
+
+
+def _per_axis_tick_minor(
+    cfg: Mapping[str, Any], tab_role: str,
+) -> "Optional[float]":
+    """Read ``cfg["axes"][tab_role]["tick_minor"]`` (CS-65, Phase 4an)."""
+    axes = cfg.get("axes")
+    if isinstance(axes, dict):
+        role_dict = axes.get(tab_role)
+        if isinstance(role_dict, dict):
+            value = role_dict.get("tick_minor", "")
+            if isinstance(value, str):
+                return _parse_tick_str(value)
+    return None
+
+
+def _per_axis_grid(cfg: Mapping[str, Any], tab_role: str) -> bool:
+    """Read ``cfg["axes"][tab_role]["grid_show"]`` (CS-65, Phase 4an).
+
+    Default-True for ``primary_x`` / ``primary_y`` and default-False for
+    the three non-primary roles when the key is missing. Renderer
+    currently consults this helper only for the two primary roles (twin
+    Y axes share the primary's grid); the per-role defaults keep the
+    Plot Settings checkbox visually consistent with what the renderer
+    actually paints when a config arrives without the key set.
+    """
+    axes = cfg.get("axes")
+    if isinstance(axes, dict):
+        role_dict = axes.get(tab_role)
+        if isinstance(role_dict, dict) and "grid_show" in role_dict:
+            return bool(role_dict["grid_show"])
+    return tab_role in ("primary_x", "primary_y")
+
+
+def _per_axis_color(cfg: Mapping[str, Any], tab_role: str) -> str:
+    """Read ``cfg["axes"][tab_role]["axis_color"]`` (CS-65, Phase 4an).
+
+    Returns a hex colour string. Defaults to ``"#000000"`` when missing
+    or when the stored value is not a string. Renderer applies the
+    colour to the per-role spine + tick params + axis-label colour at
+    each axis's per-call-site.
+    """
+    axes = cfg.get("axes")
+    if isinstance(axes, dict):
+        role_dict = axes.get(tab_role)
+        if isinstance(role_dict, dict):
+            value = role_dict.get("axis_color")
+            if isinstance(value, str) and value:
+                return value
+    return "#000000"
 
 
 def _enumerate_plots_by_role(
@@ -2624,6 +2717,75 @@ class UVVisTab(tk.Frame):
                         hi_sx if hi_sx is not None else cur[1],
                     )
 
+        # ── Apply per-axis polish (CS-65 Phase 4an) ──────────────────────────
+        # Tick spacing: empty / garbage / non-positive → keep
+        # matplotlib's auto-locator (helpers return ``None``).
+        # Non-empty positive float → ``MultipleLocator(value)``.
+        # Axis colour: hex string applied to the per-role spine,
+        # tick params (colour), and axis label colour. Applied AFTER
+        # range/scale so the colour change doesn't get reset by a
+        # subsequent set_xscale/set_yscale call.
+        #
+        # Primary X.
+        major = _per_axis_tick_major(cfg, "primary_x")
+        if major is not None:
+            ax.xaxis.set_major_locator(MultipleLocator(major))
+        minor = _per_axis_tick_minor(cfg, "primary_x")
+        if minor is not None:
+            ax.xaxis.set_minor_locator(MultipleLocator(minor))
+        color_px = _per_axis_color(cfg, "primary_x")
+        ax.spines["bottom"].set_color(color_px)
+        ax.tick_params(axis="x", colors=color_px)
+        ax.xaxis.label.set_color(color_px)
+
+        # Primary Y.
+        major = _per_axis_tick_major(cfg, "primary_y")
+        if major is not None:
+            ax.yaxis.set_major_locator(MultipleLocator(major))
+        minor = _per_axis_tick_minor(cfg, "primary_y")
+        if minor is not None:
+            ax.yaxis.set_minor_locator(MultipleLocator(minor))
+        color_py = _per_axis_color(cfg, "primary_y")
+        ax.spines["left"].set_color(color_py)
+        ax.tick_params(axis="y", colors=color_py)
+        ax.yaxis.label.set_color(color_py)
+
+        # Twin Y-axes (secondary_y, tertiary_y). Each twin has its
+        # own right spine; tertiary's spine was already offset in
+        # ``get_axis`` (CS-44).
+        for y_role, tab_role in _Y_AXIS_ROLE_TO_TAB.items():
+            if y_role == "primary":
+                continue
+            twin_ax = self._axes_by_role.get(y_role)
+            if twin_ax is None:
+                continue
+            major = _per_axis_tick_major(cfg, tab_role)
+            if major is not None:
+                twin_ax.yaxis.set_major_locator(MultipleLocator(major))
+            minor = _per_axis_tick_minor(cfg, tab_role)
+            if minor is not None:
+                twin_ax.yaxis.set_minor_locator(MultipleLocator(minor))
+            color_t = _per_axis_color(cfg, tab_role)
+            try:
+                twin_ax.spines["right"].set_color(color_t)
+            except (KeyError, AttributeError):
+                pass
+            twin_ax.tick_params(axis="y", colors=color_t)
+            twin_ax.yaxis.label.set_color(color_t)
+
+        # Secondary X (wavelength-nm sibling). Only present when the
+        # cm-1 → nm twin block ran above.
+        if 'sec' in locals():
+            major = _per_axis_tick_major(cfg, "secondary_x")
+            if major is not None:
+                sec.xaxis.set_major_locator(MultipleLocator(major))
+            minor = _per_axis_tick_minor(cfg, "secondary_x")
+            if minor is not None:
+                sec.xaxis.set_minor_locator(MultipleLocator(minor))
+            color_sx = _per_axis_color(cfg, "secondary_x")
+            sec.tick_params(axis="x", colors=color_sx)
+            sec.xaxis.label.set_color(color_sx)
+
         # ── Legend (Plot Settings → Legend) ──────────────────────────────────
         # Phase 4u (CS-44): merge handles + labels across every
         # populated role so a single legend on the primary axis
@@ -2655,12 +2817,37 @@ class UVVisTab(tk.Frame):
         # lines — matplotlib's default grid zorder (2.5) is above the
         # line collection's (2.0) and produces visually distracting
         # cross-hatching on dense overlays.
+        # CS-65 (Phase 4an): the global ``cfg["grid"]`` master switch
+        # still wins (False → no grid anywhere); when True, the per-axis
+        # ``grid_show`` keys on ``primary_x`` and ``primary_y`` control
+        # the x- and y-grid independently. Twin Y axes share the
+        # primary's grid (matplotlib paints gridlines only on the host
+        # Axes), so the renderer doesn't consult ``secondary_y`` /
+        # ``tertiary_y`` ``grid_show`` even though the schema carries
+        # them. CS-28 ``zorder=0`` invariant preserved on every
+        # ``visible=True`` call so gridlines paint BEHIND data lines.
+        #
+        # matplotlib quirk: ``ax.grid(False, axis=..., linestyle=...)``
+        # ENABLES the grid because the presence of styling kwargs
+        # overrides the explicit ``visible=False``. So the per-axis
+        # disable case calls ``ax.grid(False, axis=...)`` with NO
+        # styling kwargs.
         if cfg.get("grid", True):
-            ax.grid(
-                True, linestyle=":", alpha=0.4,
-                color=cfg.get("grid_color", "#b0b0b0"),
-                zorder=0,
-            )
+            grid_color = cfg.get("grid_color", "#b0b0b0")
+            if _per_axis_grid(cfg, "primary_x"):
+                ax.grid(
+                    True, axis="x", linestyle=":", alpha=0.4,
+                    color=grid_color, zorder=0,
+                )
+            else:
+                ax.grid(False, axis="x")
+            if _per_axis_grid(cfg, "primary_y"):
+                ax.grid(
+                    True, axis="y", linestyle=":", alpha=0.4,
+                    color=grid_color, zorder=0,
+                )
+            else:
+                ax.grid(False, axis="y")
         else:
             ax.grid(False)
 

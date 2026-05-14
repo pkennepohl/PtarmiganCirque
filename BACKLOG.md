@@ -3412,10 +3412,15 @@ the larger feature). The Claude-surfaced 🟢 items below are
 polish-level and deferrable. **Do not fix until the relevant
 subsequent Phase 4 session.**
 
-1. 🟡 **USER-FLAGGED Per-axis settings ladder — ~~Phase 4aj
+1. 🟡 ~~**USER-FLAGGED Per-axis settings ladder — ~~Phase 4aj
    through~~ ~~Phase 4ak through~~ ~~Phase 4al through 4an~~
    ~~Phase 4am through 4an~~ Phase 4an only.** CS-60 is the
-   foundation only.
+   foundation only.~~ ✅ Ladder fully closed in Phase 4an
+   (CS-65). All five canonical slots resolved: 4aj (CS-61
+   tick_direction relocation) → 4ak (CS-62 schema invention) →
+   4al (CS-63 per-axis tick rendering + Move-to picker) → 4am
+   (CS-64 range / autoscale / scale) → 4an (CS-65 tick
+   spacing + per-axis grid + axis colour).
    ~~The next five phases each ship one slice: 4aj
    relocates `tick_direction` from Plot Settings → per-axis
    tabs (CS-56 relaxation, smallest possible first
@@ -3465,16 +3470,32 @@ subsequent Phase 4 session.**
    keeps working unchanged; `autoscale=False` makes the
    schema bounds win. Twin Y-axes (secondary_y, tertiary_y)
    apply per-role scale + range at the twin axis after the
-   primary plot loop. The remaining one phase ships:
-   4an handles tick spacing + polish. **Cross-ref:** see
-   the canonical axis-double-click register entry above
-   for the multi-phase plan AND the Phase 4aj + 4ak + 4al
-   + 4am partial annotations. Reasoning level ~~for 4ak is
+   primary plot loop. ~~The remaining one phase ships:
+   4an handles tick spacing + polish.~~ ✅ Phase 4an slot
+   closed (CS-65): `_AXIS_KEYS` grew 6→10 with `tick_major` /
+   `tick_minor` / `grid_show` / `axis_color`; every per-axis
+   tab gains four new widget rows (tick-spacing Entry pair,
+   Show gridlines Checkbutton, Axis colour swatch +
+   `colorchooser` picker Button); renderer reads each axis's
+   own slot via five new helpers (`_parse_tick_str` /
+   `_per_axis_tick_major` / `_per_axis_tick_minor` /
+   `_per_axis_grid` / `_per_axis_color`) applied at five
+   call sites (primary X / primary Y / both twin Y axes /
+   secondary X wavelength sibling). The global
+   `cfg["grid"]` master switch remains the top-level
+   precedence — `False` disables everything; `True` falls
+   through to per-axis `grid_show` keys on `primary_x` and
+   `primary_y` (twin axes share the primary grid).
+   `matplotlib.ticker.MultipleLocator` underpins the tick-
+   spacing override. **Cross-ref:** see the canonical
+   axis-double-click register entry above for the multi-
+   phase plan AND the Phase 4aj + 4ak + 4al + 4am + 4an
+   partial annotations. Reasoning level ~~for 4ak is
    extra-high (schema invention + migration shim + dual-
    surface UI);~~ ~~for 4al is now slightly higher than
    originally scoped (mechanical against the locked schema
    PLUS per-axis tick rendering wire-up);~~ ~~4am stays
-   normal;~~ 4an stays medium.
+   normal;~~ ~~4an stays medium.~~ Ladder fully complete.
 
 2. 🟡 **USER-FLAGGED `_USER_DEFAULTS` tab-type split.**
    See the new canonical register entry above. Becomes
@@ -3564,17 +3585,12 @@ Claude-surfaced 🟢 items below are polish-level and
 deferrable. **Do not fix until the relevant subsequent
 Phase 4 session.**
 
-1. 🟡 **USER-FLAGGED Per-axis settings ladder continues —
+1. 🟡 ~~**USER-FLAGGED Per-axis settings ladder continues —
    ~~Phase 4ak through 4an~~ ~~Phase 4am through 4an~~
-   Phase 4an only.** Cross-ref Phase 4ai friction #1 above
-   (canonical multi-phase plan with the Phase 4aj + 4ak +
-   4al + 4am slots now ✅). ~~4ak is the next slice~~ ✅
-   Phase 4ak (CS-62): per-axis schema invention + migration
-   shim + axis label mirror + plots_by_role inventory. ✅
-   Phase 4al (CS-63): per-axis tick rendering + Move-to
-   Combobox writing `style["y_axis"]`. ✅ Phase 4am
-   (CS-64): per-axis range / autoscale / scale (linear/log)
-   widgets + renderer wiring. 4an remains.
+   Phase 4an only.**~~ ✅ Resolved in Phase 4an (CS-65).
+   Cross-ref Phase 4ai friction #1 above — ladder fully
+   closed: 4aj (CS-61) → 4ak (CS-62) → 4al (CS-63) → 4am
+   (CS-64) → 4an (CS-65).
 
 2. 🟢 ~~**Shared-var UX is dishonest by design (Claude-
    surfaced, Phase 4aj artifact).** Editing the
@@ -3703,16 +3719,10 @@ polish-level and deferrable. ONE 🟢 item carries forward
 unresolved from Phase 4aj. **Do not fix until the
 relevant subsequent Phase 4 session.**
 
-1. 🟡 **USER-FLAGGED Per-axis settings ladder continues
-   (Phase 4am through 4an).** Cross-ref Phase 4ai friction
-   #1 above (canonical multi-phase plan with the Phase 4aj
-   + 4ak + 4al slots now ✅). ~~4al is the next slice~~ ✅ Resolved in Phase 4al (CS-63):
-   wires per-axis tick rendering (five tick_params call
-   sites split per role) AND adds the Move-to Combobox on
-   the three Y-axis Plot Settings tabs (writes
-   `style["y_axis"]` via `graph.set_style`). 4am adds
-   range / autoscale / scale (linear/log); 4an handles
-   tick spacing + polish.
+1. 🟡 ~~**USER-FLAGGED Per-axis settings ladder continues
+   (Phase 4am through 4an).**~~ ✅ Resolved in Phase 4an
+   (CS-65). Cross-ref Phase 4ai friction #1 above —
+   ladder fully closed.
 
 2. ~~🟠 **USER-FLAGGED bug: changing Secondary X tick
    direction affects Primary X but not Secondary X.**~~
@@ -3848,17 +3858,10 @@ toggle has subsumed it). FOUR Claude-surfaced 🟢 items below
 are polish-level and deferrable. **Do not fix until the
 relevant subsequent Phase 4 session.**
 
-1. 🟡 **USER-FLAGGED Per-axis settings ladder continues
-   ~~(Phase 4am through 4an)~~ (Phase 4an only).**
-   Cross-ref Phase 4ai friction #1 above (canonical multi-
-   phase plan with the Phase 4aj + 4ak + 4al + 4am slots
-   now ✅). ~~4am adds range / autoscale / scale
-   (linear/log);~~ ✅ Resolved in Phase 4am (CS-64). 4an
-   handles tick spacing + per-axis grid + per-axis colour
-   pickers + polish. Reasoning level: **medium**
-   (mechanical against the locked CS-62 schema; the
-   renderer + dialog wiring patterns from CS-63 / CS-64
-   generalise cleanly to the additional per-axis keys).
+1. 🟡 ~~**USER-FLAGGED Per-axis settings ladder continues
+   ~~(Phase 4am through 4an)~~ (Phase 4an only).**~~
+   ✅ Resolved in Phase 4an (CS-65). Cross-ref Phase 4ai
+   friction #1 above — ladder fully closed.
 
 2. 🟡 **USER-FLAGGED Accessibility features umbrella.** See
    the new canonical register entry above (added in Phase
@@ -3998,14 +4001,10 @@ when `autoscale=True` (default). User had nothing to add at step
 deferrable. **Do not fix until the relevant subsequent Phase 4
 session.**
 
-1. 🟡 **USER-FLAGGED Per-axis settings ladder continues —
-   Phase 4an only.** Cross-ref Phase 4ai friction #1 above
-   (canonical multi-phase plan with the Phase 4aj + 4ak +
-   4al + 4am slots now ✅). 4an handles tick spacing +
-   per-axis grid + per-axis colour pickers + polish.
-   Reasoning level: **medium** (mechanical against the
-   locked CS-62 schema; the renderer + dialog wiring
-   patterns from CS-63 / CS-64 generalise cleanly).
+1. 🟡 ~~**USER-FLAGGED Per-axis settings ladder continues —
+   Phase 4an only.**~~ ✅ Resolved in Phase 4an (CS-65).
+   Cross-ref Phase 4ai friction #1 above — ladder fully
+   closed (all five canonical slots resolved).
 
 2. 🟡 **USER-FLAGGED Accessibility features umbrella**
    continues. Cross-ref Phase 4al friction #2. See
@@ -4106,6 +4105,141 @@ session.**
     docstring section listing `_do_apply` / `_do_save` /
     `_do_cancel` / `_do_factory_reset` as the canonical
     test hooks. No register entry; surface if it bites again.
+
+### Friction points carried forward from Phase 4an
+
+These are concrete obstacles the next Phase 4 session will hit.
+Phase 4an shipped CS-65 — the **final canonical slice** of the
+per-axis settings ladder. `_AXIS_KEYS` grew from 6 → 10 with
+`tick_major` / `tick_minor` / `grid_show` / `axis_color`. Every
+per-axis tab gains four new widget rows (tick-spacing Entry pair,
+Show gridlines Checkbutton, Axis colour swatch + `colorchooser`
+picker Button). The renderer reads each axis's own slot via five
+new module-level helpers (`_parse_tick_str` / `_per_axis_tick_
+major` / `_per_axis_tick_minor` / `_per_axis_grid` /
+`_per_axis_color`) applied at five call sites. `cfg["grid"]`
+remains the master switch; per-axis `grid_show` overrides apply
+on `primary_x` and `primary_y` (twin axes share the primary grid).
+User had nothing to add at step 5. Five Claude-surfaced notes
+below — one renderer-bug-fix surfaced by the integration tests
+(grid-styling-kwargs override visible=False, already fixed in
+commit 5) plus four 🟢 polish notes. **Do not fix until the
+relevant subsequent Phase 4 session.**
+
+1. 🟡 **USER-FLAGGED Accessibility features umbrella**
+   continues. Cross-ref Phase 4am friction #2. See canonical
+   register entry "Accessibility features umbrella". Reasoning
+   level: **high** for the first design pass (scope decision +
+   lock decisions span ~5 sub-axes), **medium** for individual
+   sub-batches thereafter (keyboard shortcuts, colour-blind
+   palette, Escape-dismiss audit, font-scale).
+
+2. 🟡 **USER-FLAGGED Modeless dialogs — drop `grab_set` from
+   Plot Settings** continues. Cross-ref Phase 4am friction #3.
+   Pairs naturally with the USER-FLAGGED "Live-preview vs Apply"
+   register entry. Reasoning level: **medium** if scoped to
+   Plot Settings only; **high** if scoped to all CS-23 modals.
+
+3. 🟡 **USER-FLAGGED Retire global "Baseline curves" top-bar
+   checkbox** continues. Cross-ref Phase 4am friction #4.
+   Small phase — half a day at most. Reasoning level: **medium**.
+
+4. 🟡 **USER-FLAGGED Live-preview vs Apply button** continues.
+   Cross-ref Phase 4am friction #5. Phase 4am friction (θ)
+   (Range Entry no-immediate-`_redraw`) folds in here. See
+   canonical register entry "Live-preview vs Apply button".
+
+5. 🟡 **USER-FLAGGED Apply-to-all icon on per-axis tabs**
+   continues. Cross-ref Phase 4am friction #6. Even more
+   actionable now: per-axis tabs carry **nine** widget rows
+   each (tick_direction + axis_label_override + Range Entry
+   pair + Autoscale Checkbutton + Scale Combobox + Tick
+   spacing Entry pair + Show gridlines Checkbutton + Axis
+   colour picker + Move-to Combobox on Y tabs). Reasoning
+   level: **medium**.
+
+6. 🟡 **USER-FLAGGED Axis nomenclature rename** continues.
+   Cross-ref Phase 4am friction #7. CS-65 inherits CS-62 /
+   CS-63 / CS-64 locks unchanged — the rename's blast radius
+   now covers CS-44 / CS-50 / CS-60 / CS-61 / CS-62 / CS-63 /
+   CS-64 / CS-65. See canonical register entry. Reasoning
+   level: **extra-high**.
+
+7. 🟡 **USER-FLAGGED Rich-text axis labels (mathtext)**
+   continues. Cross-ref Phase 4am friction #8. Independent
+   of the per-axis ladder (which is now closed). Reasoning
+   level: **medium**.
+
+8. 🟡 **USER-FLAGGED External-output plot style presets**
+   carries forward from Phase 4aj. See canonical register
+   entry. Independent of the per-axis ladder. User has
+   reference Jupyter notebook code (paths TBD at session
+   start). Reasoning level: **high** (five open lock
+   decisions; new `_OUTPUT_PRESETS` registry).
+
+9. 🟡 **USER-FLAGGED Keyboard shortcuts — first batch.**
+   Carry-over from Phase 4ah. Self-contained. Pairs with the
+   accessibility umbrella above. Reasoning level: **medium**.
+
+10. 🟢 **matplotlib grid-styling override quirk (Claude-
+    surfaced, Phase 4an artifact — already fixed).** Calling
+    `ax.grid(False, axis="x", linestyle=":", alpha=0.4,
+    color=...)` ENABLES the grid because matplotlib interprets
+    the presence of styling kwargs as "you must have meant
+    visible=True", overriding the explicit `False`. The
+    Phase 4an renderer wiring caught this in commit 5
+    integration tests; the per-axis-disable branch now calls
+    `ax.grid(False, axis=...)` with NO styling kwargs.
+    Documented inline in the renderer; surfaced here so the
+    next phase touching gridline code knows the trap exists.
+    No register entry.
+
+11. 🟢 **`grid_show` on non-primary tabs is schema-only
+    (Claude-surfaced, Phase 4an artifact).** The Checkbutton
+    renders on all five per-axis tabs for ladder consistency,
+    but the renderer ignores `grid_show` for `secondary_x` /
+    `secondary_y` / `tertiary_y` (twin axes share the primary's
+    grid). A user toggling the box on a non-primary tab gets
+    no visible feedback beyond the inline "(twin axes share
+    the primary grid)" hint label. Three resolution paths
+    when this surfaces: (a) hide the box on non-primary tabs,
+    (b) show a disabled box, (c) actually implement
+    per-twin-axis grids. Currently option (a)-adjacent via
+    the hint; defer until reported. No register entry.
+
+12. 🟢 **`tick_minor` doesn't force minor ticks to render
+    (Claude-surfaced, Phase 4an artifact).** Setting
+    `tick_minor: "0.05"` installs the MultipleLocator but
+    doesn't call `ax.minorticks_on()` — if matplotlib's
+    minor ticks are disabled (some themes do this), the
+    minor ticks stay invisible despite the locator. Fix
+    requires either a renderer-side `ax.minorticks_on()`
+    call when `_per_axis_tick_minor` is non-None, or
+    documenting the "set major to see minor" expectation.
+    Polish-level; folds into a future "tick rendering
+    polish" sub-batch (or the accessibility umbrella's
+    visibility audit). No register entry.
+
+13. 🟢 **`_AXIS_KEYS` is now 10 entries — readability cliff
+    approaches (Claude-surfaced, Phase 4an artifact).** The
+    factory-default per-role sub-dict on each of the five
+    axes is now a 10-key dict. If a future polish slice
+    adds more keys (e.g. label rotation, padding,
+    formatter), consider grouping into nested sub-dicts
+    (`axes[role]["limits"]["lo"]`, `axes[role]["ticks"]
+    ["major"]`, etc.) for readability — but this is a
+    schema-refactor decision that pairs naturally with the
+    USER-FLAGGED `_USER_DEFAULTS` tab-type split (Phase
+    4ai canonical entry). Not urgent. No register entry.
+
+14. 🟢 **Colour swatch is a `tk.Frame`, not a ttk widget
+    (Claude-surfaced, Phase 4an artifact).** The per-axis
+    Axis Colour row uses `tk.Frame(bg=hex)` for the swatch
+    with `relief="solid"` + `bd=1` for the border. Renders
+    fine on Windows but not cross-platform-verified —
+    macOS may need a `ttk.Frame` + style for the border
+    to paint as expected. Defer until cross-platform
+    feedback surfaces. No register entry.
 
 ---
 
@@ -4321,7 +4455,7 @@ the resolving phase + commit SHA appended to the row.
 
 ---
 
-*Document version: 1.38 — May 2026*
+*Document version: 1.39 — May 2026*
 *1.1: Known Bugs register added 2026-04-27 after Phase 4b manual testing.*
 *1.2: Phase 4c — baseline correction lands; B-001 / B-003 / B-004
 resolved; Phase 4c friction points logged.*

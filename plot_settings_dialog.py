@@ -175,22 +175,43 @@ _FACTORY_DEFAULTS: dict[str, Any] = {
     # bound on this end"), ``autoscale=True`` makes the renderer ignore
     # the range pair (pure matplotlib autoscale), ``scale`` is one of
     # ``{"linear", "log"}``.
+    # CS-65 (Phase 4an): per-axis polish — four more keys per role:
+    #   * tick_major / tick_minor   StringVar-friendly (empty = let
+    #     matplotlib's auto-locator pick); non-empty positive float =
+    #     fixed-spacing MultipleLocator.
+    #   * grid_show                 BooleanVar; renderer reads it only
+    #     for primary_x / primary_y (twin Y axes share the primary's
+    #     grid). Default True for the two primaries, False for the
+    #     three non-primary roles so the dialog's checkbox starts
+    #     visually consistent with what the renderer actually paints.
+    #   * axis_color                hex string ("#RRGGBB"); applied to
+    #     the spine + tick + axis-label colour. Default "#000000".
     "axes": {
         "primary_x":   {"tick_direction": "in", "axis_label_override": "",
                         "range_lo": "", "range_hi": "",
-                        "autoscale": True, "scale": "linear"},
+                        "autoscale": True, "scale": "linear",
+                        "tick_major": "", "tick_minor": "",
+                        "grid_show": True, "axis_color": "#000000"},
         "secondary_x": {"tick_direction": "in", "axis_label_override": "",
                         "range_lo": "", "range_hi": "",
-                        "autoscale": True, "scale": "linear"},
+                        "autoscale": True, "scale": "linear",
+                        "tick_major": "", "tick_minor": "",
+                        "grid_show": False, "axis_color": "#000000"},
         "primary_y":   {"tick_direction": "in", "axis_label_override": "",
                         "range_lo": "", "range_hi": "",
-                        "autoscale": True, "scale": "linear"},
+                        "autoscale": True, "scale": "linear",
+                        "tick_major": "", "tick_minor": "",
+                        "grid_show": True, "axis_color": "#000000"},
         "secondary_y": {"tick_direction": "in", "axis_label_override": "",
                         "range_lo": "", "range_hi": "",
-                        "autoscale": True, "scale": "linear"},
+                        "autoscale": True, "scale": "linear",
+                        "tick_major": "", "tick_minor": "",
+                        "grid_show": False, "axis_color": "#000000"},
         "tertiary_y":  {"tick_direction": "in", "axis_label_override": "",
                         "range_lo": "", "range_hi": "",
-                        "autoscale": True, "scale": "linear"},
+                        "autoscale": True, "scale": "linear",
+                        "tick_major": "", "tick_minor": "",
+                        "grid_show": False, "axis_color": "#000000"},
     },
 }
 
@@ -200,9 +221,13 @@ _FACTORY_DEFAULTS: dict[str, Any] = {
 # phase only touches the factory dict + this registry + the builder
 # helpers — no per-call edit list.
 # CS-64 (Phase 4am): registry grew from 2 → 6 entries.
+# CS-65 (Phase 4an): registry grew from 6 → 10 entries with the
+# tick-spacing / grid / axis-colour polish keys; the ladder slot is
+# now full.
 _AXIS_KEYS: tuple[str, ...] = (
     "tick_direction", "axis_label_override",
     "range_lo", "range_hi", "autoscale", "scale",
+    "tick_major", "tick_minor", "grid_show", "axis_color",
 )
 
 # Valid scale-type values; surfaced by the per-axis "Scale" Combobox.
@@ -1157,6 +1182,114 @@ class PlotConfigDialog(tk.Toplevel):
             values=list(_AXIS_SCALE_OPTIONS),
             state="readonly", width=8, font=("", 9),
         ).pack(side=tk.LEFT, padx=(8, 0))
+
+        # ---- Tick spacing row (CS-65 Phase 4an) ----
+        # Two Entries side-by-side: "Major" and "Minor". StringVar-
+        # backed; empty Entry = matplotlib auto-locator (no override).
+        # Non-empty positive float = fixed MultipleLocator spacing
+        # applied at the renderer's per-role tick-spacing call site.
+        # Negative / zero / unparseable values are silently rejected
+        # by the renderer's :func:`uvvis_tab._parse_tick_str` helper
+        # (no Combobox / no Validate gymnastics — matches the empty-
+        # equals-no-override convention used by the Range Entries).
+        tick_spacing_row = tk.Frame(parent)
+        tick_spacing_row.pack(fill=tk.X, anchor="w", pady=(8, 2))
+        tk.Label(
+            tick_spacing_row, text="Tick spacing:", font=("", 9, "bold"),
+        ).pack(side=tk.LEFT)
+        tk.Label(
+            tick_spacing_row, text="major", font=("", 9),
+        ).pack(side=tk.LEFT, padx=(8, 2))
+        major_var = self._make_axis_string_var(role, "tick_major")
+        tk.Entry(
+            tick_spacing_row, textvariable=major_var, width=6, font=("", 9),
+        ).pack(side=tk.LEFT, padx=(2, 6))
+        tk.Label(
+            tick_spacing_row, text="minor", font=("", 9),
+        ).pack(side=tk.LEFT, padx=(0, 2))
+        minor_var = self._make_axis_string_var(role, "tick_minor")
+        tk.Entry(
+            tick_spacing_row, textvariable=minor_var, width=6, font=("", 9),
+        ).pack(side=tk.LEFT, padx=(2, 0))
+        tk.Label(
+            tick_spacing_row, text="(empty = auto)",
+            font=("", 8, "italic"), fg="#888888",
+        ).pack(side=tk.LEFT, padx=(6, 0))
+
+        # ---- Grid row (CS-65 Phase 4an) ----
+        # BooleanVar-backed Checkbutton. The renderer reads this ONLY
+        # for primary_x / primary_y (twin Y axes share the primary's
+        # grid; secondary X grid is currently not painted), but the
+        # checkbox is rendered on every per-axis tab for visual
+        # consistency with the rest of the per-axis settings ladder.
+        # Default-True for the two primaries, False for the three
+        # non-primary roles — see :data:`_FACTORY_DEFAULTS`.
+        grid_row = tk.Frame(parent)
+        grid_row.pack(fill=tk.X, anchor="w", pady=(8, 2))
+        grid_var = self._make_axis_bool_var(role, "grid_show")
+        tk.Checkbutton(
+            grid_row, text="Show gridlines", variable=grid_var,
+            font=("", 9, "bold"),
+        ).pack(side=tk.LEFT)
+        if role not in ("primary_x", "primary_y"):
+            tk.Label(
+                grid_row,
+                text="(twin axes share the primary grid)",
+                font=("", 8, "italic"), fg="#888888",
+            ).pack(side=tk.LEFT, padx=(6, 0))
+
+        # ---- Axis colour row (CS-65 Phase 4an) ----
+        # StringVar-backed hex colour ("#RRGGBB"). The Button opens
+        # ``tkinter.colorchooser.askcolor`` seeded with the current
+        # value; a successful pick writes the new hex back into the
+        # var (which propagates through :meth:`_on_axis_var_write`
+        # like any other per-axis edit, marking the tab dirty). The
+        # Frame to the left of the Button is a live swatch — its
+        # ``bg`` follows the var via a per-widget trace; ``bd=1`` +
+        # ``relief="solid"`` gives a thin black border so a "#ffffff"
+        # axis colour still reads as a swatch against the dialog's
+        # default background.
+        color_row = tk.Frame(parent)
+        color_row.pack(fill=tk.X, anchor="w", pady=(8, 2))
+        tk.Label(
+            color_row, text="Axis colour:", font=("", 9, "bold"),
+        ).pack(side=tk.LEFT)
+        color_var = self._make_axis_string_var(role, "axis_color")
+        initial_color = color_var.get() or "#000000"
+        swatch = tk.Frame(
+            color_row, width=22, height=14, bg=initial_color,
+            relief="solid", bd=1,
+        )
+        swatch.pack(side=tk.LEFT, padx=(8, 4))
+        swatch.pack_propagate(False)
+
+        def _open_color_picker(_v=color_var, _r=role):
+            current = _v.get() or "#000000"
+            try:
+                _rgb, hex_color = colorchooser.askcolor(
+                    color=current,
+                    parent=parent.winfo_toplevel(),
+                    title=f"{_TAB_TITLES.get(_r, _r)} axis colour",
+                )
+            except tk.TclError:
+                return
+            if hex_color:
+                _v.set(hex_color)
+
+        tk.Button(
+            color_row, text="Choose…", command=_open_color_picker,
+            font=("", 9),
+        ).pack(side=tk.LEFT, padx=(0, 4))
+
+        def _refresh_swatch(*_, _v=color_var, _s=swatch):
+            value = _v.get() or "#000000"
+            try:
+                _s.configure(bg=value)
+            except tk.TclError:
+                # Invalid colour string → leave the swatch on its
+                # previous value rather than blowing up the trace.
+                pass
+        color_var.trace_add("write", _refresh_swatch)
 
     def _make_axis_string_var(
         self, role: str, key: str,
