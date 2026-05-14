@@ -2826,19 +2826,28 @@ class UVVisTab(tk.Frame):
         # ``tertiary_y`` ``grid_show`` even though the schema carries
         # them. CS-28 ``zorder=0`` invariant preserved on every
         # ``visible=True`` call so gridlines paint BEHIND data lines.
+        #
+        # matplotlib quirk: ``ax.grid(False, axis=..., linestyle=...)``
+        # ENABLES the grid because the presence of styling kwargs
+        # overrides the explicit ``visible=False``. So the per-axis
+        # disable case calls ``ax.grid(False, axis=...)`` with NO
+        # styling kwargs.
         if cfg.get("grid", True):
-            ax.grid(
-                visible=_per_axis_grid(cfg, "primary_x"),
-                axis="x", linestyle=":", alpha=0.4,
-                color=cfg.get("grid_color", "#b0b0b0"),
-                zorder=0,
-            )
-            ax.grid(
-                visible=_per_axis_grid(cfg, "primary_y"),
-                axis="y", linestyle=":", alpha=0.4,
-                color=cfg.get("grid_color", "#b0b0b0"),
-                zorder=0,
-            )
+            grid_color = cfg.get("grid_color", "#b0b0b0")
+            if _per_axis_grid(cfg, "primary_x"):
+                ax.grid(
+                    True, axis="x", linestyle=":", alpha=0.4,
+                    color=grid_color, zorder=0,
+                )
+            else:
+                ax.grid(False, axis="x")
+            if _per_axis_grid(cfg, "primary_y"):
+                ax.grid(
+                    True, axis="y", linestyle=":", alpha=0.4,
+                    color=grid_color, zorder=0,
+                )
+            else:
+                ax.grid(False, axis="y")
         else:
             ax.grid(False)
 
