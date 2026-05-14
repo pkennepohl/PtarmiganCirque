@@ -5902,5 +5902,264 @@ class TestUVVisTabPhase4yApplyToAllScope(unittest.TestCase):
         )
 
 
+class TestUVVisTabPerAxisRangeScalePhase4am(unittest.TestCase):
+    """CS-64 (Phase 4am) — per-axis range / autoscale / scale renderer wiring.
+
+    Each per-axis role (primary_x / secondary_x / primary_y /
+    secondary_y / tertiary_y) reads its own ``cfg["axes"][role]``
+    slot in ``_redraw``. The legacy top-bar ``_xlim_lo`` /
+    ``_xlim_hi`` / ``_ylim_lo`` / ``_ylim_hi`` Tk vars remain the
+    fallback for primary_x / primary_y when ``autoscale=True``
+    (default); ``autoscale=False`` makes the schema range_lo /
+    range_hi bounds win.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from uvvis_tab import UVVisTab
+        cls.UVVisTab = UVVisTab
+
+    def setUp(self):
+        self.host = tk.Frame(_root)
+        self.host.pack()
+        self.graph = ProjectGraph()
+        self.tab = self.UVVisTab(self.host, graph=self.graph)
+
+    def tearDown(self):
+        try:
+            self.tab.destroy()
+        except Exception:
+            pass
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    def _add_uvvis(self, nid: str = "u1") -> DataNode:
+        wl = np.linspace(300, 600, 10)
+        absorb = np.linspace(0.1, 0.9, 10)
+        node = DataNode(
+            id=nid, type=NodeType.UVVIS,
+            arrays={"wavelength_nm": wl, "absorbance": absorb},
+            metadata={"source_file": "synthetic"},
+            label=nid,
+            state=NodeState.COMMITTED,
+            style={"color": "#1f77b4", "linestyle": "solid",
+                   "linewidth": 1.5, "alpha": 0.9, "visible": True,
+                   "in_legend": True, "fill": False, "fill_alpha": 0.08},
+        )
+        self.graph.add_node(node)
+        return node
+
+    def _add_second_derivative(self, nid: str = "d1") -> DataNode:
+        wl = np.linspace(300, 600, 10)
+        absorb = np.linspace(-0.01, 0.01, 10)
+        node = DataNode(
+            id=nid, type=NodeType.SECOND_DERIVATIVE,
+            arrays={"wavelength_nm": wl, "absorbance": absorb},
+            metadata={"source_file": "synthetic"},
+            label=nid,
+            state=NodeState.COMMITTED,
+            style={"color": "#ff7f0e", "linestyle": "solid",
+                   "linewidth": 1.5, "alpha": 0.9, "visible": True,
+                   "in_legend": True, "fill": False, "fill_alpha": 0.08},
+        )
+        self.graph.add_node(node)
+        return node
+
+    # ---- module-level helpers ----
+
+    def test_per_axis_range_reads_string(self):
+        import uvvis_tab
+        cfg = {"axes": {"primary_y": {"range_lo": "0.25"}}}
+        self.assertEqual(
+            uvvis_tab._per_axis_range(cfg, "primary_y", "range_lo"),
+            "0.25",
+        )
+
+    def test_per_axis_range_missing_returns_empty(self):
+        import uvvis_tab
+        self.assertEqual(
+            uvvis_tab._per_axis_range({}, "primary_y", "range_lo"),
+            "",
+        )
+
+    def test_per_axis_autoscale_defaults_to_true(self):
+        import uvvis_tab
+        self.assertIs(uvvis_tab._per_axis_autoscale({}, "primary_y"), True)
+
+    def test_per_axis_autoscale_reads_false(self):
+        import uvvis_tab
+        cfg = {"axes": {"primary_y": {"autoscale": False}}}
+        self.assertIs(uvvis_tab._per_axis_autoscale(cfg, "primary_y"), False)
+
+    def test_per_axis_scale_defaults_to_linear(self):
+        import uvvis_tab
+        self.assertEqual(uvvis_tab._per_axis_scale({}, "primary_y"), "linear")
+
+    def test_per_axis_scale_reads_log(self):
+        import uvvis_tab
+        cfg = {"axes": {"primary_y": {"scale": "log"}}}
+        self.assertEqual(uvvis_tab._per_axis_scale(cfg, "primary_y"), "log")
+
+    def test_per_axis_scale_rejects_unknown(self):
+        import uvvis_tab
+        cfg = {"axes": {"primary_y": {"scale": "symlog"}}}
+        # Defensive fallback: unknown scale → "linear".
+        self.assertEqual(uvvis_tab._per_axis_scale(cfg, "primary_y"), "linear")
+
+    def test_parse_lim_str_empty_returns_none(self):
+        import uvvis_tab
+        self.assertIsNone(uvvis_tab._parse_lim_str(""))
+        self.assertIsNone(uvvis_tab._parse_lim_str("   "))
+
+    def test_parse_lim_str_garbage_returns_none(self):
+        import uvvis_tab
+        self.assertIsNone(uvvis_tab._parse_lim_str("not a number"))
+
+    def test_parse_lim_str_valid_returns_float(self):
+        import uvvis_tab
+        self.assertEqual(uvvis_tab._parse_lim_str("0.5"), 0.5)
+        self.assertEqual(uvvis_tab._parse_lim_str(" -1.25 "), -1.25)
+
+    # ---- renderer wiring: primary_y range + autoscale ----
+
+    def test_primary_y_autoscale_false_uses_schema_range(self):
+        self._add_uvvis()
+        self.tab._plot_config = {
+            "axes": {
+                "primary_y": {
+                    "range_lo": "0.2", "range_hi": "0.8",
+                    "autoscale": False, "scale": "linear",
+                },
+            },
+        }
+        self.tab._redraw()
+        ax = self.tab._axes_by_role["primary"]
+        lo, hi = ax.get_ylim()
+        self.assertAlmostEqual(lo, 0.2, places=6)
+        self.assertAlmostEqual(hi, 0.8, places=6)
+
+    def test_primary_y_autoscale_true_ignores_schema_range(self):
+        self._add_uvvis()
+        # Schema range present but autoscale=True → renderer falls
+        # back to legacy top-bar Tk vars (which are empty), so no
+        # clamp is applied and matplotlib autoscales.
+        self.tab._plot_config = {
+            "axes": {
+                "primary_y": {
+                    "range_lo": "0.2", "range_hi": "0.8",
+                    "autoscale": True, "scale": "linear",
+                },
+            },
+        }
+        self.tab._redraw()
+        ax = self.tab._axes_by_role["primary"]
+        lo, hi = ax.get_ylim()
+        # Autoscale picks data extents (0.1, 0.9) with matplotlib's
+        # default margin padding, NOT the schema's 0.2/0.8 clamp.
+        self.assertLess(lo, 0.2)
+        self.assertGreater(hi, 0.8)
+
+    def test_primary_y_autoscale_true_honours_legacy_top_bar(self):
+        self._add_uvvis()
+        self.tab._ylim_lo.set("0.3")
+        self.tab._ylim_hi.set("0.7")
+        # Default schema (autoscale=True) → legacy top-bar wins.
+        self.tab._plot_config = {}
+        self.tab._redraw()
+        ax = self.tab._axes_by_role["primary"]
+        lo, hi = ax.get_ylim()
+        self.assertAlmostEqual(lo, 0.3, places=6)
+        self.assertAlmostEqual(hi, 0.7, places=6)
+
+    # ---- renderer wiring: primary_y scale ----
+
+    def test_primary_y_scale_log_applied(self):
+        self._add_uvvis()
+        self.tab._plot_config = {
+            "axes": {"primary_y": {"scale": "log"}},
+        }
+        self.tab._redraw()
+        ax = self.tab._axes_by_role["primary"]
+        self.assertEqual(ax.get_yscale(), "log")
+
+    def test_primary_y_scale_linear_default(self):
+        self._add_uvvis()
+        self.tab._plot_config = {}
+        self.tab._redraw()
+        ax = self.tab._axes_by_role["primary"]
+        self.assertEqual(ax.get_yscale(), "linear")
+
+    # ---- renderer wiring: primary_x scale ----
+
+    def test_primary_x_scale_log_applied(self):
+        self._add_uvvis()
+        self.tab._plot_config = {
+            "axes": {"primary_x": {"scale": "log"}},
+        }
+        self.tab._redraw()
+        ax = self.tab._axes_by_role["primary"]
+        self.assertEqual(ax.get_xscale(), "log")
+
+    # ---- twin Y-axes ----
+
+    def test_secondary_y_range_applied_to_twin_axis(self):
+        self._add_uvvis()
+        self._add_second_derivative()
+        self.tab._plot_config = {
+            "axes": {
+                "secondary_y": {
+                    "range_lo": "-2.5", "range_hi": "2.5",
+                    "autoscale": False, "scale": "linear",
+                },
+            },
+        }
+        self.tab._redraw()
+        twin = self.tab._axes_by_role.get("secondary")
+        self.assertIsNotNone(twin, "secondary_y twin axis should exist")
+        lo, hi = twin.get_ylim()
+        self.assertAlmostEqual(lo, -2.5, places=6)
+        self.assertAlmostEqual(hi, 2.5, places=6)
+
+    def test_secondary_y_scale_log_applied_to_twin_axis(self):
+        self._add_uvvis()
+        self._add_second_derivative()
+        self.tab._plot_config = {
+            "axes": {"secondary_y": {"scale": "log"}},
+        }
+        self.tab._redraw()
+        twin = self.tab._axes_by_role.get("secondary")
+        self.assertIsNotNone(twin)
+        self.assertEqual(twin.get_yscale(), "log")
+
+    # ---- empty-bound semantics ----
+
+    def test_primary_y_autoscale_false_with_only_lo_leaves_hi(self):
+        self._add_uvvis()
+        self.tab._plot_config = {
+            "axes": {
+                "primary_y": {
+                    "range_lo": "0.4", "range_hi": "",
+                    "autoscale": False, "scale": "linear",
+                },
+            },
+        }
+        self.tab._redraw()
+        ax = self.tab._axes_by_role["primary"]
+        lo, hi = ax.get_ylim()
+        self.assertAlmostEqual(lo, 0.4, places=6)
+        # hi end was empty → no clamp → matplotlib autoscale-ish high
+        self.assertGreater(hi, 0.4)
+
+    # ---- defensive: missing axes sub-dict doesn't crash ----
+
+    def test_missing_axes_subdict_does_not_crash(self):
+        self._add_uvvis()
+        self.tab._plot_config = {}
+        # Should not raise.
+        self.tab._redraw()
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
