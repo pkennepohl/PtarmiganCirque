@@ -374,6 +374,98 @@ def _per_axis_tick_direction(cfg: Mapping[str, Any], tab_role: str) -> str:
     )
 
 
+def _parse_tick_str(text: str) -> "Optional[float]":
+    """Parse a per-axis tick-spacing Entry value (CS-65, Phase 4an).
+
+    Returns ``None`` for empty / whitespace-only / unparseable input AND
+    for non-positive values — callers treat ``None`` as "let matplotlib
+    pick the locator". Negative or zero spacings are silently rejected
+    because ``MultipleLocator`` would raise; rejecting in the helper
+    keeps the renderer free of try/except cluttering.
+    """
+    if not isinstance(text, str):
+        return None
+    stripped = text.strip()
+    if not stripped:
+        return None
+    try:
+        value = float(stripped)
+    except (TypeError, ValueError):
+        return None
+    if value <= 0.0 or not np.isfinite(value):
+        return None
+    return value
+
+
+def _per_axis_tick_major(
+    cfg: Mapping[str, Any], tab_role: str,
+) -> "Optional[float]":
+    """Read ``cfg["axes"][tab_role]["tick_major"]`` (CS-65, Phase 4an).
+
+    Returns the parsed float spacing, or ``None`` for "let matplotlib's
+    auto-locator decide". Defensive: pre-Phase-4an configs without the
+    nested key return ``None``.
+    """
+    axes = cfg.get("axes")
+    if isinstance(axes, dict):
+        role_dict = axes.get(tab_role)
+        if isinstance(role_dict, dict):
+            value = role_dict.get("tick_major", "")
+            if isinstance(value, str):
+                return _parse_tick_str(value)
+    return None
+
+
+def _per_axis_tick_minor(
+    cfg: Mapping[str, Any], tab_role: str,
+) -> "Optional[float]":
+    """Read ``cfg["axes"][tab_role]["tick_minor"]`` (CS-65, Phase 4an)."""
+    axes = cfg.get("axes")
+    if isinstance(axes, dict):
+        role_dict = axes.get(tab_role)
+        if isinstance(role_dict, dict):
+            value = role_dict.get("tick_minor", "")
+            if isinstance(value, str):
+                return _parse_tick_str(value)
+    return None
+
+
+def _per_axis_grid(cfg: Mapping[str, Any], tab_role: str) -> bool:
+    """Read ``cfg["axes"][tab_role]["grid_show"]`` (CS-65, Phase 4an).
+
+    Default-True for ``primary_x`` / ``primary_y`` and default-False for
+    the three non-primary roles when the key is missing. Renderer
+    currently consults this helper only for the two primary roles (twin
+    Y axes share the primary's grid); the per-role defaults keep the
+    Plot Settings checkbox visually consistent with what the renderer
+    actually paints when a config arrives without the key set.
+    """
+    axes = cfg.get("axes")
+    if isinstance(axes, dict):
+        role_dict = axes.get(tab_role)
+        if isinstance(role_dict, dict) and "grid_show" in role_dict:
+            return bool(role_dict["grid_show"])
+    return tab_role in ("primary_x", "primary_y")
+
+
+def _per_axis_color(cfg: Mapping[str, Any], tab_role: str) -> str:
+    """Read ``cfg["axes"][tab_role]["axis_color"]`` (CS-65, Phase 4an).
+
+    Returns a hex colour string. Defaults to ``"#000000"`` when missing
+    or when the stored value is not a string. Renderer applies the
+    colour to the per-role spine + tick params + axis-label colour at
+    each axis's per-call-site.
+    """
+    axes = cfg.get("axes")
+    if isinstance(axes, dict):
+        role_dict = axes.get(tab_role)
+        if isinstance(role_dict, dict):
+            value = role_dict.get("axis_color")
+            if isinstance(value, str) and value:
+                return value
+    return "#000000"
+
+
 def _enumerate_plots_by_role(
     spectrum_nodes: Iterable[DataNode],
     second_derivative_nodes: Iterable[DataNode],

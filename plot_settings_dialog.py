@@ -175,22 +175,43 @@ _FACTORY_DEFAULTS: dict[str, Any] = {
     # bound on this end"), ``autoscale=True`` makes the renderer ignore
     # the range pair (pure matplotlib autoscale), ``scale`` is one of
     # ``{"linear", "log"}``.
+    # CS-65 (Phase 4an): per-axis polish — four more keys per role:
+    #   * tick_major / tick_minor   StringVar-friendly (empty = let
+    #     matplotlib's auto-locator pick); non-empty positive float =
+    #     fixed-spacing MultipleLocator.
+    #   * grid_show                 BooleanVar; renderer reads it only
+    #     for primary_x / primary_y (twin Y axes share the primary's
+    #     grid). Default True for the two primaries, False for the
+    #     three non-primary roles so the dialog's checkbox starts
+    #     visually consistent with what the renderer actually paints.
+    #   * axis_color                hex string ("#RRGGBB"); applied to
+    #     the spine + tick + axis-label colour. Default "#000000".
     "axes": {
         "primary_x":   {"tick_direction": "in", "axis_label_override": "",
                         "range_lo": "", "range_hi": "",
-                        "autoscale": True, "scale": "linear"},
+                        "autoscale": True, "scale": "linear",
+                        "tick_major": "", "tick_minor": "",
+                        "grid_show": True, "axis_color": "#000000"},
         "secondary_x": {"tick_direction": "in", "axis_label_override": "",
                         "range_lo": "", "range_hi": "",
-                        "autoscale": True, "scale": "linear"},
+                        "autoscale": True, "scale": "linear",
+                        "tick_major": "", "tick_minor": "",
+                        "grid_show": False, "axis_color": "#000000"},
         "primary_y":   {"tick_direction": "in", "axis_label_override": "",
                         "range_lo": "", "range_hi": "",
-                        "autoscale": True, "scale": "linear"},
+                        "autoscale": True, "scale": "linear",
+                        "tick_major": "", "tick_minor": "",
+                        "grid_show": True, "axis_color": "#000000"},
         "secondary_y": {"tick_direction": "in", "axis_label_override": "",
                         "range_lo": "", "range_hi": "",
-                        "autoscale": True, "scale": "linear"},
+                        "autoscale": True, "scale": "linear",
+                        "tick_major": "", "tick_minor": "",
+                        "grid_show": False, "axis_color": "#000000"},
         "tertiary_y":  {"tick_direction": "in", "axis_label_override": "",
                         "range_lo": "", "range_hi": "",
-                        "autoscale": True, "scale": "linear"},
+                        "autoscale": True, "scale": "linear",
+                        "tick_major": "", "tick_minor": "",
+                        "grid_show": False, "axis_color": "#000000"},
     },
 }
 
@@ -200,9 +221,13 @@ _FACTORY_DEFAULTS: dict[str, Any] = {
 # phase only touches the factory dict + this registry + the builder
 # helpers — no per-call edit list.
 # CS-64 (Phase 4am): registry grew from 2 → 6 entries.
+# CS-65 (Phase 4an): registry grew from 6 → 10 entries with the
+# tick-spacing / grid / axis-colour polish keys; the ladder slot is
+# now full.
 _AXIS_KEYS: tuple[str, ...] = (
     "tick_direction", "axis_label_override",
     "range_lo", "range_hi", "autoscale", "scale",
+    "tick_major", "tick_minor", "grid_show", "axis_color",
 )
 
 # Valid scale-type values; surfaced by the per-axis "Scale" Combobox.
