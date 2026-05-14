@@ -133,19 +133,41 @@ class TestPlotConfigDialogShell(unittest.TestCase):
         self.assertEqual(dlg._control_vars["title_font_size"].get(), 22)
         self.assertEqual(bool(dlg._control_vars["grid"].get()), False)
 
-    # ----------- modal contract (transient + grab) -----------
+    # ----------- modeless contract (transient WITHOUT grab) -----------
 
-    def test_modal_grab_set_on_visible_window(self):
-        """grab_set is part of the modal contract per CS-06."""
+    def test_no_grab_set_on_visible_window(self):
+        """Phase 4ao / CS-66: dialog is modeless.
+
+        ``grab_set()`` was removed so the main window stays
+        interactive while Plot Settings is open. ``grab_status``
+        returns a falsy value (``None`` on some Tk builds, ``""`` on
+        others) when no grab is held; held grabs return the literal
+        strings ``"local"`` or ``"global"``.
+        """
         dlg = self.PlotConfigDialog(self.host, self.config)
-        # ``grab_status`` returns the empty string when no grab is held.
-        # When transient + grab_set succeed it returns "local" or
-        # "global". Acceptance: anything non-empty.
         dlg.update_idletasks()
         status = dlg.grab_status()
-        self.assertNotEqual(
-            status, "",
-            "Plot Settings dialog must hold a Tk grab once visible",
+        self.assertFalse(
+            status,
+            f"Plot Settings dialog must NOT hold a Tk grab "
+            f"(CS-66 modeless); got grab_status() = {status!r}",
+        )
+
+    def test_transient_is_preserved(self):
+        """Phase 4ao / CS-66: transient(parent) still set.
+
+        Modeless dialogs in this app keep ``transient`` so the dialog
+        is grouped above its parent in the WM's Z-order. The grab is
+        what was dropped, not the transient relationship.
+        """
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        # ``wm_transient()`` without arguments returns the master path
+        # name (a string) — non-empty iff transient was set.
+        master_path = dlg.wm_transient()
+        self.assertTrue(
+            bool(master_path),
+            "PlotConfigDialog must call transient(parent) (CS-66)",
         )
 
     # ----------- factory: focus existing dialog -----------
@@ -2997,6 +3019,97 @@ class TestPlotConfigDialogPerAxisPolishWidgetsPhase4an(unittest.TestCase):
             self.assertTrue(bool(dlg.winfo_exists()))
             dlg.destroy()
             self.psd._open_dialogs.clear()
+
+
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestPlotConfigDialogModelessPhase4ao(unittest.TestCase):
+    """Phase 4ao / CS-66: Plot Settings dropped its ``grab_set()``.
+
+    Re-pins the modeless contract independently of the
+    :class:`TestPlotConfigDialogShell` suite so the lock is easy to
+    find by phase tag. The shell suite still owns the singleton +
+    transient + Cancel-revert behaviour; this class owns the explicit
+    "main window stays interactive" + "no source-level grab call"
+    invariants.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import plot_settings_dialog
+        cls.psd = plot_settings_dialog
+        cls.PlotConfigDialog = plot_settings_dialog.PlotConfigDialog
+        cls.open_dialog = staticmethod(plot_settings_dialog.open_plot_config_dialog)
+
+    def setUp(self):
+        self.psd._open_dialogs.clear()
+        self.psd._USER_DEFAULTS.clear()
+        self.host = tk.Frame(_root)
+        self.host.pack()
+        self.config: dict = {}
+
+    def tearDown(self):
+        for dlg in list(self.psd._open_dialogs.values()):
+            try:
+                dlg.destroy()
+            except Exception:
+                pass
+        self.psd._open_dialogs.clear()
+        self.psd._USER_DEFAULTS.clear()
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    def test_main_window_stays_interactive_with_dialog_open(self):
+        """The host frame must not be grabbed away while the dialog is open.
+
+        The previous CS-06 modal contract used ``grab_set()`` which
+        redirects every pointer/keyboard event to the dialog
+        subtree until release. CS-66 drops that — the host frame is
+        still in the focus chain.
+        """
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        # ``grab_current`` on the root returns None when no widget
+        # holds a grab.
+        self.assertIsNone(
+            _root.grab_current(),
+            "No Tk widget should hold a grab while Plot Settings is open",
+        )
+
+    def test_source_does_not_call_grab_set(self):
+        """Sentinel: re-introducing ``grab_set`` should require a
+        deliberate edit.
+
+        We pin the absence of the literal ``self.grab_set()`` call in
+        :meth:`PlotConfigDialog.__init__` source so a future copy-paste
+        from a modal dialog doesn't silently re-introduce the grab.
+        """
+        import inspect
+        src = inspect.getsource(self.PlotConfigDialog.__init__)
+        self.assertNotIn(
+            "self.grab_set()", src,
+            "PlotConfigDialog.__init__ must not call grab_set() (CS-66)",
+        )
+
+    def test_singleton_invariant_preserved_under_modeless(self):
+        """CS-06 one-per-host uniqueness survives the modal→modeless flip."""
+        first = self.open_dialog(self.host, self.config)
+        second = self.open_dialog(self.host, self.config)
+        self.assertIs(first, second)
+
+    def test_destroy_does_not_break_with_no_grab(self):
+        """Without a grab there is nothing to release; destroy must
+        still complete cleanly."""
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        dlg.destroy()
+        # Idempotent — second destroy on an already-destroyed Toplevel
+        # is a no-op via Tk's guard.
+        try:
+            dlg.destroy()
+        except tk.TclError:
+            pass
 
 
 if __name__ == "__main__":

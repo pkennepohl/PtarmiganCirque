@@ -4612,12 +4612,17 @@ class TestUVVisTabSendToCompareIntegration(unittest.TestCase):
 
 @unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
 class TestUVVisTabBaselineCurveOverlay(unittest.TestCase):
-    """Phase 4o (CS-29) — dashed baseline-curve overlay in _redraw.
+    """Phase 4o (CS-29) / Phase 4ao (CS-67) — dashed baseline-curve
+    overlay in _redraw.
 
-    Toggle off (default): only the corrected spectrum lines are
-    drawn. Toggle on: each visible BASELINE node gets a dashed
-    overlay of its fitted baseline (recovered via
-    ``uvvis_baseline.compute_baseline_curve``).
+    Phase 4ao retired the global ``_show_baseline_curves`` BooleanVar
+    and its top-bar Checkbutton; CS-36's per-node
+    ``style["show_baseline_curve"]`` (default True) is now the
+    single source of truth. The renderer no longer carries an outer
+    global guard. Each visible BASELINE node gets a dashed overlay
+    of its fitted baseline (recovered via
+    ``uvvis_baseline.compute_baseline_curve``) UNLESS the per-node
+    style explicitly opts out.
     """
 
     @classmethod
@@ -4680,30 +4685,51 @@ class TestUVVisTabBaselineCurveOverlay(unittest.TestCase):
         self.graph.add_edge("op1", "c1")
         return wl, parent_abs, baseline_function
 
-    def test_default_toggle_is_off(self):
-        # Opt-in feature — make sure the default doesn't change
-        # silently and surprise existing users / tests.
-        self.assertFalse(self.tab._show_baseline_curves.get())
+    def test_no_global_baseline_var_after_phase_4ao(self):
+        # Phase 4ao (CS-67) retired the global BooleanVar. The
+        # attribute must no longer exist on UVVisTab so that a
+        # future copy-paste of "self.tab._show_baseline_curves" in
+        # a test or in app code fails loudly.
+        self.assertFalse(
+            hasattr(self.tab, "_show_baseline_curves"),
+            "Phase 4ao: global _show_baseline_curves BooleanVar removed",
+        )
+        self.assertFalse(
+            hasattr(self.tab, "_baseline_curves_cb"),
+            "Phase 4ao: global Baseline curves Checkbutton removed",
+        )
 
-    def test_toggle_off_renders_no_overlay(self):
+    def test_per_node_default_renders_overlay(self):
+        # CS-36 default for ``style["show_baseline_curve"]`` is True;
+        # Phase 4ao removed the global outer guard. Result: a freshly
+        # committed BASELINE node renders its dashed overlay without
+        # the user touching any toggle.
         self._build_parent_and_baseline()
-        self.tab._show_baseline_curves.set(False)
+        self.tab._x_unit.set("nm")
         self.tab._redraw()
         labels = [ln.get_label() for ln in self.tab._ax.get_lines()]
-        # Two solid spectrum lines (parent + corrected child),
-        # no "(baseline)" overlay.
-        self.assertNotIn("parent · baseline (linear) (baseline)", labels)
-        # Confirm no dashed line is on the axis.
+        self.assertIn(
+            "parent · baseline (linear) (baseline)", labels,
+            "overlay must render by default (no global gate anymore)",
+        )
+
+    def test_per_node_show_false_hides_overlay(self):
+        # CS-36's per-node gate is now the single source of truth.
+        # Setting ``style["show_baseline_curve"]`` to False on the
+        # BASELINE child must hide its dashed overlay.
+        self._build_parent_and_baseline()
+        self.graph.set_style("c1", {"show_baseline_curve": False})
+        self.tab._redraw()
         for ln in self.tab._ax.get_lines():
-            self.assertNotEqual(ln.get_linestyle(), "--",
-                                "no dashed overlay should appear "
-                                "when toggle is off")
+            self.assertNotEqual(
+                ln.get_linestyle(), "--",
+                "per-node show_baseline_curve=False must hide overlay",
+            )
 
     def test_toggle_on_adds_dashed_baseline_curve(self):
         wl, parent_abs, baseline_function = (
             self._build_parent_and_baseline()
         )
-        self.tab._show_baseline_curves.set(True)
         # Stay in nm so x-axis ordering matches input ordering.
         self.tab._x_unit.set("nm")
         self.tab._redraw()
@@ -4728,7 +4754,6 @@ class TestUVVisTabBaselineCurveOverlay(unittest.TestCase):
         self._build_parent_and_baseline()
         # Hide the BASELINE node via style.
         self.graph.set_style("c1", {"visible": False})
-        self.tab._show_baseline_curves.set(True)
         self.tab._redraw()
         for ln in self.tab._ax.get_lines():
             self.assertNotEqual(
@@ -4741,7 +4766,6 @@ class TestUVVisTabBaselineCurveOverlay(unittest.TestCase):
         # the user can match the dashed line to the corrected curve
         # at a glance.
         self._build_parent_and_baseline()
-        self.tab._show_baseline_curves.set(True)
         self.tab._redraw()
         dashed = [ln for ln in self.tab._ax.get_lines()
                   if ln.get_linestyle() == "--"]
@@ -4770,7 +4794,6 @@ class TestUVVisTabBaselineCurveOverlay(unittest.TestCase):
                    "in_legend": True},
         )
         self.graph.add_node(bad)
-        self.tab._show_baseline_curves.set(True)
         self.tab._redraw()  # must not raise
         for ln in self.tab._ax.get_lines():
             self.assertNotEqual(ln.get_linestyle(), "--")
@@ -5656,7 +5679,6 @@ class TestUVVisTabPhase4yYAxisOverride(unittest.TestCase):
         _op_id, baseline_id = self.tab._apply_baseline()
         self.tab.update_idletasks()
         self.graph.set_style(baseline_id, {"y_axis": "secondary"})
-        self.tab._show_baseline_curves.set(True)
         self.tab._redraw()
         self.tab.update_idletasks()
         self.assertIn("secondary", self.tab._axes_by_role)

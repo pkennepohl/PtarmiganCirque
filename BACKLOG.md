@@ -1682,8 +1682,8 @@ subsequent Phase 4 session.**
 | ⏳ | 🟡 | **Axis nomenclature rename: primary/secondary/tertiary → bottom/top/left/right with `*` suffix for offset (USER-FLAGGED, Phase 4ak)** | USER-FLAGGED at end of Phase 4ak (step 5 elicitation). User: "Maybe we should not use primary, secondary, tertiary for axes and use clear location designations such as bottom/top for the main x-axes and something like bottom* and top* for offset secondary axes for a total of 4 possible axes along x. Similar structure for y with left/right/left*/right*. Open to better nomenclature." The current taxonomy (CS-44: `primary` / `secondary` / `tertiary`; CS-60: `primary_x` / `secondary_x` / `primary_y` / `secondary_y` / `tertiary_y`) is renderer-internal and dialog-facing. Position-based names ("bottom", "top", "left", "right", with `*` for offset/secondary instance) are more discoverable for the user — a UV/Vis researcher doesn't need to know that "secondary" specifically means twinx. The proposal also opens the door to a fourth axis on each side (currently `*` suffix denotes offset, but the rename allows growth to "right*" being a tertiary-stack-style offset on top of "right"). **Architecture proposal (lock pending):** rename across the codebase. Affects: `_AXIS_ROLES = ("primary", "secondary", "tertiary")` (CS-44 lock), `_TAB_KEYS = ("global", "primary_x", "secondary_x", "primary_y", "secondary_y", "tertiary_y")` (CS-60 lock), `_TAB_TITLES` strings (CS-60 lock), `_DEFAULT_Y_AXIS_BY_NODETYPE`'s values (CS-44 lock), `_resolve_y_axis_role`'s return values (CS-44 lock), every test asserting any of the above, plot_settings_dialog's per-axis tab keys, `_Y_AXIS_ROLE_TO_TAB` (CS-62 lock), the `y_axis` style key's value set (CS-50 lock), the manifest's nested `axes` sub-dict keys (round-trip across `_USER_DEFAULTS` via project_io). **Lock decisions for the implementing session:** (i) exact name set — is the `*` suffix preserved or replaced with something more keyboard-friendly (e.g. `"bottom_offset"`)? `*` reads well in UI but parses awkwardly in code paths. (ii) does the rename happen all-at-once (one massive sweep phase) or incrementally with an alias dict mapping old → new during transition? (iii) does the `y_axis` style key's value set (CS-50: `"primary"` / `"secondary"` / `"tertiary"`) rename in lockstep — yes for consistency but increases blast radius. (iv) does the manifest schema gain a migration shim for projects saved with old names (yes, since `.ptmg` files can be years old). (v) what about the existing `_axes_by_role` dict key names (used by tests + matplotlib introspection)? **Affected:** Massive cross-codebase rename. CS-44 / CS-50 / CS-60 / CS-61 / CS-62 locks all need deliberate relaxation. Carries through to manifest round-trip migration shim + every test pinning role names. Multi-phase task — the cleanest path is one phase for the schema rename + migration shim, one phase for the dialog labels + tab titles, one phase for the renderer's internal names, with a final cleanup pass. **Risk:** high blast radius. Could combine with the "Refactor uvvis_tab.py — extract host shell" register entry since both touch axis-handling code paths. |
 | ⏳ | 🟡 | **Rich-text axis labels — subscript / superscript / equation markup (USER-FLAGGED, Phase 4ak)** | USER-FLAGGED at end of Phase 4ak (step 5 elicitation). User: "Allow for subscript/superscript and equations in axis labels. How can we do that?" Today axis labels are plain strings written through matplotlib's `set_xlabel` / `set_ylabel` (CS-62's `axis_label_override` is a plain `str`). matplotlib supports a `mathtext` subset of LaTeX inline (e.g. `r"$d^2 A / d\lambda^2$"`) AND the full `usetex=True` LaTeX rendering when a LaTeX installation is on `$PATH`. The user wants the override Entry to accept LaTeX-style markup and render it in the figure. **Architecture proposal (lock pending):** enable matplotlib's mathtext on every axis label setter. Simplest path: change `set_xlabel(text, ...)` → `set_xlabel(text, ...)` with matplotlib's default mathtext parser (no extra config needed — `$...$` is parsed automatically). User types `$d^2 A / d\lambda^2$` into the Plot Settings → Primary Y axis label override Entry → matplotlib renders the math expression. **Lock decisions for the implementing session:** (i) does the Entry widget need any preprocessing or do we trust the user to type `$...$` directly? (ii) is there a "Markup help" tooltip or pop-up showing example expressions (`$\alpha$`, `$d^2A/d\lambda^2$`, `$\Delta E$`)? (iii) does we expose mathtext only, or also the full LaTeX path (`usetex=True`) which requires a LaTeX install? (iv) does the manifest round-trip preserve the raw markup string (yes — it's a plain `str` already). (v) does the same support extend to title (`title_text`) and the legacy xlabel/ylabel custom text path? (likely yes for consistency). **Affected:** `plot_settings_dialog.py` per-axis Entry widgets + the legacy Title-and-labels section's Entry widgets — the markup goes in transparently since `set_xlabel` already supports it. Possibly a tooltip module for the markup help. New test asserting `set_xlabel($d^2A$)` renders without error. Small phase — enabling mathtext is essentially free; the lift is testing + documenting the gesture for users. Cross-refs CS-62 (`axis_label_override` Entry widgets), the legacy "Title and labels" section. **Caveat:** matplotlib's mathtext is a SUBSET of LaTeX (most math symbols work, but `\text{}`, fancy spacing, and some packages don't). Decision (iii) determines whether power users get full LaTeX. |
 | ⏳ | 🟡 | **Accessibility features (USER-FLAGGED, Phase 4al)** | USER-FLAGGED at end of Phase 4al (step 5 elicitation). User: "can we implement any accessibility features in the software?" Open-ended architectural question with multiple sub-axes. Today the app has effectively zero accessibility support: no keyboard navigation in the unified PlotConfigDialog or StyleDialog beyond Tab/Enter (no chord shortcuts, no menu mnemonics), no screen-reader hints, no high-contrast / dark mode (background is hardcoded `#ffffff` in `_FACTORY_DEFAULTS["background_color"]`), no colour-blind-safe palette toggle on `node_styles.SPECTRUM_PALETTE` (CS-21 — 10-colour palette with several red/green near-collisions), no large-text / scaling override on the matplotlib font sizes, no focus-visible outline polish for keyboard navigation. **Architecture proposal (lock pending):** scope a first batch by impact-vs-cost. Likely high-impact / low-cost: (1) keyboard shortcuts for common gestures (already a USER-FLAGGED register entry from Phase 4ah — pairs naturally); (2) colour-blind-safe palette as an opt-in `SPECTRUM_PALETTE` swap (e.g. Wong's 8-colour palette or the matplotlib `tab10` deuteranopia-safe variant); (3) global tk option/theme that enlarges font sizes by an `accessibility.scale` multiplier (touches every `font=("", N, ...)` literal across the dialog modules); (4) dialog dismiss via Escape (some dialogs already wire it; auditing for consistency). Lower priority but worth recording: (5) screen reader hints via `accessibility.title` on widgets (Tk has limited a11y story; depends on platform — Windows via UIA, macOS via AX, Linux via AT-SPI); (6) high-contrast mode (toggle that swaps background + grid + spine colours); (7) dyslexia-friendly font option. **Lock decisions for the implementing session:** (i) does accessibility get a new top-level Settings section (e.g. an "Accessibility" tab in PlotConfigDialog or a new app-level Preferences dialog), or live as scattered toggles? (ii) does the colour-blind palette swap commit on click (immediate redraw of every scan) or stage as a working-copy edit? (iii) which dialogs are in scope for the keyboard-nav audit — every modal, or just the high-traffic Plot Settings / Style? (iv) does the font-scale multiplier round-trip through `_USER_DEFAULTS` (yes — it's a persistent preference)? (v) which platforms / screen readers are in the supported matrix? **Affected:** Wide — `node_styles.py` (palette), `plot_settings_dialog.py` (font sizes, possibly a new Accessibility section), `style_dialog.py`, every dialog with `grab_set` (Escape audit), possibly new `accessibility.py` module. Cross-refs CS-21 (SPECTRUM_PALETTE), CS-06 / CS-23 / CS-60 (dialog patterns), existing Keyboard shortcuts USER-FLAGGED register entry (pairs). Multi-phase task — design + scope decision is one phase; first batch (palette + Escape audit + keyboard shortcuts) one phase; broader rollout follows. **Risk:** screen reader support has the highest cost-per-platform; defer until the rest of the batch lands. |
-| ⏳ | 🟡 | **Modeless dialogs — relax CS-06 / CS-60 `grab_set` so the main window stays interactive (USER-FLAGGED, Phase 4al)** | USER-FLAGGED at end of Phase 4al (step 5 elicitation). User: "Is it possible for pop ups to not 'lock out' the main window? It would be nice sometimes to be able to have a pop up open (e.g. the Plot Settings window) while also being able to work on the main window." Today CS-06 / CS-23 / CS-60 enforce a modal contract on the Plot Settings dialog (`tk.Toplevel` with `transient(parent)` + `grab_set()` — `plot_settings_dialog.py:584`). The grab makes the main window non-interactive until the dialog is dismissed. **`StyleDialog` is already modeless per CS-05** (`style_dialog.py:553`: "Modeless: no transient / no grab_set"), so the pattern the user wants already exists in the codebase — Plot Settings just chose modal. The user's request is essentially: relax CS-06 / CS-60's modal lock to match CS-05's modeless behaviour. **Architecture proposal (lock pending):** drop `grab_set()` from `PlotConfigDialog.__init__`, keep `transient(parent)` so the dialog stays atop the main window but doesn't block input. The dialog already lives in `_open_dialogs` per-host registry (CS-06: one dialog per tab) — re-opening focuses the existing one rather than constructing a new one, which is exactly what modeless dialogs need. **Lock decisions for the implementing session:** (i) which dialogs are in scope — Plot Settings only (CS-06 / CS-60), or every CS-23 modal (project-load mismatch dialog, Save As, etc.)? (ii) what happens when the user mutates the underlying graph (e.g. adds a node) while Plot Settings is open — does the dialog's `_plots_by_role` need to refresh (pairs with the existing "plots_by_role frozen at open time" Claude-surfaced friction note from Phase 4ak), or is "re-open to refresh" still acceptable? (iii) does Cancel still revert via `_snapshot` (CS-23 semantic preserved), or does live-preview (USER-FLAGGED Phase 4ak register entry) become the natural follow-on? (iv) does the StyleDialog modeless precedent give us a clean playbook to copy, or are there CS-06-specific complications (e.g. cross-tab pending-edit state model from CS-60)? **Affected:** `plot_settings_dialog.py` (`grab_set()` call + module docstring), CS-06 / CS-23 / CS-60 lock relaxations, tests asserting modal behaviour (search `test_plot_settings_dialog.py` for any `grab_set`-aware assertion — likely none today), the load-time project-mismatch dialog (separate question — it SHOULD probably stay modal because it represents an error needing acknowledgement). Cross-refs CS-05 (existing modeless precedent), CS-06 (current modal lock), CS-23 (button row + Cancel semantics), CS-60 (unified PlotConfigDialog), the existing "Live-preview vs Apply button" register entry (pairs — modeless + live-preview together would be the most natural CS-06 evolution), and the Phase 4ak "plots_by_role frozen at open time" friction note (becomes urgent if dialog is modeless and graph mutations happen during open). Small phase if scoped to Plot Settings only (one-line change + test sweep); medium if scoped to all CS-23 modals; pairs with live-preview for a larger meta-UX phase. |
-| ⏳ | 🟢 | **Retire the global "Baseline curves" top-bar checkbox — per-node toggle has subsumed it (USER-FLAGGED, Phase 4al)** | USER-FLAGGED at end of Phase 4al (step 5 elicitation). User: "the baseline curves checkbox is probably no longer needed since we've moved that control to the data panel." Today `uvvis_tab.py:686` packs a `tk.Checkbutton("Baseline curves", variable=self._show_baseline_curves)` into the top bar; default off (CS-29). The renderer (`_redraw` line 2232) gates the dashed-baseline overlay loop on BOTH (a) the global `_show_baseline_curves` checkbox AND (b) the per-node `style["show_baseline_curve"]` (CS-36, default True). The per-node gate was added in Phase 4r alongside the data-panel surface for it — the user's observation is correct: the global checkbox is now redundant when every per-node row exposes the same control. Retiring the global gate is a small cleanup: delete the Checkbutton + the `_show_baseline_curves` BooleanVar + the outer `if self._show_baseline_curves.get():` guard in `_redraw`. The per-node `bn.style.get("show_baseline_curve", True)` filter inside the loop is the new single-source-of-truth. **Lock decisions for the implementing session:** (i) does the new default flip from "off globally, on per-node" to "on per-node out of the box" — i.e. baseline overlays appear immediately when a baseline is committed, with the user explicitly hiding via the per-node toggle? (today's off-by-default global gate hides ALL baselines until the user opts in.) Likely yes for consistency with the per-node default of True. (ii) does removal cascade through any test asserting the global checkbox's existence (`grep _show_baseline_curves test_uvvis_tab.py` first; likely a few tests need their setup updated). (iii) does the manifest (CS-46) carry the global `_show_baseline_curves` state? (no — it's tab-private UI state, not in `_plot_config` or the graph). (iv) does CS-29 invariant doc text need updating to reflect the per-node-only model? **Affected:** `uvvis_tab.py` (3 sites: BooleanVar init line 446, Checkbutton lines 686-691, `_redraw` gate line 2232); test_uvvis_tab.py (any test referencing `_show_baseline_curves` or `_baseline_curves_cb` needs its setup adjusted); COMPONENTS.md CS-29 / CS-36 invariant texts. Small phase — half a day at most. Cross-refs CS-29 (the original Phase 4o baseline overlay feature), CS-36 (the Phase 4r per-node toggle), Phase 4r friction context. **Quality-of-life win:** removes one top-bar widget AND clarifies that baseline visibility is per-node concern, not a global toggle. |
+| ✅ | 🟡 | **Modeless dialogs — relax CS-06 / CS-60 `grab_set` so the main window stays interactive (USER-FLAGGED, Phase 4al)** ✅ Resolved in Phase 4ao (CS-66). | USER-FLAGGED at end of Phase 4al (step 5 elicitation). User: "Is it possible for pop ups to not 'lock out' the main window? It would be nice sometimes to be able to have a pop up open (e.g. the Plot Settings window) while also being able to work on the main window." Today CS-06 / CS-23 / CS-60 enforce a modal contract on the Plot Settings dialog (`tk.Toplevel` with `transient(parent)` + `grab_set()` — `plot_settings_dialog.py:584`). The grab makes the main window non-interactive until the dialog is dismissed. **`StyleDialog` is already modeless per CS-05** (`style_dialog.py:553`: "Modeless: no transient / no grab_set"), so the pattern the user wants already exists in the codebase — Plot Settings just chose modal. The user's request is essentially: relax CS-06 / CS-60's modal lock to match CS-05's modeless behaviour. **Architecture proposal (lock pending):** drop `grab_set()` from `PlotConfigDialog.__init__`, keep `transient(parent)` so the dialog stays atop the main window but doesn't block input. The dialog already lives in `_open_dialogs` per-host registry (CS-06: one dialog per tab) — re-opening focuses the existing one rather than constructing a new one, which is exactly what modeless dialogs need. **Lock decisions for the implementing session:** (i) which dialogs are in scope — Plot Settings only (CS-06 / CS-60), or every CS-23 modal (project-load mismatch dialog, Save As, etc.)? (ii) what happens when the user mutates the underlying graph (e.g. adds a node) while Plot Settings is open — does the dialog's `_plots_by_role` need to refresh (pairs with the existing "plots_by_role frozen at open time" Claude-surfaced friction note from Phase 4ak), or is "re-open to refresh" still acceptable? (iii) does Cancel still revert via `_snapshot` (CS-23 semantic preserved), or does live-preview (USER-FLAGGED Phase 4ak register entry) become the natural follow-on? (iv) does the StyleDialog modeless precedent give us a clean playbook to copy, or are there CS-06-specific complications (e.g. cross-tab pending-edit state model from CS-60)? **Affected:** `plot_settings_dialog.py` (`grab_set()` call + module docstring), CS-06 / CS-23 / CS-60 lock relaxations, tests asserting modal behaviour (search `test_plot_settings_dialog.py` for any `grab_set`-aware assertion — likely none today), the load-time project-mismatch dialog (separate question — it SHOULD probably stay modal because it represents an error needing acknowledgement). Cross-refs CS-05 (existing modeless precedent), CS-06 (current modal lock), CS-23 (button row + Cancel semantics), CS-60 (unified PlotConfigDialog), the existing "Live-preview vs Apply button" register entry (pairs — modeless + live-preview together would be the most natural CS-06 evolution), and the Phase 4ak "plots_by_role frozen at open time" friction note (becomes urgent if dialog is modeless and graph mutations happen during open). Small phase if scoped to Plot Settings only (one-line change + test sweep); medium if scoped to all CS-23 modals; pairs with live-preview for a larger meta-UX phase. |
+| ✅ | 🟢 | **Retire the global "Baseline curves" top-bar checkbox — per-node toggle has subsumed it (USER-FLAGGED, Phase 4al)** ✅ Resolved in Phase 4ao (CS-67). | USER-FLAGGED at end of Phase 4al (step 5 elicitation). User: "the baseline curves checkbox is probably no longer needed since we've moved that control to the data panel." Today `uvvis_tab.py:686` packs a `tk.Checkbutton("Baseline curves", variable=self._show_baseline_curves)` into the top bar; default off (CS-29). The renderer (`_redraw` line 2232) gates the dashed-baseline overlay loop on BOTH (a) the global `_show_baseline_curves` checkbox AND (b) the per-node `style["show_baseline_curve"]` (CS-36, default True). The per-node gate was added in Phase 4r alongside the data-panel surface for it — the user's observation is correct: the global checkbox is now redundant when every per-node row exposes the same control. Retiring the global gate is a small cleanup: delete the Checkbutton + the `_show_baseline_curves` BooleanVar + the outer `if self._show_baseline_curves.get():` guard in `_redraw`. The per-node `bn.style.get("show_baseline_curve", True)` filter inside the loop is the new single-source-of-truth. **Lock decisions for the implementing session:** (i) does the new default flip from "off globally, on per-node" to "on per-node out of the box" — i.e. baseline overlays appear immediately when a baseline is committed, with the user explicitly hiding via the per-node toggle? (today's off-by-default global gate hides ALL baselines until the user opts in.) Likely yes for consistency with the per-node default of True. (ii) does removal cascade through any test asserting the global checkbox's existence (`grep _show_baseline_curves test_uvvis_tab.py` first; likely a few tests need their setup updated). (iii) does the manifest (CS-46) carry the global `_show_baseline_curves` state? (no — it's tab-private UI state, not in `_plot_config` or the graph). (iv) does CS-29 invariant doc text need updating to reflect the per-node-only model? **Affected:** `uvvis_tab.py` (3 sites: BooleanVar init line 446, Checkbutton lines 686-691, `_redraw` gate line 2232); test_uvvis_tab.py (any test referencing `_show_baseline_curves` or `_baseline_curves_cb` needs its setup adjusted); COMPONENTS.md CS-29 / CS-36 invariant texts. Small phase — half a day at most. Cross-refs CS-29 (the original Phase 4o baseline overlay feature), CS-36 (the Phase 4r per-node toggle), Phase 4r friction context. **Quality-of-life win:** removes one top-bar widget AND clarifies that baseline visibility is per-node concern, not a global toggle. |
 
 ### Friction points carried forward from Phase 4r
 
@@ -3874,7 +3874,7 @@ relevant subsequent Phase 4 session.**
    span ~5 sub-axes), **normal** for individual sub-batches
    thereafter.
 
-3. 🟡 **USER-FLAGGED Modeless dialogs — drop `grab_set` from
+3. ~~🟡 **USER-FLAGGED Modeless dialogs — drop `grab_set` from
    Plot Settings.** See the new canonical register entry
    above (added in Phase 4al step 5). One-line change to
    `plot_settings_dialog.py:584`; lock relaxation across
@@ -3884,14 +3884,15 @@ relevant subsequent Phase 4 session.**
    register entry; together they form the most natural
    evolution of CS-06's modal contract. Reasoning level:
    **normal** if scoped to Plot Settings only; **extra-high**
-   if scoped to all CS-23 modals.
+   if scoped to all CS-23 modals.~~ ✅ Resolved in Phase 4ao
+   (CS-66).
 
-4. 🟡 **USER-FLAGGED Retire global "Baseline curves" top-bar
+4. ~~🟡 **USER-FLAGGED Retire global "Baseline curves" top-bar
    checkbox.** See the new canonical register entry above
    (added in Phase 4al step 5). Per-node CS-36 toggle in
    the data panel has subsumed the global CS-29 toggle.
    Small phase — half a day at most. Reasoning level:
-   **normal**.
+   **normal**.~~ ✅ Resolved in Phase 4ao (CS-67).
 
 5. 🟡 **USER-FLAGGED Live-preview vs Apply button**
    continues. Cross-ref Phase 4ak friction #3 (becomes more
@@ -4012,17 +4013,19 @@ session.**
    umbrella". Reasoning level: **high** for the first
    design pass, **medium** for individual sub-batches.
 
-3. 🟡 **USER-FLAGGED Modeless dialogs — drop `grab_set`
+3. ~~🟡 **USER-FLAGGED Modeless dialogs — drop `grab_set`
    from Plot Settings** continues. Cross-ref Phase 4al
    friction #3. Pairs naturally with the Phase 4ak
    USER-FLAGGED "Live-preview vs Apply" register entry.
    Reasoning level: **medium** if scoped to Plot Settings
-   only; **high** if scoped to all CS-23 modals.
+   only; **high** if scoped to all CS-23 modals.~~ ✅ Resolved
+   in Phase 4ao (CS-66).
 
-4. 🟡 **USER-FLAGGED Retire global "Baseline curves"
+4. ~~🟡 **USER-FLAGGED Retire global "Baseline curves"
    top-bar checkbox** continues. Cross-ref Phase 4al
    friction #4. Small phase — half a day at most.
-   Reasoning level: **medium**.
+   Reasoning level: **medium**.~~ ✅ Resolved in Phase 4ao
+   (CS-67).
 
 5. 🟡 **USER-FLAGGED Live-preview vs Apply button**
    continues. Cross-ref Phase 4al friction #5. Becomes
@@ -4134,15 +4137,24 @@ relevant subsequent Phase 4 session.**
    sub-batches thereafter (keyboard shortcuts, colour-blind
    palette, Escape-dismiss audit, font-scale).
 
-2. 🟡 **USER-FLAGGED Modeless dialogs — drop `grab_set` from
+2. ~~🟡 **USER-FLAGGED Modeless dialogs — drop `grab_set` from
    Plot Settings** continues. Cross-ref Phase 4am friction #3.
    Pairs naturally with the USER-FLAGGED "Live-preview vs Apply"
    register entry. Reasoning level: **medium** if scoped to
-   Plot Settings only; **high** if scoped to all CS-23 modals.
+   Plot Settings only; **high** if scoped to all CS-23 modals.~~
+   ✅ Resolved in Phase 4ao (CS-66). `grab_set()` dropped from
+   `PlotConfigDialog.__init__`; `transient(parent)` retained for
+   WM Z-order grouping. CS-06 one-per-host uniqueness invariant
+   preserved.
 
-3. 🟡 **USER-FLAGGED Retire global "Baseline curves" top-bar
+3. ~~🟡 **USER-FLAGGED Retire global "Baseline curves" top-bar
    checkbox** continues. Cross-ref Phase 4am friction #4.
-   Small phase — half a day at most. Reasoning level: **medium**.
+   Small phase — half a day at most. Reasoning level: **medium**.~~
+   ✅ Resolved in Phase 4ao (CS-67). `_show_baseline_curves`
+   BooleanVar + top-bar Checkbutton + `_redraw` outer guard all
+   deleted. CS-36's per-node `style["show_baseline_curve"]` is now
+   the single source of truth (default True — overlays now render
+   by default).
 
 4. 🟡 **USER-FLAGGED Live-preview vs Apply button** continues.
    Cross-ref Phase 4am friction #5. Phase 4am friction (θ)
@@ -4240,6 +4252,111 @@ relevant subsequent Phase 4 session.**
     macOS may need a `ttk.Frame` + style for the border
     to paint as expected. Defer until cross-platform
     feedback surfaces. No register entry.
+
+### Friction points carried forward from Phase 4ao
+
+These are concrete obstacles the next Phase 4 session will hit.
+Phase 4ao landed two small USER-FLAGGED follow-ups bundled into one
+phase: CS-66 (modeless Plot Settings — `grab_set()` dropped, main
+window stays interactive while the dialog is open; `transient(parent)`
+retained for WM Z-order grouping; CS-06 one-per-host uniqueness
+preserved) AND CS-67 (retired the global "Baseline curves" top-bar
+Checkbutton + `_show_baseline_curves` BooleanVar + `_redraw` outer
+guard — CS-36's per-node `style["show_baseline_curve"]` is now the
+single source of truth, default True so overlays render by default).
+User had nothing to add at step 5. Five Claude-surfaced notes
+below — none rise to register-entry severity. **Do not fix until
+the relevant subsequent Phase 4 session.**
+
+1. 🟡 **USER-FLAGGED Accessibility features umbrella**
+   continues. Cross-ref Phase 4an friction #1. See canonical
+   register entry "Accessibility features umbrella". Reasoning
+   level: **high** for the first design pass, **medium** for
+   individual sub-batches thereafter.
+
+2. 🟡 **USER-FLAGGED Live-preview vs Apply button** continues.
+   Cross-ref Phase 4an friction #4. **More urgent now that
+   Plot Settings is modeless** — the working-copy + Apply
+   semantic is the most visible UX friction once the user can
+   keep the dialog open while clicking around the main window.
+   Pairs naturally with CS-66. Reasoning level: **high**.
+
+3. 🟡 **USER-FLAGGED Apply-to-all icon on per-axis tabs**
+   continues. Cross-ref Phase 4an friction #5. Reasoning
+   level: **medium**.
+
+4. 🟡 **USER-FLAGGED Axis nomenclature rename** continues.
+   Cross-ref Phase 4an friction #6. Massive cross-codebase
+   rename. Reasoning level: **extra-high**.
+
+5. 🟡 **USER-FLAGGED Rich-text axis labels (mathtext)**
+   continues. Cross-ref Phase 4an friction #7. Reasoning
+   level: **medium**.
+
+6. 🟡 **USER-FLAGGED External-output plot style presets**
+   continues. Cross-ref Phase 4an friction #8. User has
+   reference Jupyter notebook code (paths TBD at session
+   start). Reasoning level: **high**.
+
+7. 🟡 **USER-FLAGGED Keyboard shortcuts — first batch**
+   continues. Cross-ref Phase 4an friction #9. Pairs with
+   the accessibility umbrella. Reasoning level: **medium**.
+
+8. 🟢 **`grab_status()` return-value variation across Tk
+   builds (Claude-surfaced, Phase 4ao artifact).** On the
+   Phase 4ao Tk build `grab_status()` returns `None` when no
+   grab is held; some other builds return the literal empty
+   string `""`. The Phase 4ao test sweep accepts both via
+   `assertFalse(status)`. If a future modeless-related test
+   regresses with `assertEqual(status, "")`, the failure
+   mode is opaque — the docstring on
+   `test_no_grab_set_on_visible_window` names the gotcha.
+   No register entry.
+
+9. 🟢 **Modeless + per-node baseline-toggle integration
+   surface is uncovered (Claude-surfaced, Phase 4ao artifact).**
+   With Plot Settings modeless AND the global Baseline-curves
+   gate retired, a useful new flow becomes possible: open Plot
+   Settings, watch the canvas, then click a per-row `~` toggle
+   in ScanTreeWidget. The dialog should stay open and the
+   canvas should redraw. No integration test drives this flow
+   today (it was impossible under the modal contract). Folds
+   naturally into the live-preview phase test sweep (friction
+   #2 above). No register entry — uncovered surface, not a
+   bug.
+
+10. 🟢 **`_plots_by_role` staleness is now more reachable
+    (Claude-surfaced, Phase 4ao artifact).** CS-62 froze
+    `_plots_by_role` at dialog open time; under modal
+    behaviour the user couldn't add nodes while Plot Settings
+    was open, so the listbox snapshot was almost always
+    current. Modeless lets the user commit a node mid-edit;
+    the Per-axis tab "Plots on this axis" listbox is now
+    stale until the user closes + reopens. Already noted as
+    Phase 4ak friction (ε); modeless makes it more reachable.
+    No new register entry — defer to a "re-open to refresh"
+    documentation note or a CS-62 lock relaxation in a
+    future live-preview / refresh-on-graph-event phase.
+
+11. 🟢 **Default-flip surface for legacy `.ptmg` projects
+    (Claude-surfaced, Phase 4ao artifact).** With the global
+    Baseline-curves gate retired and CS-36's per-node default
+    being True, any `.ptmg` project saved before CS-36 (or
+    saved with the global gate off) will display baseline
+    overlays the user didn't see before. This is the
+    documented intent of the default flip but worth a manual
+    smoke check on the first reload of a pre-CS-36 project.
+    No register entry — expected behaviour, surfaced here so
+    the next session knows the user-visible delta exists.
+
+12. 🟢 **`scan_tree_widget.py:822` still mentions the
+    "CS-29 global ``Baseline curves`` checkbox"
+    (Claude-surfaced, Phase 4ao artifact).** A docstring/comment
+    in `scan_tree_widget.py` references the now-retired global
+    Checkbutton when explaining the CS-36 per-row `~` toggle's
+    vocabulary. Cosmetic; folds into the next session that
+    touches `scan_tree_widget.py` near that block. No register
+    entry.
 
 ---
 
@@ -4455,7 +4572,7 @@ the resolving phase + commit SHA appended to the row.
 
 ---
 
-*Document version: 1.39 — May 2026*
+*Document version: 1.40 — May 2026*
 *1.1: Known Bugs register added 2026-04-27 after Phase 4b manual testing.*
 *1.2: Phase 4c — baseline correction lands; B-001 / B-003 / B-004
 resolved; Phase 4c friction points logged.*

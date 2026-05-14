@@ -11,10 +11,23 @@ choices made for ambiguities the spec left open.
 
 Behavioural model
 -----------------
-* **Modal.** A ``tk.Toplevel`` with ``transient(parent)`` and
-  ``grab_set()``. Per CS-06 exactly one Plot Settings dialog is open
-  at a time per tab; a second open request for the same host raises
-  the existing window rather than creating a duplicate.
+* **Modeless.** A ``tk.Toplevel`` with ``transient(parent)`` and NO
+  ``grab_set()`` (Phase 4ao / CS-66 — relaxes the original CS-06
+  modal contract). ``transient`` keeps the window grouped above its
+  parent in the window manager's Z-order; the absence of a grab
+  lets the user keep interacting with the main window — selecting
+  rows, panning the canvas, opening a Style dialog — while Plot
+  Settings is open. Per CS-06's still-current uniqueness invariant,
+  exactly one Plot Settings dialog is open at a time per tab; a
+  second open request for the same host focuses the existing
+  window rather than creating a duplicate. Mid-edit graph mutations
+  (e.g. the user commits a node while Plot Settings is open) do
+  NOT refresh ``_plots_by_role`` — the listbox snapshot is taken
+  at open time and re-open is the affordance for a fresh view
+  (matches the CS-62 frozen-at-open contract). The modeless model
+  matches CS-05 ``StyleDialog`` (which drops ``transient`` as well
+  because multiple style dialogs coexist per node; Plot Settings
+  keeps ``transient`` because it's one-per-host).
 
 * **Working copy semantics.** Slider, spinbox, checkbox, and combobox
   edits update an in-memory working copy of the configuration dict.
@@ -488,12 +501,15 @@ def open_plot_config_dialog(
 # =====================================================================
 
 class PlotConfigDialog(tk.Toplevel):
-    """Modal per-tab plot-settings editor (CS-06).
+    """Modeless per-tab plot-settings editor (CS-06 / CS-66).
 
     See module docstring for the design model. The class is a
-    ``Toplevel`` configured ``transient`` + ``grab_set`` so the main
-    window is non-interactive while the dialog is open. Each tab gets
-    its own Toplevel via the per-host registry above.
+    ``Toplevel`` configured ``transient`` (Z-order grouping with
+    the parent) WITHOUT ``grab_set`` — the main window stays
+    interactive while the dialog is open (Phase 4ao / CS-66).
+    Each tab gets its own Toplevel via the per-host registry
+    above; CS-06's one-per-host uniqueness invariant survives the
+    modal→modeless relaxation.
     """
 
     # ------------------------------------------------------------
@@ -621,14 +637,17 @@ class PlotConfigDialog(tk.Toplevel):
         self._modified_tabs: set[str] = set()
 
         self.title("Plot Settings")
-        # Modal: transient + grab_set per CS-06. ``transient`` keeps
-        # the dialog above the main window; ``grab_set`` blocks input
-        # to the rest of the app while open.
+        # Modeless (Phase 4ao / CS-66): ``transient`` only — keeps
+        # the dialog grouped above the main window in the WM's
+        # Z-order without grabbing input. The previous CS-06
+        # ``grab_set()`` was removed so the user can keep working
+        # on the main window while Plot Settings is open. CS-06's
+        # one-per-host uniqueness invariant is unaffected (enforced
+        # by ``_open_dialogs``).
         try:
             self.transient(parent.winfo_toplevel())
         except (AttributeError, tk.TclError):
             pass
-        self.grab_set()
 
         self._build_body()
         self._build_button_row()
