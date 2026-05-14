@@ -2454,5 +2454,209 @@ class TestPlotConfigDialogPerAxisRangeScaleSchemaPhase4am(unittest.TestCase):
             self.assertEqual(slot["scale"], "linear")
 
 
+@unittest.skipUnless(_root is not None, "Tk root unavailable")
+class TestPlotConfigDialogPerAxisRangeScaleWidgetsPhase4am(unittest.TestCase):
+    """CS-64 (Phase 4am) — per-axis Range Entries, Autoscale Checkbutton,
+    Scale Combobox on every per-axis tab.
+
+    Each per-axis tab (all five roles) hosts three new widget rows
+    below the existing tick-direction + axis-label-override rows.
+    The Tk vars register through the existing ``_axis_control_vars``
+    registry (cross-typed: StringVar for range/scale, BooleanVar for
+    autoscale).
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import plot_settings_dialog
+        cls.psd = plot_settings_dialog
+        cls.PlotConfigDialog = plot_settings_dialog.PlotConfigDialog
+
+    _AXIS_TAB_KEYS = (
+        "primary_x", "secondary_x", "primary_y", "secondary_y", "tertiary_y",
+    )
+
+    def setUp(self):
+        self.psd._open_dialogs.clear()
+        self.host = tk.Frame(_root)
+        self.host.pack()
+        self.config: dict = {}
+
+    def tearDown(self):
+        for dlg in list(self.psd._open_dialogs.values()):
+            try:
+                dlg.destroy()
+            except Exception:
+                pass
+        self.psd._open_dialogs.clear()
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    # ---- registry coverage ----
+
+    def test_axis_control_vars_registered_for_range_lo(self):
+        dlg = self.psd.open_plot_config_dialog(self.host, self.config)
+        for role in self._AXIS_TAB_KEYS:
+            self.assertIn((role, "range_lo"), dlg._axis_control_vars)
+            self.assertIsInstance(
+                dlg._axis_control_vars[(role, "range_lo")], tk.StringVar,
+            )
+
+    def test_axis_control_vars_registered_for_range_hi(self):
+        dlg = self.psd.open_plot_config_dialog(self.host, self.config)
+        for role in self._AXIS_TAB_KEYS:
+            self.assertIn((role, "range_hi"), dlg._axis_control_vars)
+
+    def test_axis_control_vars_registered_for_autoscale_as_bool(self):
+        dlg = self.psd.open_plot_config_dialog(self.host, self.config)
+        for role in self._AXIS_TAB_KEYS:
+            self.assertIn((role, "autoscale"), dlg._axis_control_vars)
+            var = dlg._axis_control_vars[(role, "autoscale")]
+            self.assertIsInstance(var, tk.BooleanVar)
+            self.assertIs(var.get(), True)
+
+    def test_axis_control_vars_registered_for_scale(self):
+        dlg = self.psd.open_plot_config_dialog(self.host, self.config)
+        for role in self._AXIS_TAB_KEYS:
+            self.assertIn((role, "scale"), dlg._axis_control_vars)
+            var = dlg._axis_control_vars[(role, "scale")]
+            self.assertEqual(var.get(), "linear")
+
+    def test_make_axis_bool_var_idempotent(self):
+        dlg = self.psd.open_plot_config_dialog(self.host, self.config)
+        first = dlg._make_axis_bool_var("primary_y", "autoscale")
+        second = dlg._make_axis_bool_var("primary_y", "autoscale")
+        self.assertIs(first, second)
+
+    # ---- write-through behaviour ----
+
+    def test_setting_range_lo_writes_to_working(self):
+        dlg = self.psd.open_plot_config_dialog(self.host, self.config)
+        dlg._axis_control_vars[("primary_y", "range_lo")].set("0.1")
+        self.assertEqual(
+            dlg._working["axes"]["primary_y"]["range_lo"], "0.1",
+        )
+        # Other roles untouched.
+        self.assertEqual(
+            dlg._working["axes"]["primary_x"]["range_lo"], "",
+        )
+
+    def test_setting_autoscale_false_writes_bool_to_working(self):
+        dlg = self.psd.open_plot_config_dialog(self.host, self.config)
+        dlg._axis_control_vars[("tertiary_y", "autoscale")].set(False)
+        self.assertIs(
+            dlg._working["axes"]["tertiary_y"]["autoscale"], False,
+        )
+        self.assertIs(
+            dlg._working["axes"]["primary_y"]["autoscale"], True,
+        )
+
+    def test_setting_scale_to_log_writes_to_working(self):
+        dlg = self.psd.open_plot_config_dialog(self.host, self.config)
+        dlg._axis_control_vars[("secondary_y", "scale")].set("log")
+        self.assertEqual(
+            dlg._working["axes"]["secondary_y"]["scale"], "log",
+        )
+        self.assertEqual(
+            dlg._working["axes"]["primary_y"]["scale"], "linear",
+        )
+
+    # ---- widget surface ----
+
+    def _settings_frame(self, dlg, role: str) -> tk.LabelFrame:
+        tab_frame = dlg._tab_frames[role]
+        for child in _all_descendants(tab_frame):
+            if (
+                isinstance(child, tk.LabelFrame)
+                and child.cget("text") == "Settings"
+            ):
+                return child
+        self.fail(f"no Settings LabelFrame on axis tab {role!r}")
+
+    def test_each_per_axis_tab_carries_range_label(self):
+        dlg = self.psd.open_plot_config_dialog(self.host, self.config)
+        for role in self._AXIS_TAB_KEYS:
+            frame = self._settings_frame(dlg, role)
+            texts = [
+                child.cget("text")
+                for child in _all_descendants(frame)
+                if isinstance(child, tk.Label)
+            ]
+            self.assertIn(
+                "Range:", texts,
+                f"per-axis tab {role!r} missing Range label",
+            )
+
+    def test_each_per_axis_tab_carries_autoscale_checkbutton(self):
+        dlg = self.psd.open_plot_config_dialog(self.host, self.config)
+        for role in self._AXIS_TAB_KEYS:
+            frame = self._settings_frame(dlg, role)
+            cbs = [
+                child for child in _all_descendants(frame)
+                if isinstance(child, tk.Checkbutton)
+                and child.cget("text") == "Autoscale"
+            ]
+            self.assertEqual(
+                len(cbs), 1,
+                f"per-axis tab {role!r} should have exactly one "
+                f"Autoscale Checkbutton",
+            )
+
+    def test_each_per_axis_tab_carries_scale_combobox(self):
+        dlg = self.psd.open_plot_config_dialog(self.host, self.config)
+        for role in self._AXIS_TAB_KEYS:
+            frame = self._settings_frame(dlg, role)
+            combos = [
+                child for child in _all_descendants(frame)
+                if isinstance(child, ttk.Combobox)
+            ]
+            self.assertGreaterEqual(
+                len(combos), 1,
+                f"per-axis tab {role!r} missing Scale Combobox",
+            )
+            scale_var_name = str(combos[0].cget("textvariable"))
+            self.assertEqual(
+                scale_var_name,
+                str(dlg._axis_control_vars[(role, "scale")]),
+            )
+
+    # ---- Apply round-trip ----
+
+    def test_apply_commits_per_axis_range_into_config(self):
+        dlg = self.psd.open_plot_config_dialog(self.host, self.config)
+        dlg._axis_control_vars[("primary_y", "range_lo")].set("0.05")
+        dlg._axis_control_vars[("primary_y", "range_hi")].set("1.5")
+        dlg._axis_control_vars[("primary_y", "autoscale")].set(False)
+        dlg._axis_control_vars[("primary_y", "scale")].set("log")
+        dlg._do_apply()
+        slot = self.config["axes"]["primary_y"]
+        self.assertEqual(slot["range_lo"], "0.05")
+        self.assertEqual(slot["range_hi"], "1.5")
+        self.assertIs(slot["autoscale"], False)
+        self.assertEqual(slot["scale"], "log")
+
+    # ---- migration: legacy config still loads ----
+
+    def test_legacy_config_loads_with_phase_4am_defaults(self):
+        # Pre-Phase-4am config: only tick_direction + axis_label_override.
+        self.config = {
+            "axes": {
+                "primary_y": {
+                    "tick_direction": "out", "axis_label_override": "A",
+                },
+            },
+        }
+        dlg = self.psd.open_plot_config_dialog(self.host, self.config)
+        slot = dlg._working["axes"]["primary_y"]
+        self.assertEqual(slot["tick_direction"], "out")
+        self.assertEqual(slot["axis_label_override"], "A")
+        self.assertEqual(slot["range_lo"], "")
+        self.assertEqual(slot["range_hi"], "")
+        self.assertIs(slot["autoscale"], True)
+        self.assertEqual(slot["scale"], "linear")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
