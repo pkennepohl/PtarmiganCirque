@@ -9348,7 +9348,223 @@ future tick-rendering polish or accessibility visibility audit);
 
 ---
 
-*Document version: 1.40 — May 2026*
+## CS-66 — Modeless Plot Settings dialog (Phase 4ao)
+
+Phase 4ao relaxes the original CS-06 modal contract: the unified
+`PlotConfigDialog` (CS-60) drops `grab_set()` so the main window
+stays interactive while the dialog is open. `transient(parent)`
+is retained — the dialog stays grouped above its parent in the
+window manager's Z-order, but no grab is held. The user can
+select scan-tree rows, pan the canvas, double-click a node to
+open a StyleDialog, or commit a panel-driven operation while
+Plot Settings remains open.
+
+### Lock relaxations vs CS-06 / CS-60
+
+The single behavioural change is in `PlotConfigDialog.__init__`:
+the `self.grab_set()` line is removed. The surrounding
+`self.transient(parent.winfo_toplevel())` block is unchanged.
+The module docstring's "Behavioural model" section flips from
+"**Modal.**" to "**Modeless.**"; the class docstring flips from
+"Modal per-tab plot-settings editor" to "Modeless per-tab plot-
+settings editor".
+
+CS-06's one-per-host uniqueness invariant is unaffected: the
+`_open_dialogs` registry still enforces "exactly one Plot
+Settings dialog open at a time per host", and a second open
+request still focuses the existing window rather than creating
+a duplicate. CS-23's Apply / Save / Cancel button row + working-
+copy + `_snapshot` semantics survive unchanged.
+
+### CS-05 StyleDialog precedent
+
+`StyleDialog` (CS-05) was already modeless before Phase 4ao; it
+drops BOTH `transient` and `grab_set` because multiple style
+dialogs coexist (one per node). Plot Settings keeps `transient`
+because it is one-per-host — keeping the dialog grouped above
+its parent is the right default. The two modeless dialogs in
+the app now have slightly different `transient` policies driven
+by their cardinality.
+
+### Renderer + integration consequences
+
+None. The dialog mutates a working-copy dict on edits; Apply /
+Save commits the working copy into the host's `_plot_config`
+and fires `_redraw`. With or without a grab, the working-copy
+semantics and the Apply / Save / Cancel button row are
+unchanged. The host doesn't observe the grab status; only the
+user does (the main window is no longer un-clickable).
+
+### Implementation notes
+
+* `wm_transient()` (called without arguments) returns the
+  master path name — non-empty when transient is set. The
+  `test_transient_is_preserved` test pins this.
+* `grab_status()` on a dialog with no grab returns `None` on
+  the Phase 4ao Tk build (`""` on some other builds). Tests
+  use `assertFalse(status)` to accept either.
+* The `test_source_does_not_call_grab_set` sentinel uses
+  `inspect.getsource(PlotConfigDialog.__init__)` and asserts
+  the literal `"self.grab_set()"` is absent. Re-introducing
+  the grab requires a deliberate edit.
+* The new `TestPlotConfigDialogModelessPhase4ao` test class
+  (four tests) pins the modeless contract independently of
+  the shell suite for ease of phase tagging.
+
+### Locks held (Phase 4ao)
+
+1. `PlotConfigDialog.__init__` does NOT call `self.grab_set()`.
+2. `PlotConfigDialog.__init__` DOES call
+   `self.transient(parent.winfo_toplevel())` inside a
+   `try/except (AttributeError, tk.TclError)` block. Removing
+   the try/except is a separate lock relaxation; the
+   `transient` call itself is the load-bearing part of CS-66.
+3. CS-06's per-host singleton survives: `_open_dialogs`
+   continues to focus an existing dialog instead of creating
+   a second.
+4. CS-23's Apply / Save / Cancel + working-copy + `_snapshot`
+   semantics survive.
+5. Module docstring + class docstring describe the dialog as
+   modeless and cross-reference CS-05.
+6. `test_no_grab_set_on_visible_window` and
+   `test_transient_is_preserved` (in `TestPlotConfigDialogShell`)
+   AND the four tests in `TestPlotConfigDialogModelessPhase4ao`
+   pin the contract.
+
+### Decision lock taken (Phase 4ao / CS-66)
+
+* (DM1) Scope: Plot Settings only. Other CS-23 modals
+  (project-load mismatch dialog, Save As confirmations) stay
+  modal because they represent acknowledgement gates.
+* (DM2) `transient(parent)` retained — the dialog is grouped
+  above the parent in the WM Z-order. The grab was the only
+  modality-bearing piece dropped.
+* (DM3) `_plots_by_role` remains frozen at open time per
+  CS-62. Mid-edit graph mutations are reflected on dialog
+  re-open. A future live-preview / refresh-on-graph-event
+  phase may revisit.
+* (DM4) Cancel semantics unchanged — reverts the working copy
+  to `_snapshot` per CS-23.
+
+### Carry-forwards
+
+(σ) Modeless + per-row-baseline-toggle integration surface is
+uncovered (no test drives that flow today — was impossible
+under the modal contract; folds into the live-preview phase).
+(τ) `_plots_by_role` staleness more reachable now (CS-62
+frozen-at-open carry-forward from Phase 4ak (ε) becomes more
+visible). (υ) `grab_status()` build-variation gotcha
+documented inline.
+
+---
+
+## CS-67 — Retire global "Baseline curves" top-bar Checkbutton (Phase 4ao)
+
+Phase 4ao retires the global `_show_baseline_curves` BooleanVar
+and its top-bar Checkbutton ("Baseline curves") on UVVisTab.
+The renderer's outer guard
+`if self._show_baseline_curves.get(): …` is removed from the
+`_redraw` baseline-overlay loop. CS-36's per-node
+`style["show_baseline_curve"]` (default True), surfaced as the
+per-row `~` toggle in ScanTreeWidget, is now the **single
+source of truth** for dashed-overlay visibility.
+
+### Default flip
+
+CS-29 (Phase 4o) introduced the global toggle as **off by
+default** — overlays were an opt-in review aid. After Phase
+4r added the per-node CS-36 gate, the renderer required BOTH
+toggles to be on (the global checkbox AND the per-node style)
+before drawing an overlay. With CS-67 the global toggle is
+gone and CS-36 (default True) wins: **baseline overlays now
+render by default** the moment a BASELINE node is committed.
+
+This is the documented intent of the canonical register entry
+(Phase 4al elicitation) and was explicitly confirmed at the
+Phase 4ao decision lock. Existing `.ptmg` projects saved before
+CS-36 will display overlays they didn't previously — expected.
+
+### Lock relaxations vs CS-29 / CS-36
+
+CS-29's "global gate exists" invariant is **retired**. CS-36's
+"per-node gate default True" invariant becomes the single
+source of truth. The renderer's overlay-loop body is unchanged
+apart from the outer guard removal; the per-node filter
+`if not bool(bn.style.get("show_baseline_curve", True)): continue`
+remains inside the loop as the only gate.
+
+### Sites changed
+
+1. `uvvis_tab.py` line ~611 (BooleanVar init): deleted +
+   replaced with a Phase 4ao retirement comment.
+2. `uvvis_tab.py` lines ~847–856 (Checkbutton + `pack`):
+   deleted + replaced with a one-line retirement comment.
+3. `uvvis_tab.py` line ~2393 (outer `if` guard in `_redraw`):
+   deleted; the `for bn in self._spectrum_nodes():` loop now
+   runs unconditionally and the per-node CS-36 filter inside
+   the loop is the sole gate.
+
+### Test consequences
+
+* `test_default_toggle_is_off` (the CS-29 default-off pin) is
+  renamed to `test_no_global_baseline_var_after_phase_4ao` and
+  inverted into a `hasattr` sentinel — the BooleanVar and the
+  Checkbutton attribute must NOT exist on `UVVisTab`.
+* `test_toggle_off_renders_no_overlay` is replaced by
+  `test_per_node_show_false_hides_overlay`, which drives
+  CS-36's per-node gate via `graph.set_style`.
+* A new `test_per_node_default_renders_overlay` pins the
+  default-flip: a fresh BASELINE node renders without any
+  toggling.
+* Four other tests in `TestUVVisTabBaselineCurveOverlay` had
+  redundant `self.tab._show_baseline_curves.set(True)` setup
+  lines; those are dropped because the default flow already
+  renders. One test in a different class
+  (`TestUVVisTabPhase4yCrossTypedInheritance`) at the
+  secondary-axis routing case dropped its `set(True)` too.
+
+### Locks held (Phase 4ao)
+
+1. `UVVisTab` has no `_show_baseline_curves` attribute.
+2. `UVVisTab` has no `_baseline_curves_cb` attribute.
+3. The `_redraw` baseline-overlay loop has no outer global
+   guard; the per-node `style["show_baseline_curve"]` filter
+   inside the loop is the only gate.
+4. CS-36's default-True invariant for
+   `style["show_baseline_curve"]` is preserved.
+5. CS-28 zorder=0 invariant on `ax.grid(...)` calls is
+   preserved (unrelated, but the `_redraw` rewrite did not
+   disturb it).
+6. CS-46 manifest schema is unaffected — the global checkbox
+   was tab-private UI state, never in `_plot_config` or the
+   graph. No round-trip surface to update.
+
+### Decision lock taken (Phase 4ao / CS-67)
+
+* (DR1) Default flip accepted — overlays now render by
+  default. User must explicitly hide via the per-row `~`
+  toggle.
+* (DR2) Tests update in place; no new test class needed
+  beyond the renamed + new tests inside the existing
+  `TestUVVisTabBaselineCurveOverlay`.
+* (DR3) Manifest schema untouched (no persisted state for
+  the retired global var).
+* (DR4) CS-29 invariant text in COMPONENTS.md left as the
+  historical record; this CS-67 entry is the canonical
+  retirement note.
+
+### Carry-forwards
+
+(φ) `scan_tree_widget.py:822` comment still references the
+CS-29 "Baseline curves" global Checkbutton. Cosmetic; folds
+into the next session that touches the surrounding block.
+(χ) Default-flip first-reload smoke check on legacy `.ptmg`
+projects is a manual verification step the user may want to
+run on first reopen of a pre-CS-36 file.
+
+---
+
+*Document version: 1.41 — May 2026*
 *1.1: CS-13 implementation notes added in Phase 4a.*
 *1.2: CS-14 Plot Settings Dialog added in Phase 4b.*
 *1.3: CS-15 UV/Vis Baseline Correction + CS-04 implementation
@@ -10468,5 +10684,42 @@ all green (1236 + 43 new across
 `TestPlotConfigDialogPerAxisPolishWidgetsPhase4an`,
 `TestUVVisTabPerAxisPolishPhase4an`, plus two pre-existing
 test sweeps for the registry growth).*
+*1.41: CS-66 + CS-67 — modeless Plot Settings + retire global
+"Baseline curves" Checkbutton, Phase 4ao. **Dual-target small
+phase** bundling two USER-FLAGGED carry-forwards. CS-66:
+`PlotConfigDialog` drops `grab_set()` — main window stays
+interactive while dialog is open; `transient(parent)` retained
+for WM Z-order grouping; CS-06 one-per-host singleton unchanged;
+CS-23 Apply/Save/Cancel + working-copy + `_snapshot` semantics
+unchanged. CS-67: `_show_baseline_curves` BooleanVar + top-bar
+Checkbutton + `_redraw` outer guard all retired — CS-36's
+per-node `style["show_baseline_curve"]` (default True) is single
+source of truth; default-flip means baseline overlays now render
+by default. **Lock relaxations:** CS-06 modal contract relaxed
+to modeless (CS-66); CS-29 global-gate invariant retired (CS-67).
+**Locks held:** CS-06 singleton, CS-23 button-row + working-copy,
+CS-36 default-True per-node, CS-28 zorder=0 grid, CS-46 manifest
+schema, CS-60 cross-tab pending-edit state model + Notebook tab
+shape, CS-61 / CS-62 / CS-63 / CS-64 / CS-65 per-axis ladder
+invariants. **Decision lock taken (Phase 4ao):** (DM1) scope
+Plot Settings only — other CS-23 acknowledgement modals stay
+modal; (DM2) `transient(parent)` retained; (DM3) `_plots_by_role`
+remains frozen at open time per CS-62; (DM4) Cancel semantics
+preserved. (DR1) Default flip accepted — overlays render by
+default; (DR2) tests rename/replace in place; (DR3) manifest
+untouched; (DR4) CS-29 historical text preserved, CS-67 is
+canonical retirement note. User had nothing to add at step 5.
+Five Claude-surfaced notes documented in BACKLOG's "Friction
+points carried forward from Phase 4ao" section: (σ) modeless
++ per-row baseline-toggle integration surface uncovered (folds
+into live-preview); (τ) `_plots_by_role` staleness more
+reachable now; (υ) `grab_status()` build-variation gotcha;
+(φ) scan_tree_widget.py:822 stale comment reference; (χ)
+default-flip first-reload manual smoke check on legacy projects.
+1285 tests, all green (1279 + 6 net new across
+`TestPlotConfigDialogModelessPhase4ao` ×4, the inverted/added
+`TestPlotConfigDialogShell` ×2, the two new + one renamed
+tests inside `TestUVVisTabBaselineCurveOverlay`, with three
+redundant `set(True)` setup lines pruned).*
 *To be updated as Open Questions are resolved and new components
 are specified.*
