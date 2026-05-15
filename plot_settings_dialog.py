@@ -29,15 +29,21 @@ Behavioural model
   because multiple style dialogs coexist per node; Plot Settings
   keeps ``transient`` because it's one-per-host).
 
-* **Working copy semantics.** Slider, spinbox, checkbox, and combobox
-  edits update an in-memory working copy of the configuration dict.
-  Nothing reaches the tab's actual config (or the plot) until the user
-  clicks Apply or Save. Apply commits and stays open for further
-  iteration; Save commits and closes ("Save & Close"). Cancel and the
-  window-close [X] discard the working copy and revert the config to
-  the snapshot taken at ``__init__``. The button row matches the CS-05
-  StyleDialog vocabulary — ``Apply · Save · Cancel`` — so Cancel-vs-Save
-  reads the same across every modal in the app (CS-23, Phase 4l).
+* **Live-preview semantics (CS-68, Phase 4ap).** Discrete widgets
+  (Combobox, Checkbutton, Spinbox, color picker, Radiobutton) commit
+  every edit immediately: each var trace writes the new value into the
+  working copy, mirrors it into the live config, and fires ``on_apply``
+  so the canvas redraws at once. Text Entry widgets (title / X label /
+  Y label, per-axis ``axis_label_override``, range / tick-spacing
+  Entries) defer the commit to ``<FocusOut>`` and ``<Return>`` so a
+  100-spectrum dialog does not redraw on every keystroke. The
+  working-copy buffer (``self._working``) survives as the widget-bound
+  mirror; it is identical to ``self._config`` after every commit.
+  Save closes the dialog (no extra commit needed). Cancel and the
+  window-close [X] revert ``self._config`` to the ``_snapshot`` taken
+  at ``__init__`` and fire ``on_apply`` once to repaint. The button
+  row is ``Save · Apply to All Tabs · Cancel`` — the CS-23 Apply
+  button is retired because every edit is implicitly applied.
 
 * **Save-as-Default / Reset Defaults / Factory Reset.** Three buttons
   inside the Fonts section (per CS-06 layout) modify the working copy
@@ -66,11 +72,13 @@ Construction
         parent,                 # tk.Widget for the Toplevel parent;
                                 # also the registry key
         config,                 # dict — tab-private plot config
-                                # (mutated in place on Apply)
-        on_apply=None,          # callable(); called after Apply
-                                # commits the working copy. The tab's
-                                # callback is typically just
-                                # `self._redraw`.
+                                # (mutated in place on every live
+                                # commit, CS-68 / Phase 4ap)
+        on_apply=None,          # callable(); fired by every live
+                                # commit (per discrete-widget edit
+                                # OR per <FocusOut>/<Return> on a
+                                # text Entry). The tab's callback
+                                # is typically just `self._redraw`.
         sections=None,          # tuple of section names to show.
                                 # If None, falls back to
                                 # config["_sections"] then to
@@ -619,6 +627,15 @@ class PlotConfigDialog(tk.Toplevel):
             tuple[str, str], Callable[[Any], None]
         ] = {}
 
+        # CS-68 (Phase 4ap): keys whose trace target writes to the
+        # working copy ONLY and defers the live commit to
+        # ``<FocusOut>`` / ``<Return>`` on the bound text Entry.
+        # Discrete widgets (Combobox, Checkbutton, Spinbox, color
+        # picker, Radiobutton) omit the registration and live-commit
+        # on every var write. Populated by the text-Entry builders.
+        self._defer_apply_keys: set[str] = set()
+        self._defer_apply_axis_keys: set[tuple[str, str]] = set()
+
         # CS-60: Notebook tab frames keyed by :data:`_TAB_KEYS`. The
         # Global tab hosts the existing section LabelFrames; each
         # axis tab hosts the per-axis shell built in
@@ -1134,10 +1151,18 @@ class PlotConfigDialog(tk.Toplevel):
         ).pack(side=tk.LEFT)
         # The Global-tab mirror section reads this var by key so the
         # two surfaces stay in lockstep without a callback hop.
+        # CS-68 (Phase 4ap): defer per-keystroke commit on the typed
+        # Entry; the Entry's <FocusOut>/<Return> binding triggers
+        # the live commit. The Global-tab mirror Entry shares this
+        # var and registers its own deferred-apply (idempotent set
+        # add) + its own bindings.
+        self._defer_apply_axis_keys.add((role, "axis_label_override"))
         override_var = self._make_axis_string_var(role, "axis_label_override")
-        tk.Entry(
+        override_entry = tk.Entry(
             label_row, textvariable=override_var, width=22, font=("", 9),
-        ).pack(side=tk.LEFT, padx=(8, 0), fill=tk.X, expand=True)
+        )
+        override_entry.pack(side=tk.LEFT, padx=(8, 0), fill=tk.X, expand=True)
+        self._bind_entry_live_commit(override_entry)
         tk.Label(
             label_row, text="(empty = auto)",
             font=("", 8, "italic"), fg="#888888",
@@ -1147,20 +1172,28 @@ class PlotConfigDialog(tk.Toplevel):
         # range_lo / range_hi are StringVar-backed; an empty Entry
         # means "no bound on this end" (preserves Phase 4u
         # empty-Entry-no-clamp semantics carried over by the renderer).
+        # CS-68 (Phase 4ap): typed Entries — defer per-keystroke
+        # commit; <FocusOut>/<Return> trigger the live commit.
         range_row = tk.Frame(parent)
         range_row.pack(fill=tk.X, anchor="w", pady=(8, 2))
         tk.Label(
             range_row, text="Range:", font=("", 9, "bold"),
         ).pack(side=tk.LEFT)
+        self._defer_apply_axis_keys.add((role, "range_lo"))
         lo_var = self._make_axis_string_var(role, "range_lo")
-        tk.Entry(
+        lo_entry = tk.Entry(
             range_row, textvariable=lo_var, width=8, font=("", 9),
-        ).pack(side=tk.LEFT, padx=(8, 2))
+        )
+        lo_entry.pack(side=tk.LEFT, padx=(8, 2))
+        self._bind_entry_live_commit(lo_entry)
         tk.Label(range_row, text="to", font=("", 9)).pack(side=tk.LEFT)
+        self._defer_apply_axis_keys.add((role, "range_hi"))
         hi_var = self._make_axis_string_var(role, "range_hi")
-        tk.Entry(
+        hi_entry = tk.Entry(
             range_row, textvariable=hi_var, width=8, font=("", 9),
-        ).pack(side=tk.LEFT, padx=(2, 0))
+        )
+        hi_entry.pack(side=tk.LEFT, padx=(2, 0))
+        self._bind_entry_live_commit(hi_entry)
         tk.Label(
             range_row, text="(empty = no bound)",
             font=("", 8, "italic"), fg="#888888",
@@ -1219,17 +1252,24 @@ class PlotConfigDialog(tk.Toplevel):
         tk.Label(
             tick_spacing_row, text="major", font=("", 9),
         ).pack(side=tk.LEFT, padx=(8, 2))
+        # CS-68: typed Entries — defer per-keystroke commit.
+        self._defer_apply_axis_keys.add((role, "tick_major"))
         major_var = self._make_axis_string_var(role, "tick_major")
-        tk.Entry(
+        major_entry = tk.Entry(
             tick_spacing_row, textvariable=major_var, width=6, font=("", 9),
-        ).pack(side=tk.LEFT, padx=(2, 6))
+        )
+        major_entry.pack(side=tk.LEFT, padx=(2, 6))
+        self._bind_entry_live_commit(major_entry)
         tk.Label(
             tick_spacing_row, text="minor", font=("", 9),
         ).pack(side=tk.LEFT, padx=(0, 2))
+        self._defer_apply_axis_keys.add((role, "tick_minor"))
         minor_var = self._make_axis_string_var(role, "tick_minor")
-        tk.Entry(
+        minor_entry = tk.Entry(
             tick_spacing_row, textvariable=minor_var, width=6, font=("", 9),
-        ).pack(side=tk.LEFT, padx=(2, 0))
+        )
+        minor_entry.pack(side=tk.LEFT, padx=(2, 0))
+        self._bind_entry_live_commit(minor_entry)
         tk.Label(
             tick_spacing_row, text="(empty = auto)",
             font=("", 8, "italic"), fg="#888888",
@@ -1403,10 +1443,18 @@ class PlotConfigDialog(tk.Toplevel):
                 parent, text=f"{_TAB_TITLES[role]}:",
                 font=("", 9, "bold"),
             ).grid(row=r, column=0, sticky="w", pady=2)
+            # CS-68 (Phase 4ap): mirror Entry on Global; the per-axis
+            # tab's builder may register the same key earlier in the
+            # build pass — set add is idempotent. Bind FocusOut/
+            # Return so editing in the Global mirror also debounces
+            # the live commit per surface.
+            self._defer_apply_axis_keys.add((role, "axis_label_override"))
             var = self._make_axis_string_var(role, "axis_label_override")
-            tk.Entry(
+            mirror_entry = tk.Entry(
                 parent, textvariable=var, width=24, font=("", 9),
-            ).grid(row=r, column=1, sticky="ew", padx=4)
+            )
+            mirror_entry.grid(row=r, column=1, sticky="ew", padx=4)
+            self._bind_entry_live_commit(mirror_entry)
         parent.columnconfigure(1, weight=1)
 
     # ============================================================
@@ -1482,9 +1530,15 @@ class PlotConfigDialog(tk.Toplevel):
         mode_var = tk.StringVar(value=str(self._working.get(mode_key, "auto")))
         self._control_vars[text_key] = text_var
         self._control_vars[mode_key] = mode_var
+        # CS-68 (Phase 4ap): defer the live commit for the text Entry
+        # to <FocusOut>/<Return> so per-keystroke typing does not
+        # redraw the canvas. Mode flips (mv.set("custom") below)
+        # commit live because mode_key is NOT in _defer_apply_keys.
+        self._defer_apply_keys.add(text_key)
 
         entry = tk.Entry(parent, textvariable=text_var, width=20)
         entry.grid(row=row, column=1, sticky="ew", padx=4)
+        self._bind_entry_live_commit(entry)
 
         # Editing the entry implicitly switches mode to "custom".
         def _on_entry_write(*_, k=text_key, v=text_var, mk=mode_key,
@@ -1647,11 +1701,18 @@ class PlotConfigDialog(tk.Toplevel):
         ``_suspend_writes`` is set during widget refreshes (Reset
         Defaults, Factory Reset, Cancel revert) so the trace callbacks
         triggered by ``var.set`` don't loop back into this handler.
+
+        CS-68 (Phase 4ap): after writing into the working copy, fire
+        the live commit unless ``key`` is registered in
+        :attr:`_defer_apply_keys` (text Entry widgets defer until
+        ``<FocusOut>`` / ``<Return>``).
         """
         if self._suspend_writes:
             return
         self._working[key] = value
         self._mark_tab_modified(_key_to_tab(key))
+        if key not in self._defer_apply_keys:
+            self._apply_changes_live()
 
     def _on_int_var_write(self, key: str, var: tk.IntVar) -> None:
         if self._suspend_writes:
@@ -1662,6 +1723,8 @@ class PlotConfigDialog(tk.Toplevel):
             # Bad spinbox state (mid-edit). Skip until valid.
             return
         self._mark_tab_modified(_key_to_tab(key))
+        # CS-68: int Spinboxes are discrete-event widgets; no defer.
+        self._apply_changes_live()
 
     def _on_float_var_write(self, key: str, var: tk.DoubleVar) -> None:
         # CS-56 (Phase 4ae): float-spinbox analogue of _on_int_var_write.
@@ -1675,6 +1738,8 @@ class PlotConfigDialog(tk.Toplevel):
         except (tk.TclError, ValueError):
             return
         self._mark_tab_modified(_key_to_tab(key))
+        # CS-68: float Spinboxes are discrete-event widgets; no defer.
+        self._apply_changes_live()
 
     def _on_axis_var_write(
         self, role: str, key: str, value: Any,
@@ -1688,6 +1753,10 @@ class PlotConfigDialog(tk.Toplevel):
         attribution for the edit — :func:`_key_to_tab` is bypassed
         entirely. The ``_suspend_writes`` re-entrancy guard works
         identically to the flat-key writers.
+
+        CS-68 (Phase 4ap): live-commits unless ``(role, key)`` is in
+        :attr:`_defer_apply_axis_keys` (text Entry widgets defer
+        until ``<FocusOut>`` / ``<Return>``).
         """
         if self._suspend_writes:
             return
@@ -1695,6 +1764,8 @@ class PlotConfigDialog(tk.Toplevel):
         role_dict = axes.setdefault(role, {})
         role_dict[key] = value
         self._mark_tab_modified(role)
+        if (role, key) not in self._defer_apply_axis_keys:
+            self._apply_changes_live()
 
     # ------------------------------------------------------------
     # Per-tab modified-edit tracking (CS-60, Phase 4ai)
@@ -1757,37 +1828,44 @@ class PlotConfigDialog(tk.Toplevel):
     def _has_uncommitted_changes(self) -> bool:
         """True iff Cancel would discard something the user could miss.
 
-        Two ways to be "dirty": uncommitted edits in the working
-        copy (``_modified_tabs`` non-empty), or intermediate-Applied
-        edits that Cancel would still revert (config != snapshot).
+        Phase 4ap (CS-68) live-preview semantics: every discrete-
+        widget edit immediately mirrors into ``_config`` (so ``config
+        != snapshot`` after the first commit) AND adds the source
+        tab to :attr:`_modified_tabs` (so the marker set is non-
+        empty after the first edit). Both conditions become True
+        together — the historical OR is preserved verbatim because
+        Cancel's confirm dialog is the "did the user make changes
+        they may not want to discard?" gate, and either signal is
+        sufficient evidence.
         """
         if self._modified_tabs:
             return True
         return dict(self._config) != self._snapshot
 
     # ------------------------------------------------------------
-    # Bottom button row — CS-60: Save · Apply · Apply to All Tabs · Cancel
+    # Bottom button row — CS-68: Save · Apply to All Tabs · Cancel
     # ------------------------------------------------------------
 
     def _build_button_row(self) -> None:
-        """Build the right-aligned dialog-level button row (CS-60).
+        """Build the right-aligned dialog-level button row (CS-68).
 
-        Layout, left → right:
-        ``Save``, ``Apply``, ``Apply to All Tabs``, ``Cancel``.
+        Layout, left → right: ``Save``, ``Apply to All Tabs``,
+        ``Cancel``. Phase 4ap retired the standalone ``Apply``
+        button — every edit on a discrete widget commits live via
+        :meth:`_apply_changes_live` (and text Entries commit on
+        ``<FocusOut>`` / ``<Return>``), so a separate "make it so"
+        gesture is redundant.
 
-        * **Save** commits every pending edit across every tab and
-          closes the dialog. Same wording as CS-23; cross-tab scope
-          is new in CS-60.
-        * **Apply** commits every pending edit across every tab and
-          keeps the dialog open. The user iterates: edit → Apply →
-          inspect the plot → edit more.
-        * **Apply to All Tabs** commits and replicates the result to
-          the host's sibling UV/Vis notebook tabs. Disabled when the
-          host hasn't supplied ``on_apply_all_tabs``.
-        * **Cancel** reverts every pending edit across every tab
-          AND any intermediate-Applied edit, then closes. When the
-          dialog has uncommitted state it shows an
-          ``askokcancel("Discard changes?")`` confirm first; the
+        * **Save** closes the dialog. Edits are already in the live
+          config; Save's only remaining job is to clear the modified-
+          tab markers and ``destroy()``.
+        * **Apply to All Tabs** broadcasts the (already-live) config
+          to the host's sibling UV/Vis notebook tabs. Disabled when
+          the host hasn't supplied ``on_apply_all_tabs``.
+        * **Cancel** reverts every edit since dialog open via the
+          ``__init__`` ``_snapshot``, fires ``on_apply`` once to
+          repaint, then closes. Shows ``askokcancel("Discard
+          changes?")`` first when there is anything to discard; the
           conservative tk-silenced answer (True) preserves the
           existing CS-23 always-close-on-Cancel test contract.
 
@@ -1795,7 +1873,7 @@ class PlotConfigDialog(tk.Toplevel):
         inside the Notebook, so it applies dialog-wide. CS-23's
         per-section "Save as Default / Reset Defaults / Factory
         Reset" row inside Fonts stays — those affect the working
-        copy only and are independent of the dialog-level buttons.
+        copy only and live-commit through :meth:`_load_into_working`.
         """
         btn_row = tk.Frame(self)
         btn_row.pack(side=tk.BOTTOM, fill=tk.X, padx=8, pady=(4, 10))
@@ -1808,11 +1886,6 @@ class PlotConfigDialog(tk.Toplevel):
             right, text="Save", width=8, command=self._do_save,
         )
         self._save_btn.pack(side=tk.LEFT, padx=3)
-
-        self._apply_btn = tk.Button(
-            right, text="Apply", width=10, command=self._do_apply,
-        )
-        self._apply_btn.pack(side=tk.LEFT, padx=3)
 
         self._apply_all_tabs_btn = tk.Button(
             right, text="Apply to All Tabs", width=18,
@@ -1830,13 +1903,22 @@ class PlotConfigDialog(tk.Toplevel):
     # Bottom button actions
     # ------------------------------------------------------------
 
-    def _commit_working_copy(self) -> None:
-        """Mutate ``self._config`` in place from ``self._working``.
+    def _apply_changes_live(self) -> None:
+        """Mirror working copy → live config and fire ``on_apply`` (CS-68).
 
-        Shared by every "commit" path (Apply / Save / Apply All).
-        After commit fires ``on_apply`` if wired, then clears every
-        modified-tab marker — the working state is the new live
-        state and no tab is dirty.
+        Phase 4ap live-preview seam. Called by every discrete-widget
+        trace target (Combobox, Checkbutton, Spinbox, color picker,
+        Radiobutton) and by ``<FocusOut>`` / ``<Return>`` on the text
+        Entry widgets registered via :meth:`_bind_entry_live_commit`.
+        The CS-23 ``_snapshot`` is untouched — Cancel still reverts
+        to the dialog-open state. The CS-60 :attr:`_modified_tabs`
+        markers are NOT cleared here: markers represent "touched
+        since open" and persist until Cancel reverts or the dialog
+        is destroyed (Save / [X]).
+
+        Idempotent: committing identical working / config state is a
+        no-op for ``_redraw`` — matplotlib's :meth:`canvas.draw`
+        coalesces back-to-back paints.
         """
         self._config.clear()
         self._config.update(copy.deepcopy(self._working))
@@ -1847,26 +1929,60 @@ class PlotConfigDialog(tk.Toplevel):
                 _log.warning(
                     "plot_settings_dialog: on_apply raised", exc_info=True,
                 )
+
+    def _bind_entry_live_commit(self, entry: tk.Entry) -> None:
+        """Wire ``<FocusOut>`` / ``<Return>`` on a text Entry to the live commit (CS-68).
+
+        Called by every text-Entry widget builder after it registers
+        its key in :attr:`_defer_apply_keys` /
+        :attr:`_defer_apply_axis_keys`. The pair (registry + bind)
+        replaces the discrete trace's auto-apply for typed widgets:
+        every keystroke writes to ``_working`` only; the live commit
+        fires on focus loss or Enter.
+        """
+        entry.bind(
+            "<FocusOut>",
+            lambda _: self._apply_changes_live(),
+            add="+",
+        )
+        entry.bind(
+            "<Return>",
+            lambda _: self._apply_changes_live(),
+            add="+",
+        )
+
+    def _commit_working_copy(self) -> None:
+        """Live-commit + clear modified-tab markers (CS-23 / CS-60).
+
+        Phase 4ap (CS-68) repurposed this method as a thin wrapper
+        around :meth:`_apply_changes_live` plus the CS-60 marker
+        clear. Per-edit live-preview now flows through
+        :meth:`_apply_changes_live` directly (no marker clear) so
+        the Notebook ``Global *`` indicator persists until Save /
+        Cancel destroys it. Save and Cancel-revert call this method
+        as part of their close path; "Apply to All Tabs" uses it
+        to clear markers before the broadcast fans out.
+        """
+        self._apply_changes_live()
         self._clear_all_modified_tabs()
 
-    def _do_apply(self) -> None:
-        """Commit working copy + on_apply + clear markers; stay open."""
-        self._commit_working_copy()
-
     def _do_save(self) -> None:
-        """Commit working copy + on_apply + clear markers; close."""
-        self._commit_working_copy()
+        """Close the dialog (live edits already committed; CS-68)."""
+        self._clear_all_modified_tabs()
         self.destroy()
 
     def _do_apply_all_tabs(self) -> None:
-        """Commit working copy locally, then replicate via the host callback.
+        """Replicate the (already-live) config to sibling UV/Vis tabs.
 
-        The local commit runs first so the host's replication logic
-        sees the new value when it reads ``self._config``.
-        Disabled-button guard is enforced at construction; if the
-        callback is None we still no-op safely.
+        Phase 4ap (CS-68): under live-preview the local config is
+        already in sync with the working copy — every edit committed
+        through :meth:`_apply_changes_live`. This action only needs
+        to clear the modified-tab markers (the broadcast is an
+        explicit "this is the new baseline" gesture) and fan out
+        via the host callback. Disabled-button guard is enforced at
+        construction; if the callback is None we still no-op safely.
         """
-        self._commit_working_copy()
+        self._clear_all_modified_tabs()
         if self._on_apply_all_tabs is None:
             return
         try:
@@ -1929,20 +2045,22 @@ class PlotConfigDialog(tk.Toplevel):
         _USER_DEFAULTS = copy.deepcopy(self._working)
 
     def _do_reset_defaults(self) -> None:
-        """Load _USER_DEFAULTS into the working copy (refresh widgets only).
+        """Load _USER_DEFAULTS into the working copy + live-commit (CS-68).
 
         Falls back to _FACTORY_DEFAULTS when the user has never clicked
-        Save-as-Default. Does not modify the tab's config or trigger a
-        redraw — the user must click Apply to commit.
+        Save-as-Default. Phase 4ap (CS-68) live-preview: the bulk
+        reload commits and fires ``on_apply`` exactly once when the
+        widget refresh completes (not N times during the refresh —
+        ``_suspend_writes`` blocks the per-trace commits).
         """
         source = _USER_DEFAULTS if _USER_DEFAULTS else _FACTORY_DEFAULTS
         self._load_into_working(source)
 
     def _do_factory_reset(self) -> None:
-        """Load _FACTORY_DEFAULTS into the working copy (refresh widgets only).
+        """Load _FACTORY_DEFAULTS into the working copy + live-commit (CS-68).
 
-        Does not modify the tab's config or trigger a redraw — the
-        user must click Apply to commit.
+        Phase 4ap live-preview: bulk reload fires a single ``on_apply``
+        after every widget refreshes; see :meth:`_load_into_working`.
         """
         self._load_into_working(_FACTORY_DEFAULTS)
 
@@ -1961,6 +2079,12 @@ class PlotConfigDialog(tk.Toplevel):
         Refreshes every widget through its registered refresh
         closure under ``_suspend_writes`` so the trace callbacks
         don't write back into the working copy mid-refresh.
+
+        Phase 4ap (CS-68): after the widget refresh completes, fires
+        :meth:`_apply_changes_live` exactly once so the canvas
+        repaints with the new bulk values without N intermediate
+        redraws (``_suspend_writes`` blocked the per-widget commits
+        during the refresh loop).
         """
         self._working = copy.deepcopy(dict(source))
         migrate_plot_config(self._working)
@@ -1973,6 +2097,8 @@ class PlotConfigDialog(tk.Toplevel):
                 continue
             self._working.setdefault(k, v)
         self._refresh_widgets_from_working()
+        # CS-68: single live commit covers the whole bulk update.
+        self._apply_changes_live()
 
     def _refresh_widgets_from_working(self) -> None:
         """Push every working-copy value back into its widget.

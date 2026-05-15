@@ -222,10 +222,10 @@ class TestPlotConfigDialogShell(unittest.TestCase):
         titles = set(_section_titles(dlg))
         self.assertEqual(titles, {"Appearance"})
 
-    # ----------- working copy: edits do NOT auto-apply -----------
+    # ----------- live-preview (CS-68 / Phase 4ap): edits commit on var write -----------
 
-    def test_slider_change_does_not_auto_apply(self):
-        """Spinbox/checkbox edits update working copy only, not config."""
+    def test_spinbox_change_writes_through_immediately(self):
+        """Spinbox edits commit live to config (CS-68)."""
         self.config["title_font_size"] = 12
         dlg = self.PlotConfigDialog(self.host, self.config)
         dlg.update_idletasks()
@@ -233,12 +233,12 @@ class TestPlotConfigDialogShell(unittest.TestCase):
         dlg._control_vars["title_font_size"].set(20)
         dlg.update_idletasks()
 
-        # Working copy reflects the new value.
+        # Working copy and config both reflect the new value.
         self.assertEqual(dlg._working["title_font_size"], 20)
-        # Config dict is untouched until Apply.
-        self.assertEqual(self.config["title_font_size"], 12)
+        self.assertEqual(self.config["title_font_size"], 20)
 
-    def test_grid_toggle_does_not_auto_apply(self):
+    def test_grid_toggle_writes_through_immediately(self):
+        """Checkbutton edits commit live to config (CS-68)."""
         self.config["grid"] = True
         dlg = self.PlotConfigDialog(self.host, self.config)
         dlg.update_idletasks()
@@ -247,7 +247,7 @@ class TestPlotConfigDialogShell(unittest.TestCase):
         dlg.update_idletasks()
 
         self.assertEqual(dlg._working["grid"], False)
-        self.assertEqual(self.config["grid"], True)
+        self.assertEqual(self.config["grid"], False)
 
     def test_apply_does_not_fire_on_construction(self):
         """on_apply must not be invoked merely because the dialog opened."""
@@ -257,9 +257,9 @@ class TestPlotConfigDialogShell(unittest.TestCase):
         ).update_idletasks()
         self.assertEqual(seen, [])
 
-    # ----------- Apply commits working copy and fires on_apply -----------
+    # ----------- live edit fires on_apply per discrete write (CS-68) -----------
 
-    def test_apply_commits_working_copy_and_calls_on_apply(self):
+    def test_var_write_fires_on_apply_once_per_discrete_edit(self):
         self.config["title_font_size"] = 12
         seen: list = []
         dlg = self.PlotConfigDialog(
@@ -270,45 +270,35 @@ class TestPlotConfigDialogShell(unittest.TestCase):
         dlg._control_vars["title_font_size"].set(18)
         dlg.update_idletasks()
 
-        # Pre-Apply: config still untouched, on_apply unsignalled.
-        self.assertEqual(self.config["title_font_size"], 12)
-        self.assertEqual(seen, [])
-
-        dlg._do_apply()
-
-        # Post-Apply: config updated in place, on_apply fired exactly once.
+        # CS-68: live commit fires per discrete-widget edit.
         self.assertEqual(self.config["title_font_size"], 18)
         self.assertEqual(seen, [1])
 
-    def test_apply_keeps_dialog_open(self):
-        dlg = self.PlotConfigDialog(self.host, self.config)
-        dlg.update_idletasks()
-        dlg._do_apply()
-        self.assertTrue(bool(dlg.winfo_exists()))
-
-    # ----------- Save commits working copy and closes (CS-23) -----------
+    # ----------- Save closes the dialog (CS-68) -----------
 
     def test_save_button_is_present(self):
-        """CS-23: button row is Apply · Save · Cancel."""
+        """CS-68: button row is Save · Apply to All Tabs · Cancel."""
         dlg = self.PlotConfigDialog(self.host, self.config)
         dlg.update_idletasks()
         self.assertTrue(hasattr(dlg, "_save_btn"))
         self.assertEqual(str(dlg._save_btn.cget("text")), "Save")
 
-    def test_save_commits_working_copy_to_config(self):
-        """Save mutates the caller's config in place, like Apply."""
+    def test_save_with_prior_live_edit_keeps_committed_value(self):
+        """Save under live-preview: edits already in config; Save just closes."""
         self.config["title_font_size"] = 12
         dlg = self.PlotConfigDialog(self.host, self.config)
         dlg.update_idletasks()
 
         dlg._control_vars["title_font_size"].set(18)
         dlg.update_idletasks()
-        self.assertEqual(self.config["title_font_size"], 12)  # not yet
+        # CS-68: live-applied at var.set time.
+        self.assertEqual(self.config["title_font_size"], 18)
 
         dlg._do_save()
         self.assertEqual(self.config["title_font_size"], 18)
 
-    def test_save_fires_on_apply_exactly_once(self):
+    def test_save_does_not_re_fire_on_apply(self):
+        """Save under live-preview: on_apply was already fired by the edit."""
         seen: list = []
         dlg = self.PlotConfigDialog(
             self.host, self.config, on_apply=lambda: seen.append(1),
@@ -316,7 +306,10 @@ class TestPlotConfigDialogShell(unittest.TestCase):
         dlg.update_idletasks()
 
         dlg._control_vars["grid"].set(False)
+        # Live edit fired on_apply once.
+        self.assertEqual(seen, [1])
         dlg._do_save()
+        # Save does not re-fire on_apply (CS-68: no extra commit at close).
         self.assertEqual(seen, [1])
 
     def test_save_destroys_dialog(self):
@@ -344,8 +337,8 @@ class TestPlotConfigDialogShell(unittest.TestCase):
 
     # ----------- Cancel reverts and closes -----------
 
-    def test_cancel_reverts_intermediate_apply(self):
-        """Cancel reverts to the __init__ snapshot, even after Apply."""
+    def test_cancel_reverts_live_edits(self):
+        """Cancel reverts to the __init__ snapshot, even after live edits (CS-68)."""
         self.config["title_font_size"] = 12
         seen: list = []
         dlg = self.PlotConfigDialog(
@@ -353,9 +346,8 @@ class TestPlotConfigDialogShell(unittest.TestCase):
         )
         dlg.update_idletasks()
 
-        # User edits and clicks Apply.
+        # User edits — under CS-68 this commits live to config + fires on_apply.
         dlg._control_vars["title_font_size"].set(20)
-        dlg._do_apply()
         self.assertEqual(self.config["title_font_size"], 20)
         self.assertEqual(seen, [1])
 
@@ -378,12 +370,12 @@ class TestPlotConfigDialogShell(unittest.TestCase):
         dlg = self.PlotConfigDialog(self.host, self.config)
         dlg.update_idletasks()
 
+        # CS-68: live edit immediately reaches config.
         dlg._control_vars["title_font_size"].set(20)
-        dlg._do_apply()
         self.assertEqual(self.config["title_font_size"], 20)
 
         # The protocol handler is _on_close_requested — calling it
-        # directly mimics the [X] gesture.
+        # directly mimics the [X] gesture and runs Cancel revert.
         dlg._on_close_requested()
         self.assertEqual(self.config["title_font_size"], 12)
         self.assertEqual(int(dlg.winfo_exists()), 0)
@@ -450,17 +442,26 @@ class TestPlotConfigDialogDefaults(unittest.TestCase):
         self.assertEqual(self.psd._USER_DEFAULTS["title_font_size"], 20)
         self.assertEqual(self.psd._USER_DEFAULTS["grid"], False)
 
-    def test_save_as_default_does_not_apply_to_config(self):
-        """Save-as-Default writes to module state, not the tab config."""
+    def test_save_as_default_writes_user_defaults_distinct_from_config(self):
+        """Save-as-Default writes to module state, not (only) to the config (CS-68)."""
+        # Phase 4ap (CS-68): under live-preview the spinbox edit DOES
+        # commit to config (no longer a "config untouched until Apply"
+        # invariant). Save-as-Default's job is the SECOND write — into
+        # the module-level _USER_DEFAULTS dict — and that write is
+        # independent of the live-commit. This test pins both halves:
+        # the live-commit reaches config AND the save-as-default
+        # reaches _USER_DEFAULTS.
         self.config["title_font_size"] = 12
         dlg = self.PlotConfigDialog(self.host, self.config)
         dlg.update_idletasks()
 
         dlg._control_vars["title_font_size"].set(20)
-        dlg._do_save_as_default()
+        # Live-preview: config sees the new value.
+        self.assertEqual(self.config["title_font_size"], 20)
 
-        # Tab config is unchanged — only Apply commits.
-        self.assertEqual(self.config["title_font_size"], 12)
+        dlg._do_save_as_default()
+        # Module-level user defaults captured the working copy.
+        self.assertEqual(self.psd._USER_DEFAULTS["title_font_size"], 20)
 
     # ----------- Reset Defaults -----------
 
@@ -533,33 +534,43 @@ class TestPlotConfigDialogDefaults(unittest.TestCase):
             dlg._working["grid"], self.psd._FACTORY_DEFAULTS["grid"],
         )
 
-    def test_factory_reset_does_not_apply_to_config(self):
-        """Factory Reset rewrites the working copy only; Apply commits."""
-        self.config["title_font_size"] = 12
-        dlg = self.PlotConfigDialog(self.host, self.config)
-        dlg.update_idletasks()
-
-        dlg._do_factory_reset()
-        dlg.update_idletasks()
-
-        # Config dict still carries the user's pre-existing value
-        # because no Apply happened.
-        self.assertEqual(self.config["title_font_size"], 12)
-
-    def test_factory_reset_then_apply_writes_factory_values_to_config(self):
-        # A Factory Reset followed by Apply is the only way the
-        # factory values reach the tab.
+    def test_factory_reset_writes_factory_values_to_config_live(self):
+        """Factory Reset commits the bulk reload live (CS-68 / Phase 4ap)."""
         self.config["title_font_size"] = 22
         dlg = self.PlotConfigDialog(self.host, self.config)
         dlg.update_idletasks()
 
         dlg._do_factory_reset()
-        dlg._do_apply()
+        dlg.update_idletasks()
 
+        # CS-68: bulk reload runs _suspend_writes during the widget
+        # refresh and fires _apply_changes_live ONCE at the end —
+        # config now carries the factory value.
         self.assertEqual(
             self.config["title_font_size"],
             self.psd._FACTORY_DEFAULTS["title_font_size"],
         )
+
+    def test_factory_reset_fires_on_apply_exactly_once(self):
+        """The bulk reload coalesces N per-widget redraws into one (CS-68)."""
+        seen: list = []
+        # Pre-populate config with non-default values across many keys
+        # so the reset has work to do on every widget.
+        self.config.update({
+            "title_font_size": 22,
+            "grid": False,
+            "background_color": "#abcdef",
+        })
+        dlg = self.PlotConfigDialog(
+            self.host, self.config, on_apply=lambda: seen.append(1),
+        )
+        dlg.update_idletasks()
+
+        seen.clear()  # ignore any init-side commits (none expected)
+        dlg._do_factory_reset()
+        dlg.update_idletasks()
+        # Exactly one live commit covers the whole bulk reload.
+        self.assertEqual(seen, [1])
 
 
 @unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
@@ -971,9 +982,9 @@ class TestPlotConfigDialogNotebookPhase4ai(unittest.TestCase):
 
     # ----- working copy still shared across tabs ---------------------
 
-    def test_global_tab_edits_still_reach_config_on_apply(self):
-        # Sanity check that the lift-into-Global tab didn't break
-        # the existing _do_apply working-copy flow.
+    def test_global_tab_edits_reach_config_live(self):
+        # CS-68 (Phase 4ap): live-preview seam — the Global-tab
+        # spinbox edit reaches config without an explicit Apply.
         self.config["title_font_size"] = 12
         dlg = self.PlotConfigDialog(self.host, self.config, tab="primary_y")
         dlg.update_idletasks()
@@ -981,7 +992,6 @@ class TestPlotConfigDialogNotebookPhase4ai(unittest.TestCase):
         dlg.select_tab("global")
         dlg._control_vars["title_font_size"].set(22)
         dlg.update_idletasks()
-        dlg._do_apply()
         self.assertEqual(self.config["title_font_size"], 22)
 
 
@@ -1146,26 +1156,28 @@ class TestPlotConfigDialogStateModelPhase4ai(unittest.TestCase):
         for k in ("primary_y", "secondary_y", "tertiary_y"):
             self.assertEqual(self._tab_text(dlg, k), self.psd._TAB_TITLES[k])
 
-    # ----- Apply / Save clear markers -----
+    # ----- Marker lifecycle (CS-68 / Phase 4ap) -----
 
-    def test_apply_clears_modified_tabs(self):
+    def test_live_edit_keeps_modified_tab_marker(self):
+        """Markers represent 'touched since open' under live-preview (CS-68)."""
         dlg = self.PlotConfigDialog(self.host, self.config)
         dlg.update_idletasks()
         dlg._control_vars["title_font_size"].set(20)
         dlg.update_idletasks()
+        # CS-68: live commit writes to config but leaves the marker in
+        # place — the user still sees the suffix until Cancel/Save.
+        expected = self.psd._TAB_TITLES["global"] + self.psd._MODIFIED_TAB_SUFFIX
         self.assertEqual(dlg._modified_tabs, {"global"})
-        dlg._do_apply()
-        self.assertEqual(dlg._modified_tabs, set())
-        self.assertEqual(self._tab_text(dlg, "global"), "Global")
+        self.assertEqual(self._tab_text(dlg, "global"), expected)
 
     def test_save_clears_modified_tabs_before_destroy(self):
         dlg = self.PlotConfigDialog(self.host, self.config)
         dlg.update_idletasks()
         dlg._control_vars["title_font_size"].set(20)
         dlg.update_idletasks()
-        # We can't introspect after destroy; record _modified_tabs
-        # snapshot just before destroy by calling clear ourselves
-        # via _commit_working_copy instead. Equivalent invariant.
+        # Save clears markers before destroying — equivalent to
+        # _commit_working_copy under CS-68 (which now wraps
+        # _apply_changes_live + _clear_all_modified_tabs).
         dlg._commit_working_copy()
         self.assertEqual(dlg._modified_tabs, set())
 
@@ -1200,17 +1212,20 @@ class TestPlotConfigDialogStateModelPhase4ai(unittest.TestCase):
 
 
 # =====================================================================
-# CS-60 Phase 4ai: new four-button row (Save / Apply / Apply All / Cancel)
+# CS-60 Phase 4ai → CS-68 Phase 4ap: dialog-level button row
+# (Save · Apply to All Tabs · Cancel after CS-68 retired Apply)
 # =====================================================================
 
 
 @unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
 class TestPlotConfigDialogButtonRowPhase4ai(unittest.TestCase):
-    """The dialog-level button row carries four buttons in canonical order.
+    """The dialog-level button row carries three buttons in canonical order.
 
-    Save · Apply · Apply to All Tabs · Cancel — right-aligned at the
-    bottom of the Toplevel. Apply to All Tabs is disabled unless the
-    host supplied an ``on_apply_all_tabs`` callback.
+    Save · Apply to All Tabs · Cancel — right-aligned at the bottom of
+    the Toplevel. Apply to All Tabs is disabled unless the host
+    supplied an ``on_apply_all_tabs`` callback. Phase 4ap (CS-68)
+    retired the standalone Apply button — every discrete-widget edit
+    is implicitly applied via :meth:`_apply_changes_live`.
     """
 
     @classmethod
@@ -1239,17 +1254,31 @@ class TestPlotConfigDialogButtonRowPhase4ai(unittest.TestCase):
         except Exception:
             pass
 
-    def test_four_buttons_in_order(self):
+    def test_three_buttons_in_order_after_phase_4ap(self):
+        """CS-68: button row is Save · Apply to All Tabs · Cancel (no Apply)."""
         dlg = self.PlotConfigDialog(self.host, self.config)
         dlg.update_idletasks()
-        # The attributes are the canonical names; the visible text is
-        # what the user sees.
         self.assertEqual(dlg._save_btn.cget("text"), "Save")
-        self.assertEqual(dlg._apply_btn.cget("text"), "Apply")
         self.assertEqual(
             dlg._apply_all_tabs_btn.cget("text"), "Apply to All Tabs",
         )
         self.assertEqual(dlg._cancel_btn.cget("text"), "Cancel")
+        # Apply button retired: attribute MUST be absent (sentinel).
+        self.assertFalse(
+            hasattr(dlg, "_apply_btn"),
+            "Phase 4ap (CS-68) retired the standalone Apply button — "
+            "every edit is implicitly applied via _apply_changes_live.",
+        )
+
+    def test_apply_method_retired_after_phase_4ap(self):
+        """Sentinel: PlotConfigDialog has no _do_apply method (CS-68)."""
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        self.assertFalse(
+            hasattr(dlg, "_do_apply"),
+            "Phase 4ap (CS-68) retired _do_apply — discrete-widget "
+            "edits commit live via _apply_changes_live.",
+        )
 
     def test_apply_all_tabs_disabled_without_callback(self):
         dlg = self.PlotConfigDialog(self.host, self.config)
@@ -1273,9 +1302,11 @@ class TestPlotConfigDialogButtonRowPhase4ai(unittest.TestCase):
         dlg._apply_all_tabs_btn.invoke()
         self.assertEqual(seen, [1])
 
-    def test_apply_all_tabs_commits_locally_first(self):
-        # The host's replication callback reads self._config, so the
-        # local commit must run BEFORE the host callback fires.
+    def test_apply_all_tabs_sees_already_live_config(self):
+        # CS-68 (Phase 4ap): the live commit at var.set time means
+        # ``self._config`` is already in sync when "Apply to All
+        # Tabs" fires. The host's replication callback reads the
+        # already-current value.
         observed: list = []
 
         def host_cb():
@@ -1328,18 +1359,20 @@ class TestPlotConfigDialogButtonRowPhase4ai(unittest.TestCase):
         dlg.update_idletasks()
         self.assertTrue(dlg._has_uncommitted_changes())
 
-    def test_has_uncommitted_changes_true_after_apply_then_no_edit(self):
-        # Apply commits to config but the __init__ snapshot lives on;
-        # Cancel would still revert. So has_uncommitted_changes
-        # reports True until the snapshot also matches.
+    def test_has_uncommitted_changes_true_after_live_edit_persists(self):
+        """CS-68: live-preview keeps the marker AND the config-vs-snapshot delta."""
+        # Phase 4ap (CS-68): the live-commit writes to config but does
+        # NOT clear the modified-tab marker. Both signals
+        # (_modified_tabs non-empty AND config != snapshot) stay True
+        # until Cancel reverts or the dialog destroys.
         self.config["title_font_size"] = 12
         dlg = self.PlotConfigDialog(self.host, self.config)
         dlg.update_idletasks()
         dlg._control_vars["title_font_size"].set(20)
         dlg.update_idletasks()
-        dlg._do_apply()
-        # Modified set was cleared by Apply, but config != snapshot.
-        self.assertEqual(dlg._modified_tabs, set())
+        # Both signals raised by the same edit.
+        self.assertEqual(dlg._modified_tabs, {"global"})
+        self.assertNotEqual(dict(dlg._config), dlg._snapshot)
         self.assertTrue(dlg._has_uncommitted_changes())
 
 
@@ -1582,24 +1615,25 @@ class TestPlotConfigDialogTickDirectionRelocationPhase4aj(unittest.TestCase):
                 "inout",
             )
 
-    def test_apply_commits_per_axis_tick_direction_into_config(self):
-        # End-to-end: edit on tab X → click Apply → config carries
-        # the new value under the nested axes[<role>] slot. Other
-        # roles keep their factory default; only the edited role
-        # changes.
+    def test_per_axis_tick_direction_writes_through_live_into_config(self):
+        # CS-68 (Phase 4ap): Radiobutton edit on per-axis tab fires
+        # _on_axis_var_write which live-commits via
+        # _apply_changes_live — config carries the new nested value
+        # without a separate Apply step. Other roles keep their
+        # factory default; only the edited role changes. The CS-60
+        # modified-tab marker persists (it represents "touched
+        # since open" under live-preview).
         dlg = self.PlotConfigDialog(self.host, self.config)
         dlg.update_idletasks()
         dlg._axis_control_vars[("tertiary_y", "tick_direction")].set("out")
         dlg.update_idletasks()
-        dlg._do_apply()
         self.assertEqual(
             self.config["axes"]["tertiary_y"]["tick_direction"], "out",
         )
         self.assertEqual(
             self.config["axes"]["primary_x"]["tick_direction"], "in",
         )
-        # Apply clears every modified marker.
-        self.assertEqual(dlg._modified_tabs, set())
+        self.assertIn("tertiary_y", dlg._modified_tabs)
 
     # ---- factory defaults invariants (CS-62 shape) ----
 
@@ -2011,17 +2045,24 @@ class TestPlotConfigDialogPerAxisSchemaPhase4ak(unittest.TestCase):
         # Contents still complete.
         self.assertEqual(listbox.size(), 12)
 
-    # ---- end-to-end Apply commits nested form into config ----
+    # ---- end-to-end live commits write nested form into config (CS-68) ----
 
-    def test_apply_commits_nested_axes_block_into_config(self):
+    def test_per_axis_edits_write_through_nested_axes_block_live(self):
+        # CS-68 (Phase 4ap): per-axis edits commit live via
+        # _on_axis_var_write → _apply_changes_live. The text Entry
+        # for axis_label_override defers to <FocusOut>/<Return>
+        # in the UI, but a direct var.set in test fires the trace
+        # which writes to _working — to flush the live commit we
+        # also call _apply_changes_live directly (the test stand-in
+        # for the FocusOut event).
         dlg = self.PlotConfigDialog(self.host, self.config)
         dlg.update_idletasks()
         dlg._axis_control_vars[
             ("primary_y", "axis_label_override")
         ].set("Custom label")
+        dlg._apply_changes_live()  # simulate <FocusOut> on the override Entry
         dlg._axis_control_vars[("tertiary_y", "tick_direction")].set("out")
         dlg.update_idletasks()
-        dlg._do_apply()
         # Config carries the full nested form.
         self.assertEqual(
             self.config["axes"]["primary_y"]["axis_label_override"],
@@ -2030,8 +2071,10 @@ class TestPlotConfigDialogPerAxisSchemaPhase4ak(unittest.TestCase):
         self.assertEqual(
             self.config["axes"]["tertiary_y"]["tick_direction"], "out",
         )
-        # Modified markers cleared.
-        self.assertEqual(dlg._modified_tabs, set())
+        # CS-68: markers persist through live commits — they only
+        # clear on Cancel-revert or destroy.
+        self.assertIn("primary_y", dlg._modified_tabs)
+        self.assertIn("tertiary_y", dlg._modified_tabs)
 
     # ---- end-to-end Reset Defaults migrates user defaults ----
 
@@ -2650,15 +2693,20 @@ class TestPlotConfigDialogPerAxisRangeScaleWidgetsPhase4am(unittest.TestCase):
                 str(dlg._axis_control_vars[(role, "scale")]),
             )
 
-    # ---- Apply round-trip ----
+    # ---- Live commit round-trip (CS-68 / Phase 4ap) ----
 
-    def test_apply_commits_per_axis_range_into_config(self):
+    def test_per_axis_range_writes_through_to_config_live(self):
+        # CS-68: range_lo / range_hi are typed Entries → defer per-
+        # keystroke commit until <FocusOut>/<Return>; we flush by
+        # calling _apply_changes_live directly. autoscale (BoolVar
+        # Checkbutton) and scale (Combobox) are discrete and live-
+        # commit on var write.
         dlg = self.psd.open_plot_config_dialog(self.host, self.config)
         dlg._axis_control_vars[("primary_y", "range_lo")].set("0.05")
         dlg._axis_control_vars[("primary_y", "range_hi")].set("1.5")
+        dlg._apply_changes_live()  # simulate <FocusOut> on the typed Entries
         dlg._axis_control_vars[("primary_y", "autoscale")].set(False)
         dlg._axis_control_vars[("primary_y", "scale")].set("log")
-        dlg._do_apply()
         slot = self.config["axes"]["primary_y"]
         self.assertEqual(slot["range_lo"], "0.05")
         self.assertEqual(slot["range_hi"], "1.5")
@@ -3110,6 +3158,278 @@ class TestPlotConfigDialogModelessPhase4ao(unittest.TestCase):
             dlg.destroy()
         except tk.TclError:
             pass
+
+
+# =====================================================================
+# CS-68 Phase 4ap — live-preview (USER-FLAGGED)
+# =====================================================================
+
+
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestPlotConfigDialogLivePreviewPhase4ap(unittest.TestCase):
+    """CS-68 (Phase 4ap) — Plot Settings dialog runs in live-preview mode.
+
+    Discrete widgets (Combobox, Checkbutton, Spinbox, color picker,
+    Radiobutton) commit every edit immediately to the live config and
+    fire ``on_apply``. Text Entry widgets defer the live commit to
+    ``<FocusOut>`` and ``<Return>`` so per-keystroke typing does not
+    redraw the canvas. The Apply button is retired.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import plot_settings_dialog
+        cls.psd = plot_settings_dialog
+        cls.PlotConfigDialog = plot_settings_dialog.PlotConfigDialog
+
+    def setUp(self):
+        self.psd._open_dialogs.clear()
+        self.psd._USER_DEFAULTS.clear()
+        self.host = tk.Frame(_root)
+        self.host.pack()
+        self.config: dict = {}
+
+    def tearDown(self):
+        for dlg in list(self.psd._open_dialogs.values()):
+            try:
+                dlg.destroy()
+            except Exception:
+                pass
+        self.psd._open_dialogs.clear()
+        self.psd._USER_DEFAULTS.clear()
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    # ---- module sentinels ----
+
+    def test_apply_changes_live_method_present(self):
+        """CS-68 sentinel: the live-commit helper exists on the dialog."""
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        self.assertTrue(callable(getattr(dlg, "_apply_changes_live", None)))
+
+    def test_bind_entry_live_commit_method_present(self):
+        """CS-68 sentinel: the FocusOut/Return helper for text Entries exists."""
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        self.assertTrue(
+            callable(getattr(dlg, "_bind_entry_live_commit", None))
+        )
+
+    def test_defer_apply_keys_registered_for_text_label_entries(self):
+        """CS-68: title/X label/Y label text Entries register defer-apply."""
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        for key in ("title_text", "xlabel_text", "ylabel_text"):
+            self.assertIn(
+                key, dlg._defer_apply_keys,
+                f"text Entry key {key!r} must defer live commit (CS-68)",
+            )
+
+    def test_defer_apply_axis_keys_registered_for_per_axis_entries(self):
+        """CS-68: per-axis typed Entries register defer-apply."""
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        # axis_label_override is registered on every per-axis tab AND
+        # on the Global mirror (idempotent set add); range_lo /
+        # range_hi / tick_major / tick_minor are per-axis only.
+        for role in ("primary_x", "secondary_x", "primary_y",
+                     "secondary_y", "tertiary_y"):
+            for key in ("axis_label_override", "range_lo", "range_hi",
+                        "tick_major", "tick_minor"):
+                self.assertIn(
+                    (role, key), dlg._defer_apply_axis_keys,
+                    f"per-axis Entry ({role!r}, {key!r}) must defer (CS-68)",
+                )
+
+    # ---- discrete widgets commit live ----
+
+    def test_combobox_change_writes_through_immediately(self):
+        """CS-68: Combobox StringVar edit (legend_position) commits live."""
+        self.config["legend_position"] = "best"
+        seen: list = []
+        dlg = self.PlotConfigDialog(
+            self.host, self.config, on_apply=lambda: seen.append(1),
+        )
+        dlg.update_idletasks()
+        dlg._control_vars["legend_position"].set("upper right")
+        dlg.update_idletasks()
+        self.assertEqual(self.config["legend_position"], "upper right")
+        self.assertEqual(seen, [1])
+
+    def test_int_spinbox_change_writes_through_immediately(self):
+        """CS-68: int Spinbox edit (title_font_size) commits live."""
+        self.config["title_font_size"] = 12
+        seen: list = []
+        dlg = self.PlotConfigDialog(
+            self.host, self.config, on_apply=lambda: seen.append(1),
+        )
+        dlg.update_idletasks()
+        dlg._control_vars["title_font_size"].set(20)
+        dlg.update_idletasks()
+        self.assertEqual(self.config["title_font_size"], 20)
+        self.assertEqual(seen, [1])
+
+    def test_per_axis_radio_writes_through_immediately(self):
+        """CS-68: per-axis tick_direction Radiobutton commits live."""
+        seen: list = []
+        dlg = self.PlotConfigDialog(
+            self.host, self.config, on_apply=lambda: seen.append(1),
+        )
+        dlg.update_idletasks()
+        dlg._axis_control_vars[
+            ("primary_x", "tick_direction")
+        ].set("out")
+        dlg.update_idletasks()
+        self.assertEqual(
+            self.config["axes"]["primary_x"]["tick_direction"], "out",
+        )
+        self.assertEqual(seen, [1])
+
+    def test_per_axis_autoscale_checkbutton_writes_through_immediately(self):
+        """CS-68: per-axis BooleanVar Checkbutton (autoscale) commits live."""
+        seen: list = []
+        dlg = self.PlotConfigDialog(
+            self.host, self.config, on_apply=lambda: seen.append(1),
+        )
+        dlg.update_idletasks()
+        dlg._axis_control_vars[("primary_y", "autoscale")].set(False)
+        dlg.update_idletasks()
+        self.assertIs(
+            self.config["axes"]["primary_y"]["autoscale"], False,
+        )
+        self.assertEqual(seen, [1])
+
+    # ---- text Entry defers commit until FocusOut / Return ----
+
+    def test_text_label_entry_var_write_does_not_fire_on_apply(self):
+        """CS-68: per-keystroke writes on title_text don't fire on_apply."""
+        seen: list = []
+        dlg = self.PlotConfigDialog(
+            self.host, self.config, on_apply=lambda: seen.append(1),
+        )
+        dlg.update_idletasks()
+        # var.set simulates a keystroke writing into the StringVar.
+        # Note: title_text trace flips the mode_var to "custom" which
+        # IS a discrete commit — test with a non-empty initial mode
+        # to suppress that branch.
+        dlg._working["title_mode"] = "custom"
+        dlg._control_vars["title_mode"].set("custom")
+        dlg.update_idletasks()
+        seen.clear()  # ignore the mode-flip commit
+        dlg._control_vars["title_text"].set("My Title")
+        dlg.update_idletasks()
+        # Working copy reflects the typed text.
+        self.assertEqual(dlg._working["title_text"], "My Title")
+        # CS-68: live commit deferred — config NOT yet updated.
+        self.assertNotEqual(self.config.get("title_text"), "My Title")
+        self.assertEqual(seen, [])
+
+    def test_text_label_entry_has_focus_out_and_return_bindings(self):
+        """CS-68: title_text Entry binds <FocusOut> and <Return> for live commit."""
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        # Find the title_text Entry by matching its textvariable name.
+        title_entries = [
+            w for w in _all_descendants(dlg)
+            if isinstance(w, tk.Entry)
+            and str(w.cget("textvariable"))
+            == str(dlg._control_vars["title_text"])
+        ]
+        self.assertEqual(len(title_entries), 1)
+        entry = title_entries[0]
+        focus_out_bindings = entry.bind("<FocusOut>")
+        return_bindings = entry.bind("<Return>")
+        # Tk's bind() returns the script string (or empty string when
+        # nothing is bound). Non-empty proves a binding is attached.
+        self.assertTrue(
+            focus_out_bindings,
+            "title_text Entry must carry a <FocusOut> binding (CS-68)",
+        )
+        self.assertTrue(
+            return_bindings,
+            "title_text Entry must carry a <Return> binding (CS-68)",
+        )
+
+    def test_text_label_entry_apply_changes_live_commits(self):
+        """CS-68: the deferred path commits via _apply_changes_live (the
+        binding's call target)."""
+        seen: list = []
+        dlg = self.PlotConfigDialog(
+            self.host, self.config, on_apply=lambda: seen.append(1),
+        )
+        dlg.update_idletasks()
+        dlg._working["title_mode"] = "custom"
+        dlg._control_vars["title_mode"].set("custom")
+        dlg.update_idletasks()
+        seen.clear()
+        dlg._control_vars["title_text"].set("After Focus")
+        dlg.update_idletasks()
+        # Per-keystroke trace deferred — config not yet updated.
+        self.assertNotEqual(self.config.get("title_text"), "After Focus")
+        self.assertEqual(seen, [])
+        # The bound FocusOut/Return target IS _apply_changes_live;
+        # invoking it directly is the headless-test stand-in.
+        dlg._apply_changes_live()
+        self.assertEqual(self.config.get("title_text"), "After Focus")
+        self.assertEqual(seen, [1])
+
+    def test_per_axis_override_entry_focus_out_fires_on_apply(self):
+        """CS-68: <FocusOut> on per-axis axis_label_override commits live."""
+        seen: list = []
+        dlg = self.PlotConfigDialog(
+            self.host, self.config, on_apply=lambda: seen.append(1),
+        )
+        dlg.update_idletasks()
+        dlg._axis_control_vars[
+            ("primary_y", "axis_label_override")
+        ].set("Custom")
+        dlg.update_idletasks()
+        # Defer in effect: not yet committed live.
+        self.assertEqual(seen, [])
+        # Direct call substitutes for the FocusOut event (the binding
+        # call target is the same).
+        dlg._apply_changes_live()
+        self.assertEqual(
+            self.config["axes"]["primary_y"]["axis_label_override"], "Custom",
+        )
+        self.assertEqual(seen, [1])
+
+    # ---- bulk reload coalesces redraws ----
+
+    def test_user_defaults_bulk_load_fires_one_redraw(self):
+        """CS-68: Reset Defaults pushes N values but fires on_apply once."""
+        self.psd._USER_DEFAULTS.update({
+            "title_font_size": 14,
+            "grid": False,
+            "background_color": "#eeeeee",
+        })
+        seen: list = []
+        dlg = self.PlotConfigDialog(
+            self.host, self.config, on_apply=lambda: seen.append(1),
+        )
+        dlg.update_idletasks()
+        seen.clear()
+        dlg._do_reset_defaults()
+        dlg.update_idletasks()
+        # CS-68: bulk reload coalesces to one live commit.
+        self.assertEqual(seen, [1])
+
+    # ---- _commit_working_copy survives as a wrapper ----
+
+    def test_commit_working_copy_is_apply_plus_marker_clear(self):
+        """CS-68: _commit_working_copy now wraps _apply_changes_live + clear."""
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        dlg._control_vars["title_font_size"].set(20)
+        dlg.update_idletasks()
+        self.assertEqual(dlg._modified_tabs, {"global"})
+        dlg._commit_working_copy()
+        # Markers cleared; config retains the edit.
+        self.assertEqual(dlg._modified_tabs, set())
+        self.assertEqual(self.config["title_font_size"], 20)
 
 
 if __name__ == "__main__":
