@@ -819,11 +819,12 @@ class ScanTreeWidget(tk.Frame):
         # Phase 4r (CS-36): per-node baseline-curve overlay toggle.
         # Only added on BASELINE rows. ``[~]`` when on (default),
         # ``[–]`` when off — parallel to the legend ``✓/–`` glyph
-        # vocabulary. The CS-29 global ``Baseline curves`` checkbox
-        # is the master switch; this per-row toggle is the
-        # downstream filter that lets a user hide individual
-        # overlays (e.g. while comparing two of five competing
-        # baselines on the same parent). Mutation routes through
+        # vocabulary. Phase 4ao (CS-67) retired the CS-29 global
+        # ``Baseline curves`` Checkbutton (``_show_baseline_curves``
+        # BooleanVar + the outer ``_redraw`` guard); this per-row
+        # toggle is now the SINGLE source of truth for whether a
+        # given baseline overlay is rendered (default True so
+        # overlays show out of the box). Mutation routes through
         # ``set_style`` so ``GraphEvent.NODE_STYLE_CHANGED`` triggers
         # ``uvvis_tab._redraw`` — same path as the visibility and
         # legend toggles. Phase 4w (CS-48): the button is parented
