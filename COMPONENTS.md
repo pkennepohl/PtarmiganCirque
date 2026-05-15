@@ -9564,7 +9564,226 @@ run on first reopen of a pre-CS-36 file.
 
 ---
 
-*Document version: 1.41 — May 2026*
+## CS-68 — Live-preview semantics in PlotConfigDialog (Phase 4ap)
+
+Phase 4ap relaxes the CS-23 / CS-60 working-copy + Apply contract
+on the unified `PlotConfigDialog` (CS-60, modeless per CS-66).
+Discrete widgets (Combobox, Checkbutton, Spinbox, color picker,
+Radiobutton) commit every edit immediately to the live config and
+fire `on_apply` so the canvas redraws at once. Text Entry widgets
+(`title_text` / `xlabel_text` / `ylabel_text`, per-axis
+`axis_label_override`, `range_lo` / `range_hi`, `tick_major` /
+`tick_minor`, plus the Global mirror `axis_label_override`) defer
+the live commit to `<FocusOut>` and `<Return>` so a 100-spectrum
+dialog does not redraw on every keystroke. The standalone Apply
+button is retired — every edit is implicitly applied.
+
+### Lock relaxations vs CS-23 / CS-60 / CS-66
+
+CS-23's `Apply / Save / Cancel` button row collapses to
+`Save · Apply to All Tabs · Cancel`. The `Apply` button + the
+`_do_apply` method are removed. The CS-23 working-copy +
+`_snapshot` semantic is partially relaxed: edits write through
+to `self._config` immediately (live), but `self._snapshot`
+survives verbatim as the Cancel-revert source. CS-60's per-tab
+modified-edit `_modified_tabs` markers persist through live
+commits — they represent "touched since dialog open" and clear
+only on Cancel-revert or destroy (Save / `[X]`). CS-66's
+modeless contract (no `grab_set`, `transient` retained) is
+fully preserved. CS-06's one-per-host singleton is preserved.
+
+The CS-60 cross-tab routing map (`_KEY_TO_TAB`), the per-tab
+Notebook hosting, and the `plots_by_role` constructor kwarg
+are unchanged. The per-axis ladder schemas (CS-61 through
+CS-65) are unchanged — live-preview is the seam, not the
+schema.
+
+### Architecture
+
+A new method `_apply_changes_live()` on `PlotConfigDialog`:
+
+```
+def _apply_changes_live(self) -> None:
+    self._config.clear()
+    self._config.update(copy.deepcopy(self._working))
+    if self._on_apply is not None:
+        try:
+            self._on_apply()
+        except Exception:
+            _log.warning("plot_settings_dialog: on_apply raised", exc_info=True)
+```
+
+The four trace targets (`_on_var_write`, `_on_int_var_write`,
+`_on_float_var_write`, `_on_axis_var_write`) call this method
+at the end of their existing write+mark sequence — but
+conditionally for the StringVar-backed paths so text Entries
+can defer:
+
+```
+def _on_var_write(self, key, value):
+    if self._suspend_writes:
+        return
+    self._working[key] = value
+    self._mark_tab_modified(_key_to_tab(key))
+    if key not in self._defer_apply_keys:
+        self._apply_changes_live()
+```
+
+`_on_int_var_write` and `_on_float_var_write` ALWAYS call the
+live commit (Spinboxes are discrete-event widgets — there is
+no per-keystroke fan-out worth deferring).
+
+Two new sets register the deferred-commit text Entries:
+* `self._defer_apply_keys: set[str]` — flat keys (e.g.
+  `"title_text"`, `"xlabel_text"`, `"ylabel_text"`).
+* `self._defer_apply_axis_keys: set[tuple[str, str]]` —
+  per-axis `(role, key)` pairs (e.g.
+  `("primary_y", "axis_label_override")`, `("primary_y",
+  "range_lo")`).
+
+A small helper `_bind_entry_live_commit(entry)` wires
+`<FocusOut>` and `<Return>` on each text Entry to call
+`_apply_changes_live()`. Each text-Entry widget builder calls
+this helper after creating its widget.
+
+`_commit_working_copy()` survives as a thin wrapper around
+`_apply_changes_live() + _clear_all_modified_tabs()` (used by
+Save's tear-down path and by tests pinning the marker-clear
+invariant). The body that used to do the same work is now
+just two method calls.
+
+### Defaults / Factory Reset bulk reload
+
+`_load_into_working` continues to flip `_suspend_writes = True`
+during widget refresh so the per-trace commits are blocked.
+After `_refresh_widgets_from_working` completes, a single
+`_apply_changes_live()` call covers the whole bulk update —
+ONE redraw instead of N. The `test_factory_reset_fires_on_
+apply_exactly_once` and `test_user_defaults_bulk_load_fires_
+one_redraw` tests pin the coalescing.
+
+### Button row + action methods
+
+`_build_button_row` packs three buttons (left → right):
+`Save · Apply to All Tabs · Cancel`. `_apply_btn` and
+`_do_apply` are deleted.
+
+* `_do_save`: `_clear_all_modified_tabs(); destroy()`. Live
+  edits are already in `_config`; Save's only remaining job
+  is to drop the markers and tear down. Does NOT re-fire
+  `on_apply` (the test `test_save_does_not_re_fire_on_apply`
+  pins this).
+* `_do_apply_all_tabs`: `_clear_all_modified_tabs();
+  _on_apply_all_tabs()`. The local config is already in sync
+  — the broadcast is the gesture, not a commit.
+* `_do_cancel`: unchanged. Reverts `_config` to `_snapshot`,
+  fires `_on_apply` once to repaint, and destroys. The
+  `_has_uncommitted_changes`-gated confirm dialog is
+  unchanged.
+* `_on_close_requested` (window-close `[X]`): unchanged —
+  routes to `_do_cancel`.
+
+### Save-as-Default / Reset Defaults / Factory Reset
+
+`_do_save_as_default` is unchanged. `self._working` IS
+`self._config` after every commit, so the source of the
+`_USER_DEFAULTS` snapshot is the same dict the user has been
+editing live. `_do_reset_defaults` and `_do_factory_reset`
+both call `_load_into_working(...)` which now also live-
+commits + redraws once.
+
+### Renderer + integration consequences
+
+None on the renderer side. `uvvis_tab._on_plot_config_changed`
+remains the host's `on_apply` callback (it just fires
+`_redraw`). The host's `_open_plot_settings` factory call is
+unchanged. The CS-66 modeless × CS-36 per-row baseline-toggle
+flow is now redraw-aware end-to-end (the user can keep Plot
+Settings open and click `~` toggles in ScanTreeWidget) —
+covered by the new
+`TestUVVisTabLivePreviewModelessPhase4ap.test_per_row_toggle_
+redraws_canvas_with_dialog_open` integration test.
+
+### Locks held (Phase 4ap)
+
+1. `PlotConfigDialog._apply_changes_live()` exists, mirrors
+   `_working` → `_config` (deep copy), and fires `_on_apply`.
+2. `PlotConfigDialog._bind_entry_live_commit(entry)` binds
+   `<FocusOut>` and `<Return>` on the Entry to
+   `_apply_changes_live`.
+3. `self._defer_apply_keys` includes `title_text`,
+   `xlabel_text`, `ylabel_text`. `self._defer_apply_axis_keys`
+   includes `(role, "axis_label_override")`, `(role,
+   "range_lo")`, `(role, "range_hi")`, `(role, "tick_major")`,
+   `(role, "tick_minor")` for every per-axis role.
+4. `PlotConfigDialog._do_apply` does NOT exist. `_apply_btn`
+   does NOT exist. The button row carries exactly three
+   buttons: `Save`, `Apply to All Tabs`, `Cancel`.
+5. `self._snapshot` survives verbatim as the Cancel-revert
+   source. The CS-23 always-close-on-Cancel (silenced
+   `askokcancel`) test contract is preserved.
+6. `_modified_tabs` markers persist through live commits;
+   only Cancel-revert (or `_clear_all_modified_tabs`) clears
+   them.
+7. CS-66 modeless contract preserved: no `grab_set`,
+   `transient` retained, `_open_dialogs` singleton enforced.
+8. Defaults / Factory Reset fires `on_apply` exactly once.
+9. The `TestPlotConfigDialogLivePreviewPhase4ap` test class
+   (14 sentinels) and the
+   `TestUVVisTabLivePreviewModelessPhase4ap` integration
+   tests (3) pin the contract.
+
+### Decision lock taken (Phase 4ap / CS-68)
+
+* (DM1) Scope: `PlotConfigDialog` only. CS-05 `StyleDialog`
+  is already write-through; project-load mismatch dialog is
+  a confirmation gate and stays modal/working-copy.
+* (DM2) Working-copy buffer retained — `_working` survives
+  as the widget-bound mirror; live commit mirrors it into
+  `_config` and fires `on_apply`. No widget builder rewrite.
+* (DM3) `_snapshot` retained as the single Cancel-revert
+  source. No accumulated undo stack.
+* (DM4) Apply button retired (per user's literal "negate
+  the need to have an apply button"). Save = destroy. Cancel
+  = revert + destroy.
+* (DM5) Text Entry per-keystroke debounce via
+  `<FocusOut>` / `<Return>` bindings; discrete widgets
+  commit on every var write.
+* (DM6) Defaults / Factory Reset bulk reload fires
+  `_apply_changes_live` exactly once after the suspend-
+  guarded widget refresh.
+* (DM7) `_modified_tabs` markers represent "touched since
+  open" — they persist through live commits. Useful as a
+  visible "I have made changes" indicator.
+* (DM8) Phase 4ao friction #9 (modeless × per-row baseline
+  toggle) covered by a new integration test in this phase.
+* (DM9) Phase 4ao friction #12 (`scan_tree_widget.py:822`
+  stale CS-29 comment) opportunistically refreshed in this
+  phase as a cosmetic carry-fix.
+
+### Carry-forwards
+
+(α) `_plots_by_role` staleness on graph mutation (Phase 4ak
+ε / Phase 4ao τ): now even MORE reachable under live-preview
+because the dialog can stay open through node load / discard
+gestures. Defer to a future CS-62 lock-relaxation phase.
+(β) Cross-keystroke debounce policy on number-typed Entries
+(`range_lo`, `tick_major`, etc.): `<FocusOut>` is reliable
+on Tab navigation but a user typing a value and then clicking
+elsewhere outside any Entry may not trigger it. The Entry's
+own value is still visible and the working copy retains the
+typed text — the only delta is the live-commit timing.
+(γ) Color picker swatch path (`_pick`) calls `var.set` →
+trace → live commit. Each color picked is a discrete event
+so this is fine; no flicker because the colorchooser modal
+holds focus while the user picks. (δ) "Apply to All Tabs"
+under live-preview now means "broadcast my (already-live)
+edits to other tabs" — semantics intact, gesture name still
+matches.
+
+---
+
+*Document version: 1.42 — May 2026*
 *1.1: CS-13 implementation notes added in Phase 4a.*
 *1.2: CS-14 Plot Settings Dialog added in Phase 4b.*
 *1.3: CS-15 UV/Vis Baseline Correction + CS-04 implementation
@@ -10721,5 +10940,43 @@ default-flip first-reload manual smoke check on legacy projects.
 `TestPlotConfigDialogShell` ×2, the two new + one renamed
 tests inside `TestUVVisTabBaselineCurveOverlay`, with three
 redundant `set(True)` setup lines pruned).*
+*1.42: CS-68 — live-preview semantics in `PlotConfigDialog`,
+Phase 4ap. Discrete widgets (Combobox, Checkbutton, Spinbox,
+color picker, Radiobutton) commit every edit immediately to the
+live config and fire `on_apply`; text Entry widgets defer the
+live commit to `<FocusOut>` / `<Return>` so per-keystroke typing
+does not redraw a 100-spectrum canvas. The Apply button is
+retired — every edit is implicitly applied. Button row collapses
+to `Save · Apply to All Tabs · Cancel`. **Lock relaxations:**
+CS-23 button-row + working-copy + Apply lock partially relaxed
+(`_snapshot` retained for Cancel; `_working` retained as widget-
+bound mirror; `_apply_changes_live` is the new live commit
+helper; `_do_apply` and `_apply_btn` removed); CS-66 lock 4
+(CS-23 button-row passthrough) partially relaxed in the same
+way. **Locks held:** CS-06 singleton, CS-23 `_snapshot`-as-
+revert source, CS-23 silenced-`askokcancel` close-on-Cancel,
+CS-29 retirement (CS-67), CS-36 default-True per-node, CS-46
+manifest schema, CS-60 cross-tab Notebook + `_KEY_TO_TAB`
+routing + per-tab `_modified_tabs` (semantic broadened to
+"touched since open"), CS-61 / CS-62 / CS-63 / CS-64 / CS-65
+per-axis ladder schemas + widgets, CS-66 modeless contract.
+**Decision lock taken (Phase 4ap):** (DM1) scope
+`PlotConfigDialog` only; (DM2) `_working` retained as mirror;
+(DM3) `_snapshot`-only revert; (DM4) Apply button retired per
+user request; (DM5) text Entry per-keystroke debounce via
+`<FocusOut>` / `<Return>`; (DM6) Defaults / Factory Reset
+coalesces to one redraw via `_apply_changes_live` after the
+suspend-guarded refresh; (DM7) `_modified_tabs` markers persist
+through live commits; (DM8) Phase 4ao friction #9 (modeless ×
+per-row baseline) covered by new integration test; (DM9) Phase
+4ao friction #12 (stale CS-29 comment) refreshed opportunist-
+ically. User contributed THREE new USER-FLAGGED items at
+step 5: cross-node Style dropdown / multi-node window;
+wavelength secondary axis broken (B-005); Autoscale ↔ Range
+Entry seed semantics. Four Claude-surfaced carry-forwards
+recorded in BACKLOG. 1302 tests, all green (1285 + 14 new
+sentinels in `TestPlotConfigDialogLivePreviewPhase4ap` + 3
+new integration tests in
+`TestUVVisTabLivePreviewModelessPhase4ap`).*
 *To be updated as Open Questions are resolved and new components
 are specified.*

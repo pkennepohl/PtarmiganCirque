@@ -1677,7 +1677,10 @@ subsequent Phase 4 session.**
 | ⏳ | 🟢 | **Sidebar `«` toggle + "TDDFT Section:" combobox follow Open File / Reload into TDDFT chrome (USER-CONFIRMED follow-up)** | Surfaced Phase 4ah step 5 and USER-CONFIRMED for queueing as a future-phase polish. With commit 3 of Phase 4ah relocating Open File / Reload from `binah._build_top_bar` into the TDDFT sidebar, the top bar still hosts two pieces of TDDFT-only chrome: (a) the `«` sidebar-toggle button (operates on `self._sidebar`, which is the TDDFT-specific Loaded Files pane), and (b) the "TDDFT Section:" combobox + the "No file loaded" file label. None of those make sense for UV/Vis, XANES, EXAFS, or the planned Compare tab. **Architecture proposal (lock pending):** relocate all three into the TDDFT tab — the `«` button into the TDDFT sidebar's own chrome, the section combobox + file label into a small TDDFT-tab top strip. Once done, the app top bar becomes either empty (auto-hidden) or repurposed as a true cross-tab status row. **Lock decisions for the implementing session:** (i) where does the `«` button live — TDDFT sidebar top corner, or inside `_build_main_area`'s spectra-frame chrome? (ii) does the empty top-bar disappear (`pack_forget` when no children), or stay as a status strip? (iii) keyboard shortcuts (none currently bound) — defer. **Affected:** `binah._build_top_bar`, `binah._build_main_area` (TDDFT side), `_toggle_sidebar`'s `self._sidebar_btn` lookup. Cross-refs the larger "Refactor uvvis_tab.py — extract host shell into separate files; cross-tab generalization" register entry (the broader tab-chrome lift). Pairs with the keyboard-shortcuts whole-interface evaluation USER-FLAGGED pass (which may scope `Ctrl+O` to TDDFT at the same time). |
 | ✅ | 🟡 | **"Show hidden" toggle should disable when no hidden rows exist (USER-FLAGGED polish)** | USER-FLAGGED at end of Phase 4ag (step 5 elicitation; "If it's not relevant, then it should be greyed out when it's not relevant"). Originally surfaced as a 🟢 Claude polish in Phase 4af friction #5 ("'Show hidden' footer toggle behaviour is opaque"). **Resolved Phase 4ah (CS-59 Thread A, commit 2):** new `_has_hidden_rows()` predicate returns True iff ≥1 non-DISCARDED DataNode with `active=False` passes the tab predicate (or is itself a NODE_GROUP). New companion `_refresh_show_hidden_button_state()` flips the Checkbutton (now stored as `self._show_hidden_btn`) between `"normal"` and `"disabled"`. Called at the end of every `_rebuild` immediately after `_refresh_group_button_state` — the cluster of `_refresh_*_button_state` methods is now the canonical pattern for state-aware footer controls. **Lock decisions taken:** (i) disable-only — no count badge or tooltip (minimal scope, matches the user's "greyed out" phrasing); (ii) cascade preserves `_show_hidden` ON when the last hidden row disappears (toggle stays ON + becomes disabled — never silently flipped, the disabled state is the affordance); (iii) hidden group members count regardless of whether their parent group is expanded (avoids whiplash on expand/collapse — see CS-59 lock 2). 11 new tests in `TestShowHiddenButtonGatingPhase4ah`: 6 pure-helper coverage (empty graph, all-active, one-hidden, discarded-ignored, predicate-excluded-ignored, NODE_GROUP-counts), 5 button-state coverage (fresh-disabled, becomes-hidden, un-hidden-redisables, cascade discard preserves `_show_hidden` ON, hidden group member counts). Closes the chain with Phase 4af friction #5 (now ✅). |
 | ⏳ | 🟡 | **External-output plot style presets — journal / presentation / web formatting (USER-FLAGGED, Phase 4aj)** | USER-FLAGGED at end of Phase 4aj (step 5 elicitation). User: "Include plot style formatting defaults that are tailored to specific external outputs. For example, for a figure for J. Am. Chem. Soc. or for a two column powerpoint presentation, etc. I have implemented this in some jupyter notebooks and we can steal some of the code and information from there. This will be a per plot type setting and will need some thought on how to do that." Today every plot inherits the same `_FACTORY_DEFAULTS` (`title_font_size = 12`, `xlabel_font_size = 10`, `tick_label_font_size = 9`, etc. in `plot_settings_dialog.py`) — appropriate for an interactive UI but typically wrong for a journal-figure target (smaller, denser, narrower aspect) or a presentation slide (larger, bolder, wider). **Architecture proposal (lock pending):** new `_OUTPUT_PRESETS: dict[str, dict[str, Any]]` registry mapping preset names → working-copy patch dicts. Concrete first-batch candidates: `"jacs_single_column"` (JACS single-column figure), `"jacs_double_column"` (JACS double-column figure), `"nature_main"` (Nature main-text figure), `"powerpoint_two_column"` (two-column 16:9 slide), `"powerpoint_full"` (full-slide), `"web_compact"` (web/notebook-embed). The user has reference Jupyter notebook code with concrete `rcParams` blocks; **lifting those values is half the work**. New "Preset:" combobox at the top of Plot Settings → Global tab (above the existing section stack) applies the patch on selection; a `"(custom)"` sentinel surfaces when the user departs from any preset. **Lock decisions for the implementing session:** (i) where do presets live — bundled in `plot_settings_dialog.py`, a new `plot_style_presets.py` module (preferred for testability + future user-extensibility), or an external JSON/YAML config the user can extend without code edits? (ii) **"per plot type setting"** — does each tab type (UV/Vis / XANES / EXAFS / Compare) get its own preset list with tab-aware tweaks (JACS-UV/Vis has different sizing than JACS-EXAFS k-space), or is the preset list shared and tab-aware nuances ride elsewhere? Pairs with the existing `_USER_DEFAULTS` tab-type split register entry; should probably wait for that schema to land first (Phase 4ak+). (iii) does selecting a preset commit immediately to working-copy + flip every modified tab dirty, or stage as a separate preview/apply gesture? (iv) is figure aspect ratio / dimensions part of the preset, or out of scope (matplotlib `figure.figsize` lives at canvas-creation time, not in Plot Settings today — would require canvas-recreate plumbing if included)? (v) does the manifest schema (CS-46 `plot_defaults` key) round-trip the preset NAME (so a `.ptmg` "remembers" the user picked JACS), or just the resolved values? **Affected:** `plot_settings_dialog.py` (preset registry + Global-tab picker + "(custom)" sentinel detection on any edit that departs from the active preset), CS-46 manifest schema (maybe — depends on lock (v)), new tests for preset application + the custom-sentinel transitions, possibly `uvvis_tab.py` if figure dimensions land in scope (lock (iv)). Cross-refs: `_FACTORY_DEFAULTS` (CS-23 / CS-56 / CS-60) — presets layer ON TOP of factory defaults, never replace; `_USER_DEFAULTS` tab-type split register entry (per-tab-type behaviour pairs with per-preset behaviour); the existing Plot Settings → Appearance section (Fonts / Background colour / Grid colour). Multi-phase task — design + first-batch (~3-4 presets bundled, single tab type) is one phase; per-tab-type expansion is a later phase. **Reference code source:** user's Jupyter notebooks (paths to be supplied at start of the implementing phase). |
-| ⏳ | 🟡 | **Live-preview vs Apply button — modal-vs-instant settings reconciliation (USER-FLAGGED, Phase 4ak)** | USER-FLAGGED at end of Phase 4ak (step 5 elicitation). User: "In some cases, it seems that changing a parameter in the settings popup windows immediately changes the plot/data settings, but in other cases it only changes once I click 'apply'. The former behaviour is quite useful but I don't know if it's possible to ensure that everything behaves that way (which would negate the need to have an apply button)." This is a meta-UX observation across the dialog ecosystem: today CS-06 / CS-23 / CS-60 enforce a working-copy + Apply/Save/Cancel pattern (no live commit), while certain panels (e.g. baseline-section sliders, peak-picking) write through immediately to the graph. The user notes that live-preview feels strictly better when it works. **Architecture proposal (lock pending):** introduce a "preview mode" on Plot Settings (and possibly other modal dialogs) where edits apply to the live config + redraw immediately — Apply becomes the "make this the new snapshot" action and Cancel restores the snapshot. Trade-off: revert costs grow if the user makes 20 edits and clicks Cancel (every edit triggered a redraw). **Lock decisions for the implementing session:** (i) does live-preview replace the working-copy model entirely (config and working diverge only between dialog open + first commit), or layer on top (an optional checkbox that flips behaviour)? (ii) does Cancel still revert via the `_snapshot` copy, or does it accumulate an undo stack of every intermediate edit? (iii) which dialogs adopt live-preview — Plot Settings only (CS-06 / CS-60), or every CS-23 modal (StyleDialog included)? (iv) does `_redraw` per-edit cause perceivable lag with 100+ visible spectra? (timing the worst-case redraw is a prerequisite). **Affected:** `plot_settings_dialog.py` working-copy semantics (CS-06 / CS-60 locks need deliberate relaxation), style_dialog.py if scope expands (CS-23 lock), all tests asserting "edit doesn't commit until Apply" (`test_grid_toggle_does_not_auto_apply`, `test_slider_change_does_not_auto_apply`, similar in `test_style_dialog.py`). Cross-refs CS-06 / CS-23 / CS-60 / CS-23-locked Apply/Save/Cancel semantics. Pairs with the existing "Refactor uvvis_tab.py — extract host shell" refactor if a generic "live-preview-aware Dialog" base class lands. Larger multi-phase task — design + scope decision is one phase, Plot Settings adoption is another, cross-dialog adoption is the third. |
+| ✅ | 🟡 | **Live-preview vs Apply button — modal-vs-instant settings reconciliation (USER-FLAGGED, Phase 4ak)** ✅ Resolved Phase 4ap (CS-68). | Resolved Phase 4ap (CS-68). Live-preview lands on `PlotConfigDialog` only — discrete widgets (Combobox, Checkbutton, Spinbox, color picker, Radiobutton) commit every edit immediately via `_apply_changes_live` (mirror `_working` → `_config` + fire `on_apply`); text Entry widgets defer the live commit to `<FocusOut>` / `<Return>` so per-keystroke typing does not redraw a 100-spectrum canvas. Apply button retired. Button row collapses to `Save · Apply to All Tabs · Cancel`. **Lock decisions taken:** (i) live-preview replaces the working-copy commit gesture entirely — `_working` retained as the widget-bound mirror, `_config` is mutated in place by `_apply_changes_live`; (ii) Cancel still reverts via the `_snapshot` copy taken at `__init__` (no undo stack); (iii) scope is Plot Settings only — CS-05 `StyleDialog` was already write-through, project-load mismatch dialog stays modal/working-copy as a confirmation gate; (iv) per-keystroke redraw deferred via `<FocusOut>` / `<Return>` on text Entries — no debounce framework needed. The CS-60 `_modified_tabs` markers semantic broadens to "touched since open" — they persist through live commits and clear only on Cancel revert or destroy. Defaults / Factory Reset bulk reload coalesces to one redraw. Pairs with CS-66 modeless: Phase 4ao friction #9 (modeless × per-row baseline toggle) covered by `TestUVVisTabLivePreviewModelessPhase4ap.test_per_row_toggle_redraws_canvas_with_dialog_open`. 1302 tests green (1285 + 17 new). |
+| ⏳ | 🟡 | **Cross-node Style dropdown / multi-node style window (USER-FLAGGED, Phase 4ap)** | USER-FLAGGED at end of Phase 4ap (step 5 elicitation). User: "just like plot settings, I'd like a way of having access to all node plot settings from the pop up window. dropdown menu with all of the loaded nodes?" Today CS-05 `StyleDialog` is opened per-node — there is no single window listing every loaded node's style. The user's request: extend the modeless Plot Settings paradigm (CS-66 / CS-68) to per-node styles, with a Combobox listing every loaded node, switching the per-node controls on selection. **Architecture proposal (lock pending):** spawn a new modeless dialog (working title `NodeStylesDialog` or similar) — OR add a "Node styles" Notebook tab to the existing `PlotConfigDialog` — that carries (a) a Combobox listing every loaded node by `(label, id)`, (b) the existing CS-05 universal section (color, linestyle, linewidth, alpha, visible, in_legend) for the selected node, (c) the per-NodeType extension sections (peak-marker style for PEAK_LIST, etc.) that CS-05 already provides. Live-preview semantic from CS-68 carries forward — every edit writes to the selected node's `style` dict via `graph.set_style` and `GraphEvent.NODE_STYLE_CHANGED` fires the redraw. **Lock decisions for the implementing session:** (i) extend `PlotConfigDialog` as a new "Node Styles" tab (cross-tab routing map / per-tab dirty markers extend) vs. spawn a new sibling dialog (cleaner separation, but the user has to remember two windows); (ii) when a node is added / discarded mid-session, refresh the Combobox (pairs with the long-standing `_plots_by_role` frozen-at-open friction — CS-62 lock relaxation needed); (iii) interaction with the existing per-node CS-05 `StyleDialog` (right-click "Edit Style…") — coexist or subsume; (iv) per-node ∀ apply-to-all flows (CS-05 universal `_push_to_all` factory) — surface the Combobox as the source of "Apply to all of THIS node's siblings"; (v) what does "all loaded nodes" mean — UVVIS only, or every NodeType across every tab (Compare / XANES / EXAFS will eventually have nodes too)? Phase 4 scope answer: UVVIS-tab-private node list. **Affected:** new module `node_styles_dialog.py` (or new tab inside `plot_settings_dialog.py`), new `_open_dialogs`-style registry, host wiring on `UVVisTab`, integration tests. Multi-phase: design + scope decision (extra-high) → Plot Settings tab vs. new dialog (high) → cross-tab adoption later. Pairs naturally with CS-05 / CS-06 / CS-66 / CS-68. |
+| ⏳ | 🟡 | **Autoscale ↔ Range Entry seed semantics (USER-FLAGGED, Phase 4ap)** | USER-FLAGGED at end of Phase 4ap (step 5 elicitation). User: "if an axis is set to auto and this is unselected, then the min max should be populated by the values used by auto. when auto, show the values but grey out the fields." Today the per-axis `range_lo` / `range_hi` Entries (CS-64) display whatever the user last typed (or the empty-string "no bound" default). When `autoscale=True` (the renderer ignores the bounds), the Entries are still editable AND show stale values — a visible discoverability hazard. **Architecture proposal (lock pending):** the per-axis `range_lo` / `range_hi` Entries should reflect the renderer's current axis limits when `autoscale=True`, AND be `state="readonly"` (greyed out) under that condition. When the user toggles `autoscale=False`, the Entries become editable AND seed-populate with the values just shown (the current matplotlib `ax.get_xlim()` / `ax.get_ylim()` for the role). The two-way link requires the dialog to read back from the host's matplotlib axes after each redraw. **Lock decisions for the implementing session:** (i) read-back source — `tab._axes_by_role[role].get_xlim()` / `get_ylim()` (CS-44 axes registry) at dialog open + on every `on_apply` — what about between redraws when the user toggles autoscale and expects an immediate seed? Probably hook `_apply_changes_live` in the dialog to read back AFTER firing `on_apply`; (ii) seed-on-toggle policy: when `autoscale True → False`, seed with the post-redraw limits, NOT with the dialog's stale `_working["axes"][role]["range_lo"]`; when `False → True`, retain the user's typed values in `_working` so they're preserved if the user toggles back; (iii) what happens when the dialog opens with `autoscale=True` — the Entries show the current axis limits AND are read-only from the start; (iv) does the read-back path interact badly with the existing CS-65 `tick_major` / `tick_minor` Entries (similar "auto means no override" semantic but no seed-on-toggle requested)? **Affected:** `plot_settings_dialog.py` per-axis Settings frame builder (autoscale Checkbutton callback + range_lo/range_hi Entry state); `uvvis_tab.py` may need an `axis_limits_provider` constructor kwarg or a host-side helper that maps role → `(get_lo(), get_hi())`. CS-64 lock relaxation explicit. Pairs with the new cross-node Style dropdown and with the Apply-to-all icon entries. Reasoning level: **medium** (focused UX delta, well-defined affordance, two-way binding cost is the main risk). |
+| ⏳ | 🟠 | **USER-FLAGGED bug: wavelength as linked secondary axis is broken (B-005, Phase 4ap)** | USER-FLAGGED at end of Phase 4ap (step 5 elicitation). User: "wavelength as linked secondary axis is broken". Symptom unclear at logging time — needs diagnostic in the next phase. Suspected sites: the secondary X axis (energy ↔ wavelength twin) in `uvvis_tab.py:_redraw` (CS-44 axes registry + the wavelength twin `_per_axis_tick_direction(cfg, "secondary_x")` path); the Plot Settings per-axis "Secondary X" tab (CS-61 → CS-65 ladder); the renderer's twin-axis sync. Phase 4ap added live-preview to the dialog but did not touch the wavelength secondary axis path — most likely a pre-existing bug surfaced by the user's recent UV/Vis exercise, not a regression from Phase 4ap. **Diagnostic checklist for the implementing session:** (1) capture user's exact reproduction (which dataset, which menu/Plot Settings interaction); (2) `grep secondary_x | wavelength` across `uvvis_tab.py` for the twin-axis builder; (3) check whether the secondary axis appears at all (axis create path) vs whether it appears but doesn't track correctly (transform / set_xlim path); (4) verify with a one-spectrum minimal test that the secondary X axis reads `secondary_x` config from the per-axis schema. Logged as **B-005** in the Known Bugs table below. Reasoning level: **high** (debugging session — could be small or could expose a CS-44 axis-registry hole). |
 | ⏳ | 🟡 | **Apply-to-all icon on per-axis Plot Settings tabs — UI consistency with data-node settings (USER-FLAGGED, Phase 4ak)** | USER-FLAGGED at end of Phase 4ak (step 5 elicitation). User: "Use same apply-to-all icon used for data node settings in the axis setting popups." Data-node settings (the per-row → icon on `ScanTreeWidget` rows surfaced by CS-27 / Phase 4n) carry a recognisable "Apply to all" affordance; Plot Settings → per-axis tabs offer only the dialog-level "Apply to All Tabs" button at the bottom (CS-60 button row). The per-axis tabs lack an in-tab "Apply this axis's settings to every other axis" gesture — useful for cases like "apply this tick direction to every axis at once" or "broadcast this axis label override to every Y axis". **Architecture proposal (lock pending):** add a small icon button next to each per-axis widget (or at the per-axis tab top) labelled with the same icon used by `ScanTreeWidget`'s send-to-compare row icon (the → symbol per CS-27). Click → confirm dialog → write the widget's value into every other per-axis role's slot in `self._working`, mark every other per-axis tab dirty. **Lock decisions for the implementing session:** (i) per-widget icon (one per widget on the per-axis tab) or per-tab icon (one icon broadcasts every widget on the tab)? (ii) does the broadcast respect axis-shape semantics (e.g. an X-axis tab's value broadcast to other X tabs only, not Y)? (iii) does the broadcast write through `_USER_DEFAULTS["axes"][role]` directly or stage through `_on_axis_var_write` per-widget (the latter is consistent with the existing dirty-marker contract)? (iv) does the icon match `_send_to_compare_btn`'s exact glyph or use a slightly different one to distinguish axis-to-axis from tab-to-compare? **Affected:** `plot_settings_dialog.py` (new icon widget + broadcast handler; CS-62 `_axis_control_vars` walk), CS-61 / CS-62 layout (icon adds a row or column to the Settings frame), tests for the broadcast path. Cross-refs CS-27 (the existing per-row send-to-compare icon pattern), CS-60 (the dialog-level Apply to All Tabs button — different scope), CS-62 (per-axis Tk var registry). Small-medium phase; depends on having more than one populated per-axis widget (Phase 4ak ships two: tick_direction + axis_label_override, so this is actionable from 4al onward). |
 | ⏳ | 🟡 | **Axis nomenclature rename: primary/secondary/tertiary → bottom/top/left/right with `*` suffix for offset (USER-FLAGGED, Phase 4ak)** | USER-FLAGGED at end of Phase 4ak (step 5 elicitation). User: "Maybe we should not use primary, secondary, tertiary for axes and use clear location designations such as bottom/top for the main x-axes and something like bottom* and top* for offset secondary axes for a total of 4 possible axes along x. Similar structure for y with left/right/left*/right*. Open to better nomenclature." The current taxonomy (CS-44: `primary` / `secondary` / `tertiary`; CS-60: `primary_x` / `secondary_x` / `primary_y` / `secondary_y` / `tertiary_y`) is renderer-internal and dialog-facing. Position-based names ("bottom", "top", "left", "right", with `*` for offset/secondary instance) are more discoverable for the user — a UV/Vis researcher doesn't need to know that "secondary" specifically means twinx. The proposal also opens the door to a fourth axis on each side (currently `*` suffix denotes offset, but the rename allows growth to "right*" being a tertiary-stack-style offset on top of "right"). **Architecture proposal (lock pending):** rename across the codebase. Affects: `_AXIS_ROLES = ("primary", "secondary", "tertiary")` (CS-44 lock), `_TAB_KEYS = ("global", "primary_x", "secondary_x", "primary_y", "secondary_y", "tertiary_y")` (CS-60 lock), `_TAB_TITLES` strings (CS-60 lock), `_DEFAULT_Y_AXIS_BY_NODETYPE`'s values (CS-44 lock), `_resolve_y_axis_role`'s return values (CS-44 lock), every test asserting any of the above, plot_settings_dialog's per-axis tab keys, `_Y_AXIS_ROLE_TO_TAB` (CS-62 lock), the `y_axis` style key's value set (CS-50 lock), the manifest's nested `axes` sub-dict keys (round-trip across `_USER_DEFAULTS` via project_io). **Lock decisions for the implementing session:** (i) exact name set — is the `*` suffix preserved or replaced with something more keyboard-friendly (e.g. `"bottom_offset"`)? `*` reads well in UI but parses awkwardly in code paths. (ii) does the rename happen all-at-once (one massive sweep phase) or incrementally with an alias dict mapping old → new during transition? (iii) does the `y_axis` style key's value set (CS-50: `"primary"` / `"secondary"` / `"tertiary"`) rename in lockstep — yes for consistency but increases blast radius. (iv) does the manifest schema gain a migration shim for projects saved with old names (yes, since `.ptmg` files can be years old). (v) what about the existing `_axes_by_role` dict key names (used by tests + matplotlib introspection)? **Affected:** Massive cross-codebase rename. CS-44 / CS-50 / CS-60 / CS-61 / CS-62 locks all need deliberate relaxation. Carries through to manifest round-trip migration shim + every test pinning role names. Multi-phase task — the cleanest path is one phase for the schema rename + migration shim, one phase for the dialog labels + tab titles, one phase for the renderer's internal names, with a final cleanup pass. **Risk:** high blast radius. Could combine with the "Refactor uvvis_tab.py — extract host shell" register entry since both touch axis-handling code paths. |
 | ⏳ | 🟡 | **Rich-text axis labels — subscript / superscript / equation markup (USER-FLAGGED, Phase 4ak)** | USER-FLAGGED at end of Phase 4ak (step 5 elicitation). User: "Allow for subscript/superscript and equations in axis labels. How can we do that?" Today axis labels are plain strings written through matplotlib's `set_xlabel` / `set_ylabel` (CS-62's `axis_label_override` is a plain `str`). matplotlib supports a `mathtext` subset of LaTeX inline (e.g. `r"$d^2 A / d\lambda^2$"`) AND the full `usetex=True` LaTeX rendering when a LaTeX installation is on `$PATH`. The user wants the override Entry to accept LaTeX-style markup and render it in the figure. **Architecture proposal (lock pending):** enable matplotlib's mathtext on every axis label setter. Simplest path: change `set_xlabel(text, ...)` → `set_xlabel(text, ...)` with matplotlib's default mathtext parser (no extra config needed — `$...$` is parsed automatically). User types `$d^2 A / d\lambda^2$` into the Plot Settings → Primary Y axis label override Entry → matplotlib renders the math expression. **Lock decisions for the implementing session:** (i) does the Entry widget need any preprocessing or do we trust the user to type `$...$` directly? (ii) is there a "Markup help" tooltip or pop-up showing example expressions (`$\alpha$`, `$d^2A/d\lambda^2$`, `$\Delta E$`)? (iii) does we expose mathtext only, or also the full LaTeX path (`usetex=True`) which requires a LaTeX install? (iv) does the manifest round-trip preserve the raw markup string (yes — it's a plain `str` already). (v) does the same support extend to title (`title_text`) and the legacy xlabel/ylabel custom text path? (likely yes for consistency). **Affected:** `plot_settings_dialog.py` per-axis Entry widgets + the legacy Title-and-labels section's Entry widgets — the markup goes in transparently since `set_xlabel` already supports it. Possibly a tooltip module for the markup help. New test asserting `set_xlabel($d^2A$)` renders without error. Small phase — enabling mathtext is essentially free; the lift is testing + documenting the gesture for users. Cross-refs CS-62 (`axis_label_override` Entry widgets), the legacy "Title and labels" section. **Caveat:** matplotlib's mathtext is a SUBSET of LaTeX (most math symbols work, but `\text{}`, fancy spacing, and some packages don't). Decision (iii) determines whether power users get full LaTeX. |
@@ -3738,15 +3741,18 @@ relevant subsequent Phase 4 session.**
    `test_secondary_x_distinct_from_primary_x` pins the
    non-collision.
 
-3. 🟡 **USER-FLAGGED Live-preview vs Apply button**
-   continues. See the new canonical register entry above
-   (added in Phase 4ak step 5). Independent of the per-
-   axis ladder — could happen alongside or after. Becomes
-   actionable when the user is ready to make a decision
-   on lock (i) (live-preview-only vs optional-checkbox).
-   **Cross-ref:** see canonical register entry "Live-
-   preview vs Apply button — modal-vs-instant settings
-   reconciliation (USER-FLAGGED, Phase 4ak)" above.
+3. 🟡 ~~**USER-FLAGGED Live-preview vs Apply button**
+   continues.~~ ✅ Resolved in Phase 4ap (CS-68). All four
+   open lock decisions resolved — see the canonical
+   register entry above for the full landed shape.
+   `PlotConfigDialog` now runs in live-preview mode for
+   discrete widgets; text Entries debounce to `<FocusOut>`
+   / `<Return>`; Apply button retired. CS-23 / CS-60 / CS-66
+   working-copy passthrough partially relaxed (`_snapshot`
+   retained for Cancel; `_modified_tabs` semantic broadened
+   to "touched since open"). **Canonical resolution
+   record** — later cross-refs in 4al/4am/4an/4ao friction
+   sections collapse to one-liners pointing here.
 
 4. 🟡 **USER-FLAGGED Apply-to-all icon on per-axis tabs**
    continues. See the new canonical register entry above
@@ -3894,13 +3900,10 @@ relevant subsequent Phase 4 session.**
    Small phase — half a day at most. Reasoning level:
    **normal**.~~ ✅ Resolved in Phase 4ao (CS-67).
 
-5. 🟡 **USER-FLAGGED Live-preview vs Apply button**
-   continues. Cross-ref Phase 4ak friction #3 (becomes more
-   actionable now that 4al has shipped routing-as-immediate-
-   commit — that asymmetry is exactly the kind of CS-06
-   working-copy edge case the live-preview phase needs to
-   address). See canonical register entry "Live-preview vs
-   Apply button" above.
+5. 🟡 ~~**USER-FLAGGED Live-preview vs Apply button**
+   continues.~~ ✅ Resolved in Phase 4ap (CS-68). Cross-ref
+   Phase 4ak friction #3 above (canonical resolution
+   record).
 
 6. 🟡 **USER-FLAGGED Apply-to-all icon on per-axis tabs**
    continues. Cross-ref Phase 4ak friction #4. Now more
@@ -4027,12 +4030,10 @@ session.**
    Reasoning level: **medium**.~~ ✅ Resolved in Phase 4ao
    (CS-67).
 
-5. 🟡 **USER-FLAGGED Live-preview vs Apply button**
-   continues. Cross-ref Phase 4al friction #5. Becomes
-   more actionable now that Phase 4am has shipped: friction
-   (θ) below is exactly the kind of working-copy edge case
-   the live-preview phase needs to address. See canonical
-   register entry "Live-preview vs Apply button".
+5. 🟡 ~~**USER-FLAGGED Live-preview vs Apply button**
+   continues.~~ ✅ Resolved in Phase 4ap (CS-68). Cross-ref
+   Phase 4ak friction #3 above (canonical resolution
+   record).
 
 6. 🟡 **USER-FLAGGED Apply-to-all icon on per-axis tabs**
    continues. Cross-ref Phase 4al friction #6. Even more
@@ -4156,10 +4157,12 @@ relevant subsequent Phase 4 session.**
    the single source of truth (default True — overlays now render
    by default).
 
-4. 🟡 **USER-FLAGGED Live-preview vs Apply button** continues.
-   Cross-ref Phase 4am friction #5. Phase 4am friction (θ)
-   (Range Entry no-immediate-`_redraw`) folds in here. See
-   canonical register entry "Live-preview vs Apply button".
+4. 🟡 ~~**USER-FLAGGED Live-preview vs Apply button** continues.~~
+   ✅ Resolved in Phase 4ap (CS-68). Cross-ref Phase 4ak friction
+   #3 above (canonical resolution record). Phase 4am friction (θ)
+   (Range Entry no-immediate-`_redraw`) is now resolved as a side
+   effect — the Range Entries debounce to `<FocusOut>` / `<Return>`
+   per the CS-68 text-Entry policy.
 
 5. 🟡 **USER-FLAGGED Apply-to-all icon on per-axis tabs**
    continues. Cross-ref Phase 4am friction #6. Even more
@@ -4274,12 +4277,9 @@ the relevant subsequent Phase 4 session.**
    level: **high** for the first design pass, **medium** for
    individual sub-batches thereafter.
 
-2. 🟡 **USER-FLAGGED Live-preview vs Apply button** continues.
-   Cross-ref Phase 4an friction #4. **More urgent now that
-   Plot Settings is modeless** — the working-copy + Apply
-   semantic is the most visible UX friction once the user can
-   keep the dialog open while clicking around the main window.
-   Pairs naturally with CS-66. Reasoning level: **high**.
+2. 🟡 ~~**USER-FLAGGED Live-preview vs Apply button** continues.~~
+   ✅ Resolved in Phase 4ap (CS-68). Cross-ref Phase 4ak friction
+   #3 above (canonical resolution record).
 
 3. 🟡 **USER-FLAGGED Apply-to-all icon on per-axis tabs**
    continues. Cross-ref Phase 4an friction #5. Reasoning
@@ -4313,17 +4313,13 @@ the relevant subsequent Phase 4 session.**
    `test_no_grab_set_on_visible_window` names the gotcha.
    No register entry.
 
-9. 🟢 **Modeless + per-node baseline-toggle integration
-   surface is uncovered (Claude-surfaced, Phase 4ao artifact).**
-   With Plot Settings modeless AND the global Baseline-curves
-   gate retired, a useful new flow becomes possible: open Plot
-   Settings, watch the canvas, then click a per-row `~` toggle
-   in ScanTreeWidget. The dialog should stay open and the
-   canvas should redraw. No integration test drives this flow
-   today (it was impossible under the modal contract). Folds
-   naturally into the live-preview phase test sweep (friction
-   #2 above). No register entry — uncovered surface, not a
-   bug.
+9. 🟢 ~~**Modeless + per-node baseline-toggle integration
+   surface is uncovered.**~~ ✅ Covered in Phase 4ap (CS-68) by
+   `TestUVVisTabLivePreviewModelessPhase4ap.test_per_row_toggle_
+   redraws_canvas_with_dialog_open` — opens Plot Settings,
+   toggles per-row `~` on a BASELINE row, asserts the dashed
+   overlay disappears AND the dialog stays alive. The flow now
+   has explicit regression coverage.
 
 10. 🟢 **`_plots_by_role` staleness is now more reachable
     (Claude-surfaced, Phase 4ao artifact).** CS-62 froze
@@ -4349,14 +4345,148 @@ the relevant subsequent Phase 4 session.**
     No register entry — expected behaviour, surfaced here so
     the next session knows the user-visible delta exists.
 
-12. 🟢 **`scan_tree_widget.py:822` still mentions the
-    "CS-29 global ``Baseline curves`` checkbox"
-    (Claude-surfaced, Phase 4ao artifact).** A docstring/comment
-    in `scan_tree_widget.py` references the now-retired global
-    Checkbutton when explaining the CS-36 per-row `~` toggle's
-    vocabulary. Cosmetic; folds into the next session that
-    touches `scan_tree_widget.py` near that block. No register
-    entry.
+12. 🟢 ~~**`scan_tree_widget.py:822` still mentions the
+    "CS-29 global ``Baseline curves`` checkbox".**~~ ✅ Resolved
+    in Phase 4ap (CS-68 commit `a6b07ea`) — comment refreshed
+    to credit CS-67 / Phase 4ao for the retirement and CS-36
+    as the now-single source of truth.
+
+### Friction points carried forward from Phase 4ap
+
+These are concrete obstacles the next Phase 4 session will hit.
+Phase 4ap shipped CS-68 — live-preview semantics on the unified
+`PlotConfigDialog`. Discrete widgets (Combobox, Checkbutton,
+Spinbox, color picker, Radiobutton) commit every edit immediately
+to the live config and fire `on_apply`; text Entries (`title_text`
+/ `xlabel_text` / `ylabel_text`, per-axis `axis_label_override`,
+`range_lo` / `range_hi`, `tick_major` / `tick_minor`, plus the
+Global mirror `axis_label_override`) defer to `<FocusOut>` /
+`<Return>` so per-keystroke typing does not redraw a 100-spectrum
+canvas. Apply button retired; button row collapses to `Save ·
+Apply to All Tabs · Cancel`. Defaults / Factory Reset coalesces
+to one redraw. New `TestPlotConfigDialogLivePreviewPhase4ap` (14
+sentinels) and `TestUVVisTabLivePreviewModelessPhase4ap` (3
+integration tests, including the modeless × per-row baseline
+toggle flow) pin the contract. The user contributed THREE new
+USER-FLAGGED items at step 5 (cross-node Style dropdown / multi-
+node window; wavelength secondary axis broken — B-005; Autoscale
+↔ Range Entry seed semantics). Four Claude-surfaced notes below
+are polish-level and deferrable. **Do not fix until the relevant
+subsequent Phase 4 session.**
+
+1. 🟡 **USER-FLAGGED Cross-node Style dropdown / multi-node
+   style window.** See the new canonical register entry above
+   (added in Phase 4ap step 5). Becomes actionable any time —
+   open scope question is "extend `PlotConfigDialog` with a new
+   Notebook tab" vs "spawn a new sibling modeless dialog". Pairs
+   with CS-05 / CS-06 / CS-66 / CS-68. Reasoning level:
+   **extra-high** for the first design pass + lock decisions
+   (5 lock decisions span dialog scope + dropdown semantics +
+   refresh-on-graph-event interaction + ∀ apply-to-all
+   coexistence + cross-tab vs UVVIS-only scope), **high** for
+   the implementation phase that follows.
+
+2. 🟠 **USER-FLAGGED Wavelength secondary axis broken (B-005).**
+   See the new canonical register entry above (added in Phase
+   4ap step 5). Logged as B-005 in the Known Bugs table below.
+   Diagnostic step required first — capture user's exact
+   reproduction (which dataset / which menu interaction) before
+   designing the fix. Suspected sites: `uvvis_tab.py` secondary
+   X axis builder (CS-44 axes registry + the wavelength twin
+   `_per_axis_tick_direction(cfg, "secondary_x")` path); the
+   Plot Settings per-axis "Secondary X" tab (CS-61 → CS-65
+   ladder). Reasoning level: **high** (debug-driven; could be
+   small or expose a CS-44 axis-registry hole).
+
+3. 🟡 **USER-FLAGGED Autoscale ↔ Range Entry seed semantics.**
+   See the new canonical register entry above (added in Phase
+   4ap step 5). Pairs with CS-64 + CS-68. Two-way binding cost
+   is the main risk; the read-back from `tab._axes_by_role[
+   role].get_xlim()` after each redraw is the new code path.
+   Reasoning level: **medium** (focused UX delta).
+
+4. 🟡 **USER-FLAGGED Apply-to-all icon on per-axis tabs**
+   continues. Cross-ref Phase 4ao friction #3. Even more
+   actionable now that live-preview shipped — the "I changed
+   the tick direction on Primary Y, now I want it on every Y
+   axis" gesture has no affordance, and the live commit means
+   every per-axis change requires manual repetition. Reasoning
+   level: **medium**.
+
+5. 🟡 **USER-FLAGGED Accessibility features umbrella**
+   continues. Cross-ref Phase 4ao friction #1. Reasoning
+   level: **high** for the first design pass, **medium** for
+   individual sub-batches thereafter.
+
+6. 🟡 **USER-FLAGGED Axis nomenclature rename** continues.
+   Cross-ref Phase 4ao friction #4. Massive cross-codebase
+   rename. Reasoning level: **extra-high**.
+
+7. 🟡 **USER-FLAGGED Rich-text axis labels (mathtext)**
+   continues. Cross-ref Phase 4ao friction #5. Reasoning
+   level: **medium**.
+
+8. 🟡 **USER-FLAGGED External-output plot style presets**
+   continues. Cross-ref Phase 4ao friction #6. User has
+   reference Jupyter notebook code (paths TBD at session
+   start). Reasoning level: **high**.
+
+9. 🟡 **USER-FLAGGED Keyboard shortcuts — first batch**
+   continues. Cross-ref Phase 4ao friction #7. Pairs with
+   the accessibility umbrella. Reasoning level: **medium**.
+
+10. 🟢 **`_plots_by_role` staleness even more reachable now
+    (Claude-surfaced, Phase 4ap artifact).** Phase 4ao made
+    the staleness reachable (modeless dialog + node mutations);
+    Phase 4ap makes it MORE reachable because the dialog is
+    explicitly designed to stay open through the user's full
+    edit session. The "Plots on this axis" Listbox on each
+    per-axis tab snapshots at dialog open and never refreshes.
+    Pairs naturally with the new Cross-node Style dropdown
+    register entry (which faces the same refresh-on-graph-event
+    question for its Combobox). CS-62 lock relaxation needed.
+    No new register entry — folds into the existing canonical
+    "_plots_by_role frozen at open time" friction (Phase 4ak ε).
+
+11. 🟢 **Text Entry `<FocusOut>` debounce vs click-elsewhere
+    (Claude-surfaced, Phase 4ap artifact).** The CS-68 text-
+    Entry policy fires the live commit on `<FocusOut>` /
+    `<Return>`. `<FocusOut>` triggers reliably when the user
+    Tabs to another widget OR clicks another widget that
+    accepts focus (other Entry / Spinbox). It does NOT trigger
+    when the user clicks on a Tk Label or empty dialog space —
+    those don't take focus, so the Entry retains it. The
+    typed value is still in `_working` (the trace fired) but
+    the live commit waits until focus moves. In practice the
+    Save button click (focus shift to button) flushes the
+    pending edit. Acceptable — but worth a manual smoke check
+    if a user reports "I typed and clicked Save but nothing
+    happened" symptoms. No register entry.
+
+12. 🟢 **Text Entry mode-flip cascade fires per-keystroke
+    commit on `title_text` / `xlabel_text` / `ylabel_text`
+    (Claude-surfaced, Phase 4ap artifact).** When the user
+    types into the title/label Entry while the mode is
+    currently "auto" or "none", the first keystroke flips
+    `mode_var` to "custom" — mode_var's trace IS in the
+    discrete-commit path, so it fires `_apply_changes_live`
+    immediately. Subsequent keystrokes don't flip mode again
+    so they correctly defer. Net effect: ONE redraw per text
+    Entry session, on the first keystroke. Strictly an
+    improvement vs the canonical "no commit until FocusOut"
+    semantic but worth documenting. No register entry.
+
+13. 🟢 **`_apply_changes_live` deep-copy cost grows with
+    per-axis schema (Claude-surfaced, Phase 4ap artifact).**
+    The live commit calls `copy.deepcopy(self._working)` on
+    every discrete-widget edit. The working copy now carries
+    a nested `axes` sub-dict with five role entries × ~10 keys
+    each (CS-61 → CS-65 ladder) — totalling ~50 dict ops per
+    deepcopy. Negligible at current scale; if future per-axis
+    work doubles the schema width or if the user makes
+    sustained Spinbox-arrow edits, profile the deepcopy.
+    Alternative: key-level diff + apply (more code, faster).
+    No register entry.
 
 ---
 
@@ -4561,6 +4691,7 @@ phase to touch files that its primary brief lists as no-modify.
 | **B-002** | ✅ Phase 4d | Sidebar row controls do not adapt to sidebar width. At narrow widths the row overflows. The minimum always-visible set should be: dataset name + visibility checkbox + ⚙ gear button. Every other per-row control (colour swatch, legend toggle, linestyle canvas, linewidth entry, fill checkbox, history indicator, ✕) must collapse when the row narrows. The unified StyleDialog (CS-05) must then cover every collapsed control — which it currently does not: `style["visible"]` and `style["in_legend"]` have no controls in the dialog | CS-04 §6.1 + CS-05 universal section | Resolved by commits `85c30f3` (responsive row collapse — `_apply_responsive_layout` hides the optional set below `_RESPONSIVE_COLLAPSE_PX` = 280 px) and `5f7ed47` (StyleDialog universal section gained `visible` and `in_legend` checkbutton rows with per-row ∀ delegates; bulk ∀ excludes both as a footgun guard). The minimum always-visible set landed as state · `[☑]` · label · `[⚙]` · `[✕]` (the brief's listing kept `state` and `[✕]` because dropping them would break provisional/committed affordance and the discard/hide gesture). UV/Vis ∀ fan-out widened from `_uvvis_nodes` to `_spectrum_nodes` (UVVIS + BASELINE) so toggling visibility on one row reaches every row in the same sidebar |
 | **B-003** | ✅ Phase 4c | When `Norm: area` is active the X-axis limit entries no longer take effect on Apply / Return. `Norm: none` and `Norm: peak` both work. Likely interaction between `_y_with_norm`'s area integral and the post-render axis-limit application path in `_redraw` ([uvvis_tab.py:583-593](uvvis_tab.py#L583), [uvvis_tab.py:662-671](uvvis_tab.py#L662)) — verify before fixing | UV/Vis tab `_redraw` | Resolved by commit `88ad2bf` — root cause was `np.trapz` removed in numpy 2.x; switched to `np.trapezoid` and took absolute value of the integral |
 | **B-004** | ✅ Phase 4c | No way to rename a dataset from the right sidebar via the right-click menu. CS-04 §"Context menu" lists `Rename` as a right-click entry; the implementation only landed Commit / Discard / Send to Compare. In-place double-click rename exists per Phase 2 but is undiscoverable. Add the context-menu entry; consider a label tooltip pointing at it | CS-04 §"Context menu" | Resolved by commit `7314a68` — the Rename menu entry was present since Phase 2 but `_begin_label_edit` raised `TclError` from `entry.pack(before=...)` after `pack_forget`, which silently broke both rename gestures; fixed the pack call |
+| **B-005** | 🟠 Phase 4aq | USER-FLAGGED at end of Phase 4ap (step 5): "wavelength as linked secondary axis is broken". Symptom unclear — needs reproduction capture in the next session. Suspected sites: secondary X axis (energy ↔ wavelength twin) in `uvvis_tab.py:_redraw` (CS-44 axes registry + `_per_axis_tick_direction(cfg, "secondary_x")` path); the Plot Settings per-axis "Secondary X" tab (CS-61 → CS-65 ladder); the renderer's twin-axis sync. Most likely a pre-existing bug surfaced by the user's UV/Vis exercise post Phase 4ap, NOT a regression from Phase 4ap (Phase 4ap touched only the dialog's commit semantics, not the secondary-axis path) | CS-44 / CS-61–65 / `uvvis_tab._redraw` | Diagnose first (capture user's reproduction); resolve in Phase 4aq |
 
 The Phase 4d responsive-row work (B-002) also needs to add `visible`
 and `in_legend` controls to the StyleDialog universal section so the
@@ -4572,7 +4703,7 @@ the resolving phase + commit SHA appended to the row.
 
 ---
 
-*Document version: 1.40 — May 2026*
+*Document version: 1.41 — May 2026*
 *1.1: Known Bugs register added 2026-04-27 after Phase 4b manual testing.*
 *1.2: Phase 4c — baseline correction lands; B-001 / B-003 / B-004
 resolved; Phase 4c friction points logged.*
@@ -5486,4 +5617,62 @@ skip keys in `_KEY_TO_TAB`); (4) hard-coded "in" fallback in
 (CS-56 schema invariant guard against future drift). 1126
 tests, all green (1113 + 13 new in
 `TestPlotConfigDialogTickDirectionRelocationPhase4aj`).*
+*1.41: Phase 4ap — CS-68 live-preview semantics in
+`PlotConfigDialog` (USER-FLAGGED single-target phase).
+Discrete widgets (Combobox, Checkbutton, Spinbox, color
+picker, Radiobutton) commit every edit immediately to the
+live config and fire `on_apply`; text Entries (`title_text`
+/ `xlabel_text` / `ylabel_text`, per-axis
+`axis_label_override`, `range_lo` / `range_hi`, `tick_major`
+/ `tick_minor`, plus the Global mirror
+`axis_label_override`) defer the live commit to
+`<FocusOut>` / `<Return>`. Apply button retired (per user's
+literal "negate the need to have an apply button"); button
+row collapses to `Save · Apply to All Tabs · Cancel`.
+`_apply_changes_live`, `_bind_entry_live_commit`,
+`_defer_apply_keys`, `_defer_apply_axis_keys` are the new
+seam pieces. `_working` retained as widget-bound mirror;
+`_snapshot` retained as Cancel-revert source.
+`_modified_tabs` markers persist through live commits
+(semantic broadens to "touched since open"); only Cancel-
+revert / Save / `[X]` clears them. Defaults / Factory Reset
+coalesces to ONE redraw via the suspend-guarded refresh +
+single trailing `_apply_changes_live`. **Lock relaxations:**
+CS-23 button-row passthrough partially relaxed (Apply
+button + `_do_apply` removed; live commit replaces explicit
+Apply gesture); CS-66 lock 4 (CS-23 button-row passthrough)
+partially relaxed via the same. **Locks held:** CS-06
+singleton, CS-23 `_snapshot`-as-revert source + close-on-
+Cancel silenced-`askokcancel`, CS-29 retirement (CS-67),
+CS-36 default-True per-node, CS-46 manifest schema, CS-60
+cross-tab Notebook + `_KEY_TO_TAB` routing + per-tab
+`_modified_tabs`, CS-61 / CS-62 / CS-63 / CS-64 / CS-65
+per-axis ladder schemas + widgets, CS-66 modeless contract.
+**Decision lock taken (Phase 4ap):** (DM1) scope
+`PlotConfigDialog` only; (DM2) `_working` retained as
+mirror; (DM3) `_snapshot`-only revert; (DM4) Apply button
+retired; (DM5) text Entry per-keystroke debounce via
+`<FocusOut>` / `<Return>`; (DM6) Defaults / Factory Reset
+coalesces to one redraw; (DM7) `_modified_tabs` markers
+persist through live commits; (DM8) Phase 4ao friction #9
+covered by new integration test; (DM9) Phase 4ao friction
+#12 (stale CS-29 comment) refreshed opportunistically.
+USER contributed THREE new USER-FLAGGED items at step 5:
+cross-node Style dropdown / multi-node window (new
+register entry); wavelength secondary axis broken (B-005
+in Known Bugs); Autoscale ↔ Range Entry seed semantics
+(new register entry). Four Claude-surfaced carry-forwards
+documented in BACKLOG's "Friction points carried forward
+from Phase 4ap" section. Five code commits this phase: (1)
+`plot_settings_dialog.py` live-preview seam (`cfcf77d`);
+(2) `test_plot_settings_dialog.py` test rewrites + 14 new
+sentinels in `TestPlotConfigDialogLivePreviewPhase4ap`
+(`4d3f527`); (3) `scan_tree_widget.py:822` cosmetic
+stale-comment refresh (`a6b07ea`); (4) `test_uvvis_tab.py`
+new `TestUVVisTabLivePreviewModelessPhase4ap` 3
+integration tests (`22f29a8`); (5) `test_uvvis_tab.py`
+host-side test sweep dropping vestigial `_do_apply`
+(`8a6c3ab`). 1302 tests, all green (1285 + 14 new live-
+preview sentinels + 3 new modeless × live-preview
+integration tests).*
 *Supersedes: BACKLOG.md (original)*
