@@ -810,11 +810,11 @@ class TestUVVisTabPlotSettingsIntegration(unittest.TestCase):
         labels_pre = self.tab._ax.get_xticklabels()
         size_pre = labels_pre[0].get_fontsize() if labels_pre else None
 
-        # Adjust tick label font size in the dialog and Apply.
+        # CS-68 (Phase 4ap): live-preview seam — the var.set fires
+        # _on_var_write → _apply_changes_live → tab._redraw via the
+        # registered on_apply callback. No explicit Apply step.
         dlg._control_vars["tick_label_font_size"].set(16)
         dlg.update_idletasks()
-        dlg._do_apply()
-        # The on_apply callback (the tab's _redraw) has fired.
 
         labels_post = self.tab._ax.get_xticklabels()
         # The tick params API stores labelsize on each tick label.
@@ -834,12 +834,12 @@ class TestUVVisTabPlotSettingsIntegration(unittest.TestCase):
         dlg.update_idletasks()
 
         # Bump the X-axis label font size from default (10) to 18.
+        # CS-68: live commit fires on var.set; no Apply step.
         dlg._control_vars["xlabel_font_size"].set(18)
         dlg.update_idletasks()
-        dlg._do_apply()
 
-        # _redraw has been called; the matplotlib X-label carries the
-        # new font size.
+        # _redraw has been called via the live on_apply path; the
+        # matplotlib X-label carries the new font size.
         self.assertAlmostEqual(
             self.tab._ax.xaxis.label.get_fontsize(), 18.0,
         )
@@ -854,13 +854,13 @@ class TestUVVisTabPlotSettingsIntegration(unittest.TestCase):
         # At least one gridline visible by default.
         self.assertTrue(any(g.get_visible() for g in x_grid_pre))
 
-        # Open dialog, flip grid off, Apply.
+        # CS-68: open dialog, flip grid off — live commit fires on
+        # var.set, no Apply gesture.
         self.tab._open_plot_settings()
         dlg = self.psd._open_dialogs[id(self.tab)]
         dlg.update_idletasks()
         dlg._control_vars["grid"].set(False)
         dlg.update_idletasks()
-        dlg._do_apply()
 
         x_grid_post = self.tab._ax.xaxis.get_gridlines()
         # Gridlines either gone or all marked invisible.
@@ -1049,11 +1049,11 @@ class TestUVVisTabAxisDoubleClickPhase4ai(unittest.TestCase):
         self.tab._on_mpl_axis_double_click(ev)
         dlg = self.psd._open_dialogs[id(self.tab)]
         dlg.update_idletasks()
-        # Edit a global setting and Apply — the on_apply path drives
-        # _redraw because that's the host callback the tab registered.
+        # CS-68: edit a global setting — the live-preview path
+        # drives _redraw because the host's on_apply callback IS
+        # the tab's _redraw.
         dlg._control_vars["xlabel_font_size"].set(18)
         dlg.update_idletasks()
-        dlg._do_apply()
         self.assertAlmostEqual(
             self.tab._ax.xaxis.label.get_fontsize(), 18.0,
         )
