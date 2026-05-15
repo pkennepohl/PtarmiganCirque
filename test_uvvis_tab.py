@@ -6481,5 +6481,187 @@ class TestUVVisTabPerAxisPolishPhase4an(unittest.TestCase):
         self.tab._redraw()
 
 
+# =====================================================================
+# CS-68 Phase 4ap — live-preview × CS-66 modeless integration
+# =====================================================================
+
+
+class TestUVVisTabLivePreviewModelessPhase4ap(unittest.TestCase):
+    """Integration: modeless Plot Settings (CS-66) + live-preview (CS-68).
+
+    Phase 4ao friction #9 surfaced an uncovered flow: with Plot
+    Settings open AND no global Baseline-curves gate, the user can
+    toggle a per-row ``~`` in ScanTreeWidget and the canvas should
+    redraw while the dialog stays open. Phase 4ap (CS-68) adds a
+    second uncovered flow: a discrete edit IN the dialog (e.g. a
+    Combobox change) commits live to the host's plot config and
+    redraws the host's canvas without an Apply gesture.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from uvvis_tab import UVVisTab
+        import plot_settings_dialog
+        cls.UVVisTab = UVVisTab
+        cls.psd = plot_settings_dialog
+
+    def setUp(self):
+        from nodes import OperationNode, OperationType
+        self.OperationNode = OperationNode
+        self.OperationType = OperationType
+        self.psd._open_dialogs.clear()
+        self.host = tk.Frame(_root)
+        self.graph = ProjectGraph()
+        self.tab = self.UVVisTab(self.host, graph=self.graph)
+        self.tab._x_unit.set("nm")
+
+    def tearDown(self):
+        for dlg in list(self.psd._open_dialogs.values()):
+            try:
+                dlg.destroy()
+            except Exception:
+                pass
+        self.psd._open_dialogs.clear()
+        try:
+            self.tab.destroy()
+        except Exception:
+            pass
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    def _add_uvvis_with_baseline(self):
+        """Build a UVVIS parent + BASELINE child graph for canvas tests."""
+        wl = np.linspace(300.0, 600.0, 6)
+        parent_abs = np.array([1.0, 1.5, 2.0, 1.8, 1.4, 0.9])
+        baseline_function = np.array([0.4, 0.5, 0.6, 0.55, 0.45, 0.3])
+        child_abs = parent_abs - baseline_function
+        parent = DataNode(
+            id="p1", type=NodeType.UVVIS,
+            arrays={"wavelength_nm": wl, "absorbance": parent_abs},
+            metadata={"source_file": "synthetic"},
+            label="parent-spec",
+            state=NodeState.COMMITTED,
+            style={"color": "#1f77b4", "linestyle": "solid",
+                   "linewidth": 1.5, "alpha": 0.9, "visible": True,
+                   "in_legend": True},
+        )
+        op = self.OperationNode(
+            id="op1", type=self.OperationType.BASELINE,
+            engine="internal", engine_version="test",
+            params={"mode": "linear"},
+            input_ids=["p1"], output_ids=["c1"],
+            status="SUCCESS", state=NodeState.COMMITTED,
+        )
+        child = DataNode(
+            id="c1", type=NodeType.BASELINE,
+            arrays={"wavelength_nm": wl, "absorbance": child_abs},
+            metadata={}, label="parent · baseline (linear)",
+            state=NodeState.COMMITTED,
+            style={"color": "#ff7f0e", "linestyle": "solid",
+                   "linewidth": 1.5, "alpha": 0.9, "visible": True,
+                   "in_legend": True},
+        )
+        self.graph.add_node(parent)
+        self.graph.add_node(op)
+        self.graph.add_node(child)
+        self.graph.add_edge("p1", "op1")
+        self.graph.add_edge("op1", "c1")
+
+    def _open_plot_settings(self):
+        """Open Plot Settings via the host's wired callback (CS-66 modeless)."""
+        # The host wires open via _on_open_plot_settings; calling
+        # the underlying factory directly with the same arguments
+        # mirrors that path without depending on a button click.
+        return self.psd.open_plot_config_dialog(
+            self.tab,
+            self.tab._plot_config,
+            on_apply=self.tab._on_plot_config_changed,
+        )
+
+    # ---- Modeless × per-row toggle redraw (CS-66 friction #9) ----
+
+    def test_per_row_toggle_redraws_canvas_with_dialog_open(self):
+        """Toggle CS-36 ~ on a BASELINE row → canvas redraws → dialog still open."""
+        self._add_uvvis_with_baseline()
+        self.tab._redraw()
+        # Pre-check: dashed overlay present.
+        self.assertTrue(any(
+            ln.get_linestyle() == "--"
+            for ln in self.tab._ax.get_lines()
+        ))
+
+        dlg = self._open_plot_settings()
+        try:
+            self.assertEqual(int(dlg.winfo_exists()), 1)
+
+            # Toggle the per-row ~ off (CS-36 mutation routes through
+            # set_style → GraphEvent.NODE_STYLE_CHANGED → tab._redraw).
+            self.graph.set_style("c1", {"show_baseline_curve": False})
+
+            # Dialog still alive (CS-66 modeless contract).
+            self.assertEqual(int(dlg.winfo_exists()), 1)
+            # Canvas redrew without the dashed overlay.
+            self.assertFalse(any(
+                ln.get_linestyle() == "--"
+                for ln in self.tab._ax.get_lines()
+            ), "per-row ~ toggle off should hide the dashed overlay")
+        finally:
+            dlg.destroy()
+
+    # ---- Live-preview from inside the dialog (CS-68) ----
+
+    def test_dialog_combobox_edit_commits_live_to_host_config(self):
+        """Combobox edit in Plot Settings commits live to tab._plot_config."""
+        self._add_uvvis_with_baseline()
+        self.tab._plot_config["legend_position"] = "best"
+        self.tab._redraw()
+
+        dlg = self._open_plot_settings()
+        try:
+            # Discrete-widget edit fires _on_var_write →
+            # _apply_changes_live → tab._on_plot_config_changed →
+            # tab._redraw. The host's plot_config dict carries the
+            # new value because PlotConfigDialog's _config IS that
+            # dict (mutated in place).
+            dlg._control_vars["legend_position"].set("upper right")
+            dlg.update_idletasks()
+            self.assertEqual(
+                self.tab._plot_config["legend_position"], "upper right",
+                "CS-68 live-preview must mirror discrete-widget edits "
+                "into the host's plot_config dict",
+            )
+            # Dialog stays open (no commit-and-close behaviour).
+            self.assertEqual(int(dlg.winfo_exists()), 1)
+        finally:
+            dlg.destroy()
+
+    def test_dialog_cancel_reverts_after_live_edits(self):
+        """Cancel reverts every live edit via the __init__ snapshot."""
+        self._add_uvvis_with_baseline()
+        self.tab._plot_config["legend_position"] = "best"
+        self.tab._redraw()
+
+        dlg = self._open_plot_settings()
+        try:
+            dlg._control_vars["legend_position"].set("lower left")
+            dlg.update_idletasks()
+            self.assertEqual(
+                self.tab._plot_config["legend_position"], "lower left",
+            )
+            # Cancel reverts via _snapshot.
+            dlg._do_cancel()
+            self.assertEqual(
+                self.tab._plot_config["legend_position"], "best",
+                "Cancel must revert live-applied edits via _snapshot",
+            )
+        finally:
+            try:
+                dlg.destroy()
+            except Exception:
+                pass
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
