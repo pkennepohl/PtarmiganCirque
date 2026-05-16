@@ -3441,5 +3441,370 @@ class TestPlotConfigDialogLivePreviewPhase4ap(unittest.TestCase):
         self.assertEqual(self.config["title_font_size"], 20)
 
 
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestPlotConfigDialogSecondaryXLinkGreyingPhase4aq(unittest.TestCase):
+    """CS-69 (Phase 4aq) — Secondary X link greying state-machine.
+
+    Pins the contract for the new ``secondary_x_linked: bool``
+    constructor kwarg. When True, the Secondary X tab's
+    ``range_lo`` / ``range_hi`` / ``autoscale`` / ``scale`` widgets
+    render ``state="disabled"`` because matplotlib's linked
+    secondary derives its limits from the primary via the forward
+    function — pushing values into those widgets would back-
+    propagate through the inverse and corrupt the primary axis
+    (B-005). ``custom_ticks`` / ``tick_major`` / ``tick_minor`` stay
+    editable — they're the user's actual affordances on the linked
+    axis.
+
+    The greying is a snapshot at dialog open; the kwarg defaults to
+    False, so every existing test that constructs the dialog without
+    the kwarg keeps the pre-CS-69 fully-editable behaviour.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import plot_settings_dialog
+        cls.psd = plot_settings_dialog
+        cls.PlotConfigDialog = plot_settings_dialog.PlotConfigDialog
+
+    def setUp(self):
+        self.psd._open_dialogs.clear()
+        self.psd._USER_DEFAULTS.clear()
+        self.host = tk.Frame(_root)
+        self.host.pack()
+        self.config: dict = {}
+
+    def tearDown(self):
+        for dlg in list(self.psd._open_dialogs.values()):
+            try:
+                dlg.destroy()
+            except Exception:
+                pass
+        self.psd._open_dialogs.clear()
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    # ---- kwarg plumbing ----
+
+    def test_secondary_x_linked_kwarg_defaults_false(self):
+        # Existing tests construct PlotConfigDialog without the kwarg
+        # and must keep working.
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        self.assertIs(dlg._secondary_x_linked, False)
+
+    def test_secondary_x_linked_true_stored_on_dialog(self):
+        dlg = self.PlotConfigDialog(
+            self.host, self.config, secondary_x_linked=True,
+        )
+        self.assertIs(dlg._secondary_x_linked, True)
+
+    def test_factory_threads_secondary_x_linked_through(self):
+        # ``open_plot_config_dialog`` is the public entry; the kwarg
+        # must propagate.
+        dlg = self.psd.open_plot_config_dialog(
+            self.host, self.config, secondary_x_linked=True,
+        )
+        self.assertIs(dlg._secondary_x_linked, True)
+
+    # ---- widget registry (CS-69 hook for greying + future tests) ----
+
+    def test_axis_control_widgets_registry_populated(self):
+        # The registry exposes (role, key) → widget for every per-axis
+        # role on the four greyable keys plus custom_ticks. Tests can
+        # address them by key instead of walking the widget tree.
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        for role in ("primary_x", "secondary_x", "primary_y",
+                     "secondary_y", "tertiary_y"):
+            for key in ("range_lo", "range_hi", "autoscale", "scale",
+                        "custom_ticks"):
+                self.assertIn(
+                    (role, key), dlg._axis_control_widgets,
+                    f"(role, key)=({role}, {key}) missing from registry",
+                )
+
+    # ---- greying invariants ----
+
+    def test_secondary_x_widgets_disabled_when_linked(self):
+        dlg = self.PlotConfigDialog(
+            self.host, self.config, secondary_x_linked=True,
+        )
+        dlg.update_idletasks()
+        for key in ("range_lo", "range_hi", "autoscale", "scale"):
+            w = dlg._axis_control_widgets[("secondary_x", key)]
+            self.assertEqual(
+                str(w.cget("state")), "disabled",
+                f"secondary_x.{key} widget should be disabled when "
+                f"secondary_x_linked=True",
+            )
+
+    def test_secondary_x_widgets_editable_when_not_linked(self):
+        # Default False → pre-CS-69 fully-editable behaviour.
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        for key in ("range_lo", "range_hi"):
+            w = dlg._axis_control_widgets[("secondary_x", key)]
+            self.assertEqual(str(w.cget("state")), "normal")
+        autoscale_cb = dlg._axis_control_widgets[
+            ("secondary_x", "autoscale")
+        ]
+        self.assertEqual(str(autoscale_cb.cget("state")), "normal")
+        scale_combo = dlg._axis_control_widgets[("secondary_x", "scale")]
+        # Combobox uses "readonly" as its normal state.
+        self.assertEqual(str(scale_combo.cget("state")), "readonly")
+
+    def test_custom_ticks_entry_editable_even_when_linked(self):
+        # Custom ticks is the user's actual affordance on the linked
+        # axis (the whole point of the B-005 fix); it stays editable.
+        dlg = self.PlotConfigDialog(
+            self.host, self.config, secondary_x_linked=True,
+        )
+        dlg.update_idletasks()
+        w = dlg._axis_control_widgets[("secondary_x", "custom_ticks")]
+        self.assertEqual(str(w.cget("state")), "normal")
+
+    def test_other_role_widgets_not_disabled_when_secondary_x_linked(self):
+        # Greying is scoped to the Secondary X tab. The other four
+        # per-axis tabs stay fully editable.
+        dlg = self.PlotConfigDialog(
+            self.host, self.config, secondary_x_linked=True,
+        )
+        dlg.update_idletasks()
+        for role in ("primary_x", "primary_y", "secondary_y", "tertiary_y"):
+            for key in ("range_lo", "range_hi"):
+                w = dlg._axis_control_widgets[(role, key)]
+                self.assertEqual(
+                    str(w.cget("state")), "normal",
+                    f"{role}.{key} should NOT be disabled "
+                    f"(greying is secondary_x-only)",
+                )
+
+
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestPlotConfigDialogCustomTicksPhase4aq(unittest.TestCase):
+    """CS-69 (Phase 4aq) — ``custom_ticks`` Entry per-axis schema + live.
+
+    Pins:
+
+    1. The schema's ``custom_ticks`` key defaults to ``""`` on every
+       per-axis role.
+    2. The Entry registers in :attr:`PlotConfigDialog._defer_apply_axis_keys`
+       so it commits live on ``<FocusOut>`` / ``<Return>`` (CS-68
+       consistency).
+    3. Setting the Tk var writes through to the working copy.
+    4. ``_apply_changes_live`` propagates the working copy into the
+       host config dict (the host's source of truth for the renderer).
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import plot_settings_dialog
+        cls.psd = plot_settings_dialog
+        cls.PlotConfigDialog = plot_settings_dialog.PlotConfigDialog
+
+    _AXIS_TAB_KEYS = (
+        "primary_x", "secondary_x", "primary_y", "secondary_y", "tertiary_y",
+    )
+
+    def setUp(self):
+        self.psd._open_dialogs.clear()
+        self.psd._USER_DEFAULTS.clear()
+        self.host = tk.Frame(_root)
+        self.host.pack()
+        self.config: dict = {}
+
+    def tearDown(self):
+        for dlg in list(self.psd._open_dialogs.values()):
+            try:
+                dlg.destroy()
+            except Exception:
+                pass
+        self.psd._open_dialogs.clear()
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    def test_custom_ticks_default_empty_on_every_role(self):
+        for role in self._AXIS_TAB_KEYS:
+            self.assertEqual(
+                self.psd._FACTORY_DEFAULTS["axes"][role]["custom_ticks"],
+                "",
+                f"{role}.custom_ticks factory default should be empty",
+            )
+
+    def test_custom_ticks_entry_is_deferred_apply(self):
+        # CS-68: typed Entries defer commit to <FocusOut>/<Return>.
+        # The (role, key) pair must register in _defer_apply_axis_keys
+        # for every per-axis role, so the typed Entry's per-keystroke
+        # var.set() does NOT auto-fire the live commit.
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        for role in self._AXIS_TAB_KEYS:
+            self.assertIn(
+                (role, "custom_ticks"), dlg._defer_apply_axis_keys,
+                f"({role}, custom_ticks) should defer-apply per CS-68",
+            )
+
+    def test_var_set_writes_to_working_copy(self):
+        # Setting the Tk var writes through to the working copy
+        # (whether or not the live commit fires).
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        dlg._axis_control_vars[
+            ("secondary_x", "custom_ticks")
+        ].set("300, 400, 500")
+        dlg.update_idletasks()
+        self.assertEqual(
+            dlg._working["axes"]["secondary_x"]["custom_ticks"],
+            "300, 400, 500",
+        )
+
+    def test_apply_changes_live_propagates_to_host_config(self):
+        # CS-68: <FocusOut>/<Return> triggers _apply_changes_live which
+        # writes the working copy into ``self.config`` (the host's
+        # source of truth for the renderer).
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        dlg._axis_control_vars[
+            ("secondary_x", "custom_ticks")
+        ].set("300, 400, 500")
+        dlg._apply_changes_live()
+        self.assertEqual(
+            self.config["axes"]["secondary_x"]["custom_ticks"],
+            "300, 400, 500",
+        )
+
+    def test_cancel_revert_clears_uncommitted_custom_ticks(self):
+        # CS-68 protects un-committed Entry edits via the _snapshot
+        # taken at dialog open. With CS-68 live-preview semantics,
+        # the working-copy write happens on var.set (above), but the
+        # host config only picks up the value at <FocusOut>/<Return>.
+        # So setting the var without firing _apply_changes_live and
+        # then Cancelling confirms the host config never saw the
+        # edit. We seed the host config with a known starting value
+        # so the assertion has something concrete to compare against
+        # post-revert.
+        self.config = {"axes": {"secondary_x": {"custom_ticks": "100"}}}
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        dlg._axis_control_vars[
+            ("secondary_x", "custom_ticks")
+        ].set("999")
+        dlg.update_idletasks()
+        # Cancel discards the working-copy change without ever
+        # committing to host config — config returns to the snapshot.
+        dlg._do_cancel()
+        self.assertEqual(
+            self.config["axes"]["secondary_x"]["custom_ticks"],
+            "100",
+            "Cancel should revert un-committed custom_ticks edit "
+            "back to the snapshot value",
+        )
+
+    def test_apply_changes_live_with_invalid_custom_ticks_stores_raw(self):
+        # The dialog stores the raw string; the parser silently drops
+        # invalid tokens at the renderer side. Confirms the dialog
+        # doesn't pre-filter.
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        dlg._axis_control_vars[
+            ("secondary_x", "custom_ticks")
+        ].set("300, abc, 500")
+        dlg._apply_changes_live()
+        self.assertEqual(
+            self.config["axes"]["secondary_x"]["custom_ticks"],
+            "300, abc, 500",
+        )
+
+
+class TestPlotConfigMigrationCustomTicksPhase4aq(unittest.TestCase):
+    """CS-69 (Phase 4aq) — migration fills in ``custom_ticks: ""``.
+
+    The migration shim reuses the existing CS-62 factory walk; no new
+    code in :func:`migrate_plot_config` is required. These tests pin
+    that the existing walk picks up the new schema key, preserves
+    user-set values, and is idempotent — and confirm CS-46's
+    PTMG_FORMAT_VERSION does NOT need to bump (the addition is
+    backward-compatible: pre-Phase-4aq saves load with ``""`` defaults
+    and re-saves include the key without protocol change).
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import plot_settings_dialog
+        cls.psd = plot_settings_dialog
+
+    _AXIS_TAB_KEYS = (
+        "primary_x", "secondary_x", "primary_y", "secondary_y", "tertiary_y",
+    )
+
+    def test_migration_fills_custom_ticks_on_every_role(self):
+        cfg: dict = {}
+        self.psd.migrate_plot_config(cfg)
+        for role in self._AXIS_TAB_KEYS:
+            self.assertEqual(
+                cfg["axes"][role]["custom_ticks"], "",
+                f"{role}.custom_ticks should be filled to '' by migration",
+            )
+
+    def test_migration_preserves_user_set_custom_ticks(self):
+        cfg: dict = {
+            "axes": {
+                "secondary_x": {"custom_ticks": "300, 400, 500"},
+            },
+        }
+        self.psd.migrate_plot_config(cfg)
+        self.assertEqual(
+            cfg["axes"]["secondary_x"]["custom_ticks"], "300, 400, 500",
+        )
+        # Other roles get the factory default "".
+        for role in ("primary_x", "primary_y", "secondary_y", "tertiary_y"):
+            self.assertEqual(cfg["axes"][role]["custom_ticks"], "")
+
+    def test_migration_is_idempotent_on_custom_ticks(self):
+        cfg: dict = {
+            "axes": {
+                "secondary_x": {"custom_ticks": "300, 400"},
+            },
+        }
+        self.psd.migrate_plot_config(cfg)
+        snapshot = copy.deepcopy(cfg)
+        self.psd.migrate_plot_config(cfg)
+        self.assertEqual(cfg, snapshot)
+
+    def test_pre_phase_4aq_config_loads_through_factory(self):
+        # A pre-Phase-4aq config carries the CS-65 ten-key schema for
+        # one role and nothing for the others. Migration fills the
+        # missing keys (including custom_ticks) from factory defaults
+        # without touching the user's values.
+        cfg: dict = {
+            "axes": {
+                "primary_y": {
+                    "tick_direction": "out",
+                    "axis_label_override": "Absorbance",
+                    "range_lo": "0",
+                    "range_hi": "1",
+                    "autoscale": False,
+                    "scale": "linear",
+                    "tick_major": "0.2",
+                    "tick_minor": "0.05",
+                    "grid_show": True,
+                    "axis_color": "#000000",
+                    # Note: custom_ticks missing — simulates pre-CS-69 save.
+                },
+            },
+        }
+        self.psd.migrate_plot_config(cfg)
+        # The pre-existing keys stay put.
+        self.assertEqual(cfg["axes"]["primary_y"]["tick_direction"], "out")
+        self.assertEqual(cfg["axes"]["primary_y"]["range_lo"], "0")
+        self.assertEqual(cfg["axes"]["primary_y"]["tick_major"], "0.2")
+        # The new CS-69 key is filled with the factory default.
+        self.assertEqual(cfg["axes"]["primary_y"]["custom_ticks"], "")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
