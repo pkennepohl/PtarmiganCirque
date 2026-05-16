@@ -682,6 +682,16 @@ class PlotConfigDialog(tk.Toplevel):
         # are simply not addressable.
         self._axis_control_widgets: dict[tuple[str, str], tk.Widget] = {}
 
+        # CS-70 (Phase 4ar): the italic explanation label rendered
+        # below the Secondary X tab's Settings frame when the
+        # wavelength↔energy link is active. Tracked as an instance
+        # attribute (rather than discarded into the Tk widget tree)
+        # so :meth:`refresh_axis_link_state` can ``pack`` /
+        # ``pack_forget`` it as the host's link state flips while
+        # the dialog is open. ``None`` until the Secondary X tab is
+        # built (or when the dialog has no Secondary X tab at all).
+        self._secondary_x_greying_label: "tk.Widget | None" = None
+
         # CS-68 (Phase 4ap): keys whose trace target writes to the
         # working copy ONLY and defers the live commit to
         # ``<FocusOut>`` / ``<Return>`` on the bound text Entry.
@@ -1452,34 +1462,98 @@ class PlotConfigDialog(tk.Toplevel):
                 pass
         color_var.trace_add("write", _refresh_swatch)
 
-        # ---- Secondary X link greying (CS-69 Phase 4aq) ----
-        # When the host opens the dialog with the wavelength↔energy
-        # linked secondary X axis active, range_lo / range_hi /
-        # autoscale / scale on the Secondary X tab become inert —
-        # matplotlib derives ``sec``'s limits from the primary via the
-        # forward function. Grey those widgets out so the user can't
-        # push values into them and (in the buggy pre-CS-69 path)
-        # back-propagate through ``sec.set_xlim`` to corrupt the
-        # primary axis (B-005). ``custom_ticks`` / ``tick_major`` /
-        # ``tick_minor`` stay editable — they're the user's actual
-        # affordances on the linked axis. The greying is a snapshot
-        # at dialog open; user reopens after toggling the host's
-        # nm-axis Checkbutton to refresh.
-        if role == "secondary_x" and self._secondary_x_linked:
-            for w in (lo_entry, hi_entry, autoscale_cb, scale_combo):
-                try:
-                    w.configure(state="disabled")
-                except tk.TclError:
-                    pass
-            tk.Label(
+        # ---- Secondary X link greying (CS-70 Phase 4ar) ----
+        # When the host's wavelength↔energy linked secondary X axis
+        # is active, range_lo / range_hi / autoscale / scale on the
+        # Secondary X tab are inert — matplotlib derives ``sec``'s
+        # limits from the primary via the forward function. Grey
+        # those widgets out so the user can't push values into them
+        # and (in the buggy pre-CS-69 path) back-propagate through
+        # ``sec.set_xlim`` to corrupt the primary axis (B-005).
+        # ``custom_ticks`` / ``tick_major`` / ``tick_minor`` stay
+        # editable — they're the user's actual affordances on the
+        # linked axis. CS-70 relaxes CS-69's D4 snapshot-at-open
+        # lock: the greying is now refreshable while the dialog is
+        # open via :meth:`refresh_axis_link_state`, which the host
+        # calls when ``_x_unit`` or ``_show_nm_axis`` changes.
+        if role == "secondary_x":
+            self._secondary_x_greying_label = tk.Label(
                 parent,
                 text=("Range / Autoscale / Scale are derived from the "
-                      "primary X axis while the λ(nm) toggle is on "
-                      "— use Custom ticks above to name explicit nm "
-                      "positions."),
+                      "primary axis while the wavelength secondary "
+                      "axis is shown — use Custom ticks above to "
+                      "name explicit nm positions."),
                 font=("", 8, "italic"), fg="#666666",
                 wraplength=420, justify="left",
-            ).pack(anchor="w", pady=(6, 2), padx=(0, 8))
+            )
+            self._apply_secondary_x_link_greying()
+
+    # ── CS-70 (Phase 4ar): live-refresh of Secondary X link greying ──
+    def _apply_secondary_x_link_greying(self) -> None:
+        """Set Secondary X tab widget states from ``_secondary_x_linked``.
+
+        Walks :attr:`_axis_control_widgets` for the four greying-eligible
+        keys (``range_lo``, ``range_hi``, ``autoscale``, ``scale``) and
+        sets ``state="disabled"`` when the link is active, or restores
+        the baseline state (``"readonly"`` for the ``scale`` ttk Combobox,
+        ``"normal"`` for the Entry / Checkbutton) when it is not. Also
+        packs / unpacks :attr:`_secondary_x_greying_label` so the italic
+        explanation matches the greying state.
+
+        Safe no-op when the dialog has no Secondary X tab (no entries in
+        the registry) or when the label has not been built yet. Does NOT
+        trigger :meth:`_apply_changes_live` — greying is widget-state
+        only, not config — and does NOT clear :attr:`_modified_tabs`
+        markers, so the user's uncommitted edits on other tabs survive
+        a refresh.
+        """
+        linked = bool(self._secondary_x_linked)
+        for key in ("range_lo", "range_hi", "autoscale", "scale"):
+            widget = self._axis_control_widgets.get(("secondary_x", key))
+            if widget is None:
+                continue
+            try:
+                if linked:
+                    widget.configure(state="disabled")
+                else:
+                    if isinstance(widget, ttk.Combobox):
+                        widget.configure(state="readonly")
+                    else:
+                        widget.configure(state="normal")
+            except tk.TclError:
+                # Widget may be in teardown; swallow rather than raise
+                # through a Tk var trace.
+                pass
+        label = self._secondary_x_greying_label
+        if label is not None:
+            try:
+                if linked:
+                    label.pack(anchor="w", pady=(6, 2), padx=(0, 8))
+                else:
+                    label.pack_forget()
+            except tk.TclError:
+                pass
+
+    def refresh_axis_link_state(self, linked: bool) -> None:
+        """Re-snapshot ``_secondary_x_linked`` and re-grey accordingly.
+
+        Public entry point called by the host (UVVisTab) when its
+        ``_x_unit`` or ``_show_nm_axis`` changes while the dialog is
+        open. Replaces CS-69's D4 snapshot-at-open lock with a
+        notification-driven refresh path (CS-70 Phase 4ar). Callers
+        pass the host's freshly computed link state — typically
+        ``host._secondary_x_linked()``.
+
+        The refresh is widget-state only: it does NOT touch
+        :attr:`_working`, does NOT trigger :meth:`_apply_changes_live`,
+        and does NOT clear :attr:`_modified_tabs` markers. The user's
+        in-progress edits on the Secondary X tab (or any other tab)
+        survive the refresh; only the four greying-eligible widgets'
+        ``state="disabled"`` flag and the explanation label's
+        visibility flip.
+        """
+        self._secondary_x_linked = bool(linked)
+        self._apply_secondary_x_link_greying()
 
     def _make_axis_string_var(
         self, role: str, key: str,
