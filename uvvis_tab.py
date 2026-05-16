@@ -27,7 +27,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
 import matplotlib
-from matplotlib.ticker import MultipleLocator
+from matplotlib.ticker import FixedLocator, MultipleLocator
 matplotlib.use("TkAgg")
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
@@ -465,6 +465,99 @@ def _per_axis_color(cfg: Mapping[str, Any], tab_role: str) -> str:
             if isinstance(value, str) and value:
                 return value
     return "#000000"
+
+
+# ── CS-69 (Phase 4aq) custom-ticks helpers ───────────────────────────────────
+# Per-axis ``custom_ticks`` is a comma-separated list of explicit tick
+# positions (e.g. ``"300, 400, 500, 700, 900"``). Non-empty wins outright
+# over ``tick_major`` on the role's MAJOR ticks via :class:`FixedLocator`;
+# ``tick_minor`` (CS-65) is unaffected. The motivating use case is the
+# wavelength↔energy linked secondary X axis (B-005) where
+# ``1e7 / x`` / ``_HC_NM_EV / x`` make uniform-spacing
+# ``MultipleLocator(value)`` ticks unrepresentative — users want named
+# wavelengths in nm. Schema key is uniform across every per-axis role
+# (D6b lock); a non-secondary-X axis simply gets the same treatment if
+# its ``custom_ticks`` ever parses to a non-empty tuple.
+def _parse_custom_ticks_str(text: str) -> "Optional[tuple[float, ...]]":
+    """Parse a per-axis ``custom_ticks`` Entry value (CS-69, Phase 4aq).
+
+    Splits on commas, strips whitespace, parses each token as ``float``,
+    silently drops empty / non-numeric / non-finite tokens. Returns
+    ``None`` for empty / whitespace-only / all-invalid input (callers
+    treat ``None`` as "no FixedLocator override; fall through to
+    ``tick_major``"). A non-empty tuple of finite floats triggers the
+    override. The silent-drop policy mirrors :func:`_parse_tick_str`
+    (CS-65) for consistency across the per-axis ladder.
+    """
+    if not isinstance(text, str):
+        return None
+    stripped = text.strip()
+    if not stripped:
+        return None
+    out: list[float] = []
+    for token in stripped.split(","):
+        token = token.strip()
+        if not token:
+            continue
+        try:
+            value = float(token)
+        except (TypeError, ValueError):
+            continue
+        if not np.isfinite(value):
+            continue
+        out.append(value)
+    if not out:
+        return None
+    return tuple(out)
+
+
+def _per_axis_custom_ticks(
+    cfg: Mapping[str, Any], tab_role: str,
+) -> str:
+    """Read ``cfg["axes"][tab_role]["custom_ticks"]`` (CS-69, Phase 4aq).
+
+    Returns the raw string (caller passes through
+    :func:`_parse_custom_ticks_str`). Defensive: pre-Phase-4aq configs
+    without the nested key return ``""`` — equivalent to "no override",
+    so the renderer falls through to ``tick_major`` automatically. The
+    backward-compat path lets a saved .ptmg project load cleanly
+    without bumping :data:`project_io.PTMG_FORMAT_VERSION` (CS-46).
+    """
+    axes = cfg.get("axes")
+    if isinstance(axes, dict):
+        role_dict = axes.get(tab_role)
+        if isinstance(role_dict, dict):
+            value = role_dict.get("custom_ticks", "")
+            if isinstance(value, str):
+                return value
+    return ""
+
+
+def _apply_major_locator(
+    axis_obj: Any, cfg: Mapping[str, Any], tab_role: str,
+) -> None:
+    """Apply the major-tick locator for ``tab_role`` (CS-69, Phase 4aq).
+
+    ``custom_ticks`` wins outright when it parses to a non-empty tuple
+    — applied as :class:`~matplotlib.ticker.FixedLocator`. Otherwise
+    ``tick_major`` is applied as
+    :class:`~matplotlib.ticker.MultipleLocator(value)` when it parses
+    to a positive float (CS-65). Empty / all-invalid on both keys
+    leaves matplotlib's auto-locator in place — preserving the
+    pre-CS-65 default behaviour.
+
+    ``axis_obj`` is one of ``ax.xaxis`` / ``ax.yaxis`` /
+    ``twin_ax.yaxis`` / ``sec.xaxis``. The helper is a single point of
+    truth for the four per-role call sites in :meth:`UVVisTab._redraw`
+    so a future tick-locator key only touches this function.
+    """
+    custom = _parse_custom_ticks_str(_per_axis_custom_ticks(cfg, tab_role))
+    if custom is not None:
+        axis_obj.set_major_locator(FixedLocator(list(custom)))
+        return
+    major = _per_axis_tick_major(cfg, tab_role)
+    if major is not None:
+        axis_obj.set_major_locator(MultipleLocator(major))
 
 
 def _enumerate_plots_by_role(
@@ -1925,6 +2018,7 @@ class UVVisTab(tk.Frame):
             on_apply=self._on_plot_config_changed,
             plots_by_role=self._compute_plots_by_role(),
             on_route_plot=self._on_route_plot_from_dialog,
+            secondary_x_linked=self._secondary_x_linked(),
         )
 
     def _on_plot_config_changed(self) -> None:
@@ -1995,15 +2089,31 @@ class UVVisTab(tk.Frame):
         its lifetime, so subsequent graph mutations require a fresh
         open to surface.
         """
-        secondary_x_active = (
-            self._x_unit.get() == "cm-1"
-            and bool(self._show_nm_axis.get())
-        )
         return _enumerate_plots_by_role(
             self._spectrum_nodes(),
             self._second_derivative_nodes(),
             self._peak_list_nodes(),
-            secondary_x_active=secondary_x_active,
+            secondary_x_active=self._secondary_x_linked(),
+        )
+
+    def _secondary_x_linked(self) -> bool:
+        """Return True iff the wavelength↔energy linked secondary X axis
+        is currently live (CS-69, Phase 4aq).
+
+        The guard is ``self._x_unit.get() in ("cm-1", "eV") and
+        bool(self._show_nm_axis.get())``. ``_redraw`` consults it to
+        decide whether to build ``sec`` via ``ax.secondary_xaxis(...,
+        functions=(_fwd, _fwd))``; ``_compute_plots_by_role`` consults
+        it to decide whether the ``secondary_x`` role gets a non-empty
+        plots list; the Plot Settings hand-off consults it to thread
+        ``secondary_x_linked`` into the dialog so the Secondary X
+        tab's inert range / autoscale / scale widgets render greyed
+        out (D8 lock; B-005 root cause is matplotlib's set_xlim back-
+        propagation through the inverse of ``_fwd``).
+        """
+        return (
+            self._x_unit.get() in ("cm-1", "eV")
+            and bool(self._show_nm_axis.get())
         )
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -2186,6 +2296,7 @@ class UVVisTab(tk.Frame):
             tab=hit.role,
             plots_by_role=self._compute_plots_by_role(),
             on_route_plot=self._on_route_plot_from_dialog,
+            secondary_x_linked=self._secondary_x_linked(),
         )
 
     def _on_unit_change(self):
@@ -2587,11 +2698,38 @@ class UVVisTab(tk.Frame):
         # axis (different from the role-keyed y-axis machinery above);
         # it stays anchored to ``ax`` regardless of which roles are
         # populated below.
-        if unit == "cm-1" and self._show_nm_axis.get():
-            def _fwd(x):
+        #
+        # CS-69 (Phase 4aq) B-005 fix: the secondary X axis is a
+        # matplotlib LINKED axis via ``ax.secondary_xaxis(...,
+        # functions=(_fwd, _fwd))`` — matplotlib derives ``sec``'s data
+        # limits from ``ax``'s on every draw via the forward function.
+        # The renderer must NEVER call ``sec.set_xlim`` /
+        # ``sec.set_xscale``: either the call is a silent no-op or
+        # (depending on matplotlib version) it severs the link and
+        # leaves the wavelength axis stranded with stale values. The
+        # per-axis ``range_lo`` / ``range_hi`` / ``autoscale`` /
+        # ``scale`` schema keys for ``secondary_x`` therefore become
+        # inert when the link is active — the dialog greys those
+        # widgets out so the user can't fight the link (Phase 4aq).
+        #
+        # CS-69 (Phase 4aq) D8 relaxation: the link extends to both
+        # ``unit == "cm-1"`` (via ``1e7 / x``) and ``unit == "eV"``
+        # (via ``_HC_NM_EV / x``). Both transforms are self-inverse —
+        # ``1e7 / (1e7 / x) == x`` and likewise for the eV constant —
+        # which is why the same callable is passed for both slots of
+        # ``functions=(...)``. The same ``_show_nm_axis`` Tk var gates
+        # both branches; the toggle is a no-op in ``unit == "nm"``
+        # (the primary axis is already λ in nm).
+        if unit in ("cm-1", "eV") and self._show_nm_axis.get():
+            if unit == "cm-1":
+                _const = 1e7
+            else:
+                _const = _HC_NM_EV
+
+            def _fwd(x, _c=_const):
                 with np.errstate(divide="ignore", invalid="ignore"):
                     return np.where(np.asarray(x, float) > 0,
-                                    1e7 / np.asarray(x, float), 0.0)
+                                    _c / np.asarray(x, float), 0.0)
             sec = ax.secondary_xaxis("top", functions=(_fwd, _fwd))
             # Phase 4ak (CS-62): the secondary X label has no
             # historical user-facing control — its override is the
@@ -2693,22 +2831,16 @@ class UVVisTab(tk.Frame):
                 )
 
         # ---- Secondary X (wavelength-nm sibling) ----
-        # Local ``sec`` only exists when the cm-1 → nm twin block ran
-        # above. The schema lookup is safe regardless; the apply is
-        # guarded.
-        if 'sec' in locals():
-            sec.set_xscale(_per_axis_scale(cfg, "secondary_x"))
-            if not _per_axis_autoscale(cfg, "secondary_x"):
-                lo_sx = _parse_lim_str(
-                    _per_axis_range(cfg, "secondary_x", "range_lo"))
-                hi_sx = _parse_lim_str(
-                    _per_axis_range(cfg, "secondary_x", "range_hi"))
-                if lo_sx is not None or hi_sx is not None:
-                    cur = sec.get_xlim()
-                    sec.set_xlim(
-                        lo_sx if lo_sx is not None else cur[0],
-                        hi_sx if hi_sx is not None else cur[1],
-                    )
+        # CS-69 (Phase 4aq) B-005 fix: the link via
+        # ``ax.secondary_xaxis(..., functions=(_fwd, _fwd))`` is the
+        # single source of truth for ``sec``'s xlim and xscale.
+        # ``sec.set_xlim`` / ``sec.set_xscale`` are intentionally NOT
+        # called here. The ``secondary_x`` schema's ``range_lo`` /
+        # ``range_hi`` / ``autoscale`` / ``scale`` keys are inert when
+        # the link is active; the dialog greys those widgets out so the
+        # user can never push values into them while the link is live.
+        # Pre-Phase-4aq projects with stale values on those keys simply
+        # have them ignored — no migration needed.
 
         # ── Apply per-axis polish (CS-65 Phase 4an) ──────────────────────────
         # Tick spacing: empty / garbage / non-positive → keep
@@ -2719,10 +2851,11 @@ class UVVisTab(tk.Frame):
         # range/scale so the colour change doesn't get reset by a
         # subsequent set_xscale/set_yscale call.
         #
-        # Primary X.
-        major = _per_axis_tick_major(cfg, "primary_x")
-        if major is not None:
-            ax.xaxis.set_major_locator(MultipleLocator(major))
+        # Primary X. CS-69: ``_apply_major_locator`` consults
+        # ``custom_ticks`` first (FixedLocator wins outright when non-
+        # empty) before falling through to ``tick_major``
+        # MultipleLocator. Minor ticks unchanged.
+        _apply_major_locator(ax.xaxis, cfg, "primary_x")
         minor = _per_axis_tick_minor(cfg, "primary_x")
         if minor is not None:
             ax.xaxis.set_minor_locator(MultipleLocator(minor))
@@ -2731,10 +2864,8 @@ class UVVisTab(tk.Frame):
         ax.tick_params(axis="x", colors=color_px)
         ax.xaxis.label.set_color(color_px)
 
-        # Primary Y.
-        major = _per_axis_tick_major(cfg, "primary_y")
-        if major is not None:
-            ax.yaxis.set_major_locator(MultipleLocator(major))
+        # Primary Y. CS-69: same custom_ticks → tick_major fallthrough.
+        _apply_major_locator(ax.yaxis, cfg, "primary_y")
         minor = _per_axis_tick_minor(cfg, "primary_y")
         if minor is not None:
             ax.yaxis.set_minor_locator(MultipleLocator(minor))
@@ -2752,9 +2883,8 @@ class UVVisTab(tk.Frame):
             twin_ax = self._axes_by_role.get(y_role)
             if twin_ax is None:
                 continue
-            major = _per_axis_tick_major(cfg, tab_role)
-            if major is not None:
-                twin_ax.yaxis.set_major_locator(MultipleLocator(major))
+            # CS-69: custom_ticks → tick_major fallthrough on each twin Y.
+            _apply_major_locator(twin_ax.yaxis, cfg, tab_role)
             minor = _per_axis_tick_minor(cfg, tab_role)
             if minor is not None:
                 twin_ax.yaxis.set_minor_locator(MultipleLocator(minor))
@@ -2767,11 +2897,15 @@ class UVVisTab(tk.Frame):
             twin_ax.yaxis.label.set_color(color_t)
 
         # Secondary X (wavelength-nm sibling). Only present when the
-        # cm-1 → nm twin block ran above.
+        # linked-secondary block ran above (cm⁻¹ or eV + toggle ON).
+        # CS-69 (Phase 4aq): ``custom_ticks`` is the user's primary
+        # affordance for the wavelength axis — ``"300, 400, 500, 700,
+        # 900"`` paints those specific nm positions via FixedLocator,
+        # whereas ``MultipleLocator`` (fed from ``tick_major``) gives
+        # evenly-spaced ticks in wavelength that don't land on
+        # round numbers.
         if 'sec' in locals():
-            major = _per_axis_tick_major(cfg, "secondary_x")
-            if major is not None:
-                sec.xaxis.set_major_locator(MultipleLocator(major))
+            _apply_major_locator(sec.xaxis, cfg, "secondary_x")
             minor = _per_axis_tick_minor(cfg, "secondary_x")
             if minor is not None:
                 sec.xaxis.set_minor_locator(MultipleLocator(minor))

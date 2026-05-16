@@ -207,32 +207,47 @@ _FACTORY_DEFAULTS: dict[str, Any] = {
     #     visually consistent with what the renderer actually paints.
     #   * axis_color                hex string ("#RRGGBB"); applied to
     #     the spine + tick + axis-label colour. Default "#000000".
+    # CS-69 (Phase 4aq): one more key per role:
+    #   * custom_ticks              StringVar-friendly comma-separated
+    #     list of explicit tick positions (e.g. "300, 400, 500, 700,
+    #     900"). Non-empty wins outright over ``tick_major`` on the
+    #     role's MAJOR ticks via :class:`FixedLocator`. ``tick_minor``
+    #     unaffected. Motivating use case: the wavelength↔energy
+    #     linked secondary X axis where ``1e7 / x`` / ``_HC_NM_EV /
+    #     x`` make uniform-spacing ``MultipleLocator(value)`` ticks
+    #     unrepresentative — users want named wavelengths in nm.
+    #     Schema key is uniform across every per-axis role (D6b lock).
     "axes": {
         "primary_x":   {"tick_direction": "in", "axis_label_override": "",
                         "range_lo": "", "range_hi": "",
                         "autoscale": True, "scale": "linear",
                         "tick_major": "", "tick_minor": "",
-                        "grid_show": True, "axis_color": "#000000"},
+                        "grid_show": True, "axis_color": "#000000",
+                        "custom_ticks": ""},
         "secondary_x": {"tick_direction": "in", "axis_label_override": "",
                         "range_lo": "", "range_hi": "",
                         "autoscale": True, "scale": "linear",
                         "tick_major": "", "tick_minor": "",
-                        "grid_show": False, "axis_color": "#000000"},
+                        "grid_show": False, "axis_color": "#000000",
+                        "custom_ticks": ""},
         "primary_y":   {"tick_direction": "in", "axis_label_override": "",
                         "range_lo": "", "range_hi": "",
                         "autoscale": True, "scale": "linear",
                         "tick_major": "", "tick_minor": "",
-                        "grid_show": True, "axis_color": "#000000"},
+                        "grid_show": True, "axis_color": "#000000",
+                        "custom_ticks": ""},
         "secondary_y": {"tick_direction": "in", "axis_label_override": "",
                         "range_lo": "", "range_hi": "",
                         "autoscale": True, "scale": "linear",
                         "tick_major": "", "tick_minor": "",
-                        "grid_show": False, "axis_color": "#000000"},
+                        "grid_show": False, "axis_color": "#000000",
+                        "custom_ticks": ""},
         "tertiary_y":  {"tick_direction": "in", "axis_label_override": "",
                         "range_lo": "", "range_hi": "",
                         "autoscale": True, "scale": "linear",
                         "tick_major": "", "tick_minor": "",
-                        "grid_show": False, "axis_color": "#000000"},
+                        "grid_show": False, "axis_color": "#000000",
+                        "custom_ticks": ""},
     },
 }
 
@@ -243,12 +258,14 @@ _FACTORY_DEFAULTS: dict[str, Any] = {
 # helpers — no per-call edit list.
 # CS-64 (Phase 4am): registry grew from 2 → 6 entries.
 # CS-65 (Phase 4an): registry grew from 6 → 10 entries with the
-# tick-spacing / grid / axis-colour polish keys; the ladder slot is
-# now full.
+# tick-spacing / grid / axis-colour polish keys.
+# CS-69 (Phase 4aq): registry grew from 10 → 11 with ``custom_ticks``
+# (comma-separated explicit tick positions, FixedLocator-painted).
 _AXIS_KEYS: tuple[str, ...] = (
     "tick_direction", "axis_label_override",
     "range_lo", "range_hi", "autoscale", "scale",
     "tick_major", "tick_minor", "grid_show", "axis_color",
+    "custom_ticks",
 )
 
 # Valid scale-type values; surfaced by the per-axis "Scale" Combobox.
@@ -452,6 +469,7 @@ def open_plot_config_dialog(
     on_apply_all_tabs: Callable[[], None] | None = None,
     plots_by_role: "dict[str, tuple[str, ...]] | None" = None,
     on_route_plot: Callable[[str, str, Optional[str]], None] | None = None,
+    secondary_x_linked: bool = False,
 ) -> "PlotConfigDialog":
     """Open the Plot Config dialog for a host, or focus the existing one.
 
@@ -480,6 +498,19 @@ def open_plot_config_dialog(
     ``"(no plots on this axis)"`` placeholder. Roles missing from
     the mapping (or whose tuple is empty) get the same placeholder.
 
+    ``secondary_x_linked`` (CS-69, Phase 4aq) is True when the host
+    has activated the wavelength↔energy linked secondary X axis (cm⁻¹
+    or eV unit + the ``λ(nm) axis`` toggle). When True, the Secondary
+    X tab's range_lo / range_hi / autoscale / scale widgets are
+    greyed out because matplotlib's linked secondary derives its
+    limits from the primary via the forward function; pushing values
+    into those widgets would back-propagate through the inverse and
+    corrupt the primary axis (B-005). The greying is a snapshot at
+    dialog open — toggling the host's nm-axis Checkbutton while the
+    dialog is open does NOT live-refresh the greying; the user
+    reopens to pick up the new state (matches the ``plots_by_role``
+    snapshot pattern).
+
     Returns the live ``PlotConfigDialog`` either way.
     """
     key = id(parent)
@@ -501,6 +532,7 @@ def open_plot_config_dialog(
         tab=tab, on_apply_all_tabs=on_apply_all_tabs,
         plots_by_role=plots_by_role,
         on_route_plot=on_route_plot,
+        secondary_x_linked=secondary_x_linked,
     )
 
 
@@ -534,6 +566,7 @@ class PlotConfigDialog(tk.Toplevel):
         on_apply_all_tabs: Callable[[], None] | None = None,
         plots_by_role: "dict[str, tuple[str, ...]] | None" = None,
         on_route_plot: Callable[[str, str, Optional[str]], None] | None = None,
+        secondary_x_linked: bool = False,
     ) -> None:
         super().__init__(parent)
 
@@ -553,6 +586,19 @@ class PlotConfigDialog(tk.Toplevel):
         self._plots_by_role: "dict[str, tuple[str, ...]]" = dict(
             plots_by_role or {}
         )
+
+        # CS-69 (Phase 4aq): host-supplied flag indicating whether the
+        # wavelength↔energy linked secondary X axis is currently live
+        # (unit ∈ {cm-1, eV} + λ(nm)-axis toggle ON). When True, the
+        # Secondary X tab's range_lo / range_hi / autoscale / scale
+        # widgets are built ``state="disabled"`` — matplotlib's linked
+        # secondary derives its limits from the primary via the
+        # forward function; pushing values would back-propagate through
+        # the inverse and corrupt the primary axis (B-005). The
+        # ``custom_ticks`` Entry stays editable — that's the user's
+        # primary affordance for the linked axis. Snapshotted at
+        # dialog open; the user reopens to refresh.
+        self._secondary_x_linked: bool = bool(secondary_x_linked)
 
         # Phase 4al: Move-to picker callback. None means the host did
         # not wire routing — the picker still renders on Y-axis tabs
@@ -626,6 +672,15 @@ class PlotConfigDialog(tk.Toplevel):
         self._axis_control_refresh: dict[
             tuple[str, str], Callable[[Any], None]
         ] = {}
+        # CS-69 (Phase 4aq): parallel registry of per-axis widget refs
+        # keyed by ``(role, key)``. Populated by
+        # :meth:`_build_axis_tab_settings`. Used by the
+        # secondary-X-linked greying block (and by Phase 4aq tests) to
+        # locate the widgets to disable; future "live state-machine"
+        # work on per-axis widgets has a hook here without a second
+        # scan. Widgets not in the registry (e.g. label-only rows)
+        # are simply not addressable.
+        self._axis_control_widgets: dict[tuple[str, str], tk.Widget] = {}
 
         # CS-68 (Phase 4ap): keys whose trace target writes to the
         # working copy ONLY and defers the live commit to
@@ -1186,6 +1241,7 @@ class PlotConfigDialog(tk.Toplevel):
         )
         lo_entry.pack(side=tk.LEFT, padx=(8, 2))
         self._bind_entry_live_commit(lo_entry)
+        self._axis_control_widgets[(role, "range_lo")] = lo_entry
         tk.Label(range_row, text="to", font=("", 9)).pack(side=tk.LEFT)
         self._defer_apply_axis_keys.add((role, "range_hi"))
         hi_var = self._make_axis_string_var(role, "range_hi")
@@ -1194,6 +1250,7 @@ class PlotConfigDialog(tk.Toplevel):
         )
         hi_entry.pack(side=tk.LEFT, padx=(2, 0))
         self._bind_entry_live_commit(hi_entry)
+        self._axis_control_widgets[(role, "range_hi")] = hi_entry
         tk.Label(
             range_row, text="(empty = no bound)",
             font=("", 8, "italic"), fg="#888888",
@@ -1209,10 +1266,15 @@ class PlotConfigDialog(tk.Toplevel):
         autoscale_row = tk.Frame(parent)
         autoscale_row.pack(fill=tk.X, anchor="w", pady=(8, 2))
         autoscale_var = self._make_axis_bool_var(role, "autoscale")
-        tk.Checkbutton(
+        # CS-69 (Phase 4aq): capture the Checkbutton handle so the
+        # secondary-X-linked greying block at the end of this function
+        # can disable it. Same for the Scale combobox below.
+        autoscale_cb = tk.Checkbutton(
             autoscale_row, text="Autoscale", variable=autoscale_var,
             font=("", 9, "bold"),
-        ).pack(side=tk.LEFT)
+        )
+        autoscale_cb.pack(side=tk.LEFT)
+        self._axis_control_widgets[(role, "autoscale")] = autoscale_cb
         tk.Label(
             autoscale_row,
             text="(off = use Range bounds above)",
@@ -1229,11 +1291,13 @@ class PlotConfigDialog(tk.Toplevel):
             scale_row, text="Scale:", font=("", 9, "bold"),
         ).pack(side=tk.LEFT)
         scale_var = self._make_axis_string_var(role, "scale")
-        ttk.Combobox(
+        scale_combo = ttk.Combobox(
             scale_row, textvariable=scale_var,
             values=list(_AXIS_SCALE_OPTIONS),
             state="readonly", width=8, font=("", 9),
-        ).pack(side=tk.LEFT, padx=(8, 0))
+        )
+        scale_combo.pack(side=tk.LEFT, padx=(8, 0))
+        self._axis_control_widgets[(role, "scale")] = scale_combo
 
         # ---- Tick spacing row (CS-65 Phase 4an) ----
         # Two Entries side-by-side: "Major" and "Minor". StringVar-
@@ -1272,6 +1336,44 @@ class PlotConfigDialog(tk.Toplevel):
         self._bind_entry_live_commit(minor_entry)
         tk.Label(
             tick_spacing_row, text="(empty = auto)",
+            font=("", 8, "italic"), fg="#888888",
+        ).pack(side=tk.LEFT, padx=(6, 0))
+
+        # ---- Custom tick positions row (CS-69 Phase 4aq) ----
+        # Comma-separated list of explicit major-tick positions (e.g.
+        # ``"300, 400, 500, 700, 900"``). Non-empty wins outright over
+        # ``tick_major`` on the role's MAJOR ticks via
+        # :class:`FixedLocator`. ``tick_minor`` (above) is unaffected.
+        # Empty / all-invalid silently falls through to ``tick_major``
+        # MultipleLocator (or matplotlib auto if that is also empty).
+        # The renderer's :func:`uvvis_tab._parse_custom_ticks_str`
+        # silently drops invalid tokens, mirroring the CS-65
+        # ``_parse_tick_str`` policy.
+        #
+        # CS-68: typed Entry — defer per-keystroke commit; the
+        # <FocusOut>/<Return> binding triggers the live commit. Stays
+        # editable even on the Secondary X tab when the link is
+        # active (it's the user's primary affordance for naming
+        # wavelengths on the linked axis — the whole point of B-005).
+        custom_ticks_row = tk.Frame(parent)
+        custom_ticks_row.pack(fill=tk.X, anchor="w", pady=(8, 2))
+        tk.Label(
+            custom_ticks_row, text="Custom ticks:", font=("", 9, "bold"),
+        ).pack(side=tk.LEFT)
+        self._defer_apply_axis_keys.add((role, "custom_ticks"))
+        custom_ticks_var = self._make_axis_string_var(role, "custom_ticks")
+        custom_ticks_entry = tk.Entry(
+            custom_ticks_row, textvariable=custom_ticks_var,
+            width=22, font=("", 9),
+        )
+        custom_ticks_entry.pack(
+            side=tk.LEFT, padx=(8, 0), fill=tk.X, expand=True,
+        )
+        self._bind_entry_live_commit(custom_ticks_entry)
+        self._axis_control_widgets[(role, "custom_ticks")] = custom_ticks_entry
+        tk.Label(
+            custom_ticks_row,
+            text="(e.g. 300, 400, 500; empty = use major)",
             font=("", 8, "italic"), fg="#888888",
         ).pack(side=tk.LEFT, padx=(6, 0))
 
@@ -1349,6 +1451,35 @@ class PlotConfigDialog(tk.Toplevel):
                 # previous value rather than blowing up the trace.
                 pass
         color_var.trace_add("write", _refresh_swatch)
+
+        # ---- Secondary X link greying (CS-69 Phase 4aq) ----
+        # When the host opens the dialog with the wavelength↔energy
+        # linked secondary X axis active, range_lo / range_hi /
+        # autoscale / scale on the Secondary X tab become inert —
+        # matplotlib derives ``sec``'s limits from the primary via the
+        # forward function. Grey those widgets out so the user can't
+        # push values into them and (in the buggy pre-CS-69 path)
+        # back-propagate through ``sec.set_xlim`` to corrupt the
+        # primary axis (B-005). ``custom_ticks`` / ``tick_major`` /
+        # ``tick_minor`` stay editable — they're the user's actual
+        # affordances on the linked axis. The greying is a snapshot
+        # at dialog open; user reopens after toggling the host's
+        # nm-axis Checkbutton to refresh.
+        if role == "secondary_x" and self._secondary_x_linked:
+            for w in (lo_entry, hi_entry, autoscale_cb, scale_combo):
+                try:
+                    w.configure(state="disabled")
+                except tk.TclError:
+                    pass
+            tk.Label(
+                parent,
+                text=("Range / Autoscale / Scale are derived from the "
+                      "primary X axis while the λ(nm) toggle is on "
+                      "— use Custom ticks above to name explicit nm "
+                      "positions."),
+                font=("", 8, "italic"), fg="#666666",
+                wraplength=420, justify="left",
+            ).pack(anchor="w", pady=(6, 2), padx=(0, 8))
 
     def _make_axis_string_var(
         self, role: str, key: str,

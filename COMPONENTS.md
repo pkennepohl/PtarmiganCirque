@@ -9783,7 +9783,291 @@ matches.
 
 ---
 
-*Document version: 1.42 — May 2026*
+## CS-69 — Linked secondary X axis + custom_ticks Entry (Phase 4aq)
+
+Phase 4aq fixes **B-005**: the wavelength↔energy linked
+secondary X axis was broken under any non-default
+`cfg["axes"]["secondary_x"]["autoscale"]=False` configuration
+because the CS-64 schema's `range_lo` / `range_hi` push-through
+called `sec.set_xlim(...)` on matplotlib's linked secondary
+axis. On a linked secondary, that call back-propagates through
+the inverse of the forward function and **corrupts the primary
+axis's xlim** — the user-visible symptom. Companion issue:
+`tick_major` (`MultipleLocator`) produced evenly-spaced ticks
+in cm⁻¹ / eV that didn't land on round wavelengths in nm. Fix
+ships in four commits: pure-module + 27 unit tests + dialog
+integration + 18 integration tests.
+
+D8 lock relaxation: the wavelength toggle now activates the
+linked secondary for BOTH `unit == "cm-1"` (via `1e7 / x`) AND
+`unit == "eV"` (via `_HC_NM_EV / x`). Both transforms are
+self-inverse, so a single callable feeds both slots of
+matplotlib's `ax.secondary_xaxis("top", functions=(_fwd, _fwd))`.
+
+### Lock relaxations vs CS-64 / CS-65
+
+CS-64's `range_lo` / `range_hi` / `autoscale` / `scale` keys
+on `secondary_x` are **inert when the link is active** — the
+renderer no longer calls `sec.set_xlim` / `sec.set_xscale` at
+all. Pre-Phase-4aq projects carrying stale values on those
+keys simply have them ignored; no migration needed.
+
+CS-65's `_AXIS_KEYS` registry grows from 10 → 11 entries with
+`custom_ticks` — a typed Entry carrying a comma-separated list
+of explicit major-tick positions (e.g. `"300, 400, 500, 700,
+900"`). Non-empty wins outright over `tick_major` on every
+per-axis role via `FixedLocator`; the schema key is uniform
+across all roles (D6b lock) so future use on primary X is
+free. `tick_minor` (CS-65) is unaffected.
+
+CS-46 (`.ptmg` manifest schema): **PTMG_FORMAT_VERSION does
+NOT bump**. The addition is backward-compatible — pre-Phase-
+4aq saves load with `""` defaults via the existing
+`migrate_plot_config` factory walk; re-saves include the new
+key without protocol change.
+
+CS-66 modeless contract preserved. CS-68 live-preview semantics
+preserved — the new `custom_ticks` Entry is a typed Entry,
+deferred-commit on `<FocusOut>` / `<Return>` via
+`_bind_entry_live_commit` and registered in
+`_defer_apply_axis_keys` for every per-axis role.
+
+### Architecture — pure module (`uvvis_tab.py`)
+
+Three new module-level helpers:
+
+```
+def _parse_custom_ticks_str(text: str) -> tuple[float, ...] | None:
+    # Split on commas, strip whitespace, parse each token as
+    # float. Silently drop empty / non-numeric / non-finite
+    # tokens. Return None for empty / all-invalid.
+
+def _per_axis_custom_ticks(cfg, tab_role) -> str:
+    # Read cfg["axes"][tab_role]["custom_ticks"] with defensive ""
+    # fallback for pre-Phase-4aq configs.
+
+def _apply_major_locator(axis_obj, cfg, tab_role) -> None:
+    # custom_ticks wins outright (FixedLocator) over tick_major
+    # (MultipleLocator) over matplotlib's auto-locator.
+    # Single point of truth for the four per-role call sites:
+    #   ax.xaxis, ax.yaxis, twin_ax.yaxis, sec.xaxis.
+```
+
+The `_apply_major_locator` helper replaces four inline
+`MultipleLocator(...)` blocks in `_redraw` with a single
+function call per role. Minor ticks remain inline (unchanged).
+
+The secondary X axis builder block grows to handle eV in
+addition to cm⁻¹:
+
+```
+if unit in ("cm-1", "eV") and self._show_nm_axis.get():
+    _const = 1e7 if unit == "cm-1" else _HC_NM_EV
+    def _fwd(x, _c=_const):
+        with np.errstate(divide="ignore", invalid="ignore"):
+            return np.where(np.asarray(x, float) > 0,
+                            _c / np.asarray(x, float), 0.0)
+    sec = ax.secondary_xaxis("top", functions=(_fwd, _fwd))
+```
+
+The `sec.set_xlim` / `sec.set_xscale` block from CS-64 is
+**deleted**. The polish block walks the new helper:
+
+```
+if 'sec' in locals():
+    _apply_major_locator(sec.xaxis, cfg, "secondary_x")
+    minor = _per_axis_tick_minor(cfg, "secondary_x")
+    if minor is not None:
+        sec.xaxis.set_minor_locator(MultipleLocator(minor))
+    # ... color application unchanged ...
+```
+
+New host method `UVVisTab._secondary_x_linked()` returns the
+boolean `self._x_unit.get() in ("cm-1", "eV") and
+bool(self._show_nm_axis.get())`. Single source of truth — used
+by three call sites: `_redraw` (existing inline guard),
+`_compute_plots_by_role` (DRY'd to call the new method), and
+the two `open_plot_config_dialog` hand-offs (⚙ button + axis
+double-click) which now pass
+`secondary_x_linked=self._secondary_x_linked()`.
+
+### Architecture — dialog (`plot_settings_dialog.py`)
+
+Schema: `_FACTORY_DEFAULTS["axes"][<role>]["custom_ticks"]: ""`
+on all five per-axis roles. `_AXIS_KEYS` grew from 10 → 11.
+`migrate_plot_config` requires no new code — its existing
+factory walk picks up the new key automatically.
+
+Constructor: `PlotConfigDialog.__init__` gains
+`secondary_x_linked: bool = False` (default keeps every
+existing test green). Stored as `self._secondary_x_linked`.
+`open_plot_config_dialog` factory threads the kwarg through.
+
+New `self._axis_control_widgets: dict[tuple[str, str], tk.Widget]`
+registry — parallel to the existing `_axis_control_vars` /
+`_axis_control_refresh`. Populated by `_build_axis_tab_settings`
+with the five greyable / addressable widgets per role
+(`range_lo`, `range_hi`, `autoscale`, `scale`, `custom_ticks`).
+Hook for the greying block and for Phase 4aq tests.
+
+`_build_axis_tab_settings` gains a "Custom ticks:" Entry row
+between "Tick spacing" and "Grid". CS-68 deferred-commit on
+`<FocusOut>` / `<Return>`. Helper label: "(e.g. 300, 400, 500;
+empty = use major)".
+
+End-of-function greying block:
+
+```
+if role == "secondary_x" and self._secondary_x_linked:
+    for w in (lo_entry, hi_entry, autoscale_cb, scale_combo):
+        try:
+            w.configure(state="disabled")
+        except tk.TclError:
+            pass
+    tk.Label(parent, text="Range / Autoscale / Scale are derived "
+                          "from the primary X axis while the "
+                          "λ(nm) toggle is on — use Custom ticks "
+                          "above to name explicit nm positions.",
+             font=("", 8, "italic"), fg="#666666",
+             wraplength=420, justify="left",
+            ).pack(anchor="w", pady=(6, 2), padx=(0, 8))
+```
+
+`custom_ticks` / `tick_major` / `tick_minor` widgets stay
+editable — they're the user's actual affordances on the
+linked axis. The greying is a snapshot at dialog open; user
+reopens after toggling the host's nm-axis Checkbutton to
+refresh (a future phase will wire live refresh — Phase 4aq
+friction item #2).
+
+### Renderer behaviour summary
+
+| `cfg["axes"]["secondary_x"]` key | Effect when link active |
+|---|---|
+| `range_lo` / `range_hi` | **Inert.** Renderer never calls `sec.set_xlim`. |
+| `autoscale` | **Inert.** Same reason. |
+| `scale` | **Inert.** Renderer never calls `sec.set_xscale`. |
+| `tick_direction` | Applied as before (CS-61 / CS-62). |
+| `axis_label_override` | Applied as before (CS-62). |
+| `tick_major` | Applied as `MultipleLocator` (CS-65), UNLESS `custom_ticks` is non-empty. |
+| `tick_minor` | Applied as before (CS-65). |
+| `grid_show` | Renderer ignores (twin-axes invariant; CS-65). |
+| `axis_color` | Applied as before (CS-65). |
+| `custom_ticks` | **NEW.** Non-empty → parsed tuple → `FixedLocator` major ticks, **wins over `tick_major`**. Empty / all-invalid → fall through. |
+
+### Locks held (Phase 4aq)
+
+1. `_parse_custom_ticks_str(text)` exists, returns `None`
+   for empty / all-invalid input, silently drops invalid
+   tokens, returns a tuple of finite floats otherwise.
+2. `_per_axis_custom_ticks(cfg, role)` exists, returns `""`
+   for missing keys (backward-compat).
+3. `_apply_major_locator(axis_obj, cfg, role)` exists, with
+   `custom_ticks` > `tick_major` > auto-locator precedence.
+4. The renderer NEVER calls `sec.set_xlim` or `sec.set_xscale`
+   on the linked secondary X axis.
+5. The wavelength toggle guard is `unit in ("cm-1", "eV") and
+   self._show_nm_axis.get()` — both branches use a self-inverse
+   forward function for `(_fwd, _fwd)`.
+6. `_FACTORY_DEFAULTS["axes"][<role>]["custom_ticks"] == ""`
+   on all five per-axis roles. `_AXIS_KEYS` has 11 entries
+   ending with `"custom_ticks"`.
+7. `PlotConfigDialog.__init__` accepts `secondary_x_linked:
+   bool = False`. Stored as `self._secondary_x_linked`.
+8. `open_plot_config_dialog` factory accepts and threads
+   `secondary_x_linked` to `PlotConfigDialog`.
+9. `PlotConfigDialog._axis_control_widgets[(role, key)]`
+   registry exists and is populated for (role, key) ∈
+   {`(<role>, "range_lo"|"range_hi"|"autoscale"|"scale"|"custom_ticks")`}.
+10. `_build_axis_tab_settings` greys range_lo / range_hi /
+    autoscale / scale widgets on the Secondary X tab when
+    `self._secondary_x_linked` is True.
+11. `custom_ticks` Entry registers in
+    `self._defer_apply_axis_keys` for every per-axis role
+    (CS-68 deferred commit).
+12. `UVVisTab._secondary_x_linked()` returns the canonical
+    bool; both `open_plot_config_dialog` call sites pass it.
+13. `TestSecondaryXAxisLinkPhase4aq` (5 tests),
+    `TestCustomTicksParsePhase4aq` (11), 
+    `TestPerAxisCustomTicksAccessorPhase4aq` (5),
+    `TestCustomTicksRendererPhase4aq` (6),
+    `TestPlotConfigDialogSecondaryXLinkGreyingPhase4aq` (8),
+    `TestPlotConfigDialogCustomTicksPhase4aq` (6), and
+    `TestPlotConfigMigrationCustomTicksPhase4aq` (4) pin
+    the contract. 45 new tests; full suite 1347/1347.
+
+### Decision lock taken (Phase 4aq / CS-69)
+
+* (D1) The matplotlib-side link is already correct
+  (`secondary_xaxis(functions=(_fwd, _fwd))`); the bug is in
+  the renderer's post-link override path.
+* (D2) Renderer skips `sec.set_xlim` AND `sec.set_xscale`
+  whenever the link is active, regardless of schema values.
+  Stale legacy values become inert.
+* (D3) Dialog greys `range_lo` / `range_hi` / `autoscale` /
+  `scale` widgets on the Secondary X tab when the link is
+  active.
+* (D4) Greying snapshotted at dialog open via new
+  `secondary_x_linked: bool` kwarg (mirrors `plots_by_role`
+  pattern). Does NOT live-update if user toggles
+  `_show_nm_axis` while dialog is open — user reopens to
+  refresh. *Live-refresh queued as Phase 4aq friction item #2.*
+* (D5) New per-axis schema key `custom_ticks: str` added to
+  EVERY role (D6b uniform-schema lock), not secondary-X-only.
+* (D6) `custom_ticks` is a typed Entry → CS-68 defer-commit
+  on `<FocusOut>` / `<Return>`. Helper `_parse_custom_ticks_str`
+  silent-drops invalid tokens.
+* (D7) When `custom_ticks` is non-empty, the renderer uses
+  `FixedLocator(values)` for **major** ticks, ignoring
+  `tick_major`. Minor ticks unchanged. `tick_major` Entry
+  stays editable; renderer is the single arbiter.
+* (D8) **Lock relaxation** — wavelength toggle scope extends
+  from cm⁻¹-only to **cm⁻¹ OR eV**. Renderer guard:
+  `if unit in ("cm-1", "eV") and self._show_nm_axis.get()`.
+  For cm⁻¹: `_fwd = 1e7 / x`. For eV: `_fwd = _HC_NM_EV / x`.
+  Both self-inverse.
+* (D9) When toggle OFF, Secondary X tab stays fully editable
+  (configure in anticipation of next toggle ON).
+* (D10) `migrate_plot_config` requires no new code — the
+  existing factory walk picks up `custom_ticks`
+  automatically. **PTMG_FORMAT_VERSION does NOT bump.**
+* (D11) New CS-69 section in COMPONENTS.md. COMPONENTS doc-
+  version → 1.43, BACKLOG doc-version → 1.42.
+* (D12) Commits in standard order: (1) pure module
+  (`aedfd81`); (2) unit tests (`cdd6f61`); (3) integration
+  (`df2542a`); (4) integration tests (`ab6a178`); (5)
+  bookkeeping.
+
+### Carry-forwards
+
+(ε) **Compare-tab `plot_widget.py` has the same buggy
+`sec.set_xlim` pattern as pre-CS-69 UVVisTab.** UVVisTab is
+fixed; the Compare tab's renderer is not. Recorded as Phase
+4aq friction item #1 — mechanical CS-69 port to
+`plot_widget.py`, including the new `_apply_major_locator`
+helper (lift to a shared module or duplicate).
+
+(ζ) **Live-refresh of `secondary_x_linked` greying** when
+the user toggles `λ(nm) axis` with the dialog open — today
+the user must close and reopen. Recorded as Phase 4aq
+friction item #2; pairs naturally with the older
+`_plots_by_role` staleness carry-forward (α, β) — both are
+dialog-snapshot-at-open problems with the same architectural
+solution shape.
+
+(η) **`λ(nm)` toolbar Checkbutton stays visible when
+`unit == "nm"`** — the toggle is a no-op in nm mode (the
+renderer guard short-circuits). Recorded as Phase 4aq
+friction item #3 — single Checkbutton state-machine.
+
+(θ) **Greying label hard-codes "while the λ(nm) toggle is
+on"** — wording reads slightly ambiguous now that D8 extends
+the link to eV. Recorded as Phase 4aq friction item #4 —
+single string-literal change.
+
+---
+
+*Document version: 1.43 — May 2026*
 *1.1: CS-13 implementation notes added in Phase 4a.*
 *1.2: CS-14 Plot Settings Dialog added in Phase 4b.*
 *1.3: CS-15 UV/Vis Baseline Correction + CS-04 implementation
@@ -10978,5 +11262,57 @@ recorded in BACKLOG. 1302 tests, all green (1285 + 14 new
 sentinels in `TestPlotConfigDialogLivePreviewPhase4ap` + 3
 new integration tests in
 `TestUVVisTabLivePreviewModelessPhase4ap`).*
+*1.43: CS-69 — B-005 wavelength-secondary-axis fix lands in
+Phase 4aq. Root cause: matplotlib's linked
+`ax.secondary_xaxis(functions=(_fwd, _fwd))` was being
+corrupted by the renderer's CS-64 `sec.set_xlim` call (back-
+propagates through the inverse of `_fwd` and corrupts the
+primary axis). Fix: renderer NEVER calls `sec.set_xlim` /
+`sec.set_xscale`; `secondary_x` schema's range / autoscale /
+scale keys become inert when link is active. New per-axis
+schema key `custom_ticks: str` (comma-separated explicit
+positions, e.g. `"300, 400, 500, 700, 900"`) paints
+`FixedLocator` major ticks via new `_apply_major_locator`
+helper, uniform across all per-axis roles (D6b lock). D8
+lock relaxation: link extends to BOTH `unit == "cm-1"` (via
+`1e7 / x`) AND `unit == "eV"` (via `_HC_NM_EV / x`); both
+self-inverse, single callable feeds both slots of `functions=
+(_fwd, _fwd)`. New dialog kwarg `secondary_x_linked: bool`
+snapshotted at open greys Secondary X tab's range_lo /
+range_hi / autoscale / scale widgets so the user can't fight
+the link (custom_ticks / tick_major / tick_minor stay
+editable). New `_axis_control_widgets[(role, key)]` registry
+on `PlotConfigDialog` parallel to `_axis_control_vars`. CS-65
+`_AXIS_KEYS` registry grew from 10 → 11; CS-46 PTMG_FORMAT_
+VERSION does NOT bump (backward-compatible). **Lock
+relaxations:** CS-64 secondary_x range/autoscale/scale keys
+inert when link active; CS-65 `_AXIS_KEYS` extended with
+`custom_ticks`. **Locks held:** CS-44 axes registry, CS-46
+manifest (no PTMG bump), CS-60 cross-tab Notebook + routing,
+CS-61 / CS-62 / CS-63 / CS-65 ladder schemas (custom_ticks
+extension only), CS-66 modeless, CS-67 per-node baseline
+toggle, CS-68 live-preview + defer-commit (custom_ticks Entry
+registers in `_defer_apply_axis_keys`). **Decision lock
+taken (Phase 4aq):** D1 link is matplotlib-side (already
+correct); D2 renderer skips `set_xlim` / `set_xscale` on
+sec; D3 dialog greys range/autoscale/scale on linked secondary;
+D4 greying snapshotted at dialog open; D5 schema key
+uniform across roles; D6 typed Entry defer-commit per CS-68;
+D7 custom_ticks wins on major ticks only; D8 cm⁻¹ + eV;
+D9 toggle OFF keeps tab editable; D10 no PTMG bump; D11
+CS-69 section + doc-version 1.42 → 1.43; D12 commit order
+pure → tests → integration → tests. USER contributed FOUR
+new USER-FLAGGED items at step 5: Compare-tab CS-69 mirror;
+live-refresh of greying on toggle change; `λ(nm)`
+Checkbutton greying when `unit == "nm"`; greying label
+wording polish — all four queued for next phase. Four code
+commits this phase: (1) `uvvis_tab.py` pure-module link fix
++ helpers (`aedfd81`); (2) `test_uvvis_tab.py` 27 unit-test
+sentinels across 4 classes (`cdd6f61`); (3) `plot_settings_
+dialog.py` + `uvvis_tab.py` dialog wiring + greying + 2
+sentinel updates (`df2542a`); (4) `test_plot_settings_
+dialog.py` 18 dialog integration tests across 3 classes
+(`ab6a178`). 1347 tests, all green (1302 + 27 unit + 18
+integration).*
 *To be updated as Open Questions are resolved and new components
 are specified.*

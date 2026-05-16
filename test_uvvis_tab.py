@@ -1556,6 +1556,427 @@ class TestUVVisTabPerAxisTickRenderingPhase4al(unittest.TestCase):
         self.assertEqual(x_params.get("direction"), "in")
 
 
+class TestCustomTicksParsePhase4aq(unittest.TestCase):
+    """Phase 4aq (CS-69) — ``_parse_custom_ticks_str`` policy.
+
+    Pure-helper coverage matching :func:`uvvis_tab._parse_tick_str`'s
+    "silent-drop invalid, ``None`` for empty / all-invalid" contract.
+    No Tk display needed.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from uvvis_tab import _parse_custom_ticks_str
+        cls._parse = staticmethod(_parse_custom_ticks_str)
+
+    def test_empty_string_returns_none(self):
+        self.assertIsNone(self._parse(""))
+
+    def test_whitespace_only_returns_none(self):
+        self.assertIsNone(self._parse("   "))
+        self.assertIsNone(self._parse("\t\n"))
+
+    def test_non_string_input_returns_none(self):
+        # Migration shim writes ``""`` for missing slots, but a
+        # malformed config might carry a non-string value through; the
+        # helper must not crash.
+        self.assertIsNone(self._parse(None))  # type: ignore[arg-type]
+        self.assertIsNone(self._parse(123))   # type: ignore[arg-type]
+
+    def test_valid_csv_returns_tuple(self):
+        result = self._parse("300, 400, 500, 700, 900")
+        self.assertEqual(result, (300.0, 400.0, 500.0, 700.0, 900.0))
+
+    def test_mixed_silently_drops_invalid_tokens(self):
+        # "abc" is not a float; the helper silently drops it and
+        # returns the parseable subset.
+        self.assertEqual(self._parse("300, abc, 500"), (300.0, 500.0))
+
+    def test_all_invalid_returns_none(self):
+        # No salvageable tokens → None, matching empty input.
+        self.assertIsNone(self._parse("abc, xyz, ?"))
+
+    def test_extra_commas_skipped(self):
+        # Double comma yields an empty token in the middle — silently
+        # dropped.
+        self.assertEqual(self._parse("300,,400"), (300.0, 400.0))
+        self.assertEqual(self._parse(", 300, ,400, "), (300.0, 400.0))
+
+    def test_negative_values_kept(self):
+        # Unlike ``_parse_tick_str`` (CS-65) which rejects non-positive
+        # for ``MultipleLocator``, ``_parse_custom_ticks_str`` accepts
+        # negative tick positions — ``FixedLocator`` handles them.
+        self.assertEqual(self._parse("-1, 0, 2"), (-1.0, 0.0, 2.0))
+
+    def test_non_finite_silently_dropped(self):
+        # ``np.isfinite`` rejects inf / nan; the helper drops them.
+        result = self._parse("300, inf, 500, nan, 700")
+        self.assertEqual(result, (300.0, 500.0, 700.0))
+
+    def test_single_value_returns_one_element_tuple(self):
+        self.assertEqual(self._parse("500"), (500.0,))
+
+    def test_float_values_preserved(self):
+        result = self._parse("300.5, 400.25, 500.125")
+        self.assertEqual(result, (300.5, 400.25, 500.125))
+
+
+class TestPerAxisCustomTicksAccessorPhase4aq(unittest.TestCase):
+    """Phase 4aq (CS-69) — ``_per_axis_custom_ticks`` reader."""
+
+    @classmethod
+    def setUpClass(cls):
+        from uvvis_tab import _per_axis_custom_ticks
+        cls._read = staticmethod(_per_axis_custom_ticks)
+
+    def test_missing_axes_returns_empty(self):
+        # Pre-Phase-4aq config / blank config → "" (no override).
+        self.assertEqual(self._read({}, "secondary_x"), "")
+
+    def test_missing_role_returns_empty(self):
+        self.assertEqual(self._read({"axes": {}}, "secondary_x"), "")
+
+    def test_missing_custom_ticks_key_returns_empty(self):
+        cfg = {"axes": {"secondary_x": {"tick_major": "100"}}}
+        self.assertEqual(self._read(cfg, "secondary_x"), "")
+
+    def test_non_string_value_returns_empty(self):
+        # Defensive: stored value is not a string (e.g., None from a
+        # malformed config) — return "" so the renderer falls through
+        # to ``tick_major`` cleanly.
+        cfg = {"axes": {"secondary_x": {"custom_ticks": None}}}
+        self.assertEqual(self._read(cfg, "secondary_x"), "")
+
+    def test_string_value_returned_verbatim(self):
+        cfg = {"axes": {"secondary_x":
+                        {"custom_ticks": "300, 400, 500"}}}
+        self.assertEqual(self._read(cfg, "secondary_x"), "300, 400, 500")
+
+
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestSecondaryXAxisLinkPhase4aq(unittest.TestCase):
+    """Phase 4aq (CS-69) — B-005 linked secondary X axis contract.
+
+    Pins three invariants:
+
+    1. With cm⁻¹ + toggle ON, the secondary X axis is matplotlib-
+       linked via ``secondary_xaxis(functions=(_fwd, _fwd))``;
+       ``sec.get_xlim()`` tracks ``_fwd(ax.get_xlim())`` by
+       construction.
+    2. Same for ``unit == "eV"`` (D8 lock relaxation: the wavelength
+       toggle activates the linked secondary for both cm⁻¹ and eV).
+    3. The renderer does NOT call ``sec.set_xlim`` even when the
+       schema's ``secondary_x.autoscale=False`` with non-empty
+       ``range_lo`` / ``range_hi``. Calling ``sec.set_xlim`` on a
+       linked secondary axis would back-propagate through the inverse
+       of ``_fwd`` and CORRUPT the primary axis's xlim — the bug at
+       the root of B-005. Stale legacy ``range_lo`` / ``range_hi`` /
+       ``autoscale`` / ``scale`` values are therefore inert.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from uvvis_tab import UVVisTab, _HC_NM_EV
+        cls.UVVisTab = UVVisTab
+        cls._HC_NM_EV = _HC_NM_EV
+
+    def setUp(self):
+        self.host = tk.Frame(_root)
+        self.host.pack()
+        self.graph = ProjectGraph()
+        self.tab = self.UVVisTab(self.host, graph=self.graph)
+
+    def tearDown(self):
+        try:
+            self.tab.destroy()
+        except Exception:
+            pass
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    def _add_uvvis(self, nid: str = "u1") -> None:
+        wl = np.linspace(300, 600, 10)
+        absorb = np.linspace(0.1, 0.9, 10)
+        self.graph.add_node(DataNode(
+            id=nid, type=NodeType.UVVIS,
+            arrays={"wavelength_nm": wl, "absorbance": absorb},
+            metadata={"source_file": "synthetic"},
+            label=nid,
+            state=NodeState.COMMITTED,
+            style={"color": "#1f77b4", "linestyle": "solid",
+                   "linewidth": 1.5, "alpha": 0.9, "visible": True,
+                   "in_legend": True, "fill": False, "fill_alpha": 0.08},
+        ))
+
+    # ---- link invariants ----
+
+    def test_cm1_secondary_x_axis_tracks_primary_via_fwd(self):
+        # _fwd(x) = 1e7 / x for cm-1; both forward AND inverse slots of
+        # secondary_xaxis(...) receive the same callable (it's self-
+        # inverse). After redraw, sec.get_xlim() must equal _fwd of
+        # ax.get_xlim().
+        self._add_uvvis()
+        self.tab._x_unit.set("cm-1")
+        self.tab._show_nm_axis.set(True)
+        self.tab._redraw()
+        self.assertTrue(self.tab._ax.child_axes,
+                        "Secondary X axis must exist for cm-1 + toggle ON")
+        sec = self.tab._ax.child_axes[0]
+        ax_lo, ax_hi = self.tab._ax.get_xlim()
+        sec_lo, sec_hi = sec.get_xlim()
+        # The link is via 1e7 / x. Ordered by sec's natural orientation
+        # (matplotlib may invert), so we compare the SET of transformed
+        # endpoints rather than positional order.
+        expected = {1e7 / ax_lo, 1e7 / ax_hi}
+        actual = {sec_lo, sec_hi}
+        for e in expected:
+            self.assertTrue(
+                any(abs(a - e) < 1e-6 for a in actual),
+                f"Secondary xlim {actual} should contain 1e7/{ax_lo or ax_hi}"
+                f" ≈ {e}",
+            )
+
+    def test_eV_secondary_x_axis_tracks_primary_via_fwd(self):
+        # D8 lock relaxation: same link contract for unit == "eV"
+        # via _HC_NM_EV / x. Tests that toggling x_unit to eV + the
+        # nm-axis toggle creates the linked sibling.
+        self._add_uvvis()
+        self.tab._x_unit.set("eV")
+        self.tab._show_nm_axis.set(True)
+        self.tab._redraw()
+        self.assertTrue(self.tab._ax.child_axes,
+                        "Secondary X axis must exist for eV + toggle ON")
+        sec = self.tab._ax.child_axes[0]
+        ax_lo, ax_hi = self.tab._ax.get_xlim()
+        sec_lo, sec_hi = sec.get_xlim()
+        expected = {self._HC_NM_EV / ax_lo, self._HC_NM_EV / ax_hi}
+        actual = {sec_lo, sec_hi}
+        for e in expected:
+            self.assertTrue(
+                any(abs(a - e) < 1e-6 for a in actual),
+                f"Secondary xlim {actual} should contain _HC_NM_EV/"
+                f"{ax_lo or ax_hi} ≈ {e}",
+            )
+
+    def test_nm_unit_does_not_create_secondary_x(self):
+        # The wavelength toggle is gated on unit ∈ {cm-1, eV}; nm is
+        # already wavelength so no linked sibling makes sense. Confirm
+        # the secondary axis is NOT created in nm mode regardless of
+        # the toggle's value.
+        self._add_uvvis()
+        self.tab._x_unit.set("nm")
+        self.tab._show_nm_axis.set(True)
+        self.tab._redraw()
+        self.assertFalse(self.tab._ax.child_axes,
+                         "Secondary X must not be created in nm mode")
+
+    def test_renderer_does_not_corrupt_primary_xlim_via_range_lo_hi(self):
+        # B-005 root cause: the buggy renderer called
+        # ``sec.set_xlim(lo, hi)`` whenever secondary_x.autoscale=False
+        # with non-empty range_lo / range_hi. On a linked secondary
+        # axis matplotlib back-propagates through the inverse of _fwd
+        # and CORRUPTS the primary axis. The CS-69 fix never calls
+        # sec.set_xlim, so the primary xlim is preserved across the
+        # autoscale-False schema.
+        self._add_uvvis()
+        self.tab._x_unit.set("cm-1")
+        self.tab._show_nm_axis.set(True)
+        # Capture the primary xlim with autoscale=True (default).
+        self.tab._redraw()
+        baseline_lo, baseline_hi = self.tab._ax.get_xlim()
+        # Now populate the stale secondary_x range that the buggy code
+        # would have pushed through ``sec.set_xlim``.
+        self.tab._plot_config["axes"] = {
+            "secondary_x": {
+                "autoscale": False,
+                "range_lo": "300",
+                "range_hi": "500",
+                "scale": "linear",
+            },
+        }
+        self.tab._redraw()
+        # The primary xlim must match the autoscale-derived baseline;
+        # if the buggy code path runs, ax.set_xlim was hit via the
+        # back-propagation through _fwd at the secondary's set_xlim
+        # call and the baseline diverges.
+        post_lo, post_hi = self.tab._ax.get_xlim()
+        self.assertAlmostEqual(post_lo, baseline_lo, places=4)
+        self.assertAlmostEqual(post_hi, baseline_hi, places=4)
+
+    def test_renderer_does_not_corrupt_primary_xscale_via_secondary_log(self):
+        # Companion to the range case: secondary_x.scale="log" once
+        # called ``sec.set_xscale("log")`` which on a linked secondary
+        # could propagate to the primary. The CS-69 fix never calls
+        # sec.set_xscale; the primary stays linear regardless of the
+        # secondary_x.scale value.
+        self._add_uvvis()
+        self.tab._x_unit.set("cm-1")
+        self.tab._show_nm_axis.set(True)
+        self.tab._plot_config["axes"] = {
+            "secondary_x": {"scale": "log"},
+        }
+        self.tab._redraw()
+        # Primary x scale must still be linear.
+        self.assertEqual(self.tab._ax.get_xscale(), "linear")
+
+
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestCustomTicksRendererPhase4aq(unittest.TestCase):
+    """Phase 4aq (CS-69) — ``custom_ticks`` renderer wiring.
+
+    Non-empty ``cfg["axes"][<role>]["custom_ticks"]`` wins outright over
+    ``tick_major`` on every per-axis role, applied as
+    :class:`matplotlib.ticker.FixedLocator`. Empty / all-invalid falls
+    through to ``tick_major`` :class:`MultipleLocator` (CS-65) or, if
+    that's also empty, matplotlib's auto-locator. ``tick_minor`` is
+    untouched by ``custom_ticks``.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from uvvis_tab import UVVisTab
+        cls.UVVisTab = UVVisTab
+
+    def setUp(self):
+        self.host = tk.Frame(_root)
+        self.host.pack()
+        self.graph = ProjectGraph()
+        self.tab = self.UVVisTab(self.host, graph=self.graph)
+
+    def tearDown(self):
+        try:
+            self.tab.destroy()
+        except Exception:
+            pass
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    def _add_uvvis(self, nid: str = "u1") -> None:
+        wl = np.linspace(300, 600, 10)
+        absorb = np.linspace(0.1, 0.9, 10)
+        self.graph.add_node(DataNode(
+            id=nid, type=NodeType.UVVIS,
+            arrays={"wavelength_nm": wl, "absorbance": absorb},
+            metadata={"source_file": "synthetic"},
+            label=nid,
+            state=NodeState.COMMITTED,
+            style={"color": "#1f77b4", "linestyle": "solid",
+                   "linewidth": 1.5, "alpha": 0.9, "visible": True,
+                   "in_legend": True, "fill": False, "fill_alpha": 0.08},
+        ))
+
+    def test_custom_ticks_paint_fixed_locator_on_secondary_x(self):
+        from matplotlib.ticker import FixedLocator
+        self._add_uvvis()
+        self.tab._x_unit.set("cm-1")
+        self.tab._show_nm_axis.set(True)
+        self.tab._plot_config["axes"] = {
+            "secondary_x": {"custom_ticks": "300, 400, 500, 700, 900"},
+        }
+        self.tab._redraw()
+        sec = self.tab._ax.child_axes[0]
+        locator = sec.xaxis.get_major_locator()
+        self.assertIsInstance(locator, FixedLocator)
+        self.assertEqual(
+            list(locator.tick_values(0, 0)),
+            [300.0, 400.0, 500.0, 700.0, 900.0],
+        )
+
+    def test_custom_ticks_override_tick_major_on_secondary_x(self):
+        # Both keys set: custom_ticks must win.
+        from matplotlib.ticker import FixedLocator
+        self._add_uvvis()
+        self.tab._x_unit.set("cm-1")
+        self.tab._show_nm_axis.set(True)
+        self.tab._plot_config["axes"] = {
+            "secondary_x": {
+                "tick_major": "100",
+                "custom_ticks": "300, 600",
+            },
+        }
+        self.tab._redraw()
+        sec = self.tab._ax.child_axes[0]
+        locator = sec.xaxis.get_major_locator()
+        self.assertIsInstance(locator, FixedLocator)
+        self.assertEqual(list(locator.tick_values(0, 0)), [300.0, 600.0])
+
+    def test_empty_custom_ticks_falls_through_to_tick_major(self):
+        from matplotlib.ticker import MultipleLocator
+        self._add_uvvis()
+        self.tab._x_unit.set("cm-1")
+        self.tab._show_nm_axis.set(True)
+        self.tab._plot_config["axes"] = {
+            "secondary_x": {"tick_major": "100", "custom_ticks": ""},
+        }
+        self.tab._redraw()
+        sec = self.tab._ax.child_axes[0]
+        locator = sec.xaxis.get_major_locator()
+        self.assertIsInstance(locator, MultipleLocator)
+        self.assertEqual(locator.view_limits(0, 100), (0.0, 100.0))
+
+    def test_minor_locator_unaffected_by_custom_ticks(self):
+        from matplotlib.ticker import FixedLocator, MultipleLocator
+        self._add_uvvis()
+        self.tab._x_unit.set("cm-1")
+        self.tab._show_nm_axis.set(True)
+        self.tab._plot_config["axes"] = {
+            "secondary_x": {
+                "custom_ticks": "300, 400, 500",
+                "tick_minor": "10",
+            },
+        }
+        self.tab._redraw()
+        sec = self.tab._ax.child_axes[0]
+        major = sec.xaxis.get_major_locator()
+        minor = sec.xaxis.get_minor_locator()
+        self.assertIsInstance(major, FixedLocator)
+        self.assertIsInstance(minor, MultipleLocator)
+
+    def test_custom_ticks_uniform_across_primary_x(self):
+        # D6b lock: the schema key is uniform — non-empty custom_ticks
+        # on primary_x also paints FixedLocator. The user only stated
+        # the secondary X use case, but uniform contract makes future
+        # use free.
+        from matplotlib.ticker import FixedLocator
+        self._add_uvvis()
+        self.tab._plot_config["axes"] = {
+            "primary_x": {"custom_ticks": "350, 450, 550"},
+        }
+        self.tab._redraw()
+        locator = self.tab._ax.xaxis.get_major_locator()
+        self.assertIsInstance(locator, FixedLocator)
+        self.assertEqual(
+            list(locator.tick_values(0, 0)),
+            [350.0, 450.0, 550.0],
+        )
+
+    def test_all_invalid_custom_ticks_falls_through_to_auto(self):
+        # All-invalid custom_ticks + empty tick_major → auto-locator.
+        self._add_uvvis()
+        self.tab._x_unit.set("cm-1")
+        self.tab._show_nm_axis.set(True)
+        self.tab._plot_config["axes"] = {
+            "secondary_x": {
+                "custom_ticks": "abc, xyz",
+                "tick_major": "",
+            },
+        }
+        # Just confirm no crash; renderer falls through to matplotlib's
+        # default. The locator type is matplotlib-version-dependent
+        # (AutoLocator on 3.x).
+        self.tab._redraw()
+        sec = self.tab._ax.child_axes[0]
+        # Must NOT be FixedLocator or our user-specified MultipleLocator
+        # (no tick_major to consume).
+        from matplotlib.ticker import FixedLocator, MultipleLocator
+        locator = sec.xaxis.get_major_locator()
+        self.assertNotIsInstance(locator, FixedLocator)
+
+
 @unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
 class TestUVVisTabMoveToPickerPhase4al(unittest.TestCase):
     """Phase 4al — host wiring for the Plot Settings Move-to picker.
