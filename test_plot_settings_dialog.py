@@ -3583,6 +3583,293 @@ class TestPlotConfigDialogSecondaryXLinkGreyingPhase4aq(unittest.TestCase):
 
 
 @unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestPlotConfigDialogLiveRefreshGreyingPhase4ar(unittest.TestCase):
+    """CS-70 (Phase 4ar) — live-refresh of Secondary X link greying.
+
+    Pins the contract for the two new methods that replace CS-69's D4
+    snapshot-at-open lock with a host-driven refresh path:
+
+    * ``_apply_secondary_x_link_greying()`` — applies widget state
+      from ``self._secondary_x_linked``. Disables the four greying-
+      eligible widgets when True; restores ``"normal"`` (Entry,
+      Checkbutton) / ``"readonly"`` (Combobox) when False. Packs /
+      unpacks ``_secondary_x_greying_label``.
+
+    * ``refresh_axis_link_state(linked)`` — public entry. Re-snapshots
+      the flag then re-runs the apply method. Widget-state only — does
+      NOT trigger ``_apply_changes_live`` and does NOT clear
+      ``_modified_tabs`` markers.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import plot_settings_dialog
+        cls.psd = plot_settings_dialog
+        cls.PlotConfigDialog = plot_settings_dialog.PlotConfigDialog
+
+    def setUp(self):
+        self.psd._open_dialogs.clear()
+        self.psd._USER_DEFAULTS.clear()
+        self.host = tk.Frame(_root)
+        self.host.pack()
+        self.config: dict = {}
+
+    def tearDown(self):
+        for dlg in list(self.psd._open_dialogs.values()):
+            try:
+                dlg.destroy()
+            except Exception:
+                pass
+        self.psd._open_dialogs.clear()
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    # ---- _apply_secondary_x_link_greying initial state ----
+
+    def test_apply_greying_disables_widgets_when_linked_true(self):
+        # Pin: building the dialog with secondary_x_linked=True ends in
+        # all four greying-eligible widgets being disabled. (Mirrors the
+        # CS-69 assertion but routed through the new apply method.)
+        dlg = self.PlotConfigDialog(
+            self.host, self.config, secondary_x_linked=True,
+        )
+        dlg.update_idletasks()
+        for key in ("range_lo", "range_hi", "autoscale", "scale"):
+            w = dlg._axis_control_widgets[("secondary_x", key)]
+            self.assertEqual(
+                str(w.cget("state")), "disabled",
+                f"({key}) should be disabled at build when linked=True",
+            )
+
+    def test_apply_greying_restores_baseline_when_linked_false(self):
+        # Default constructor (linked=False) — Entry/Checkbutton at
+        # "normal", scale Combobox at "readonly" (its normal state).
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        for key in ("range_lo", "range_hi", "autoscale"):
+            w = dlg._axis_control_widgets[("secondary_x", key)]
+            self.assertEqual(
+                str(w.cget("state")), "normal",
+                f"({key}) should be normal at build when linked=False",
+            )
+        scale = dlg._axis_control_widgets[("secondary_x", "scale")]
+        self.assertEqual(
+            str(scale.cget("state")), "readonly",
+            "scale Combobox should be readonly when linked=False",
+        )
+
+    # ---- refresh_axis_link_state behaviour ----
+
+    def test_refresh_to_true_disables_widgets(self):
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        # Sanity: widgets active.
+        for key in ("range_lo", "range_hi", "autoscale"):
+            w = dlg._axis_control_widgets[("secondary_x", key)]
+            self.assertEqual(str(w.cget("state")), "normal")
+        dlg.refresh_axis_link_state(True)
+        dlg.update_idletasks()
+        for key in ("range_lo", "range_hi", "autoscale", "scale"):
+            w = dlg._axis_control_widgets[("secondary_x", key)]
+            self.assertEqual(
+                str(w.cget("state")), "disabled",
+                f"({key}) should be disabled after refresh(True)",
+            )
+
+    def test_refresh_to_false_restores_baseline(self):
+        dlg = self.PlotConfigDialog(
+            self.host, self.config, secondary_x_linked=True,
+        )
+        dlg.update_idletasks()
+        dlg.refresh_axis_link_state(False)
+        dlg.update_idletasks()
+        for key in ("range_lo", "range_hi", "autoscale"):
+            w = dlg._axis_control_widgets[("secondary_x", key)]
+            self.assertEqual(
+                str(w.cget("state")), "normal",
+                f"({key}) should be normal after refresh(False)",
+            )
+        scale = dlg._axis_control_widgets[("secondary_x", "scale")]
+        self.assertEqual(str(scale.cget("state")), "readonly")
+
+    def test_refresh_round_trip(self):
+        # True → False → True should land at disabled (idempotent under
+        # repeated flips).
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.refresh_axis_link_state(True)
+        dlg.refresh_axis_link_state(False)
+        dlg.refresh_axis_link_state(True)
+        dlg.update_idletasks()
+        for key in ("range_lo", "range_hi", "autoscale", "scale"):
+            w = dlg._axis_control_widgets[("secondary_x", key)]
+            self.assertEqual(
+                str(w.cget("state")), "disabled",
+                f"({key}) should be disabled after T→F→T",
+            )
+
+    def test_refresh_updates_secondary_x_linked_snapshot(self):
+        # The dialog's snapshot flag must follow the refresh call.
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        self.assertIs(dlg._secondary_x_linked, False)
+        dlg.refresh_axis_link_state(True)
+        self.assertIs(dlg._secondary_x_linked, True)
+        dlg.refresh_axis_link_state(False)
+        self.assertIs(dlg._secondary_x_linked, False)
+
+    def test_refresh_coerces_truthy_to_bool(self):
+        # Defensive: ``linked`` is annotated ``bool`` but defensive
+        # ``bool(...)`` coercion in the method should hold for truthy
+        # / falsy non-bool inputs too.
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.refresh_axis_link_state(1)
+        self.assertIs(dlg._secondary_x_linked, True)
+        dlg.refresh_axis_link_state(0)
+        self.assertIs(dlg._secondary_x_linked, False)
+
+    # ---- custom_ticks stays editable across refresh ----
+
+    def test_custom_ticks_editable_after_refresh_true(self):
+        # Custom ticks is the user's affordance on the linked axis —
+        # CS-69's "stays editable" lock survives the CS-70 refresh.
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.refresh_axis_link_state(True)
+        dlg.update_idletasks()
+        w = dlg._axis_control_widgets[("secondary_x", "custom_ticks")]
+        self.assertEqual(str(w.cget("state")), "normal")
+
+    def test_other_roles_unaffected_by_refresh(self):
+        # refresh_axis_link_state walks only ``("secondary_x", key)``;
+        # primary_x / primary_y / secondary_y / tertiary_y widgets are
+        # untouched.
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.refresh_axis_link_state(True)
+        dlg.update_idletasks()
+        for role in ("primary_x", "primary_y", "secondary_y", "tertiary_y"):
+            for key in ("range_lo", "range_hi", "autoscale"):
+                w = dlg._axis_control_widgets[(role, key)]
+                self.assertEqual(
+                    str(w.cget("state")), "normal",
+                    f"{role}.{key} should NOT be disabled by refresh "
+                    f"(scope is secondary_x only)",
+                )
+
+    # ---- greying label widget tracking + wording ----
+
+    def test_greying_label_widget_tracked_on_dialog(self):
+        # ``_secondary_x_greying_label`` is an instance attribute set
+        # when the Secondary X tab builds; refresh-able via ``pack`` /
+        # ``pack_forget``.
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        self.assertIsNotNone(dlg._secondary_x_greying_label)
+        self.assertIsInstance(dlg._secondary_x_greying_label, tk.Widget)
+
+    def test_greying_label_wording_phase4ar(self):
+        # CS-70 (Phase 4ar) label wording polish: covers both cm⁻¹
+        # and eV unit cases under the D8 lock relaxation.
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        text = str(dlg._secondary_x_greying_label.cget("text"))
+        # New wording mentions "wavelength secondary axis is shown" —
+        # NOT the old "λ(nm) toggle is on" framing.
+        self.assertIn("wavelength secondary axis is shown", text)
+        self.assertIn("primary axis", text)
+        self.assertIn("Custom ticks", text)
+        # The old wording must NOT appear (sentinel against regression).
+        self.assertNotIn("λ(nm) toggle is on", text)
+
+    def test_greying_label_packed_when_linked_true(self):
+        # ``winfo_manager`` returns ``"pack"`` when the widget is
+        # pack-managed; ``""`` after ``pack_forget``. (Better than
+        # ``winfo_ismapped`` in tests because the latter also requires
+        # the Toplevel parent to be realized on-screen.)
+        dlg = self.PlotConfigDialog(
+            self.host, self.config, secondary_x_linked=True,
+        )
+        dlg.update_idletasks()
+        self.assertEqual(
+            dlg._secondary_x_greying_label.winfo_manager(), "pack",
+        )
+
+    def test_greying_label_unpacked_when_linked_false(self):
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        self.assertEqual(
+            dlg._secondary_x_greying_label.winfo_manager(), "",
+        )
+
+    def test_greying_label_visibility_follows_refresh(self):
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        # Start unpacked.
+        self.assertEqual(
+            dlg._secondary_x_greying_label.winfo_manager(), "",
+        )
+        # Refresh ON → packed.
+        dlg.refresh_axis_link_state(True)
+        dlg.update_idletasks()
+        self.assertEqual(
+            dlg._secondary_x_greying_label.winfo_manager(), "pack",
+        )
+        # Refresh OFF → unpacked again.
+        dlg.refresh_axis_link_state(False)
+        dlg.update_idletasks()
+        self.assertEqual(
+            dlg._secondary_x_greying_label.winfo_manager(), "",
+        )
+
+    # ---- side-effect isolation (BACKLOG locks ii + iii) ----
+
+    def test_refresh_does_not_trigger_apply_changes_live(self):
+        # Lock iii from BACKLOG carry-forward: refresh is widget-state
+        # only and must NOT route through _apply_changes_live (which
+        # would touch the host config dict via on_apply).
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        call_count = [0]
+        original_apply = dlg._apply_changes_live
+
+        def _spy(*a, **kw):
+            call_count[0] += 1
+            return original_apply(*a, **kw)
+        dlg._apply_changes_live = _spy  # type: ignore[method-assign]
+        dlg.refresh_axis_link_state(True)
+        dlg.refresh_axis_link_state(False)
+        dlg.refresh_axis_link_state(True)
+        self.assertEqual(
+            call_count[0], 0,
+            "refresh_axis_link_state must not call _apply_changes_live",
+        )
+
+    def test_refresh_does_not_clear_modified_tabs(self):
+        # Lock ii from BACKLOG carry-forward: the user's pending edit
+        # markers survive a refresh (greying flip should not vaporise
+        # their typed-but-uncommitted work elsewhere).
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        dlg._modified_tabs.add("global")
+        dlg._modified_tabs.add("secondary_x")
+        dlg.refresh_axis_link_state(True)
+        self.assertIn("global", dlg._modified_tabs)
+        self.assertIn("secondary_x", dlg._modified_tabs)
+        dlg.refresh_axis_link_state(False)
+        self.assertIn("global", dlg._modified_tabs)
+        self.assertIn("secondary_x", dlg._modified_tabs)
+
+    def test_refresh_does_not_touch_working_copy(self):
+        # The working copy holds the in-progress config edits; refresh
+        # is widget-state only and must leave _working unchanged.
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        snapshot = copy.deepcopy(dlg._working)
+        dlg.refresh_axis_link_state(True)
+        dlg.refresh_axis_link_state(False)
+        self.assertEqual(dlg._working, snapshot)
+
+
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
 class TestPlotConfigDialogCustomTicksPhase4aq(unittest.TestCase):
     """CS-69 (Phase 4aq) — ``custom_ticks`` Entry per-axis schema + live.
 
