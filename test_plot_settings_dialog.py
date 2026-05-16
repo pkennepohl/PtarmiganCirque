@@ -1763,11 +1763,15 @@ class TestPlotConfigDialogPerAxisSchemaPhase4ak(unittest.TestCase):
         # asserting its contents documents the schema growth path
         # for future phases. CS-64 (Phase 4am) grew this from 2 → 6;
         # CS-65 (Phase 4an) grew it from 6 → 10 with the polish keys.
+        # CS-69 (Phase 4aq) grew it from 10 → 11 with ``custom_ticks``
+        # (comma-separated FixedLocator positions for the B-005
+        # wavelength axis fix).
         self.assertEqual(
             tuple(self.psd._AXIS_KEYS),
             ("tick_direction", "axis_label_override",
              "range_lo", "range_hi", "autoscale", "scale",
-             "tick_major", "tick_minor", "grid_show", "axis_color"),
+             "tick_major", "tick_minor", "grid_show", "axis_color",
+             "custom_ticks"),
         )
         # Every per-axis role's sub-dict carries exactly these keys.
         for role in self._AXIS_TAB_KEYS:
@@ -2755,9 +2759,14 @@ class TestPlotConfigDialogPerAxisPolishSchemaPhase4an(unittest.TestCase):
         "primary_x", "secondary_x", "primary_y", "secondary_y", "tertiary_y",
     )
 
-    def test_axis_keys_grew_to_ten(self):
-        self.assertEqual(len(self.psd._AXIS_KEYS), 10)
-        for k in ("tick_major", "tick_minor", "grid_show", "axis_color"):
+    def test_axis_keys_grew_to_eleven_after_phase_4aq(self):
+        # CS-65 (Phase 4an) grew the registry to ten with the polish
+        # ladder (tick_major / tick_minor / grid_show / axis_color).
+        # CS-69 (Phase 4aq) added the eleventh — ``custom_ticks`` —
+        # for the B-005 wavelength axis FixedLocator path.
+        self.assertEqual(len(self.psd._AXIS_KEYS), 11)
+        for k in ("tick_major", "tick_minor", "grid_show", "axis_color",
+                  "custom_ticks"):
             self.assertIn(k, self.psd._AXIS_KEYS)
 
     def test_factory_defaults_carry_phase_4an_keys(self):

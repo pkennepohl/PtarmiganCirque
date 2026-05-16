@@ -2018,6 +2018,7 @@ class UVVisTab(tk.Frame):
             on_apply=self._on_plot_config_changed,
             plots_by_role=self._compute_plots_by_role(),
             on_route_plot=self._on_route_plot_from_dialog,
+            secondary_x_linked=self._secondary_x_linked(),
         )
 
     def _on_plot_config_changed(self) -> None:
@@ -2088,15 +2089,31 @@ class UVVisTab(tk.Frame):
         its lifetime, so subsequent graph mutations require a fresh
         open to surface.
         """
-        secondary_x_active = (
-            self._x_unit.get() in ("cm-1", "eV")
-            and bool(self._show_nm_axis.get())
-        )
         return _enumerate_plots_by_role(
             self._spectrum_nodes(),
             self._second_derivative_nodes(),
             self._peak_list_nodes(),
-            secondary_x_active=secondary_x_active,
+            secondary_x_active=self._secondary_x_linked(),
+        )
+
+    def _secondary_x_linked(self) -> bool:
+        """Return True iff the wavelength↔energy linked secondary X axis
+        is currently live (CS-69, Phase 4aq).
+
+        The guard is ``self._x_unit.get() in ("cm-1", "eV") and
+        bool(self._show_nm_axis.get())``. ``_redraw`` consults it to
+        decide whether to build ``sec`` via ``ax.secondary_xaxis(...,
+        functions=(_fwd, _fwd))``; ``_compute_plots_by_role`` consults
+        it to decide whether the ``secondary_x`` role gets a non-empty
+        plots list; the Plot Settings hand-off consults it to thread
+        ``secondary_x_linked`` into the dialog so the Secondary X
+        tab's inert range / autoscale / scale widgets render greyed
+        out (D8 lock; B-005 root cause is matplotlib's set_xlim back-
+        propagation through the inverse of ``_fwd``).
+        """
+        return (
+            self._x_unit.get() in ("cm-1", "eV")
+            and bool(self._show_nm_axis.get())
         )
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -2279,6 +2296,7 @@ class UVVisTab(tk.Frame):
             tab=hit.role,
             plots_by_role=self._compute_plots_by_role(),
             on_route_plot=self._on_route_plot_from_dialog,
+            secondary_x_linked=self._secondary_x_linked(),
         )
 
     def _on_unit_change(self):
