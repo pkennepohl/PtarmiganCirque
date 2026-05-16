@@ -1680,7 +1680,7 @@ subsequent Phase 4 session.**
 | ✅ | 🟡 | **Live-preview vs Apply button — modal-vs-instant settings reconciliation (USER-FLAGGED, Phase 4ak)** ✅ Resolved Phase 4ap (CS-68). | Resolved Phase 4ap (CS-68). Live-preview lands on `PlotConfigDialog` only — discrete widgets (Combobox, Checkbutton, Spinbox, color picker, Radiobutton) commit every edit immediately via `_apply_changes_live` (mirror `_working` → `_config` + fire `on_apply`); text Entry widgets defer the live commit to `<FocusOut>` / `<Return>` so per-keystroke typing does not redraw a 100-spectrum canvas. Apply button retired. Button row collapses to `Save · Apply to All Tabs · Cancel`. **Lock decisions taken:** (i) live-preview replaces the working-copy commit gesture entirely — `_working` retained as the widget-bound mirror, `_config` is mutated in place by `_apply_changes_live`; (ii) Cancel still reverts via the `_snapshot` copy taken at `__init__` (no undo stack); (iii) scope is Plot Settings only — CS-05 `StyleDialog` was already write-through, project-load mismatch dialog stays modal/working-copy as a confirmation gate; (iv) per-keystroke redraw deferred via `<FocusOut>` / `<Return>` on text Entries — no debounce framework needed. The CS-60 `_modified_tabs` markers semantic broadens to "touched since open" — they persist through live commits and clear only on Cancel revert or destroy. Defaults / Factory Reset bulk reload coalesces to one redraw. Pairs with CS-66 modeless: Phase 4ao friction #9 (modeless × per-row baseline toggle) covered by `TestUVVisTabLivePreviewModelessPhase4ap.test_per_row_toggle_redraws_canvas_with_dialog_open`. 1302 tests green (1285 + 17 new). |
 | ⏳ | 🟡 | **Cross-node Style dropdown / multi-node style window (USER-FLAGGED, Phase 4ap)** | USER-FLAGGED at end of Phase 4ap (step 5 elicitation). User: "just like plot settings, I'd like a way of having access to all node plot settings from the pop up window. dropdown menu with all of the loaded nodes?" Today CS-05 `StyleDialog` is opened per-node — there is no single window listing every loaded node's style. The user's request: extend the modeless Plot Settings paradigm (CS-66 / CS-68) to per-node styles, with a Combobox listing every loaded node, switching the per-node controls on selection. **Architecture proposal (lock pending):** spawn a new modeless dialog (working title `NodeStylesDialog` or similar) — OR add a "Node styles" Notebook tab to the existing `PlotConfigDialog` — that carries (a) a Combobox listing every loaded node by `(label, id)`, (b) the existing CS-05 universal section (color, linestyle, linewidth, alpha, visible, in_legend) for the selected node, (c) the per-NodeType extension sections (peak-marker style for PEAK_LIST, etc.) that CS-05 already provides. Live-preview semantic from CS-68 carries forward — every edit writes to the selected node's `style` dict via `graph.set_style` and `GraphEvent.NODE_STYLE_CHANGED` fires the redraw. **Lock decisions for the implementing session:** (i) extend `PlotConfigDialog` as a new "Node Styles" tab (cross-tab routing map / per-tab dirty markers extend) vs. spawn a new sibling dialog (cleaner separation, but the user has to remember two windows); (ii) when a node is added / discarded mid-session, refresh the Combobox (pairs with the long-standing `_plots_by_role` frozen-at-open friction — CS-62 lock relaxation needed); (iii) interaction with the existing per-node CS-05 `StyleDialog` (right-click "Edit Style…") — coexist or subsume; (iv) per-node ∀ apply-to-all flows (CS-05 universal `_push_to_all` factory) — surface the Combobox as the source of "Apply to all of THIS node's siblings"; (v) what does "all loaded nodes" mean — UVVIS only, or every NodeType across every tab (Compare / XANES / EXAFS will eventually have nodes too)? Phase 4 scope answer: UVVIS-tab-private node list. **Affected:** new module `node_styles_dialog.py` (or new tab inside `plot_settings_dialog.py`), new `_open_dialogs`-style registry, host wiring on `UVVisTab`, integration tests. Multi-phase: design + scope decision (extra-high) → Plot Settings tab vs. new dialog (high) → cross-tab adoption later. Pairs naturally with CS-05 / CS-06 / CS-66 / CS-68. |
 | ⏳ | 🟡 | **Autoscale ↔ Range Entry seed semantics (USER-FLAGGED, Phase 4ap)** | USER-FLAGGED at end of Phase 4ap (step 5 elicitation). User: "if an axis is set to auto and this is unselected, then the min max should be populated by the values used by auto. when auto, show the values but grey out the fields." Today the per-axis `range_lo` / `range_hi` Entries (CS-64) display whatever the user last typed (or the empty-string "no bound" default). When `autoscale=True` (the renderer ignores the bounds), the Entries are still editable AND show stale values — a visible discoverability hazard. **Architecture proposal (lock pending):** the per-axis `range_lo` / `range_hi` Entries should reflect the renderer's current axis limits when `autoscale=True`, AND be `state="readonly"` (greyed out) under that condition. When the user toggles `autoscale=False`, the Entries become editable AND seed-populate with the values just shown (the current matplotlib `ax.get_xlim()` / `ax.get_ylim()` for the role). The two-way link requires the dialog to read back from the host's matplotlib axes after each redraw. **Lock decisions for the implementing session:** (i) read-back source — `tab._axes_by_role[role].get_xlim()` / `get_ylim()` (CS-44 axes registry) at dialog open + on every `on_apply` — what about between redraws when the user toggles autoscale and expects an immediate seed? Probably hook `_apply_changes_live` in the dialog to read back AFTER firing `on_apply`; (ii) seed-on-toggle policy: when `autoscale True → False`, seed with the post-redraw limits, NOT with the dialog's stale `_working["axes"][role]["range_lo"]`; when `False → True`, retain the user's typed values in `_working` so they're preserved if the user toggles back; (iii) what happens when the dialog opens with `autoscale=True` — the Entries show the current axis limits AND are read-only from the start; (iv) does the read-back path interact badly with the existing CS-65 `tick_major` / `tick_minor` Entries (similar "auto means no override" semantic but no seed-on-toggle requested)? **Affected:** `plot_settings_dialog.py` per-axis Settings frame builder (autoscale Checkbutton callback + range_lo/range_hi Entry state); `uvvis_tab.py` may need an `axis_limits_provider` constructor kwarg or a host-side helper that maps role → `(get_lo(), get_hi())`. CS-64 lock relaxation explicit. Pairs with the new cross-node Style dropdown and with the Apply-to-all icon entries. Reasoning level: **medium** (focused UX delta, well-defined affordance, two-way binding cost is the main risk). |
-| ⏳ | 🟠 | **USER-FLAGGED bug: wavelength as linked secondary axis is broken (B-005, Phase 4ap)** | USER-FLAGGED at end of Phase 4ap (step 5 elicitation). User: "wavelength as linked secondary axis is broken". Symptom unclear at logging time — needs diagnostic in the next phase. Suspected sites: the secondary X axis (energy ↔ wavelength twin) in `uvvis_tab.py:_redraw` (CS-44 axes registry + the wavelength twin `_per_axis_tick_direction(cfg, "secondary_x")` path); the Plot Settings per-axis "Secondary X" tab (CS-61 → CS-65 ladder); the renderer's twin-axis sync. Phase 4ap added live-preview to the dialog but did not touch the wavelength secondary axis path — most likely a pre-existing bug surfaced by the user's recent UV/Vis exercise, not a regression from Phase 4ap. **Diagnostic checklist for the implementing session:** (1) capture user's exact reproduction (which dataset, which menu/Plot Settings interaction); (2) `grep secondary_x | wavelength` across `uvvis_tab.py` for the twin-axis builder; (3) check whether the secondary axis appears at all (axis create path) vs whether it appears but doesn't track correctly (transform / set_xlim path); (4) verify with a one-spectrum minimal test that the secondary X axis reads `secondary_x` config from the per-axis schema. Logged as **B-005** in the Known Bugs table below. Reasoning level: **high** (debugging session — could be small or could expose a CS-44 axis-registry hole). |
+| ✅ | 🟠 | **USER-FLAGGED bug: wavelength as linked secondary axis is broken (B-005, Phase 4ap)** ✅ Resolved Phase 4aq (CS-69). | Resolved Phase 4aq (CS-69) — commits `aedfd81` + `cdd6f61` + `df2542a` + `ab6a178`. Root cause: the secondary X axis was correctly using matplotlib's linked `ax.secondary_xaxis(functions=(_fwd, _fwd))` API, but the renderer then called `sec.set_xlim(...)` from the CS-64 `range_lo` / `range_hi` / `autoscale` schema path. On a linked secondary that call back-propagates through the inverse of `_fwd` and CORRUPTS the primary axis — the user-visible symptom. **Fix landed:** (1) renderer NEVER calls `sec.set_xlim` / `sec.set_xscale` (matplotlib owns linked limits); (2) new per-axis schema key `custom_ticks: str` (comma-separated explicit nm positions like `"300, 400, 500"`) paints `FixedLocator` major ticks via the new `_apply_major_locator` helper, uniform across all per-axis roles (D6b lock); (3) D8 lock relaxation extends the link to BOTH cm⁻¹ (via `1e7 / x`) AND eV (via `_HC_NM_EV / x`); both are self-inverse; (4) new `secondary_x_linked: bool` dialog kwarg snapshotted at open greys out Secondary X tab's range_lo / range_hi / autoscale / scale widgets so the user can't fight the link — custom_ticks / tick_major / tick_minor stay editable. Logged as **B-005** in the Known Bugs table below (now ✅). 45 new tests pin the fix: 27 unit (parse, accessor, link cm⁻¹+eV, renderer FixedLocator) + 18 integration (greying, custom_ticks Entry round-trip, migration shim). |
 | ⏳ | 🟡 | **Apply-to-all icon on per-axis Plot Settings tabs — UI consistency with data-node settings (USER-FLAGGED, Phase 4ak)** | USER-FLAGGED at end of Phase 4ak (step 5 elicitation). User: "Use same apply-to-all icon used for data node settings in the axis setting popups." Data-node settings (the per-row → icon on `ScanTreeWidget` rows surfaced by CS-27 / Phase 4n) carry a recognisable "Apply to all" affordance; Plot Settings → per-axis tabs offer only the dialog-level "Apply to All Tabs" button at the bottom (CS-60 button row). The per-axis tabs lack an in-tab "Apply this axis's settings to every other axis" gesture — useful for cases like "apply this tick direction to every axis at once" or "broadcast this axis label override to every Y axis". **Architecture proposal (lock pending):** add a small icon button next to each per-axis widget (or at the per-axis tab top) labelled with the same icon used by `ScanTreeWidget`'s send-to-compare row icon (the → symbol per CS-27). Click → confirm dialog → write the widget's value into every other per-axis role's slot in `self._working`, mark every other per-axis tab dirty. **Lock decisions for the implementing session:** (i) per-widget icon (one per widget on the per-axis tab) or per-tab icon (one icon broadcasts every widget on the tab)? (ii) does the broadcast respect axis-shape semantics (e.g. an X-axis tab's value broadcast to other X tabs only, not Y)? (iii) does the broadcast write through `_USER_DEFAULTS["axes"][role]` directly or stage through `_on_axis_var_write` per-widget (the latter is consistent with the existing dirty-marker contract)? (iv) does the icon match `_send_to_compare_btn`'s exact glyph or use a slightly different one to distinguish axis-to-axis from tab-to-compare? **Affected:** `plot_settings_dialog.py` (new icon widget + broadcast handler; CS-62 `_axis_control_vars` walk), CS-61 / CS-62 layout (icon adds a row or column to the Settings frame), tests for the broadcast path. Cross-refs CS-27 (the existing per-row send-to-compare icon pattern), CS-60 (the dialog-level Apply to All Tabs button — different scope), CS-62 (per-axis Tk var registry). Small-medium phase; depends on having more than one populated per-axis widget (Phase 4ak ships two: tick_direction + axis_label_override, so this is actionable from 4al onward). |
 | ⏳ | 🟡 | **Axis nomenclature rename: primary/secondary/tertiary → bottom/top/left/right with `*` suffix for offset (USER-FLAGGED, Phase 4ak)** | USER-FLAGGED at end of Phase 4ak (step 5 elicitation). User: "Maybe we should not use primary, secondary, tertiary for axes and use clear location designations such as bottom/top for the main x-axes and something like bottom* and top* for offset secondary axes for a total of 4 possible axes along x. Similar structure for y with left/right/left*/right*. Open to better nomenclature." The current taxonomy (CS-44: `primary` / `secondary` / `tertiary`; CS-60: `primary_x` / `secondary_x` / `primary_y` / `secondary_y` / `tertiary_y`) is renderer-internal and dialog-facing. Position-based names ("bottom", "top", "left", "right", with `*` for offset/secondary instance) are more discoverable for the user — a UV/Vis researcher doesn't need to know that "secondary" specifically means twinx. The proposal also opens the door to a fourth axis on each side (currently `*` suffix denotes offset, but the rename allows growth to "right*" being a tertiary-stack-style offset on top of "right"). **Architecture proposal (lock pending):** rename across the codebase. Affects: `_AXIS_ROLES = ("primary", "secondary", "tertiary")` (CS-44 lock), `_TAB_KEYS = ("global", "primary_x", "secondary_x", "primary_y", "secondary_y", "tertiary_y")` (CS-60 lock), `_TAB_TITLES` strings (CS-60 lock), `_DEFAULT_Y_AXIS_BY_NODETYPE`'s values (CS-44 lock), `_resolve_y_axis_role`'s return values (CS-44 lock), every test asserting any of the above, plot_settings_dialog's per-axis tab keys, `_Y_AXIS_ROLE_TO_TAB` (CS-62 lock), the `y_axis` style key's value set (CS-50 lock), the manifest's nested `axes` sub-dict keys (round-trip across `_USER_DEFAULTS` via project_io). **Lock decisions for the implementing session:** (i) exact name set — is the `*` suffix preserved or replaced with something more keyboard-friendly (e.g. `"bottom_offset"`)? `*` reads well in UI but parses awkwardly in code paths. (ii) does the rename happen all-at-once (one massive sweep phase) or incrementally with an alias dict mapping old → new during transition? (iii) does the `y_axis` style key's value set (CS-50: `"primary"` / `"secondary"` / `"tertiary"`) rename in lockstep — yes for consistency but increases blast radius. (iv) does the manifest schema gain a migration shim for projects saved with old names (yes, since `.ptmg` files can be years old). (v) what about the existing `_axes_by_role` dict key names (used by tests + matplotlib introspection)? **Affected:** Massive cross-codebase rename. CS-44 / CS-50 / CS-60 / CS-61 / CS-62 locks all need deliberate relaxation. Carries through to manifest round-trip migration shim + every test pinning role names. Multi-phase task — the cleanest path is one phase for the schema rename + migration shim, one phase for the dialog labels + tab titles, one phase for the renderer's internal names, with a final cleanup pass. **Risk:** high blast radius. Could combine with the "Refactor uvvis_tab.py — extract host shell" register entry since both touch axis-handling code paths. |
 | ⏳ | 🟡 | **Rich-text axis labels — subscript / superscript / equation markup (USER-FLAGGED, Phase 4ak)** | USER-FLAGGED at end of Phase 4ak (step 5 elicitation). User: "Allow for subscript/superscript and equations in axis labels. How can we do that?" Today axis labels are plain strings written through matplotlib's `set_xlabel` / `set_ylabel` (CS-62's `axis_label_override` is a plain `str`). matplotlib supports a `mathtext` subset of LaTeX inline (e.g. `r"$d^2 A / d\lambda^2$"`) AND the full `usetex=True` LaTeX rendering when a LaTeX installation is on `$PATH`. The user wants the override Entry to accept LaTeX-style markup and render it in the figure. **Architecture proposal (lock pending):** enable matplotlib's mathtext on every axis label setter. Simplest path: change `set_xlabel(text, ...)` → `set_xlabel(text, ...)` with matplotlib's default mathtext parser (no extra config needed — `$...$` is parsed automatically). User types `$d^2 A / d\lambda^2$` into the Plot Settings → Primary Y axis label override Entry → matplotlib renders the math expression. **Lock decisions for the implementing session:** (i) does the Entry widget need any preprocessing or do we trust the user to type `$...$` directly? (ii) is there a "Markup help" tooltip or pop-up showing example expressions (`$\alpha$`, `$d^2A/d\lambda^2$`, `$\Delta E$`)? (iii) does we expose mathtext only, or also the full LaTeX path (`usetex=True`) which requires a LaTeX install? (iv) does the manifest round-trip preserve the raw markup string (yes — it's a plain `str` already). (v) does the same support extend to title (`title_text`) and the legacy xlabel/ylabel custom text path? (likely yes for consistency). **Affected:** `plot_settings_dialog.py` per-axis Entry widgets + the legacy Title-and-labels section's Entry widgets — the markup goes in transparently since `set_xlabel` already supports it. Possibly a tooltip module for the markup help. New test asserting `set_xlabel($d^2A$)` renders without error. Small phase — enabling mathtext is essentially free; the lift is testing + documenting the gesture for users. Cross-refs CS-62 (`axis_label_override` Entry widgets), the legacy "Title and labels" section. **Caveat:** matplotlib's mathtext is a SUBSET of LaTeX (most math symbols work, but `\text{}`, fancy spacing, and some packages don't). Decision (iii) determines whether power users get full LaTeX. |
@@ -4386,17 +4386,16 @@ subsequent Phase 4 session.**
    coexistence + cross-tab vs UVVIS-only scope), **high** for
    the implementation phase that follows.
 
-2. 🟠 **USER-FLAGGED Wavelength secondary axis broken (B-005).**
-   See the new canonical register entry above (added in Phase
-   4ap step 5). Logged as B-005 in the Known Bugs table below.
-   Diagnostic step required first — capture user's exact
-   reproduction (which dataset / which menu interaction) before
-   designing the fix. Suspected sites: `uvvis_tab.py` secondary
-   X axis builder (CS-44 axes registry + the wavelength twin
-   `_per_axis_tick_direction(cfg, "secondary_x")` path); the
-   Plot Settings per-axis "Secondary X" tab (CS-61 → CS-65
-   ladder). Reasoning level: **high** (debug-driven; could be
-   small or expose a CS-44 axis-registry hole).
+2. 🟠 ~~**USER-FLAGGED Wavelength secondary axis broken (B-005).**~~
+   ✅ Resolved Phase 4aq (CS-69) — commits `aedfd81` + `cdd6f61`
+   + `df2542a` + `ab6a178`. Root cause was matplotlib's linked
+   secondary axis being corrupted by the CS-64 `set_xlim`
+   path back-propagating through the inverse of `_fwd`.
+   Renderer no longer calls `sec.set_xlim` / `sec.set_xscale`;
+   new `custom_ticks` schema key + FixedLocator path; dialog
+   greys range / autoscale / scale on Secondary X tab when
+   link active; D8 extension covers both cm⁻¹ and eV unit
+   paths. See B-005 row in the Known Bugs table below (✅).
 
 3. 🟡 **USER-FLAGGED Autoscale ↔ Range Entry seed semantics.**
    See the new canonical register entry above (added in Phase
@@ -4486,7 +4485,112 @@ subsequent Phase 4 session.**
     work doubles the schema width or if the user makes
     sustained Spinbox-arrow edits, profile the deepcopy.
     Alternative: key-level diff + apply (more code, faster).
-    No register entry.
+    No register entry. *Phase 4aq update: schema grew to 11
+    keys per role (now 55 dict ops per deepcopy) — still
+    negligible.*
+
+### Friction points carried forward from Phase 4aq
+
+These are concrete obstacles the next Phase 4 session will hit.
+Phase 4aq shipped CS-69 — the B-005 wavelength-secondary-axis
+fix. The renderer at `uvvis_tab.py:_redraw` now NEVER calls
+`sec.set_xlim` / `sec.set_xscale` on the matplotlib-linked
+secondary X axis (matplotlib's `secondary_xaxis(functions=(_fwd,
+_fwd))` API owns the link via the forward function; the
+buggy CS-64 `set_xlim` path back-propagated through the inverse
+and corrupted the primary axis). The CS-64 schema's `range_lo`
+/ `range_hi` / `autoscale` / `scale` keys for `secondary_x`
+are inert when the link is active; the dialog greys those
+widgets via the new `secondary_x_linked: bool` constructor
+kwarg. New per-axis schema key `custom_ticks` (D6b uniform,
+CS-65 ladder grew from 10 → 11) carries the user's
+comma-separated explicit nm positions and paints `FixedLocator`
+major ticks via the new `_apply_major_locator` helper. D8 lock
+relaxation extends the wavelength link to BOTH cm⁻¹ (via
+`1e7 / x`) and eV (via `_HC_NM_EV / x`); both are self-inverse.
+The user contributed FOUR new USER-FLAGGED items at step 5 —
+all four were explicitly queued for the next phase as small
+polish fixes. **Do not fix until the relevant subsequent Phase
+4 session.**
+
+1. 🟡 **USER-FLAGGED `plot_widget.py` Compare tab has the same
+   buggy `sec.set_xlim` pattern as the pre-CS-69 UVVisTab.** The
+   Compare tab's `_show_nm_axis` (default False) also builds a
+   `secondary_xaxis(...)` and carries the same back-propagation
+   risk if the user toggles it ON with a populated
+   `cfg["axes"]["secondary_x"]["range_lo"]` / `range_hi`. UVVisTab
+   is fixed; Compare tab is not. **Architecture proposal:** lift
+   the new `_apply_major_locator` helper from `uvvis_tab.py` into
+   a shared module (or just call it from both tabs); apply the
+   same "never call `sec.set_xlim` / `sec.set_xscale` on linked
+   secondary" contract to `plot_widget.py`'s renderer; thread
+   `secondary_x_linked` through the Compare tab's Plot Settings
+   hand-off the same way `uvvis_tab._secondary_x_linked()` does.
+   **Affected:** `plot_widget.py` (secondary X axis builder, two
+   sites mirroring `uvvis_tab.py:_redraw` lines 2585–2613 and
+   2699–2711), `test_plot_widget.py` (new sentinels mirroring
+   `TestSecondaryXAxisLinkPhase4aq`). Reasoning level: **medium**
+   (mechanical port; the design pattern is already locked in
+   CS-69). Pairs with CS-69 and the upcoming Compare-tab work.
+
+2. 🟡 **USER-FLAGGED Live-refresh of `secondary_x_linked`
+   greying when the user toggles `λ(nm) axis` with the dialog
+   open.** Today's CS-69 contract snapshots the link state at
+   dialog open (D4 lock; mirrors `plots_by_role` pattern). User
+   workflow: open dialog, notice you forgot to enable the
+   wavelength toggle, click toolbar Checkbutton — Secondary X
+   tab's widgets stay greyed/un-greyed at their snapshot state
+   until the user closes and reopens the dialog. **Architecture
+   proposal:** new GraphEvent (or direct host→dialog notification
+   path) that fires on `_show_nm_axis` / `_x_unit` change; dialog
+   listens and re-runs its greying block. Pairs with the larger
+   "_plots_by_role staleness" carry-forward from Phase 4ak ε /
+   Phase 4ao τ — both are dialog-snapshots-at-open problems with
+   the same architectural solution shape. **Lock decisions:** (i)
+   one notification path for all "host state changed" events, or
+   separate hooks per concern; (ii) does the dialog's
+   `_modified_tabs` markers persist across the refresh (yes —
+   the user's typed edits should not vaporise just because the
+   greying flipped); (iii) does the refresh re-run
+   `_apply_changes_live` (probably no — greying is widget-state
+   only, not config). **Affected:** `plot_settings_dialog.py`
+   (new public refresh method + listener wiring), `uvvis_tab.py`
+   (fire notification on `_show_nm_axis` / `_x_unit` change),
+   tests for the refresh. Reasoning level: **medium** (small
+   surface; pairs naturally with CS-62 lock relaxation).
+
+3. 🟡 **USER-FLAGGED `λ(nm) axis` Checkbutton stays visible
+   when `unit == "nm"`.** When the primary x-axis is already in
+   nm, the toggle is meaningless — clicking it does nothing
+   because the renderer guard `unit in ("cm-1", "eV")` short-
+   circuits. **Architecture proposal:** grey out the toolbar
+   Checkbutton when `unit == "nm"` (or hide it entirely). Trace
+   on `_x_unit` flips `_nm_cb.config(state=...)` accordingly.
+   **Affected:** `uvvis_tab.py` (line 845, the
+   `_nm_cb = tk.Checkbutton` builder + a trace on `_x_unit`),
+   `test_uvvis_tab.py` (new sentinel pinning the gated state).
+   Reasoning level: **low** (single Checkbutton state-machine,
+   trivial). Pairs naturally with item 2 above (live-refresh
+   plumbing) — could land in the same phase.
+
+4. 🟡 **USER-FLAGGED greying label hard-codes "while the λ(nm)
+   toggle is on" — slightly misleading when `unit == "eV"`.**
+   The Secondary X tab's italic explanation label says "Range /
+   Autoscale / Scale are derived from the primary X axis while
+   the λ(nm) toggle is on". With the D8 lock relaxation
+   shipping in CS-69, that toggle now activates the link for
+   BOTH cm⁻¹ AND eV — the wording is still technically correct
+   (the toggle IS the `λ(nm) axis` Checkbutton) but the
+   "while…on" framing reads ambiguously. **Architecture
+   proposal:** rephrase to something like "Range / Autoscale /
+   Scale are derived from the primary axis while the wavelength
+   secondary axis is shown — use Custom ticks above to name
+   explicit nm positions." OR keep current phrasing and rely on
+   the Checkbutton's literal text. **Affected:** one string
+   literal at `plot_settings_dialog.py` (the greying block in
+   `_build_axis_tab_settings`). Reasoning level: **low** (single
+   string change). Bundle with item 3 above for a small
+   "wavelength polish" follow-up phase.
 
 ---
 
@@ -4691,7 +4795,7 @@ phase to touch files that its primary brief lists as no-modify.
 | **B-002** | ✅ Phase 4d | Sidebar row controls do not adapt to sidebar width. At narrow widths the row overflows. The minimum always-visible set should be: dataset name + visibility checkbox + ⚙ gear button. Every other per-row control (colour swatch, legend toggle, linestyle canvas, linewidth entry, fill checkbox, history indicator, ✕) must collapse when the row narrows. The unified StyleDialog (CS-05) must then cover every collapsed control — which it currently does not: `style["visible"]` and `style["in_legend"]` have no controls in the dialog | CS-04 §6.1 + CS-05 universal section | Resolved by commits `85c30f3` (responsive row collapse — `_apply_responsive_layout` hides the optional set below `_RESPONSIVE_COLLAPSE_PX` = 280 px) and `5f7ed47` (StyleDialog universal section gained `visible` and `in_legend` checkbutton rows with per-row ∀ delegates; bulk ∀ excludes both as a footgun guard). The minimum always-visible set landed as state · `[☑]` · label · `[⚙]` · `[✕]` (the brief's listing kept `state` and `[✕]` because dropping them would break provisional/committed affordance and the discard/hide gesture). UV/Vis ∀ fan-out widened from `_uvvis_nodes` to `_spectrum_nodes` (UVVIS + BASELINE) so toggling visibility on one row reaches every row in the same sidebar |
 | **B-003** | ✅ Phase 4c | When `Norm: area` is active the X-axis limit entries no longer take effect on Apply / Return. `Norm: none` and `Norm: peak` both work. Likely interaction between `_y_with_norm`'s area integral and the post-render axis-limit application path in `_redraw` ([uvvis_tab.py:583-593](uvvis_tab.py#L583), [uvvis_tab.py:662-671](uvvis_tab.py#L662)) — verify before fixing | UV/Vis tab `_redraw` | Resolved by commit `88ad2bf` — root cause was `np.trapz` removed in numpy 2.x; switched to `np.trapezoid` and took absolute value of the integral |
 | **B-004** | ✅ Phase 4c | No way to rename a dataset from the right sidebar via the right-click menu. CS-04 §"Context menu" lists `Rename` as a right-click entry; the implementation only landed Commit / Discard / Send to Compare. In-place double-click rename exists per Phase 2 but is undiscoverable. Add the context-menu entry; consider a label tooltip pointing at it | CS-04 §"Context menu" | Resolved by commit `7314a68` — the Rename menu entry was present since Phase 2 but `_begin_label_edit` raised `TclError` from `entry.pack(before=...)` after `pack_forget`, which silently broke both rename gestures; fixed the pack call |
-| **B-005** | 🟠 Phase 4aq | USER-FLAGGED at end of Phase 4ap (step 5): "wavelength as linked secondary axis is broken". Symptom unclear — needs reproduction capture in the next session. Suspected sites: secondary X axis (energy ↔ wavelength twin) in `uvvis_tab.py:_redraw` (CS-44 axes registry + `_per_axis_tick_direction(cfg, "secondary_x")` path); the Plot Settings per-axis "Secondary X" tab (CS-61 → CS-65 ladder); the renderer's twin-axis sync. Most likely a pre-existing bug surfaced by the user's UV/Vis exercise post Phase 4ap, NOT a regression from Phase 4ap (Phase 4ap touched only the dialog's commit semantics, not the secondary-axis path) | CS-44 / CS-61–65 / `uvvis_tab._redraw` | Diagnose first (capture user's reproduction); resolve in Phase 4aq |
+| **B-005** | ✅ Phase 4aq | USER-FLAGGED at end of Phase 4ap (step 5): "wavelength as linked secondary axis is broken". **Resolved Phase 4aq (CS-69)** — commits `aedfd81` (pure module), `cdd6f61` (27 unit tests), `df2542a` (dialog integration + greying), `ab6a178` (18 integration tests). Root cause: the secondary X axis at `uvvis_tab.py:2585–2613` was already using matplotlib's linked `secondary_xaxis("top", functions=(_fwd, _fwd))` API, but the renderer then called `sec.set_xlim(...)` whenever `cfg["axes"]["secondary_x"]["autoscale"]=False` carried non-empty `range_lo` / `range_hi` (CS-64 schema). On matplotlib's linked secondary axis the `set_xlim` call back-propagates through the inverse of `_fwd` and **corrupts the primary axis's xlim** — user-visible as the wavelength axis "going stale" or the primary axis snapping to unexpected limits. Companion issue: `tick_major` (MultipleLocator) produced evenly-spaced ticks in cm⁻¹ / eV that didn't land on round nm positions. Fix: (1) the renderer NEVER calls `sec.set_xlim` / `sec.set_xscale` — matplotlib owns linked limits via the forward function; the `secondary_x` schema's `range_lo` / `range_hi` / `autoscale` / `scale` keys become inert when the link is active. (2) New per-axis schema key `custom_ticks: str` (comma-separated explicit positions, e.g. `"300, 400, 500, 700, 900"`) paints `FixedLocator` major ticks via the new `_apply_major_locator` helper. (3) D8 lock relaxation: link extends to BOTH `unit == "cm-1"` (via `1e7 / x`) and `unit == "eV"` (via `_HC_NM_EV / x`); the same `_show_nm_axis` Tk var gates both branches. (4) Dialog greying state-machine: new `secondary_x_linked: bool` constructor kwarg the host snapshots at dialog open; when True, the Secondary X tab's `range_lo` / `range_hi` / `autoscale` / `scale` widgets render `state="disabled"` so the user can't push values into them. `custom_ticks` / `tick_major` / `tick_minor` stay editable — they're the user's real affordances on the linked axis | CS-44 / CS-61–65 / `uvvis_tab._redraw` | ✅ Resolved Phase 4aq (CS-69) |
 
 The Phase 4d responsive-row work (B-002) also needs to add `visible`
 and `in_legend` controls to the StyleDialog universal section so the
@@ -4703,7 +4807,7 @@ the resolving phase + commit SHA appended to the row.
 
 ---
 
-*Document version: 1.41 — May 2026*
+*Document version: 1.42 — May 2026*
 *1.1: Known Bugs register added 2026-04-27 after Phase 4b manual testing.*
 *1.2: Phase 4c — baseline correction lands; B-001 / B-003 / B-004
 resolved; Phase 4c friction points logged.*
@@ -5675,4 +5779,50 @@ host-side test sweep dropping vestigial `_do_apply`
 (`8a6c3ab`). 1302 tests, all green (1285 + 14 new live-
 preview sentinels + 3 new modeless × live-preview
 integration tests).*
+*1.42: CS-69 — B-005 wavelength-secondary-axis fix lands in
+Phase 4aq. Root cause: matplotlib's linked
+`ax.secondary_xaxis(functions=(_fwd, _fwd))` was being
+corrupted by the renderer's CS-64 `sec.set_xlim` call (it
+back-propagates through the inverse of `_fwd` and corrupts
+the primary axis). Fix: renderer NEVER calls `sec.set_xlim`
+/ `sec.set_xscale`; `secondary_x` schema's range / autoscale
+/ scale keys become inert when link is active. New per-axis
+schema key `custom_ticks: str` (comma-separated explicit
+positions, e.g. `"300, 400, 500, 700, 900"`) paints
+`FixedLocator` major ticks via new `_apply_major_locator`
+helper, uniform across all per-axis roles (D6b lock). D8
+lock relaxation: link extends to BOTH `unit == "cm-1"` (via
+`1e7 / x`) AND `unit == "eV"` (via `_HC_NM_EV / x`); both
+self-inverse. New dialog kwarg `secondary_x_linked: bool`
+snapshotted at open greys Secondary X tab's range_lo /
+range_hi / autoscale / scale widgets so the user can't fight
+the link (custom_ticks / tick_major / tick_minor stay
+editable). New `_axis_control_widgets[(role, key)]` registry
+on `PlotConfigDialog` parallel to `_axis_control_vars` —
+hook for greying and future per-axis widget state-machines.
+CS-65 `_AXIS_KEYS` registry grew from 10 → 11. `_AXIS_KEYS`
+sentinel test renamed `test_axis_keys_grew_to_eleven_after_
+phase_4aq`. B-005 ✅ in Known Bugs. **Decision lock taken
+(Phase 4aq):** D1 link is matplotlib-side (already correct);
+D2 renderer skips `sec.set_xlim` / `sec.set_xscale`; D3
+dialog greys range / autoscale / scale on linked secondary;
+D4 greying snapshotted at dialog open (mirrors `plots_by_role`
+pattern); D5 schema key uniform across roles; D6 typed Entry
+defer-commit per CS-68; D7 custom_ticks wins on major ticks
+only; D8 cm⁻¹ + eV both supported; D9 toggle OFF keeps tab
+editable; D10 no PTMG_FORMAT_VERSION bump; D11 CS-69
+section + COMPONENTS doc-version bump 1.42 → 1.43; D12
+commit order (pure module → tests → integration → tests).
+USER contributed FOUR new USER-FLAGGED items at step 5,
+all queued for the next phase: Compare-tab CS-69 mirror;
+live-refresh of greying on toggle change; `λ(nm)`
+Checkbutton greying when `unit == "nm"`; greying label
+wording polish. Four code commits this phase: (1)
+`uvvis_tab.py` pure-module link fix + helpers (`aedfd81`);
+(2) `test_uvvis_tab.py` 27 unit-test sentinels across 4
+classes (`cdd6f61`); (3) `plot_settings_dialog.py` + 
+`uvvis_tab.py` dialog wiring + greying + 2 sentinel updates
+(`df2542a`); (4) `test_plot_settings_dialog.py` 18 dialog
+integration tests across 3 classes (`ab6a178`). 1347 tests,
+all green (1302 + 27 unit + 18 integration).*
 *Supersedes: BACKLOG.md (original)*
