@@ -3811,7 +3811,18 @@ relevant subsequent Phase 4 session.**
    pairs with the user-flagged live-preview register
    entry above — both questions converge on "should the
    dialog be reactive". No register entry; folds into
-   the live-preview register entry above.
+   the live-preview register entry above. **Phase 4ar
+   (CS-70) architectural opening:** the live-refresh
+   mechanism CS-70 lands for the `secondary_x_linked`
+   greying — host walks `plot_settings_dialog._open_dialogs
+   [id(self)]` and calls a public `refresh_*` method on
+   the dialog — is **reusable** for this friction. A future
+   phase can copy the CS-70 shape: add
+   `refresh_plots_by_role(plots)` on `PlotConfigDialog`,
+   wire `UVVisTab` to fire it from its `GraphEvent`
+   subscribers (`NODE_ADDED` / `NODE_DISCARDED` /
+   `NODE_GROUPED`). Pattern is proven; the slot remains
+   queued.
 
 9. 🟢 **"Plots on this axis" Listbox is `state="disabled"`
    (Claude-surfaced, Phase 4ak artifact).** Read-only
@@ -4513,84 +4524,108 @@ all four were explicitly queued for the next phase as small
 polish fixes. **Do not fix until the relevant subsequent Phase
 4 session.**
 
-1. 🟡 **USER-FLAGGED `plot_widget.py` Compare tab has the same
-   buggy `sec.set_xlim` pattern as the pre-CS-69 UVVisTab.** The
-   Compare tab's `_show_nm_axis` (default False) also builds a
-   `secondary_xaxis(...)` and carries the same back-propagation
-   risk if the user toggles it ON with a populated
-   `cfg["axes"]["secondary_x"]["range_lo"]` / `range_hi`. UVVisTab
-   is fixed; Compare tab is not. **Architecture proposal:** lift
-   the new `_apply_major_locator` helper from `uvvis_tab.py` into
-   a shared module (or just call it from both tabs); apply the
-   same "never call `sec.set_xlim` / `sec.set_xscale` on linked
-   secondary" contract to `plot_widget.py`'s renderer; thread
-   `secondary_x_linked` through the Compare tab's Plot Settings
-   hand-off the same way `uvvis_tab._secondary_x_linked()` does.
-   **Affected:** `plot_widget.py` (secondary X axis builder, two
-   sites mirroring `uvvis_tab.py:_redraw` lines 2585–2613 and
-   2699–2711), `test_plot_widget.py` (new sentinels mirroring
-   `TestSecondaryXAxisLinkPhase4aq`). Reasoning level: **medium**
-   (mechanical port; the design pattern is already locked in
-   CS-69). Pairs with CS-69 and the upcoming Compare-tab work.
+1. 🟡 ~~**USER-FLAGGED `plot_widget.py` Compare tab has the same
+   buggy `sec.set_xlim` pattern as the pre-CS-69 UVVisTab.**~~
+   ❌ **Dropped in Phase 4ar (CS-70) after evidence-based
+   investigation.** `plot_widget.py` has zero `sec.set_xlim` /
+   `sec.set_xscale` calls on its `secondary_xaxis`, zero
+   `cfg["axes"]` schema, zero `plot_settings_dialog` per-axis
+   integration. The trigger condition above ("if the user
+   toggles it ON with a populated
+   `cfg["axes"]["secondary_x"]["range_lo"]` / `range_hi`")
+   cannot be reached because that schema isn't wired into the
+   Compare tab at all — its UI is a flat toolbar of Tk vars,
+   not the schema-driven per-axis tab Notebook from CS-60+.
+   The "mirror" was speculative architecture forecasting "if
+   Compare adopts the schema later", not a present bug. **Moot
+   until Compare adopts the per-axis schema.** See CS-70 §
+   "Item 1 dropped" for the full reasoning.
 
-2. 🟡 **USER-FLAGGED Live-refresh of `secondary_x_linked`
+2. 🟡 ~~**USER-FLAGGED Live-refresh of `secondary_x_linked`
    greying when the user toggles `λ(nm) axis` with the dialog
-   open.** Today's CS-69 contract snapshots the link state at
-   dialog open (D4 lock; mirrors `plots_by_role` pattern). User
-   workflow: open dialog, notice you forgot to enable the
-   wavelength toggle, click toolbar Checkbutton — Secondary X
-   tab's widgets stay greyed/un-greyed at their snapshot state
-   until the user closes and reopens the dialog. **Architecture
-   proposal:** new GraphEvent (or direct host→dialog notification
-   path) that fires on `_show_nm_axis` / `_x_unit` change; dialog
-   listens and re-runs its greying block. Pairs with the larger
-   "_plots_by_role staleness" carry-forward from Phase 4ak ε /
-   Phase 4ao τ — both are dialog-snapshots-at-open problems with
-   the same architectural solution shape. **Lock decisions:** (i)
-   one notification path for all "host state changed" events, or
-   separate hooks per concern; (ii) does the dialog's
-   `_modified_tabs` markers persist across the refresh (yes —
-   the user's typed edits should not vaporise just because the
-   greying flipped); (iii) does the refresh re-run
-   `_apply_changes_live` (probably no — greying is widget-state
-   only, not config). **Affected:** `plot_settings_dialog.py`
-   (new public refresh method + listener wiring), `uvvis_tab.py`
-   (fire notification on `_show_nm_axis` / `_x_unit` change),
-   tests for the refresh. Reasoning level: **medium** (small
-   surface; pairs naturally with CS-62 lock relaxation).
+   open.**~~ ✅ **Resolved in Phase 4ar (CS-70).** New
+   `PlotConfigDialog.refresh_axis_link_state(linked)` public
+   method + internal `_apply_secondary_x_link_greying()`. Host
+   (`UVVisTab._notify_axis_link_state_change`) walks
+   `plot_settings_dialog._open_dialogs[id(self)]` (CS-66
+   registry) and calls the refresh method. Fired from
+   `_on_unit_change` and from `_nm_cb`'s new `_on_nm_cb_toggle`
+   command. CS-69 D4 lock explicitly relaxed. **Lock decisions
+   resolved:** (i) direct host→dialog notification path (not a
+   shared event bus — minimal coupling, reuses `_open_dialogs`);
+   (ii) `_modified_tabs` markers persist across refresh (test
+   pin `test_refresh_does_not_clear_modified_tabs`); (iii)
+   refresh does NOT route through `_apply_changes_live` (test
+   pin `test_refresh_does_not_trigger_apply_changes_live`).
+   17 unit tests + 15 host-side integration tests. **The same
+   architectural shape is now reusable for the long-standing
+   `_plots_by_role` staleness carry-forward** (Phase 4ak ε /
+   Phase 4ao τ / Phase 4ap τ) — a future phase can copy
+   CS-70's pattern (`refresh_plots_by_role(plots)` on the
+   dialog, fired from host graph-event subscribers).
 
-3. 🟡 **USER-FLAGGED `λ(nm) axis` Checkbutton stays visible
-   when `unit == "nm"`.** When the primary x-axis is already in
-   nm, the toggle is meaningless — clicking it does nothing
-   because the renderer guard `unit in ("cm-1", "eV")` short-
-   circuits. **Architecture proposal:** grey out the toolbar
-   Checkbutton when `unit == "nm"` (or hide it entirely). Trace
-   on `_x_unit` flips `_nm_cb.config(state=...)` accordingly.
-   **Affected:** `uvvis_tab.py` (line 845, the
-   `_nm_cb = tk.Checkbutton` builder + a trace on `_x_unit`),
-   `test_uvvis_tab.py` (new sentinel pinning the gated state).
-   Reasoning level: **low** (single Checkbutton state-machine,
-   trivial). Pairs naturally with item 2 above (live-refresh
-   plumbing) — could land in the same phase.
+3. 🟡 ~~**USER-FLAGGED `λ(nm) axis` Checkbutton stays visible
+   when `unit == "nm"`.**~~ ✅ **Resolved in Phase 4ar (CS-70).**
+   New `UVVisTab._update_nm_cb_state()` disables `_nm_cb` and
+   forces `_show_nm_axis` False when `_x_unit == "nm"`. Mirrors
+   `plot_widget.py:1232–1239`'s symmetric pattern on the
+   Compare tab (which had this feature from inception). Called
+   once after `_nm_cb` is built (initial paint state: DISABLED
+   because default unit is "nm") and on every `_on_unit_change`.
+   Forced-False decision matches Compare-tab contract — state
+   does NOT persist across nm round-trips; user re-checks if
+   they re-want the wavelength secondary axis after a nm
+   detour. 7 dedicated tests in
+   `TestUVVisTabLiveLinkStatePhase4ar`.
 
-4. 🟡 **USER-FLAGGED greying label hard-codes "while the λ(nm)
-   toggle is on" — slightly misleading when `unit == "eV"`.**
-   The Secondary X tab's italic explanation label says "Range /
-   Autoscale / Scale are derived from the primary X axis while
-   the λ(nm) toggle is on". With the D8 lock relaxation
-   shipping in CS-69, that toggle now activates the link for
-   BOTH cm⁻¹ AND eV — the wording is still technically correct
-   (the toggle IS the `λ(nm) axis` Checkbutton) but the
-   "while…on" framing reads ambiguously. **Architecture
-   proposal:** rephrase to something like "Range / Autoscale /
-   Scale are derived from the primary axis while the wavelength
-   secondary axis is shown — use Custom ticks above to name
-   explicit nm positions." OR keep current phrasing and rely on
-   the Checkbutton's literal text. **Affected:** one string
-   literal at `plot_settings_dialog.py` (the greying block in
-   `_build_axis_tab_settings`). Reasoning level: **low** (single
-   string change). Bundle with item 3 above for a small
-   "wavelength polish" follow-up phase.
+4. 🟡 ~~**USER-FLAGGED greying label hard-codes "while the λ(nm)
+   toggle is on" — slightly misleading when `unit == "eV"`.**~~
+   ✅ **Resolved in Phase 4ar (CS-70).** New wording: "Range /
+   Autoscale / Scale are derived from the primary axis while
+   the wavelength secondary axis is shown — use Custom ticks
+   above to name explicit nm positions." Covers both cm⁻¹ and
+   eV unit cases under the D8 relaxation. Sentinel test
+   `test_greying_label_wording_phase4ar` pins the new text and
+   asserts the old "λ(nm) toggle is on" framing is absent.
+
+### Friction points carried forward from Phase 4ar
+
+These are concrete obstacles the next Phase 4 session will hit.
+Phase 4ar landed CS-70 — three of the four Phase 4aq carry-
+forward USER-FLAGGED polish items bundled into one wavelength-
+secondary-axis follow-up: live-refresh of the secondary-X
+greying replaces CS-69's D4 snapshot-at-open lock with a
+host→dialog notification path via the existing
+`_open_dialogs[id(self)]` registry (CS-66) + new public
+`PlotConfigDialog.refresh_axis_link_state(linked)` +
+`_apply_secondary_x_link_greying()` internal method (widget-
+state only, does NOT mutate `_working`, trigger
+`_apply_changes_live`, or clear `_modified_tabs`); new
+`UVVisTab._update_nm_cb_state()` / `_on_nm_cb_toggle()` /
+`_notify_axis_link_state_change()` methods; `_on_unit_change`
+chains update → notify → redraw; `_nm_cb`'s command moves
+from `self._redraw` to `self._on_nm_cb_toggle`; toolbar nm-cb
+greys when `_x_unit == "nm"` (forces `_show_nm_axis` False);
+greying label rephrased to cover both cm⁻¹ and eV under D8.
+The fourth carry-forward item (Phase 4aq item 1 — Compare-tab
+`plot_widget.py` CS-69 mirror) was **dropped** after
+evidence-based investigation: `plot_widget.py` has zero
+`sec.set_xlim` / `sec.set_xscale` calls on its secondary, zero
+`cfg["axes"]` schema, no `plot_settings_dialog` per-axis
+integration — the trigger condition cannot be reached.
+USER had nothing to add at step 5. **No new carry-forward
+items.** The bundle was scoped tight; nothing surfaced during
+implementation. **Architectural opening:** CS-70's host→dialog
+notification pattern (host walks `_open_dialogs[id(self)]` +
+calls a public `refresh_*` method on the dialog) is reusable
+for the long-standing `_plots_by_role` staleness friction
+(Phase 4ak item #8 ε / Phase 4ao item #10 τ / Phase 4ap
+item #10) — a future phase can copy the shape:
+`refresh_plots_by_role(plots)` on the dialog, fired from
+host `GraphEvent` subscribers. Pattern is proven; the slot
+remains queued as a separate friction (see Phase 4ak item #8
+for canonical reference). **Do not fix until the relevant
+subsequent Phase 4 session.**
 
 ---
 
@@ -4807,7 +4842,7 @@ the resolving phase + commit SHA appended to the row.
 
 ---
 
-*Document version: 1.42 — May 2026*
+*Document version: 1.43 — May 2026*
 *1.1: Known Bugs register added 2026-04-27 after Phase 4b manual testing.*
 *1.2: Phase 4c — baseline correction lands; B-001 / B-003 / B-004
 resolved; Phase 4c friction points logged.*
