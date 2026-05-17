@@ -10363,11 +10363,466 @@ is open can copy the CS-70 shape: add
 `refresh_plots_by_role(plots)` on the dialog, and have the
 host fire it from its graph-event subscribers. CS-70
 establishes the pattern; the `_plots_by_role` slot remains
-queued as a separate friction.
+queued as a separate friction. **CS-72 (Phase 4as) adopts
+this exact playbook** — the slot is now closed; see CS-72 below.
 
 ---
 
-*Document version: 1.44 — May 2026*
+## CS-71 — Autoscale ↔ Range Entry seed + live ax-limit display (Phase 4as)
+
+The first of two CS-70 pattern adoptions Phase 4as bundled into
+one session. Closes the long-standing USER-FLAGGED friction
+(Phase 4ap) where the per-axis `range_lo` / `range_hi` Entries
+on each Plot Settings per-axis tab were always editable and
+showed only the user's typed schema values — even when
+`autoscale=True` and the renderer was ignoring those bounds.
+After CS-71 the Entries grey out and live-display the current
+matplotlib ax limits while `autoscale=True`, and on the
+True→False toggle they seed the canonical schema StringVars
+from the displayed snapshot so the user starts editing from
+a known reasonable baseline.
+
+### Two parallel StringVar registries
+
+Pre-CS-71 the per-axis range Entries had a single `textvariable`:
+the canonical schema StringVar in `_axis_control_vars[(role,
+"range_lo"/"range_hi")]`, the source of truth for `_working`.
+CS-71 introduces a parallel `_axis_range_display_vars[(role,
+"range_lo"/"range_hi")]` of plain `tk.StringVar` instances —
+populated by `refresh_axis_displayed_limits(limits)` from the
+host's post-redraw notification, holding the formatted ax-limit
+values. The Entry's `textvariable` swaps between the two via
+`Entry.configure(textvariable=…)` at autoscale-toggle time:
+
+* `autoscale=True`  → bind display var, `state="disabled"`
+* `autoscale=False` → bind canonical var, `state="normal"`
+
+The display var is widget-only: it is never written into
+`_working`. The canonical schema StringVar remains the sole
+source of truth for the persisted config. (See CS-64 lock
+relaxation below.) Built for the four non-secondary_x roles
+only; `secondary_x` is exempt because CS-69 / CS-70 own its
+range Entry state via the wavelength↔energy link greying.
+
+### Dialog-side surfaces (`plot_settings_dialog.py`)
+
+Five new methods on `PlotConfigDialog`:
+
+* `_on_axis_autoscale_toggle(role)` — bound as the per-axis
+  Autoscale Checkbutton's `command`. Reads the new autoscale
+  state; on True→False seeds the canonical range StringVars
+  from `_axis_displayed_limits[role]`; on either transition
+  re-applies the greying. No-op for `secondary_x`.
+* `_seed_range_entries_from_display(role)` — pushes `(lo, hi)`
+  from the snapshot into the canonical StringVars via
+  `var.set(self._format_axis_limit(value))`. The set fires the
+  existing `_on_axis_var_write` trace → `_apply_changes_live`
+  chain, so the seeded values land in `_working` and propagate
+  to the host's redraw exactly like a typed Entry edit.
+* `_apply_axis_autoscale_greying(role)` — performs the
+  textvariable swap + `state` flip described above. Composes
+  with CS-70's `_apply_secondary_x_link_greying` cleanly:
+  CS-71's `secondary_x` early-return ensures CS-70 wins for
+  that role.
+* `refresh_axis_displayed_limits(limits)` — public entry point
+  for the host. Replaces `_axis_displayed_limits` snapshot +
+  pushes the formatted lo/hi values into every non-secondary_x
+  display var. Widget-state-only contract mirrors CS-70's
+  `refresh_axis_link_state` verbatim: does NOT touch
+  `_working`, does NOT trigger `_apply_changes_live`, does NOT
+  clear `_modified_tabs`. Missing roles in the input dict
+  leave their display vars unchanged (sticky last-seen).
+* `_format_axis_limit(value)` — static, `%.6g` formatter that
+  fits the Entry's `width=8`. Non-finite inputs (NaN / inf)
+  collapse to `""` so a transient bad ax-limit state doesn't
+  render gibberish in the disabled Entry.
+
+`_build_axis_tab_settings` is the existing per-axis Settings
+frame builder. Three Commit-1 additions:
+
+1. After each `range_lo` / `range_hi` Entry construction, build
+   the parallel display StringVar (skipping `secondary_x`).
+2. The Autoscale Checkbutton gains `command=lambda r=role:
+   self._on_axis_autoscale_toggle(r)`, in addition to the
+   BooleanVar trace that still owns the actual `_working`
+   write + `_apply_changes_live` invocation.
+3. At the end of the method (after the CS-70 secondary_x
+   greying block), invoke `_apply_axis_autoscale_greying(role)`
+   so the initial state matches `_working["axes"][role][
+   "autoscale"]` at dialog-open time.
+
+`_refresh_widgets_from_working` (the Reset Defaults / Factory
+Reset path) gets a Commit-1 hook: after the `_suspend_writes`
+silent var refresh loop, it re-runs `_apply_axis_autoscale_greying`
+for the four non-secondary_x roles. Refresh closures bypass
+the var trace (and therefore the Checkbutton command), so the
+explicit re-greying keeps the Entry textvariable + state in
+sync with the just-restored autoscale value.
+
+### Host-side surfaces (`uvvis_tab.py`)
+
+Two new methods on `UVVisTab`:
+
+* `_compute_axis_displayed_limits()` — translates from the
+  renderer's axis-role-key space (`_axes_by_role`: `"primary"` /
+  `"secondary"` / `"tertiary"`) to the dialog's tab-role-key
+  space (`"primary_x"` / `"primary_y"` / `"secondary_y"` /
+  `"tertiary_y"`). The primary `ax` contributes both `primary_x`
+  (`get_xlim()`) AND `primary_y` (`get_ylim()`); each twin
+  contributes its corresponding Y role's ylim only. Missing twins
+  are silently omitted from the result. `secondary_x` is never
+  in the output — CS-69 / CS-70 govern that role. Defensive
+  `try/except Exception` around the matplotlib reads so a
+  transient bad axes state during teardown can't raise into the
+  notify path.
+* `_notify_axis_displayed_limits_change()` — looks up
+  `plot_settings_dialog._open_dialogs[id(self)]` (the CS-66
+  registry) and calls
+  `dialog.refresh_axis_displayed_limits(self._compute_axis_displayed_limits())`.
+  No-op when no dialog is open. `tk.TclError`-swallowing
+  mirrors CS-70's `_notify_axis_link_state_change`.
+
+Three new fire sites:
+
+* `_redraw` end — after `tight_layout` + `draw_idle` +
+  `toolbar.update()`, so `get_xlim` / `get_ylim` reflect the
+  final visible limits.
+* `_draw_empty` end — when the empty-state placeholder draws
+  (no live nodes), ax limits flip to matplotlib defaults; the
+  notification fires so the dialog reflects the empty state.
+  (Note: CS-72 is intentionally NOT fired from `_draw_empty` —
+  see CS-72 D15 below.)
+* `_open_plot_settings` — after `open_plot_config_dialog`
+  returns, fires once so the dialog's display vars are seeded
+  with the current ax limits before the user perceives the
+  dialog. Without this seed, the dialog's display vars would
+  show `""` (their construction default) until the next
+  `_redraw` fired naturally.
+
+### Locks
+
+1. `_axis_range_display_vars` is built for the four
+   non-secondary_x roles × `{range_lo, range_hi}` = 8 entries
+   exactly. `secondary_x` is never registered.
+2. The canonical schema StringVar in `_axis_control_vars`
+   remains the sole source of truth for `_working` writes. The
+   display StringVar is widget-only.
+3. `refresh_axis_displayed_limits` is widget-state-only — no
+   `_working` touch, no `_apply_changes_live`, no
+   `_modified_tabs` clear. Mirrors CS-70's contract.
+4. `_apply_axis_autoscale_greying` and
+   `_on_axis_autoscale_toggle` short-circuit for
+   `secondary_x`. This is what guarantees the CS-70 composition
+   — when both CS-70 (secondary_x link greying) and CS-71
+   (per-role autoscale greying) would touch the same widget,
+   the secondary_x check exits first and CS-70 wins.
+5. `_format_axis_limit` uses `%.6g`. Non-finite collapses to `""`.
+6. Host-side: `_compute_axis_displayed_limits` excludes
+   `secondary_x`. Missing twins are silently omitted.
+   Defensive try/except around matplotlib reads.
+7. `_redraw` end fires CS-71 unconditionally. `_draw_empty` end
+   fires CS-71 unconditionally. `_open_plot_settings` fires CS-71
+   once after dialog construction.
+8. `_open_dialogs[id(self)]` is the lookup target (CS-66
+   registry) — same keying scheme as CS-70.
+
+### Lock relaxations vs CS-64
+
+CS-64 D-lock pre-CS-71: the per-axis range Entry's `textvariable`
+was permanently the canonical schema StringVar (one binding for
+the dialog's lifetime). CS-71 relaxes this: the Entry's
+`textvariable` swaps between the canonical StringVar (autoscale
+=False, editable) and the parallel display StringVar (autoscale
+=True, disabled). Schema StringVar remains the **sole** source
+of truth for `_working`; display StringVar is widget-only and
+never written into `_working`.
+
+The Reset Defaults / Factory Reset path (CS-68) is also touched:
+`_refresh_widgets_from_working` now re-runs CS-71 greying for
+the four non-secondary_x roles after the silent var refresh.
+Pre-CS-71 the path had no such hook; CS-71 needs it because
+the Checkbutton command (which normally drives greying) does
+NOT fire during the silent refresh.
+
+### Decision lock
+
+D1 / D2 / D3 / D7 / D8 / D9 / D10 from the Phase 4as session
+decision lock are codified above. Highlights of the user-locked
+ambiguities:
+
+* **Live display vs seed-only on toggle** — user picked live
+  display (D3 + D5). The parallel display StringVar + post-redraw
+  notification machinery is the cost; the user-flagged intent
+  ("Entries should show the current ax limits") justifies it.
+* The seed-on-True→False mechanism (D7) reads from the same
+  snapshot the display path uses — no parallel "current limits"
+  computation; one source of truth at the host.
+
+### Test sentinels
+
+`TestPlotConfigDialogAutoscaleGreyingPhase4as` — 22 unit tests
+covering the display StringVar registry shape, initial greying
+state from factory defaults, the toggle transitions in both
+directions, seed-from-snapshot behaviour, no-op-without-snapshot,
+secondary_x exemption, `refresh_axis_displayed_limits` widget-
+state-only contract (three separate sentinels — no
+`_apply_changes_live`, no `_working` mutation, no
+`_modified_tabs` clear), `_format_axis_limit` formatting + non-
+finite collapse, CS-70 composition (secondary_x_linked=True
+keeps secondary_x Entries disabled), and the Factory Reset
+re-greying hook.
+
+`TestUVVisTabAutoscaleLiveDisplayPhase4as` — 10 integration tests
+covering `_compute_axis_displayed_limits` shape (primary_x +
+primary_y from primary ax; twins included when present;
+secondary_x excluded), `_notify_axis_displayed_limits_change`
+no-op + call-on-open behaviour, `id(self)` lookup sentinel
+(mirrors CS-70), `_redraw` + `_draw_empty` fire-the-notification
+wiring, and `_open_plot_settings` seed-on-open + the parallel
+display vars are populated after open.
+
+Two pre-existing CS-69 / CS-70 tests were narrowed for the
+CS-64 D8 relaxation:
+* `TestPlotConfigDialogSecondaryXLinkGreyingPhase4aq.test_other_role_widgets_not_disabled_when_secondary_x_linked`
+  — was asserting `range_lo` / `range_hi` stay state="normal" on
+  the four non-secondary_x roles when secondary_x is linked.
+  CS-71's default greying makes them "disabled" (factory
+  autoscale=True). Narrowed to `autoscale` + `scale` keys only
+  (CS-69's actual scope).
+* `TestPlotConfigDialogLiveRefreshGreyingPhase4ar.test_other_roles_unaffected_by_refresh`
+  — same relaxation. Narrowed to `autoscale` only.
+
+---
+
+## CS-72 — Live-refresh of `_plots_by_role` inventory (Phase 4as)
+
+The second of two CS-70 pattern adoptions in Phase 4as. Closes
+the long-standing Claude-surfaced friction (Phase 4ak ε / Phase
+4ao τ / Phase 4ap τ / Phase 4ap item #10) where the dialog's
+per-axis "Plots on this axis" Listbox was a snapshot frozen at
+dialog open time — nodes added or discarded while the dialog
+was open didn't appear until the user closed and reopened the
+dialog. After CS-72 the Listbox updates live as the graph
+mutates.
+
+### Dialog-side surfaces (`plot_settings_dialog.py`)
+
+* `refresh_plots_by_role(plots)` — public entry point for the
+  host. Replaces `_plots_by_role` snapshot; for every role whose
+  parent Frame was captured by `_build_axis_tab_plots`, destroys
+  the Frame's children and re-invokes the builder. The Move-to
+  picker (CS-50 ladder, Y-axis tabs) rebuilds automatically via
+  the existing builder chain. Widget-state-only contract mirrors
+  CS-70 / CS-71.
+* `_capture_plots_listbox_selection(parent)` — walks the
+  parent's children for a `tk.Listbox` and returns the
+  currently-selected row's label text (or `None`).
+* `_restore_plots_listbox_selection(parent, label)` — walks the
+  parent's children for a Listbox and re-selects the row whose
+  text matches `label`. No-op when no Listbox exists or the
+  label isn't present.
+
+`_build_axis_tab_plots` is the existing per-axis "Plots on this
+axis" block builder. CS-72 captures `self._plots_block_parents
+[role] = parent` at the start of the method — unconditional, even
+for empty roles (the placeholder Label needs to be re-renderable
+when a node lands on the role). New init field
+`_plots_block_parents: dict[str, tk.Widget]` stores the
+captures.
+
+### Host-side surfaces (`uvvis_tab.py`)
+
+* `_notify_plots_by_role_change()` — looks up the per-host
+  dialog and calls `dialog.refresh_plots_by_role(
+  self._compute_plots_by_role())`. No-op when no dialog open.
+  Mirrors CS-70 / CS-71 shape.
+
+Three fire sites:
+
+* `_on_graph_event` dispatch — new branch fires CS-72 for the
+  six events that can change role mapping: `NODE_ADDED`,
+  `NODE_DISCARDED`, `NODE_LABEL_CHANGED`,
+  `NODE_GROUP_MEMBERS_CHANGED`, `GRAPH_LOADED`, `GRAPH_CLEARED`.
+  Explicitly EXCLUDES `NODE_STYLE_CHANGED` (D15 — see below),
+  `NODE_ACTIVE_CHANGED` (visibility, not role mapping),
+  `NODE_COMMITTED`, and `EDGE_ADDED`.
+* `_on_nm_cb_toggle` — appended after the existing CS-70
+  `_notify_axis_link_state_change` call. The nm-axis toggle
+  flips `secondary_x_active` which changes which plots report
+  on the `secondary_x` role.
+* `_on_unit_change` — inserted between the CS-70 link-state
+  notify and the existing `_redraw` call. Same rationale —
+  unit changes can flip `secondary_x_active`. The CS-70 chain
+  order grows from `update → notify_link → redraw` to
+  `update → notify_link → notify_plots → redraw`.
+
+### CS-66 `_on_destroy` defensive filter
+
+Tk's `<Destroy>` event propagates up the widget tree. CS-72's
+`refresh_plots_by_role` destroys children of each captured
+plots-block parent Frame; without filtering, those destroy
+events bubble up to the Toplevel and trigger
+`PlotConfigDialog._on_destroy`, which unconditionally pops the
+dialog from `_open_dialogs` mid-lifetime. Subsequent host
+notifications (CS-70 / CS-71) then no-op silently.
+
+The fix narrows the handler to fire only on actual Toplevel
+destruction (`event.widget is self`). Pre-CS-72 the handler
+happened to work because no code path destroyed dialog
+descendants — Reset Defaults / Factory Reset updates
+StringVars without touching widget identity. CS-72 is the
+first destroy-rebuild pattern in the dialog's lifetime; the
+filter is the minimum change to make CS-66's contract robust
+against it.
+
+This is a CS-66 lock relaxation. Pre-CS-72 the handler fired
+for any descendant destroy. Post-CS-72 it fires only when the
+event's widget IS the Toplevel. The pre-existing behaviour was
+fragile not load-bearing — no test pinned the broader scope,
+and the registry cleanup intent is the Toplevel's destruction
+not arbitrary descendants'.
+
+### Locks
+
+1. `_plots_block_parents` is populated for every per-axis tab
+   built (all five roles, including secondary_x — even empty
+   roles need to re-render).
+2. `refresh_plots_by_role` is widget-state-only — no `_working`
+   touch, no `_apply_changes_live`, no `_modified_tabs` clear.
+3. Selection preservation is by **label match**: read the
+   Listbox `curselection()` + the selected row's label string
+   BEFORE destroy; after rebuild, re-select the row whose label
+   matches if still present; otherwise leave nothing selected.
+   Move-to picker's combobox state is derived from selection
+   and follows automatically.
+4. Host dispatch fires CS-72 for exactly these six events:
+   NODE_ADDED, NODE_DISCARDED, NODE_LABEL_CHANGED,
+   NODE_GROUP_MEMBERS_CHANGED, GRAPH_LOADED, GRAPH_CLEARED.
+5. Host dispatch deliberately omits these four events:
+   NODE_STYLE_CHANGED (D15), NODE_ACTIVE_CHANGED, NODE_COMMITTED,
+   EDGE_ADDED.
+6. `_on_unit_change` chain order: update → notify_link →
+   notify_plots → redraw. `_on_nm_cb_toggle`: redraw →
+   notify_link → notify_plots.
+7. `_draw_empty` end fires CS-71 but does NOT fire CS-72 (D15
+   polish — see below).
+8. CS-66 `_on_destroy` requires `event.widget is self` to fire
+   the registry pop.
+
+### Decision lock — D15
+
+The Move-to picker (CS-50 ladder, Y-axis tabs) inside the dialog
+is the sole path that emits `NODE_STYLE_CHANGED` with a
+role-mapping effect (it writes `style["y_axis"]` which moves a
+node between primary_y / secondary_y / tertiary_y). If CS-72
+fired on `NODE_STYLE_CHANGED`, the refresh would destroy the
+Move-to picker the user is currently interacting with — a
+mid-interaction widget-destruction bug.
+
+User-locked decision (D15): skip `NODE_STYLE_CHANGED` from the
+host dispatch entirely. Trade-off: a Move-to action's effect on
+Listbox membership becomes visible only on the next non-style
+graph event. Acceptable parallel to CS-70's "in-flight Entry
+edits don't survive refresh" model.
+
+**D15 polish landed in Commit 4** of the phase: initial
+implementation fired CS-72 from `_draw_empty` end. `_redraw`
+falls through to `_draw_empty` whenever there are no live nodes;
+if `_draw_empty` fired CS-72, ANY event triggering `_redraw` on
+an empty graph (including NODE_STYLE_CHANGED on a graph that
+ALSO has no nodes left) would inadvertently fire CS-72,
+violating D15. Removed from `_draw_empty`; explicit
+`_on_graph_event` + `_on_unit_change` + `_on_nm_cb_toggle`
+dispatch is the sole CS-72 source.
+
+### Decision lock — D16 (selection preservation)
+
+User-locked: preserve by label match. Pre-destroy snapshot the
+selected row's label; after rebuild, scan for the matching
+label and re-select. If the row was removed (e.g.
+NODE_DISCARDED), the selection clears. Selection follows the
+label across index shifts (e.g. when a new node lands at the
+top of the list, the previously-selected row shifts down but
+keeps its selection).
+
+### Test sentinels
+
+`TestPlotConfigDialogPlotsByRoleRefreshPhase4as` — 10 unit
+tests covering `_plots_block_parents` capture for every per-axis
+tab, snapshot replacement, Listbox rebuild on grow + on
+empty→non-empty (placeholder→Listbox) + on non-empty→empty
+(Listbox→placeholder) transitions, selection preservation +
+clearing + index-shift behaviour, widget-state-only contract
+(three sentinels), Move-to picker re-presence after refresh.
+
+`TestUVVisTabPlotsByRoleLiveRefreshPhase4as` — 18 integration
+tests covering `_notify_plots_by_role_change` no-op + call-on-open,
+six positive-fire sentinels (one per CS-72-eligible event), three
+negative-fire sentinels (NODE_STYLE_CHANGED D15 lock,
+NODE_ACTIVE_CHANGED, NODE_COMMITTED), `_on_nm_cb_toggle` +
+`_on_unit_change` fire, `_on_unit_change` call order with CS-72
+inserted, end-to-end NODE_ADDED → dialog snapshot replacement +
+Listbox row appears, and the CS-66 `_on_destroy` filter
+regression sentinel (dialog stays in `_open_dialogs` after a
+CS-72 refresh).
+
+### Architectural follow-up
+
+CS-71 + CS-72 between them close every queued reference to the
+CS-70 "architectural opening" — the host→dialog
+`refresh_*(state)` pattern is now used by three concrete refresh
+methods (`refresh_axis_link_state` / CS-70,
+`refresh_axis_displayed_limits` / CS-71, `refresh_plots_by_role`
+/ CS-72). Any future phase needing a fourth has the canonical
+recipe: define a `refresh_*(state)` public method on the dialog
+with the widget-state-only contract, plus a `_notify_*_change()`
+helper on the host that looks up `_open_dialogs[id(self)]` and
+fires from the appropriate state-mutation site.
+
+### Friction observed during the phase
+
+(α) The pre-existing `_on_graph_event` `_redraw` trigger list
+does NOT include `NODE_GROUP_MEMBERS_CHANGED` — grouping or
+ungrouping nodes doesn't repaint the plot today. CS-72 wires
+the event to the dialog notify path correctly, but the plot
+visual update is missing. Out of Phase 4as scope; flagged as
+a small follow-up phase (medium reasoning, narrow change).
+
+### Migration impact
+
+Zero. CS-71 + CS-72 add no schema keys, so PTMG_FORMAT_VERSION
+does not bump. Pre-Phase-4as save files load unchanged. The
+new public dialog methods are additive; pre-existing host
+code that ignored them continues to work (the CS-66 registry
+lookup just no-ops when no dialog is open).
+
+### Commits
+
+Phase 4as landed in five commits on `redesign/phase-4as-
+autoscale-range-seed-plots-refresh`, then merged into
+`redesign/main`:
+(1) `plot_settings_dialog.py` pure-module additions for both
+CS-71 and CS-72 (`fd93182`); (2) `test_plot_settings_dialog.py`
+32 new unit-test sentinels in
+`TestPlotConfigDialogAutoscaleGreyingPhase4as` (22) +
+`TestPlotConfigDialogPlotsByRoleRefreshPhase4as` (10), plus 2
+pre-existing CS-69 / CS-70 tests narrowed for the CS-64 D8
+relaxation (`c5cffc6`); (3) `uvvis_tab.py` host-side plumbing +
+wiring for both halves + bundled CS-66 `_on_destroy` filter
+(`97a6536`); (4) `test_uvvis_tab.py` 28 integration-test
+sentinels in
+`TestUVVisTabAutoscaleLiveDisplayPhase4as` (10) +
+`TestUVVisTabPlotsByRoleLiveRefreshPhase4as` (18) +
+`_draw_empty` D15 polish bundled (`fa70f9b`). Plus bookkeeping
+commit (this entry). 1441 tests, all green (1379 baseline +
+62 net new across the two test classes plus the two narrowed
+pre-existing tests). **Architectural-opening cross-ref:**
+CS-70's pattern is now used by three `refresh_*` methods —
+the canonical recipe is established.
+
+---
+
+*Document version: 1.45 — May 2026*
 *1.1: CS-13 implementation notes added in Phase 4a.*
 *1.2: CS-14 Plot Settings Dialog added in Phase 4b.*
 *1.3: CS-15 UV/Vis Baseline Correction + CS-04 implementation
@@ -11670,5 +12125,28 @@ Phase 4ao τ / Phase 4ap τ) — future work can add
 host graph-event subscribers. CS-70 establishes the
 pattern; `_plots_by_role` slot remains queued as a separate
 friction.*
+*1.45: CS-71 + CS-72 added in Phase 4as. Bundled two CS-70-pattern
+adoptions in one session: CS-71 (Autoscale ↔ Range Entry seed +
+live ax-limit display) closes the USER-FLAGGED Phase 4ap friction
+where per-axis range Entries showed stale schema values while
+`autoscale=True`; CS-72 (live-refresh of `_plots_by_role`
+inventory) closes the long-standing Claude-surfaced friction
+(Phase 4ak ε / Phase 4ao τ / Phase 4ap τ / Phase 4ap item #10)
+where the Plot Settings per-axis "Plots on this axis" Listbox
+was frozen at dialog-open time. Both reuse CS-70's host→dialog
+notification pattern via the `_open_dialogs[id(self)]` registry;
+the canonical recipe (`refresh_*(state)` public on dialog,
+`_notify_*_change()` on host) is now used by three concrete
+refresh methods. Lock relaxations: CS-64 D8 (per-axis range
+Entry's textvariable swaps between canonical schema StringVar
+and parallel display StringVar based on autoscale state) and
+CS-66 (`_on_destroy` filters on `event.widget is self` to
+survive CS-72's destroy-rebuild Tk event propagation). No
+schema keys added — PTMG_FORMAT_VERSION unchanged. Five phase
+commits: (1) `fd93182` pure-module dialog surfaces;
+(2) `c5cffc6` 32 unit tests + 2 pre-existing reframed; (3)
+`97a6536` host wiring + CS-66 fix; (4) `fa70f9b` 28 integration
+tests + D15 polish; (5) bookkeeping (this entry). 1441 tests,
+all green (1379 + 62 net new).*
 *To be updated as Open Questions are resolved and new components
 are specified.*
