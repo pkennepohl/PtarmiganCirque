@@ -3567,19 +3567,31 @@ class TestPlotConfigDialogSecondaryXLinkGreyingPhase4aq(unittest.TestCase):
 
     def test_other_role_widgets_not_disabled_when_secondary_x_linked(self):
         # Greying is scoped to the Secondary X tab. The other four
-        # per-axis tabs stay fully editable.
+        # per-axis tabs stay fully editable for the keys CS-69 owns.
+        # CS-71 (Phase 4as) D8 lock relaxation: range_lo / range_hi
+        # are now governed PER ROLE by autoscale state, not by the
+        # secondary_x link — so they're excluded from this loop and
+        # asserted separately in the CS-71 test class. ``autoscale``
+        # + ``scale`` keys are still secondary_x-only greying, hence
+        # the narrowed scope here.
         dlg = self.PlotConfigDialog(
             self.host, self.config, secondary_x_linked=True,
         )
         dlg.update_idletasks()
         for role in ("primary_x", "primary_y", "secondary_y", "tertiary_y"):
-            for key in ("range_lo", "range_hi"):
-                w = dlg._axis_control_widgets[(role, key)]
-                self.assertEqual(
-                    str(w.cget("state")), "normal",
-                    f"{role}.{key} should NOT be disabled "
-                    f"(greying is secondary_x-only)",
-                )
+            w_autoscale = dlg._axis_control_widgets[(role, "autoscale")]
+            self.assertEqual(
+                str(w_autoscale.cget("state")), "normal",
+                f"{role}.autoscale should NOT be disabled "
+                f"(CS-69 greying is secondary_x-only)",
+            )
+            w_scale = dlg._axis_control_widgets[(role, "scale")]
+            self.assertEqual(
+                str(w_scale.cget("state")), "readonly",
+                f"{role}.scale should NOT be disabled "
+                f"(CS-69 greying is secondary_x-only; readonly is "
+                f"the Combobox baseline)",
+            )
 
 
 @unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
@@ -3741,19 +3753,24 @@ class TestPlotConfigDialogLiveRefreshGreyingPhase4ar(unittest.TestCase):
 
     def test_other_roles_unaffected_by_refresh(self):
         # refresh_axis_link_state walks only ``("secondary_x", key)``;
-        # primary_x / primary_y / secondary_y / tertiary_y widgets are
-        # untouched.
+        # primary_x / primary_y / secondary_y / tertiary_y widgets that
+        # CS-70 governs are untouched.
+        # CS-71 (Phase 4as) D8 relaxation: range_lo / range_hi are now
+        # governed per role by autoscale state (CS-71), not by the
+        # secondary_x link — so they're asserted via the CS-71 test
+        # class instead. Here we pin that ``autoscale`` (CS-70's own
+        # scope) stays normal on the other four roles after a
+        # refresh_axis_link_state flip.
         dlg = self.PlotConfigDialog(self.host, self.config)
         dlg.refresh_axis_link_state(True)
         dlg.update_idletasks()
         for role in ("primary_x", "primary_y", "secondary_y", "tertiary_y"):
-            for key in ("range_lo", "range_hi", "autoscale"):
-                w = dlg._axis_control_widgets[(role, key)]
-                self.assertEqual(
-                    str(w.cget("state")), "normal",
-                    f"{role}.{key} should NOT be disabled by refresh "
-                    f"(scope is secondary_x only)",
-                )
+            w = dlg._axis_control_widgets[(role, "autoscale")]
+            self.assertEqual(
+                str(w.cget("state")), "normal",
+                f"{role}.autoscale should NOT be disabled by refresh "
+                f"(CS-70 scope is secondary_x only)",
+            )
 
     # ---- greying label widget tracking + wording ----
 
@@ -4091,6 +4108,688 @@ class TestPlotConfigMigrationCustomTicksPhase4aq(unittest.TestCase):
         self.assertEqual(cfg["axes"]["primary_y"]["tick_major"], "0.2")
         # The new CS-69 key is filled with the factory default.
         self.assertEqual(cfg["axes"]["primary_y"]["custom_ticks"], "")
+
+
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestPlotConfigDialogAutoscaleGreyingPhase4as(unittest.TestCase):
+    """CS-71 (Phase 4as) — Autoscale ↔ Range Entry seed + live display.
+
+    Pins the contract for the per-axis Autoscale greying machinery:
+
+    * ``_axis_range_display_vars`` — parallel display StringVars keyed
+      ``(role, "range_lo"/"range_hi")``, built for the four
+      non-secondary_x roles; widget-only, never written into
+      ``_working``.
+    * ``_on_axis_autoscale_toggle(role)`` — Checkbutton ``command``
+      callback. On True→False seeds canonical range vars from the
+      displayed-limits snapshot; on either toggle re-runs the greying.
+    * ``_apply_axis_autoscale_greying(role)`` — swaps Entry
+      textvariable between canonical and display registries +
+      flips ``state="disabled"/"normal"`` from autoscale value.
+    * ``refresh_axis_displayed_limits(limits)`` — public API; replaces
+      snapshot + refreshes display vars. Widget-state-only contract
+      mirrored from CS-70.
+    * ``_format_axis_limit(value)`` — ``%.6g`` formatter; non-finite
+      collapses to ``""``.
+    * CS-64 D-lock relaxation: Entry textvariable is no longer
+      permanently the canonical schema StringVar; it swaps on
+      autoscale toggle. Canonical StringVar remains the sole source
+      of truth for ``_working``.
+    * CS-70 composition: secondary_x exempt from CS-71; when
+      ``secondary_x_linked=True`` CS-69 / CS-70 greying still wins
+      on the secondary_x tab.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import plot_settings_dialog
+        cls.psd = plot_settings_dialog
+        cls.PlotConfigDialog = plot_settings_dialog.PlotConfigDialog
+
+    def setUp(self):
+        self.psd._open_dialogs.clear()
+        self.psd._USER_DEFAULTS.clear()
+        self.host = tk.Frame(_root)
+        self.host.pack()
+        self.config: dict = {}
+
+    def tearDown(self):
+        for dlg in list(self.psd._open_dialogs.values()):
+            try:
+                dlg.destroy()
+            except Exception:
+                pass
+        self.psd._open_dialogs.clear()
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    # ---- Display StringVar registry shape ----
+
+    def test_display_vars_built_for_four_non_secondary_x_roles(self):
+        # Pin: the parallel display StringVars exist for every
+        # non-secondary_x role × {range_lo, range_hi} pair.
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        for role in ("primary_x", "primary_y", "secondary_y", "tertiary_y"):
+            for key in ("range_lo", "range_hi"):
+                self.assertIn(
+                    (role, key), dlg._axis_range_display_vars,
+                    f"missing display var for ({role!r}, {key!r})",
+                )
+                self.assertIsInstance(
+                    dlg._axis_range_display_vars[(role, key)],
+                    tk.StringVar,
+                )
+
+    def test_no_display_vars_for_secondary_x(self):
+        # Pin: secondary_x is explicitly exempt (CS-69 / CS-70 own it).
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        for key in ("range_lo", "range_hi"):
+            self.assertNotIn(
+                ("secondary_x", key), dlg._axis_range_display_vars,
+                f"secondary_x must NOT have a CS-71 display var "
+                f"for {key} (CS-69 / CS-70 greying owns it)",
+            )
+
+    def test_display_vars_start_empty(self):
+        # Before any host fires refresh_axis_displayed_limits the
+        # display vars are "" (the construction default). Pinned so a
+        # regression to "0"/"None"/garbage surfaces immediately.
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        for (_role, _key), var in dlg._axis_range_display_vars.items():
+            self.assertEqual(var.get(), "")
+
+    # ---- Initial greying state from factory defaults ----
+
+    def test_default_autoscale_true_disables_range_entries(self):
+        # Factory default autoscale=True for every role → at build
+        # time the range Entries on the four non-secondary_x roles are
+        # state="disabled". This IS the CS-64 D8 relaxation surface:
+        # CS-69's pre-CS-71 test asserting "normal" was updated for
+        # this behaviour.
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        for role in ("primary_x", "primary_y", "secondary_y", "tertiary_y"):
+            for key in ("range_lo", "range_hi"):
+                w = dlg._axis_control_widgets[(role, key)]
+                self.assertEqual(
+                    str(w.cget("state")), "disabled",
+                    f"{role}.{key} should be disabled "
+                    f"(autoscale=True is the factory default)",
+                )
+
+    def test_default_autoscale_true_binds_display_textvariable(self):
+        # When autoscale=True the Entry's textvariable is the parallel
+        # display var, NOT the canonical schema StringVar.
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        for role in ("primary_x", "primary_y", "secondary_y", "tertiary_y"):
+            for key in ("range_lo", "range_hi"):
+                entry = dlg._axis_control_widgets[(role, key)]
+                expected = str(dlg._axis_range_display_vars[(role, key)])
+                self.assertEqual(
+                    str(entry.cget("textvariable")), expected,
+                    f"{role}.{key} should bind the display var "
+                    f"while autoscale=True",
+                )
+
+    def test_autoscale_false_in_config_keeps_entries_editable(self):
+        # When the host passes autoscale=False for a role, the Entry
+        # is state="normal" at build time and bound to the canonical
+        # StringVar (the user's typed values are the source of truth).
+        cfg = {"axes": {"primary_y": {"autoscale": False}}}
+        dlg = self.PlotConfigDialog(self.host, cfg)
+        dlg.update_idletasks()
+        for key in ("range_lo", "range_hi"):
+            w = dlg._axis_control_widgets[("primary_y", key)]
+            self.assertEqual(
+                str(w.cget("state")), "normal",
+                f"primary_y.{key} should be normal when "
+                f"autoscale=False in the config",
+            )
+            canonical = str(dlg._axis_control_vars[("primary_y", key)])
+            self.assertEqual(str(w.cget("textvariable")), canonical)
+
+    # ---- _on_axis_autoscale_toggle behaviour ----
+
+    def test_toggle_true_to_false_swaps_to_canonical_var(self):
+        # Simulate the user toggle: var.set(False) then invoke the
+        # command callback. Entry textvariable should swap back to the
+        # canonical StringVar; state becomes "normal".
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        var = dlg._axis_control_vars[("primary_y", "autoscale")]
+        var.set(False)
+        dlg._on_axis_autoscale_toggle("primary_y")
+        dlg.update_idletasks()
+        for key in ("range_lo", "range_hi"):
+            entry = dlg._axis_control_widgets[("primary_y", key)]
+            self.assertEqual(str(entry.cget("state")), "normal")
+            canonical = str(dlg._axis_control_vars[("primary_y", key)])
+            self.assertEqual(str(entry.cget("textvariable")), canonical)
+
+    def test_toggle_false_to_true_swaps_to_display_var(self):
+        # Reverse: start at autoscale=False (range Entries editable),
+        # toggle to True, Entries should disable + rebind display var.
+        cfg = {"axes": {"primary_y": {"autoscale": False}}}
+        dlg = self.PlotConfigDialog(self.host, cfg)
+        dlg.update_idletasks()
+        var = dlg._axis_control_vars[("primary_y", "autoscale")]
+        var.set(True)
+        dlg._on_axis_autoscale_toggle("primary_y")
+        dlg.update_idletasks()
+        for key in ("range_lo", "range_hi"):
+            entry = dlg._axis_control_widgets[("primary_y", key)]
+            self.assertEqual(str(entry.cget("state")), "disabled")
+            display = str(dlg._axis_range_display_vars[("primary_y", key)])
+            self.assertEqual(str(entry.cget("textvariable")), display)
+
+    def test_toggle_true_to_false_seeds_from_displayed_limits(self):
+        # On True→False, the canonical range StringVars get seeded
+        # from the most recent displayed-limits snapshot (so the user
+        # starts editing from a known reasonable baseline).
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        dlg.refresh_axis_displayed_limits(
+            {"primary_y": (0.0, 1.5)},
+        )
+        var = dlg._axis_control_vars[("primary_y", "autoscale")]
+        var.set(False)
+        dlg._on_axis_autoscale_toggle("primary_y")
+        lo_var = dlg._axis_control_vars[("primary_y", "range_lo")]
+        hi_var = dlg._axis_control_vars[("primary_y", "range_hi")]
+        self.assertEqual(lo_var.get(), "0")
+        self.assertEqual(hi_var.get(), "1.5")
+
+    def test_toggle_seed_silent_when_no_snapshot(self):
+        # If the host never fired refresh_axis_displayed_limits, the
+        # toggle leaves the canonical StringVars untouched (no
+        # exception, no garbage seeded).
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        lo_var = dlg._axis_control_vars[("primary_y", "range_lo")]
+        hi_var = dlg._axis_control_vars[("primary_y", "range_hi")]
+        lo_var.set("explicit-pre-toggle-lo")
+        hi_var.set("explicit-pre-toggle-hi")
+        var = dlg._axis_control_vars[("primary_y", "autoscale")]
+        var.set(False)
+        dlg._on_axis_autoscale_toggle("primary_y")
+        self.assertEqual(lo_var.get(), "explicit-pre-toggle-lo")
+        self.assertEqual(hi_var.get(), "explicit-pre-toggle-hi")
+
+    def test_toggle_no_op_for_secondary_x(self):
+        # secondary_x must short-circuit (CS-69 / CS-70 own it).
+        # Calling _on_axis_autoscale_toggle("secondary_x") must not
+        # raise and must not touch widgets / vars.
+        dlg = self.PlotConfigDialog(
+            self.host, self.config, secondary_x_linked=True,
+        )
+        dlg.update_idletasks()
+        # Snapshot the secondary_x range widget state.
+        lo_state_before = str(
+            dlg._axis_control_widgets[("secondary_x", "range_lo")].cget(
+                "state",
+            )
+        )
+        dlg._on_axis_autoscale_toggle("secondary_x")
+        dlg.update_idletasks()
+        lo_state_after = str(
+            dlg._axis_control_widgets[("secondary_x", "range_lo")].cget(
+                "state",
+            )
+        )
+        self.assertEqual(lo_state_before, lo_state_after)
+        self.assertEqual(lo_state_after, "disabled")
+
+    # ---- refresh_axis_displayed_limits behaviour ----
+
+    def test_refresh_updates_snapshot(self):
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        self.assertEqual(dlg._axis_displayed_limits, {})
+        dlg.refresh_axis_displayed_limits(
+            {"primary_x": (200.0, 800.0), "primary_y": (-0.1, 2.0)},
+        )
+        self.assertEqual(
+            dlg._axis_displayed_limits,
+            {"primary_x": (200.0, 800.0), "primary_y": (-0.1, 2.0)},
+        )
+
+    def test_refresh_updates_display_vars(self):
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        dlg.refresh_axis_displayed_limits(
+            {"primary_x": (200.0, 800.0)},
+        )
+        lo_disp = dlg._axis_range_display_vars[("primary_x", "range_lo")]
+        hi_disp = dlg._axis_range_display_vars[("primary_x", "range_hi")]
+        self.assertEqual(lo_disp.get(), "200")
+        self.assertEqual(hi_disp.get(), "800")
+
+    def test_refresh_skips_secondary_x(self):
+        # Even if the host passes a secondary_x entry, refresh ignores
+        # it — no display var exists for that role.
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        dlg.refresh_axis_displayed_limits(
+            {"secondary_x": (300.0, 700.0)},
+        )
+        for key in ("range_lo", "range_hi"):
+            self.assertNotIn(
+                ("secondary_x", key), dlg._axis_range_display_vars,
+            )
+
+    def test_refresh_leaves_missing_roles_unchanged(self):
+        # When the host omits a role, its display vars keep their
+        # previous values (last-seen) — refresh is additive per role.
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        dlg.refresh_axis_displayed_limits(
+            {"primary_y": (0.0, 1.0)},
+        )
+        lo_before = dlg._axis_range_display_vars[
+            ("primary_y", "range_lo")
+        ].get()
+        # Second refresh that omits primary_y — display var sticky.
+        dlg.refresh_axis_displayed_limits(
+            {"primary_x": (200.0, 800.0)},
+        )
+        lo_after = dlg._axis_range_display_vars[
+            ("primary_y", "range_lo")
+        ].get()
+        self.assertEqual(lo_before, lo_after)
+        self.assertEqual(lo_after, "0")
+
+    def test_refresh_does_not_trigger_apply_changes_live(self):
+        # Widget-state-only contract, mirrors CS-70.
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        call_count = [0]
+        original_apply = dlg._apply_changes_live
+
+        def _spy(*a, **kw):
+            call_count[0] += 1
+            return original_apply(*a, **kw)
+        dlg._apply_changes_live = _spy  # type: ignore[method-assign]
+        dlg.refresh_axis_displayed_limits(
+            {"primary_x": (200.0, 800.0), "primary_y": (0.0, 1.5)},
+        )
+        self.assertEqual(call_count[0], 0)
+
+    def test_refresh_does_not_touch_working_copy(self):
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        snapshot = copy.deepcopy(dlg._working)
+        dlg.refresh_axis_displayed_limits(
+            {"primary_x": (200.0, 800.0)},
+        )
+        self.assertEqual(dlg._working, snapshot)
+
+    def test_refresh_does_not_clear_modified_tabs(self):
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        dlg._modified_tabs.add("global")
+        dlg._modified_tabs.add("primary_y")
+        dlg.refresh_axis_displayed_limits(
+            {"primary_y": (0.0, 1.0)},
+        )
+        self.assertIn("global", dlg._modified_tabs)
+        self.assertIn("primary_y", dlg._modified_tabs)
+
+    # ---- _format_axis_limit edge cases ----
+
+    def test_format_axis_limit_basic(self):
+        self.assertEqual(
+            self.PlotConfigDialog._format_axis_limit(0.0), "0",
+        )
+        self.assertEqual(
+            self.PlotConfigDialog._format_axis_limit(1.5), "1.5",
+        )
+        self.assertEqual(
+            self.PlotConfigDialog._format_axis_limit(-3.25), "-3.25",
+        )
+
+    def test_format_axis_limit_collapses_non_finite(self):
+        # NaN / inf produce "" so a transient bad ax-limit doesn't
+        # render gibberish into the disabled Entry.
+        self.assertEqual(
+            self.PlotConfigDialog._format_axis_limit(float("nan")), "",
+        )
+        self.assertEqual(
+            self.PlotConfigDialog._format_axis_limit(float("inf")), "",
+        )
+        self.assertEqual(
+            self.PlotConfigDialog._format_axis_limit(float("-inf")), "",
+        )
+
+    # ---- CS-70 composition: secondary_x stays governed by link ----
+
+    def test_secondary_x_link_greying_wins_over_cs71(self):
+        # When secondary_x is linked, the secondary_x range Entries
+        # are state="disabled" via CS-69 / CS-70; CS-71's exemption
+        # check prevents CS-71 from accidentally re-enabling them.
+        dlg = self.PlotConfigDialog(
+            self.host, self.config, secondary_x_linked=True,
+        )
+        dlg.update_idletasks()
+        for key in ("range_lo", "range_hi"):
+            w = dlg._axis_control_widgets[("secondary_x", key)]
+            self.assertEqual(str(w.cget("state")), "disabled")
+
+    # ---- Factory Reset re-applies CS-71 greying ----
+
+    def test_factory_reset_reapplies_greying(self):
+        # User toggles primary_y autoscale to False (Entries become
+        # editable + bound to canonical var). Factory Reset restores
+        # autoscale=True silently via the var refresh closure; CS-71's
+        # post-refresh hook in _refresh_widgets_from_working must
+        # re-grey the Entries.
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        var = dlg._axis_control_vars[("primary_y", "autoscale")]
+        var.set(False)
+        dlg._on_axis_autoscale_toggle("primary_y")
+        dlg.update_idletasks()
+        # Sanity: Entries are now editable.
+        self.assertEqual(
+            str(dlg._axis_control_widgets[("primary_y", "range_lo")].cget(
+                "state",
+            )),
+            "normal",
+        )
+        # Simulate Factory Reset by writing factory autoscale back
+        # into _working and re-running the refresh path.
+        dlg._working["axes"]["primary_y"]["autoscale"] = True
+        dlg._refresh_widgets_from_working()
+        dlg.update_idletasks()
+        # CS-71's post-refresh hook should have re-greyed primary_y.
+        for key in ("range_lo", "range_hi"):
+            w = dlg._axis_control_widgets[("primary_y", key)]
+            self.assertEqual(
+                str(w.cget("state")), "disabled",
+                f"primary_y.{key} should be disabled after factory "
+                f"autoscale=True restore",
+            )
+
+
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestPlotConfigDialogPlotsByRoleRefreshPhase4as(unittest.TestCase):
+    """CS-72 (Phase 4as) — live-refresh of ``_plots_by_role`` inventory.
+
+    Pins the contract for the new ``refresh_plots_by_role(plots)``
+    public method + the supporting per-role parent-Frame capture in
+    ``_build_axis_tab_plots``:
+
+    * ``_plots_block_parents`` — populated at build time for every
+      per-axis tab.
+    * ``refresh_plots_by_role(plots)`` — replaces snapshot; destroys
+      children of each captured parent + re-invokes the builder.
+      Widget-state-only contract mirrors CS-70 / CS-71.
+    * Selection preservation by label match (D16) — selected row
+      survives the rebuild when its label is still present;
+      otherwise selection clears.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import plot_settings_dialog
+        cls.psd = plot_settings_dialog
+        cls.PlotConfigDialog = plot_settings_dialog.PlotConfigDialog
+
+    def setUp(self):
+        self.psd._open_dialogs.clear()
+        self.psd._USER_DEFAULTS.clear()
+        self.host = tk.Frame(_root)
+        self.host.pack()
+        self.config: dict = {}
+
+    def tearDown(self):
+        for dlg in list(self.psd._open_dialogs.values()):
+            try:
+                dlg.destroy()
+            except Exception:
+                pass
+        self.psd._open_dialogs.clear()
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    @staticmethod
+    def _find_listbox(parent):
+        for child in parent.winfo_children():
+            if isinstance(child, tk.Listbox):
+                return child
+        return None
+
+    @staticmethod
+    def _listbox_items(parent):
+        lb = TestPlotConfigDialogPlotsByRoleRefreshPhase4as._find_listbox(
+            parent,
+        )
+        if lb is None:
+            return []
+        return [str(lb.get(i)) for i in range(lb.size())]
+
+    # ---- _plots_block_parents capture ----
+
+    def test_plots_block_parents_captured_for_every_axis_tab(self):
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        for role in ("primary_x", "secondary_x",
+                     "primary_y", "secondary_y", "tertiary_y"):
+            self.assertIn(
+                role, dlg._plots_block_parents,
+                f"plots-block parent must be captured for {role!r}",
+            )
+            self.assertIsInstance(
+                dlg._plots_block_parents[role], tk.Widget,
+            )
+
+    # ---- refresh_plots_by_role replaces snapshot ----
+
+    def test_refresh_replaces_plots_by_role_snapshot(self):
+        dlg = self.PlotConfigDialog(
+            self.host, self.config,
+            plots_by_role={"primary_y": ("alpha",)},
+        )
+        dlg.update_idletasks()
+        self.assertEqual(
+            dlg._plots_by_role.get("primary_y"), ("alpha",),
+        )
+        dlg.refresh_plots_by_role(
+            {"primary_y": ("alpha", "beta"), "secondary_y": ("gamma",)},
+        )
+        dlg.update_idletasks()
+        self.assertEqual(
+            dlg._plots_by_role.get("primary_y"), ("alpha", "beta"),
+        )
+        self.assertEqual(
+            dlg._plots_by_role.get("secondary_y"), ("gamma",),
+        )
+
+    def test_refresh_rebuilds_listbox_contents(self):
+        # Before refresh: one row. After refresh: two rows.
+        dlg = self.PlotConfigDialog(
+            self.host, self.config,
+            plots_by_role={"primary_y": ("alpha",)},
+        )
+        dlg.update_idletasks()
+        parent = dlg._plots_block_parents["primary_y"]
+        self.assertEqual(self._listbox_items(parent), ["alpha"])
+        dlg.refresh_plots_by_role(
+            {"primary_y": ("alpha", "beta", "gamma")},
+        )
+        dlg.update_idletasks()
+        self.assertEqual(
+            self._listbox_items(dlg._plots_block_parents["primary_y"]),
+            ["alpha", "beta", "gamma"],
+        )
+
+    def test_refresh_adds_listbox_when_role_was_empty(self):
+        # Start empty (just the italic placeholder), then refresh with
+        # plots — the placeholder gives way to a real Listbox.
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        parent = dlg._plots_block_parents["primary_y"]
+        self.assertIsNone(self._find_listbox(parent))
+        dlg.refresh_plots_by_role(
+            {"primary_y": ("alpha",)},
+        )
+        dlg.update_idletasks()
+        parent = dlg._plots_block_parents["primary_y"]
+        self.assertEqual(self._listbox_items(parent), ["alpha"])
+
+    def test_refresh_removes_listbox_when_role_becomes_empty(self):
+        dlg = self.PlotConfigDialog(
+            self.host, self.config,
+            plots_by_role={"primary_y": ("alpha",)},
+        )
+        dlg.update_idletasks()
+        parent = dlg._plots_block_parents["primary_y"]
+        self.assertIsNotNone(self._find_listbox(parent))
+        dlg.refresh_plots_by_role({"primary_y": ()})
+        dlg.update_idletasks()
+        parent = dlg._plots_block_parents["primary_y"]
+        self.assertIsNone(self._find_listbox(parent))
+
+    # ---- Selection preservation by label match (D16) ----
+
+    def test_selection_preserved_when_label_still_present(self):
+        dlg = self.PlotConfigDialog(
+            self.host, self.config,
+            plots_by_role={"primary_y": ("alpha", "beta", "gamma")},
+        )
+        dlg.update_idletasks()
+        lb = self._find_listbox(dlg._plots_block_parents["primary_y"])
+        lb.selection_set(1)  # "beta"
+        dlg.refresh_plots_by_role(
+            {"primary_y": ("alpha", "beta", "gamma", "delta")},
+        )
+        dlg.update_idletasks()
+        lb2 = self._find_listbox(dlg._plots_block_parents["primary_y"])
+        self.assertIsNotNone(lb2)
+        sel = lb2.curselection()
+        self.assertEqual(len(sel), 1)
+        self.assertEqual(str(lb2.get(sel[0])), "beta")
+
+    def test_selection_cleared_when_label_disappears(self):
+        dlg = self.PlotConfigDialog(
+            self.host, self.config,
+            plots_by_role={"primary_y": ("alpha", "beta", "gamma")},
+        )
+        dlg.update_idletasks()
+        lb = self._find_listbox(dlg._plots_block_parents["primary_y"])
+        lb.selection_set(1)  # "beta"
+        dlg.refresh_plots_by_role(
+            {"primary_y": ("alpha", "gamma")},  # beta gone
+        )
+        dlg.update_idletasks()
+        lb2 = self._find_listbox(dlg._plots_block_parents["primary_y"])
+        self.assertEqual(lb2.curselection(), ())
+
+    def test_selection_preserved_even_when_index_shifts(self):
+        # Label "gamma" was at index 2; after refresh it's at index 0.
+        # Selection follows the label, not the index.
+        dlg = self.PlotConfigDialog(
+            self.host, self.config,
+            plots_by_role={"primary_y": ("alpha", "beta", "gamma")},
+        )
+        dlg.update_idletasks()
+        lb = self._find_listbox(dlg._plots_block_parents["primary_y"])
+        lb.selection_set(2)  # "gamma"
+        dlg.refresh_plots_by_role(
+            {"primary_y": ("gamma", "delta")},
+        )
+        dlg.update_idletasks()
+        lb2 = self._find_listbox(dlg._plots_block_parents["primary_y"])
+        sel = lb2.curselection()
+        self.assertEqual(len(sel), 1)
+        self.assertEqual(str(lb2.get(sel[0])), "gamma")
+
+    # ---- Widget-state-only contract (mirrors CS-70 / CS-71) ----
+
+    def test_refresh_does_not_trigger_apply_changes_live(self):
+        dlg = self.PlotConfigDialog(
+            self.host, self.config,
+            plots_by_role={"primary_y": ("alpha",)},
+        )
+        dlg.update_idletasks()
+        call_count = [0]
+        original_apply = dlg._apply_changes_live
+
+        def _spy(*a, **kw):
+            call_count[0] += 1
+            return original_apply(*a, **kw)
+        dlg._apply_changes_live = _spy  # type: ignore[method-assign]
+        dlg.refresh_plots_by_role(
+            {"primary_y": ("alpha", "beta")},
+        )
+        self.assertEqual(call_count[0], 0)
+
+    def test_refresh_does_not_touch_working_copy(self):
+        dlg = self.PlotConfigDialog(
+            self.host, self.config,
+            plots_by_role={"primary_y": ("alpha",)},
+        )
+        dlg.update_idletasks()
+        snapshot = copy.deepcopy(dlg._working)
+        dlg.refresh_plots_by_role(
+            {"primary_y": ("alpha", "beta", "gamma")},
+        )
+        self.assertEqual(dlg._working, snapshot)
+
+    def test_refresh_does_not_clear_modified_tabs(self):
+        dlg = self.PlotConfigDialog(
+            self.host, self.config,
+            plots_by_role={"primary_y": ("alpha",)},
+        )
+        dlg.update_idletasks()
+        dlg._modified_tabs.add("global")
+        dlg._modified_tabs.add("primary_y")
+        dlg.refresh_plots_by_role(
+            {"primary_y": ("alpha", "beta")},
+        )
+        self.assertIn("global", dlg._modified_tabs)
+        self.assertIn("primary_y", dlg._modified_tabs)
+
+    # ---- Move-to picker rebuilds on Y-axis tabs ----
+
+    def test_move_to_picker_present_after_refresh_on_y_axis_tab(self):
+        # The Move-to Combobox (CS-50 ladder) lives below the Listbox
+        # on Y-axis tabs. After a refresh that keeps the role non-empty,
+        # the Combobox is re-present (rebuilt by _build_axis_tab_plots).
+        called: list = []
+
+        def _on_route(source, label, target):
+            called.append((source, label, target))
+        dlg = self.PlotConfigDialog(
+            self.host, self.config,
+            plots_by_role={"primary_y": ("alpha",)},
+            on_route_plot=_on_route,
+        )
+        dlg.update_idletasks()
+        dlg.refresh_plots_by_role(
+            {"primary_y": ("alpha", "beta")},
+        )
+        dlg.update_idletasks()
+        parent = dlg._plots_block_parents["primary_y"]
+
+        def _has_combobox(w):
+            for c in w.winfo_children():
+                if isinstance(c, ttk.Combobox):
+                    return True
+                if _has_combobox(c):
+                    return True
+            return False
+        self.assertTrue(
+            _has_combobox(parent),
+            "Move-to Combobox should be present after refresh",
+        )
 
 
 if __name__ == "__main__":
