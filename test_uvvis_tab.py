@@ -1823,6 +1823,369 @@ class TestSecondaryXAxisLinkPhase4aq(unittest.TestCase):
 
 
 @unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestUVVisTabLiveLinkStatePhase4ar(unittest.TestCase):
+    """Phase 4ar (CS-70) — host-side live link-state plumbing.
+
+    Pins the three new UVVisTab methods and their wiring:
+
+    * ``_update_nm_cb_state`` — disables ``_nm_cb`` when
+      ``_x_unit == "nm"`` and forces ``_show_nm_axis`` False.
+      Enabled (NORMAL) when unit ∈ {"cm-1", "eV"}.
+
+    * ``_on_nm_cb_toggle`` — bound as ``_nm_cb``'s command;
+      invokes ``_redraw`` and ``_notify_axis_link_state_change``.
+
+    * ``_notify_axis_link_state_change`` — looks up the per-host
+      dialog in ``plot_settings_dialog._open_dialogs[id(self)]``
+      (CS-66) and calls ``refresh_axis_link_state`` with the freshly
+      computed link bool. No-op when no dialog is open.
+
+    Wiring sentinels: ``_on_unit_change`` chains the gate update +
+    notification before ``_redraw``; the dialog's ``_secondary_x_linked``
+    snapshot tracks live host changes.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from uvvis_tab import UVVisTab
+        import plot_settings_dialog as psd
+        cls.UVVisTab = UVVisTab
+        cls.psd = psd
+
+    def setUp(self):
+        self.psd._open_dialogs.clear()
+        self.psd._USER_DEFAULTS.clear()
+        self.host = tk.Frame(_root)
+        self.host.pack()
+        self.graph = ProjectGraph()
+        self.tab = self.UVVisTab(self.host, graph=self.graph)
+
+    def tearDown(self):
+        for dlg in list(self.psd._open_dialogs.values()):
+            try:
+                dlg.destroy()
+            except Exception:
+                pass
+        self.psd._open_dialogs.clear()
+        try:
+            self.tab.destroy()
+        except Exception:
+            pass
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    # ---- _update_nm_cb_state ----
+
+    def test_nm_cb_disabled_at_construction_default_unit_nm(self):
+        # Default ``_x_unit`` is "nm" → _update_nm_cb_state should have
+        # fired once after _nm_cb was built and left it DISABLED.
+        self.assertEqual(self.tab._x_unit.get(), "nm")
+        self.assertEqual(
+            str(self.tab._nm_cb.cget("state")), "disabled",
+            "nm_cb should be DISABLED when default unit is nm",
+        )
+
+    def test_nm_cb_enabled_after_switch_to_cm1(self):
+        self.tab._x_unit.set("cm-1")
+        self.tab._update_nm_cb_state()
+        self.assertEqual(
+            str(self.tab._nm_cb.cget("state")), "normal",
+            "nm_cb should be NORMAL when unit is cm-1",
+        )
+
+    def test_nm_cb_enabled_after_switch_to_eV(self):
+        # D8 lock relaxation: eV is also a non-nm unit that allows the
+        # wavelength secondary axis.
+        self.tab._x_unit.set("eV")
+        self.tab._update_nm_cb_state()
+        self.assertEqual(
+            str(self.tab._nm_cb.cget("state")), "normal",
+            "nm_cb should be NORMAL when unit is eV",
+        )
+
+    def test_nm_cb_disabled_after_switch_back_to_nm(self):
+        self.tab._x_unit.set("cm-1")
+        self.tab._update_nm_cb_state()
+        self.tab._x_unit.set("nm")
+        self.tab._update_nm_cb_state()
+        self.assertEqual(
+            str(self.tab._nm_cb.cget("state")), "disabled",
+        )
+
+    def test_update_forces_show_nm_axis_false_when_unit_nm(self):
+        # User had toggle ON in cm⁻¹ mode; switching to nm should
+        # force the BooleanVar to False (toggle has no effect in nm
+        # mode anyway, but leaving it stale-truthy is misleading UX).
+        self.tab._x_unit.set("cm-1")
+        self.tab._show_nm_axis.set(True)
+        self.tab._x_unit.set("nm")
+        self.tab._update_nm_cb_state()
+        self.assertFalse(self.tab._show_nm_axis.get())
+
+    def test_update_does_not_flip_show_nm_axis_when_unit_non_nm(self):
+        # When unit ∈ {cm-1, eV}, the gate enables the Checkbutton but
+        # must NOT touch the BooleanVar's current value (the user's
+        # choice is preserved across switches between cm-1 and eV).
+        self.tab._x_unit.set("cm-1")
+        self.tab._show_nm_axis.set(True)
+        self.tab._update_nm_cb_state()
+        self.assertTrue(self.tab._show_nm_axis.get())
+        self.tab._x_unit.set("eV")
+        self.tab._update_nm_cb_state()
+        self.assertTrue(self.tab._show_nm_axis.get())
+
+    def test_update_safe_when_nm_cb_attribute_missing(self):
+        # Defensive guard: calling _update_nm_cb_state before _nm_cb
+        # exists (or after it's been destroyed) is a no-op, not an
+        # AttributeError.
+        del self.tab._nm_cb
+        # Must not raise.
+        self.tab._update_nm_cb_state()
+
+    # ---- _on_nm_cb_toggle ----
+
+    def test_nm_cb_command_routes_through_on_nm_cb_toggle(self):
+        # Wiring sentinel: the Checkbutton's command must route through
+        # _on_nm_cb_toggle, NOT the pre-CS-70 direct _redraw binding.
+        # We can't monkey-patch _on_nm_cb_toggle after the fact (Tk's
+        # command callback closes over the original method object at
+        # build time), so we spy on the two side effects
+        # (_redraw + _notify_axis_link_state_change) and invoke the
+        # widget. If both fire on a single ``.invoke()`` call, the
+        # command MUST be _on_nm_cb_toggle — the pre-CS-70 binding only
+        # fired _redraw.
+        # Switch to cm-1 first so _nm_cb is NOT disabled (Tk widgets
+        # in state=disabled don't fire commands on invoke).
+        self.tab._x_unit.set("cm-1")
+        self.tab._update_nm_cb_state()
+        redraw_calls = [0]
+        notify_calls = [0]
+        original_redraw = self.tab._redraw
+        original_notify = self.tab._notify_axis_link_state_change
+
+        def _redraw_spy(*a, **kw):
+            redraw_calls[0] += 1
+            return original_redraw(*a, **kw)
+
+        def _notify_spy(*a, **kw):
+            notify_calls[0] += 1
+            return original_notify(*a, **kw)
+        self.tab._redraw = _redraw_spy  # type: ignore[method-assign]
+        self.tab._notify_axis_link_state_change = _notify_spy  # type: ignore[method-assign]
+        self.tab._nm_cb.invoke()
+        self.assertEqual(
+            redraw_calls[0], 1,
+            "_nm_cb.invoke() must fire _redraw via _on_nm_cb_toggle",
+        )
+        self.assertEqual(
+            notify_calls[0], 1,
+            "_nm_cb.invoke() must fire _notify via _on_nm_cb_toggle "
+            "(absent in the pre-CS-70 direct-redraw binding)",
+        )
+
+    def test_on_nm_cb_toggle_calls_redraw_and_notify(self):
+        # Both side effects must fire. Spy on both.
+        redraw_calls = [0]
+        notify_calls = [0]
+        original_redraw = self.tab._redraw
+        original_notify = self.tab._notify_axis_link_state_change
+
+        def _redraw_spy(*a, **kw):
+            redraw_calls[0] += 1
+            return original_redraw(*a, **kw)
+
+        def _notify_spy(*a, **kw):
+            notify_calls[0] += 1
+            return original_notify(*a, **kw)
+        self.tab._redraw = _redraw_spy  # type: ignore[method-assign]
+        self.tab._notify_axis_link_state_change = _notify_spy  # type: ignore[method-assign]
+        self.tab._on_nm_cb_toggle()
+        self.assertEqual(redraw_calls[0], 1)
+        self.assertEqual(notify_calls[0], 1)
+
+    # ---- _notify_axis_link_state_change ----
+
+    def test_notify_is_noop_when_no_dialog_open(self):
+        # No dialog in _open_dialogs → call must be a silent no-op.
+        self.psd._open_dialogs.clear()
+        # Must not raise.
+        self.tab._notify_axis_link_state_change()
+
+    def test_notify_calls_refresh_on_open_dialog(self):
+        # Open a real dialog and verify that the notification routes
+        # to its refresh_axis_link_state method.
+        dlg = self.psd.open_plot_config_dialog(
+            self.tab, {}, secondary_x_linked=False,
+        )
+        try:
+            calls = []
+            original = dlg.refresh_axis_link_state
+
+            def _spy(linked):
+                calls.append(linked)
+                return original(linked)
+            dlg.refresh_axis_link_state = _spy  # type: ignore[method-assign]
+            # Flip host into the linked state and notify.
+            self.tab._x_unit.set("cm-1")
+            self.tab._show_nm_axis.set(True)
+            self.tab._notify_axis_link_state_change()
+            self.assertEqual(calls, [True])
+            # Flip back and notify again.
+            self.tab._show_nm_axis.set(False)
+            self.tab._notify_axis_link_state_change()
+            self.assertEqual(calls, [True, False])
+        finally:
+            try:
+                dlg.destroy()
+            except Exception:
+                pass
+
+    def test_notify_uses_id_self_lookup(self):
+        # The dialog registry is keyed by id(parent). Confirm the
+        # notification only fires for the dialog whose parent IS this
+        # tab — a dialog for an unrelated host must be left alone.
+        other_host = tk.Frame(_root)
+        other_host.pack()
+        try:
+            other_tab = self.UVVisTab(other_host, graph=ProjectGraph())
+            try:
+                self_dlg = self.psd.open_plot_config_dialog(
+                    self.tab, {}, secondary_x_linked=False,
+                )
+                other_dlg = self.psd.open_plot_config_dialog(
+                    other_tab, {}, secondary_x_linked=False,
+                )
+                self_calls = []
+                other_calls = []
+                original_self = self_dlg.refresh_axis_link_state
+                original_other = other_dlg.refresh_axis_link_state
+
+                def _spy_self(linked):
+                    self_calls.append(linked)
+                    return original_self(linked)
+
+                def _spy_other(linked):
+                    other_calls.append(linked)
+                    return original_other(linked)
+                self_dlg.refresh_axis_link_state = _spy_self  # type: ignore[method-assign]
+                other_dlg.refresh_axis_link_state = _spy_other  # type: ignore[method-assign]
+                # Flip this tab into linked, notify — only self_dlg fires.
+                self.tab._x_unit.set("cm-1")
+                self.tab._show_nm_axis.set(True)
+                self.tab._notify_axis_link_state_change()
+                self.assertEqual(self_calls, [True])
+                self.assertEqual(other_calls, [])
+            finally:
+                try:
+                    other_tab.destroy()
+                except Exception:
+                    pass
+        finally:
+            try:
+                other_host.destroy()
+            except Exception:
+                pass
+
+    # ---- end-to-end via _on_unit_change ----
+
+    def test_on_unit_change_refreshes_dialog_greying(self):
+        # Start in cm-1 + nm-axis ON (linked); open dialog → greyed.
+        self.tab._x_unit.set("cm-1")
+        self.tab._x_unit_prev = "cm-1"
+        self.tab._show_nm_axis.set(True)
+        dlg = self.psd.open_plot_config_dialog(
+            self.tab, {},
+            secondary_x_linked=self.tab._secondary_x_linked(),
+        )
+        try:
+            dlg.update_idletasks()
+            self.assertIs(dlg._secondary_x_linked, True)
+            # Flip unit to nm via the toolbar Radiobutton path's
+            # callback. _on_unit_change updates the gate (forces
+            # _show_nm_axis False) then notifies the dialog.
+            self.tab._x_unit.set("nm")
+            self.tab._on_unit_change()
+            dlg.update_idletasks()
+            self.assertIs(dlg._secondary_x_linked, False)
+            # Secondary X widgets should be un-greyed now.
+            for key in ("range_lo", "range_hi", "autoscale"):
+                w = dlg._axis_control_widgets[("secondary_x", key)]
+                self.assertEqual(
+                    str(w.cget("state")), "normal",
+                    f"({key}) should be normal after unit→nm refresh",
+                )
+        finally:
+            try:
+                dlg.destroy()
+            except Exception:
+                pass
+
+    def test_on_nm_cb_toggle_refreshes_dialog_greying(self):
+        # Start in cm-1 + nm-axis OFF; open dialog (not linked, not
+        # greyed). Toggle nm-axis ON via the Checkbutton command path
+        # → dialog should flip into greyed state.
+        self.tab._x_unit.set("cm-1")
+        self.tab._x_unit_prev = "cm-1"
+        self.tab._show_nm_axis.set(False)
+        dlg = self.psd.open_plot_config_dialog(
+            self.tab, {},
+            secondary_x_linked=self.tab._secondary_x_linked(),
+        )
+        try:
+            dlg.update_idletasks()
+            self.assertIs(dlg._secondary_x_linked, False)
+            # Toggle nm-axis ON and fire the command. (Setting the var
+            # alone does NOT fire the command in Tk, so we call the
+            # command directly — mirrors what tk would do on a user
+            # click.)
+            self.tab._show_nm_axis.set(True)
+            self.tab._on_nm_cb_toggle()
+            dlg.update_idletasks()
+            self.assertIs(dlg._secondary_x_linked, True)
+            for key in ("range_lo", "range_hi", "autoscale", "scale"):
+                w = dlg._axis_control_widgets[("secondary_x", key)]
+                self.assertEqual(
+                    str(w.cget("state")), "disabled",
+                    f"({key}) should be disabled after nm_cb toggle ON",
+                )
+        finally:
+            try:
+                dlg.destroy()
+            except Exception:
+                pass
+
+    def test_on_unit_change_chains_update_then_notify_then_redraw(self):
+        # Call order matters: gate update first (may flip
+        # _show_nm_axis), then notify (so the dialog sees the freshly
+        # computed link state), then redraw. Verify order via a single
+        # event list.
+        events = []
+        original_update = self.tab._update_nm_cb_state
+        original_notify = self.tab._notify_axis_link_state_change
+        original_redraw = self.tab._redraw
+
+        def _upd(*a, **kw):
+            events.append("update")
+            return original_update(*a, **kw)
+
+        def _not(*a, **kw):
+            events.append("notify")
+            return original_notify(*a, **kw)
+
+        def _red(*a, **kw):
+            events.append("redraw")
+            return original_redraw(*a, **kw)
+        self.tab._update_nm_cb_state = _upd  # type: ignore[method-assign]
+        self.tab._notify_axis_link_state_change = _not  # type: ignore[method-assign]
+        self.tab._redraw = _red  # type: ignore[method-assign]
+        self.tab._x_unit_prev = self.tab._x_unit.get()
+        self.tab._on_unit_change()
+        self.assertEqual(events, ["update", "notify", "redraw"])
+
+
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
 class TestCustomTicksRendererPhase4aq(unittest.TestCase):
     """Phase 4aq (CS-69) — ``custom_ticks`` renderer wiring.
 
