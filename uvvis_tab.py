@@ -935,10 +935,17 @@ class UVVisTab(tk.Frame):
                            ).pack(side=tk.LEFT)
 
         _sep()
+        # CS-70 (Phase 4ar): command routes through ``_on_nm_cb_toggle``
+        # so the dialog refresh notification fires alongside ``_redraw``.
         self._nm_cb = tk.Checkbutton(bar, text="λ(nm) axis",
                                      variable=self._show_nm_axis,
-                                     command=self._redraw, font=F9)
+                                     command=self._on_nm_cb_toggle, font=F9)
         self._nm_cb.pack(side=tk.LEFT, padx=2)
+        # CS-70: grey the Checkbutton when primary unit is already nm
+        # (the toggle's renderer guard would short-circuit anyway, so
+        # leaving it user-actionable is misleading UX). Initial state
+        # set here; updated on every ``_on_unit_change``.
+        self._update_nm_cb_state()
 
         # Phase 4ao (CS-67) retired the global "Baseline curves"
         # Checkbutton — CS-36's per-node ``~`` row toggle is now the
@@ -2116,6 +2123,73 @@ class UVVisTab(tk.Frame):
             and bool(self._show_nm_axis.get())
         )
 
+    # ── CS-70 (Phase 4ar): live link-state plumbing ──────────────────
+    def _update_nm_cb_state(self) -> None:
+        """Grey the ``λ(nm) axis`` Checkbutton when primary unit is nm.
+
+        When the primary X-axis is already in nm, the secondary
+        wavelength axis is structurally redundant — the renderer's
+        ``unit in ("cm-1", "eV")`` guard short-circuits, so clicking
+        the Checkbutton is a silent no-op. Greying it out (and forcing
+        :attr:`_show_nm_axis` to False so the var doesn't carry stale
+        truthy state into a later unit flip) gives clearer UX.
+
+        Mirrors :meth:`plot_widget._update_nm_axis_btn_state` (which
+        applies the symmetric rule on the Compare tab: enabled only
+        when unit == "cm⁻¹"). Called once after ``_nm_cb`` is built
+        and on every :meth:`_on_unit_change`.
+        """
+        if not hasattr(self, "_nm_cb") or self._nm_cb is None:
+            return
+        is_nm = self._x_unit.get() == "nm"
+        try:
+            self._nm_cb.config(
+                state=tk.DISABLED if is_nm else tk.NORMAL,
+            )
+        except tk.TclError:
+            return
+        if is_nm:
+            self._show_nm_axis.set(False)
+
+    def _on_nm_cb_toggle(self) -> None:
+        """Command for the ``λ(nm) axis`` Checkbutton (CS-70 Phase 4ar).
+
+        Replaces the inline ``self._redraw`` command so that toggling
+        the secondary axis also notifies any open
+        :class:`PlotConfigDialog` for this tab to refresh its
+        Secondary-X link greying. ``tk.BooleanVar.set`` does NOT fire
+        widget ``command`` callbacks (only traces), so the recursive
+        call path from :meth:`_update_nm_cb_state` setting
+        ``_show_nm_axis`` is not a concern.
+        """
+        self._redraw()
+        self._notify_axis_link_state_change()
+
+    def _notify_axis_link_state_change(self) -> None:
+        """Notify any open PlotConfigDialog for this tab that the
+        wavelength↔energy link state may have changed (CS-70 Phase 4ar).
+
+        Looks up the per-host dialog in :data:`plot_settings_dialog._open_dialogs`
+        (CS-66 registry; one dialog per host) and calls
+        :meth:`PlotConfigDialog.refresh_axis_link_state` with the
+        freshly computed link state. No-op when no dialog is open.
+
+        Replaces CS-69's D4 snapshot-at-open lock — the dialog now
+        sees live link-state changes while it is open. Widget-state
+        only on the dialog side: no config mutation, no
+        ``_apply_changes_live`` invocation, no ``_modified_tabs``
+        marker clear.
+        """
+        dialog = plot_settings_dialog._open_dialogs.get(id(self))
+        if dialog is None:
+            return
+        try:
+            dialog.refresh_axis_link_state(self._secondary_x_linked())
+        except tk.TclError:
+            # Dialog may be mid-destroy; swallow rather than raise
+            # out of a Tk var-write / command callback.
+            pass
+
     # ══════════════════════════════════════════════════════════════════════════
     #  File loading
     # ══════════════════════════════════════════════════════════════════════════
@@ -2310,6 +2384,11 @@ class UVVisTab(tk.Frame):
                 self._xlim_lo.set(f"{new_lo:.4g}")
                 self._xlim_hi.set(f"{new_hi:.4g}")
             self._x_unit_prev = new_unit
+        # CS-70 (Phase 4ar): update the nm-cb gate BEFORE notifying the
+        # dialog so the freshly computed link state reflects any forced
+        # ``_show_nm_axis`` False from the new unit.
+        self._update_nm_cb_state()
+        self._notify_axis_link_state_change()
         self._redraw()
 
     # ══════════════════════════════════════════════════════════════════════════
