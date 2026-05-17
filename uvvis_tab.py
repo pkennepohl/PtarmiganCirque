@@ -2536,11 +2536,17 @@ class UVVisTab(tk.Frame):
                       color="gray", fontsize=11)
         self._ax.set_axis_off()
         self._canvas.draw_idle()
-        # CS-71 / CS-72 (Phase 4as): empty state means the dialog's
-        # displayed limits + plots inventory both flipped to "no
-        # data". Push fresh notifications so the dialog reflects it.
+        # CS-71 (Phase 4as): empty state means the dialog's displayed
+        # limits flipped to matplotlib defaults — push fresh
+        # snapshot so the disabled range Entries reflect it.
+        # CS-72 is intentionally NOT fired here. _draw_empty is called
+        # from inside _redraw whenever there are no live nodes; if
+        # _draw_empty fired CS-72, ANY event that triggers _redraw on
+        # an empty graph (including NODE_STYLE_CHANGED) would
+        # inadvertently fire CS-72, violating D15. CS-72 fires only
+        # through the explicit _on_graph_event dispatch path and the
+        # _on_unit_change / _on_nm_cb_toggle paths.
         self._notify_axis_displayed_limits_change()
-        self._notify_plots_by_role_change()
 
     def _redraw(self, *_args, **_kwargs):
         # Accept ``focus=node_id`` from ScanTreeWidget history-click
