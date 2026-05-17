@@ -2688,12 +2688,23 @@ class PlotConfigDialog(tk.Toplevel):
     # Lifecycle
     # ------------------------------------------------------------
 
-    def _on_destroy(self, _event: tk.Event) -> None:
+    def _on_destroy(self, event: tk.Event) -> None:
         """Drop the registry entry when the Toplevel is destroyed.
 
         Idempotent — both Tk's <Destroy> event and the WM close hook
         can fire, but a missing key is harmless.
+
+        CS-72 (Phase 4as): filter on ``event.widget is self``. Tk's
+        ``<Destroy>`` event propagates up the widget tree, so any
+        descendant destruction (e.g. CS-72's
+        :meth:`refresh_plots_by_role` destroying + rebuilding plots
+        blocks) would otherwise pop the dialog from
+        :data:`_open_dialogs` mid-lifetime — silently breaking
+        subsequent notifications. The filter narrows handling to the
+        actual Toplevel destruction.
         """
+        if event.widget is not self:
+            return
         key = id(self._parent)
         if _open_dialogs.get(key) is self:
             _open_dialogs.pop(key, None)

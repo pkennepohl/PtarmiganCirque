@@ -1838,6 +1838,22 @@ class UVVisTab(tk.Frame):
             GraphEventType.GRAPH_CLEARED,
         ):
             self._refresh_shared_subjects()
+        # CS-72 (Phase 4as): refresh any open PlotConfigDialog's
+        # plots-by-role inventory for the six events that can change
+        # which nodes report on which role. NODE_STYLE_CHANGED is
+        # deliberately omitted per D15 — refreshing during the
+        # Move-to picker's own callback would destroy the picker the
+        # user is interacting with. NODE_ACTIVE_CHANGED is omitted
+        # because activation toggles visibility, not role mapping.
+        if et in (
+            GraphEventType.NODE_ADDED,
+            GraphEventType.NODE_DISCARDED,
+            GraphEventType.NODE_LABEL_CHANGED,
+            GraphEventType.NODE_GROUP_MEMBERS_CHANGED,
+            GraphEventType.GRAPH_LOADED,
+            GraphEventType.GRAPH_CLEARED,
+        ):
+            self._notify_plots_by_role_change()
 
     def _on_destroy_unsubscribe(self, _event) -> None:
         try:
@@ -2027,6 +2043,12 @@ class UVVisTab(tk.Frame):
             on_route_plot=self._on_route_plot_from_dialog,
             secondary_x_linked=self._secondary_x_linked(),
         )
+        # CS-71 (Phase 4as): seed the dialog's displayed-limits snapshot
+        # immediately on open so the disabled range Entries on each
+        # per-axis tab show the current matplotlib values instead of
+        # the construction-default empty string. Subsequent redraws
+        # keep them current via the post-redraw notification.
+        self._notify_axis_displayed_limits_change()
 
     def _on_plot_config_changed(self) -> None:
         """Apply / Cancel callback from the Plot Settings dialog.
@@ -2161,9 +2183,15 @@ class UVVisTab(tk.Frame):
         widget ``command`` callbacks (only traces), so the recursive
         call path from :meth:`_update_nm_cb_state` setting
         ``_show_nm_axis`` is not a concern.
+
+        CS-72 (Phase 4as): the toggle also flips
+        ``secondary_x_active`` which changes the dialog's
+        ``plots_by_role`` mapping (the ``secondary_x`` entry gains /
+        loses plots that report on it). Notify plots-by-role too.
         """
         self._redraw()
         self._notify_axis_link_state_change()
+        self._notify_plots_by_role_change()
 
     def _notify_axis_link_state_change(self) -> None:
         """Notify any open PlotConfigDialog for this tab that the
@@ -2188,6 +2216,100 @@ class UVVisTab(tk.Frame):
         except tk.TclError:
             # Dialog may be mid-destroy; swallow rather than raise
             # out of a Tk var-write / command callback.
+            pass
+
+    # ── CS-71 (Phase 4as): displayed-limits host→dialog notification ──
+    def _compute_axis_displayed_limits(
+        self,
+    ) -> dict[str, tuple[float, float]]:
+        """Map tab-role keys → current ``(lo, hi)`` matplotlib ax limits.
+
+        The dialog speaks tab-role-key space (``primary_x`` /
+        ``primary_y`` / ``secondary_y`` / ``tertiary_y``); the
+        renderer's :attr:`_axes_by_role` speaks axis-role-key space
+        (``primary`` / ``secondary`` / ``tertiary``). This helper
+        translates: the primary ``ax`` covers both ``primary_x``
+        (xlim) and ``primary_y`` (ylim); the twin axes contribute
+        ``secondary_y`` / ``tertiary_y`` only.
+
+        ``secondary_x`` is intentionally absent — CS-69 / CS-70 govern
+        that role's display via the wavelength↔energy link. Missing
+        twins (no SECOND_DERIVATIVE / PEAK_LIST node) are omitted.
+
+        Defensive: matplotlib ``get_xlim`` / ``get_ylim`` calls are
+        wrapped in a try/except so a transient bad axes state during
+        teardown cannot raise into the notify path.
+        """
+        out: dict[str, tuple[float, float]] = {}
+        primary_ax = self._axes_by_role.get("primary")
+        if primary_ax is not None:
+            try:
+                out["primary_x"] = tuple(primary_ax.get_xlim())  # type: ignore[assignment]
+                out["primary_y"] = tuple(primary_ax.get_ylim())  # type: ignore[assignment]
+            except Exception:  # pragma: no cover — defensive
+                pass
+        for axis_role, tab_role in (
+            ("secondary", "secondary_y"),
+            ("tertiary", "tertiary_y"),
+        ):
+            ax = self._axes_by_role.get(axis_role)
+            if ax is None:
+                continue
+            try:
+                out[tab_role] = tuple(ax.get_ylim())  # type: ignore[assignment]
+            except Exception:  # pragma: no cover — defensive
+                pass
+        return out
+
+    def _notify_axis_displayed_limits_change(self) -> None:
+        """Push current ax limits to any open PlotConfigDialog (CS-71 Phase 4as).
+
+        Fires from the end of :meth:`_redraw` (and :meth:`_draw_empty`)
+        so the dialog's parallel display StringVars stay in sync with
+        the matplotlib axes the user sees on screen. No-op when no
+        dialog is open for this tab.
+
+        Widget-state only on the dialog side (mirrors
+        :meth:`_notify_axis_link_state_change`): the dialog's
+        :meth:`refresh_axis_displayed_limits` does NOT touch
+        ``_working``, does NOT trigger ``_apply_changes_live``, and
+        does NOT clear ``_modified_tabs`` markers.
+        """
+        dialog = plot_settings_dialog._open_dialogs.get(id(self))
+        if dialog is None:
+            return
+        try:
+            dialog.refresh_axis_displayed_limits(
+                self._compute_axis_displayed_limits(),
+            )
+        except tk.TclError:
+            pass
+
+    # ── CS-72 (Phase 4as): plots-by-role host→dialog notification ──
+    def _notify_plots_by_role_change(self) -> None:
+        """Push current plots inventory to any open PlotConfigDialog (CS-72).
+
+        Fires from selected branches of :meth:`_on_graph_event`
+        (NODE_ADDED, NODE_DISCARDED, NODE_LABEL_CHANGED,
+        NODE_GROUP_MEMBERS_CHANGED, GRAPH_LOADED, GRAPH_CLEARED) and
+        from :meth:`_on_unit_change` / :meth:`_on_nm_cb_toggle` (the
+        ``secondary_x_active`` flag flip changes which nodes report
+        on the ``secondary_x`` role). NODE_STYLE_CHANGED is
+        deliberately excluded per CS-72 D15 — the Move-to picker
+        inside the dialog is the only path that emits
+        NODE_STYLE_CHANGED with a role-mapping effect, and refreshing
+        from inside that callback would destroy the picker the user
+        is interacting with.
+
+        No-op when no dialog is open for this tab. Widget-state only
+        on the dialog side (mirrors CS-70 / CS-71).
+        """
+        dialog = plot_settings_dialog._open_dialogs.get(id(self))
+        if dialog is None:
+            return
+        try:
+            dialog.refresh_plots_by_role(self._compute_plots_by_role())
+        except tk.TclError:
             pass
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -2387,8 +2509,11 @@ class UVVisTab(tk.Frame):
         # CS-70 (Phase 4ar): update the nm-cb gate BEFORE notifying the
         # dialog so the freshly computed link state reflects any forced
         # ``_show_nm_axis`` False from the new unit.
+        # CS-72 (Phase 4as): unit change can flip ``secondary_x_active``
+        # so the dialog's plots-by-role mapping needs a refresh too.
         self._update_nm_cb_state()
         self._notify_axis_link_state_change()
+        self._notify_plots_by_role_change()
         self._redraw()
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -2411,6 +2536,11 @@ class UVVisTab(tk.Frame):
                       color="gray", fontsize=11)
         self._ax.set_axis_off()
         self._canvas.draw_idle()
+        # CS-71 / CS-72 (Phase 4as): empty state means the dialog's
+        # displayed limits + plots inventory both flipped to "no
+        # data". Push fresh notifications so the dialog reflects it.
+        self._notify_axis_displayed_limits_change()
+        self._notify_plots_by_role_change()
 
     def _redraw(self, *_args, **_kwargs):
         # Accept ``focus=node_id`` from ScanTreeWidget history-click
@@ -3060,6 +3190,13 @@ class UVVisTab(tk.Frame):
         self._fig.tight_layout()
         self._canvas.draw_idle()
         self._toolbar.update()
+        # CS-71 (Phase 4as): push current ax limits to any open
+        # PlotConfigDialog so its disabled range Entries display the
+        # post-redraw matplotlib values. Fires AFTER tight_layout +
+        # draw_idle so get_xlim / get_ylim reflect the final visible
+        # limits. CS-72 is intentionally NOT fired here — see D15
+        # in :meth:`_notify_plots_by_role_change` for the rationale.
+        self._notify_axis_displayed_limits_change()
 
     # ══════════════════════════════════════════════════════════════════════════
     #  Push to TDDFT overlay
