@@ -728,6 +728,25 @@ class PlotConfigDialog(tk.Toplevel):
         # silently by the refresh path.
         self._plots_block_parents: "dict[str, tk.Widget]" = {}
 
+        # CS-73 (Phase 4at): per-row "Apply to all axes" ∀ buttons on
+        # each per-axis tab's Settings frame, keyed by ``(role, key)``.
+        # Populated by :meth:`_build_axis_tab_settings` for every
+        # broadcast-capable widget (D1: all per-axis controls except
+        # ``axis_label_override``, which has its own Global-tab mirror
+        # surface). Clicking a button reads the source role's canonical
+        # value from :attr:`_axis_control_vars` and writes it to the
+        # four OTHER per-axis roles' ``_working`` slots + Tk vars,
+        # marks each target tab dirty, and fires :meth:`_apply_changes_live`
+        # exactly once (D4). The handler bypasses the per-keystroke
+        # trace path (``_suspend_writes`` guard) and manually drives
+        # the live commit, so defer-commit Entries broadcast in one
+        # gesture instead of needing per-target focus events. CS-71 /
+        # CS-70 greying methods walk this registry too (D8) so the ∀
+        # button next to an inert widget is itself inert.
+        self._axis_apply_to_all_buttons: (
+            "dict[tuple[str, str], tk.Button]"
+        ) = {}
+
         # CS-68 (Phase 4ap): keys whose trace target writes to the
         # working copy ONLY and defers the live commit to
         # ``<FocusOut>`` / ``<Return>`` on the bound text Entry.
@@ -1250,6 +1269,11 @@ class PlotConfigDialog(tk.Toplevel):
             tk.Radiobutton(
                 radio_frame, text=display, variable=tick_var, value=value,
             ).pack(side=tk.LEFT, padx=3)
+        # CS-73 (Phase 4at): ∀ broadcasts this role's tick_direction
+        # to the four other per-axis tabs.
+        self._make_axis_apply_to_all_button(
+            tick_row, role, "tick_direction",
+        ).pack(side=tk.LEFT, padx=(8, 0))
 
         # ---- Axis label override row ----
         label_row = tk.Frame(parent)
@@ -1308,6 +1332,12 @@ class PlotConfigDialog(tk.Toplevel):
         lo_entry.pack(side=tk.LEFT, padx=(8, 2))
         self._bind_entry_live_commit(lo_entry)
         self._axis_control_widgets[(role, "range_lo")] = lo_entry
+        # CS-73 (Phase 4at): ∀ for range_lo. CS-71 / CS-70 greying
+        # methods include this button so an inert range Entry has an
+        # inert ∀ next to it (D8).
+        self._make_axis_apply_to_all_button(
+            range_row, role, "range_lo",
+        ).pack(side=tk.LEFT, padx=(2, 4))
         tk.Label(range_row, text="to", font=("", 9)).pack(side=tk.LEFT)
         self._defer_apply_axis_keys.add((role, "range_hi"))
         hi_var = self._make_axis_string_var(role, "range_hi")
@@ -1321,6 +1351,11 @@ class PlotConfigDialog(tk.Toplevel):
         hi_entry.pack(side=tk.LEFT, padx=(2, 0))
         self._bind_entry_live_commit(hi_entry)
         self._axis_control_widgets[(role, "range_hi")] = hi_entry
+        # CS-73 (Phase 4at): ∀ for range_hi. Same greying composition
+        # as range_lo (D8).
+        self._make_axis_apply_to_all_button(
+            range_row, role, "range_hi",
+        ).pack(side=tk.LEFT, padx=(2, 0))
         tk.Label(
             range_row, text="(empty = no bound)",
             font=("", 8, "italic"), fg="#888888",
@@ -1355,6 +1390,11 @@ class PlotConfigDialog(tk.Toplevel):
         )
         autoscale_cb.pack(side=tk.LEFT)
         self._axis_control_widgets[(role, "autoscale")] = autoscale_cb
+        # CS-73 (Phase 4at): ∀ for autoscale. Greyed by CS-70 on
+        # ``secondary_x`` when the wavelength↔energy link is active (D8).
+        self._make_axis_apply_to_all_button(
+            autoscale_row, role, "autoscale",
+        ).pack(side=tk.LEFT, padx=(6, 0))
         tk.Label(
             autoscale_row,
             text="(off = use Range bounds above)",
@@ -1378,6 +1418,11 @@ class PlotConfigDialog(tk.Toplevel):
         )
         scale_combo.pack(side=tk.LEFT, padx=(8, 0))
         self._axis_control_widgets[(role, "scale")] = scale_combo
+        # CS-73 (Phase 4at): ∀ for scale. Greyed by CS-70 on
+        # ``secondary_x`` when linked (D8).
+        self._make_axis_apply_to_all_button(
+            scale_row, role, "scale",
+        ).pack(side=tk.LEFT, padx=(6, 0))
 
         # ---- Tick spacing row (CS-65 Phase 4an) ----
         # Two Entries side-by-side: "Major" and "Minor". StringVar-
@@ -1402,8 +1447,12 @@ class PlotConfigDialog(tk.Toplevel):
         major_entry = tk.Entry(
             tick_spacing_row, textvariable=major_var, width=6, font=("", 9),
         )
-        major_entry.pack(side=tk.LEFT, padx=(2, 6))
+        major_entry.pack(side=tk.LEFT, padx=(2, 2))
         self._bind_entry_live_commit(major_entry)
+        # CS-73 (Phase 4at): ∀ for tick_major.
+        self._make_axis_apply_to_all_button(
+            tick_spacing_row, role, "tick_major",
+        ).pack(side=tk.LEFT, padx=(2, 6))
         tk.Label(
             tick_spacing_row, text="minor", font=("", 9),
         ).pack(side=tk.LEFT, padx=(0, 2))
@@ -1414,6 +1463,10 @@ class PlotConfigDialog(tk.Toplevel):
         )
         minor_entry.pack(side=tk.LEFT, padx=(2, 0))
         self._bind_entry_live_commit(minor_entry)
+        # CS-73 (Phase 4at): ∀ for tick_minor.
+        self._make_axis_apply_to_all_button(
+            tick_spacing_row, role, "tick_minor",
+        ).pack(side=tk.LEFT, padx=(2, 0))
         tk.Label(
             tick_spacing_row, text="(empty = auto)",
             font=("", 8, "italic"), fg="#888888",
@@ -1451,6 +1504,10 @@ class PlotConfigDialog(tk.Toplevel):
         )
         self._bind_entry_live_commit(custom_ticks_entry)
         self._axis_control_widgets[(role, "custom_ticks")] = custom_ticks_entry
+        # CS-73 (Phase 4at): ∀ for custom_ticks.
+        self._make_axis_apply_to_all_button(
+            custom_ticks_row, role, "custom_ticks",
+        ).pack(side=tk.LEFT, padx=(4, 0))
         tk.Label(
             custom_ticks_row,
             text="(e.g. 300, 400, 500; empty = use major)",
@@ -1472,6 +1529,10 @@ class PlotConfigDialog(tk.Toplevel):
             grid_row, text="Show gridlines", variable=grid_var,
             font=("", 9, "bold"),
         ).pack(side=tk.LEFT)
+        # CS-73 (Phase 4at): ∀ for grid_show.
+        self._make_axis_apply_to_all_button(
+            grid_row, role, "grid_show",
+        ).pack(side=tk.LEFT, padx=(6, 0))
         if role not in ("primary_x", "primary_y"):
             tk.Label(
                 grid_row,
@@ -1521,6 +1582,11 @@ class PlotConfigDialog(tk.Toplevel):
             color_row, text="Choose…", command=_open_color_picker,
             font=("", 9),
         ).pack(side=tk.LEFT, padx=(0, 4))
+        # CS-73 (Phase 4at): ∀ for axis_color. Broadcasts the current
+        # hex colour to all other axes' colour swatches + working vars.
+        self._make_axis_apply_to_all_button(
+            color_row, role, "axis_color",
+        ).pack(side=tk.LEFT, padx=(2, 0))
 
         def _refresh_swatch(*_, _v=color_var, _s=swatch):
             value = _v.get() or "#000000"
@@ -1568,6 +1634,87 @@ class PlotConfigDialog(tk.Toplevel):
         # before the user can perceive the blank state.
         self._apply_axis_autoscale_greying(role)
 
+    # ── CS-73 (Phase 4at): Apply-to-all (∀) per-row buttons ───────────
+    def _make_axis_apply_to_all_button(
+        self, parent: tk.Widget, role: str, key: str,
+    ) -> tk.Button:
+        """Build and register a per-row ∀ Apply-to-all button (CS-73).
+
+        Style matches the CS-05 ``style_dialog`` per-row ∀ convention
+        (flat relief, ∀ glyph, 8-pt font, snug padding) so the same
+        affordance reads consistently across the app's universal-section
+        and per-axis surfaces. The button's ``command`` closure binds
+        the source role + key and dispatches to
+        :meth:`_on_axis_apply_to_all` on click.
+
+        The button handle is stored in :attr:`_axis_apply_to_all_buttons`
+        keyed by ``(role, key)`` so the CS-70 and CS-71 greying methods
+        can disable it alongside the widget it sits next to (D8).
+        """
+        btn = tk.Button(
+            parent, text="∀", font=("", 8), relief=tk.FLAT,
+            padx=4, pady=0,
+            command=lambda r=role, k=key: self._on_axis_apply_to_all(r, k),
+        )
+        self._axis_apply_to_all_buttons[(role, key)] = btn
+        return btn
+
+    def _on_axis_apply_to_all(self, source_role: str, key: str) -> None:
+        """Broadcast one per-axis value to every other per-axis tab (CS-73).
+
+        Reads the source role's canonical Tk var from
+        :attr:`_axis_control_vars`; for each of the four OTHER per-axis
+        roles, writes that value to ``_working["axes"][target_role][key]``,
+        sets the target's Tk var (so the widget reflects it), and marks
+        the target tab as modified. Fires :meth:`_apply_changes_live`
+        exactly once at the end (D4 — single redraw per broadcast).
+
+        The handler engages :attr:`_suspend_writes` while iterating, so
+        the per-target Tk var sets don't re-enter
+        :meth:`_on_axis_var_write` (which would double-write
+        ``_working`` and, for non-deferred keys, fire
+        :meth:`_apply_changes_live` four times). The explicit
+        ``_working`` write + ``_mark_tab_modified`` mirror the trace
+        path's effects exactly, so defer-commit Entries (range_lo,
+        range_hi, tick_major, tick_minor, custom_ticks) broadcast in
+        one click instead of requiring per-target focus events.
+
+        Silent no-op when the source var is missing (per-axis tab not
+        built) or when the source var ``.get()`` fails (mid-teardown).
+        """
+        source_var = self._axis_control_vars.get((source_role, key))
+        if source_var is None:
+            return
+        try:
+            value = source_var.get()
+        except tk.TclError:
+            return
+        targets = tuple(
+            r for r in _TAB_KEYS[1:] if r != source_role
+        )
+        if not targets:
+            return
+        prev_suspend = self._suspend_writes
+        self._suspend_writes = True
+        try:
+            axes = self._working.setdefault("axes", {})
+            for target_role in targets:
+                target_var = self._axis_control_vars.get(
+                    (target_role, key)
+                )
+                if target_var is None:
+                    continue
+                role_dict = axes.setdefault(target_role, {})
+                role_dict[key] = value
+                try:
+                    target_var.set(value)
+                except tk.TclError:
+                    pass
+                self._mark_tab_modified(target_role)
+        finally:
+            self._suspend_writes = prev_suspend
+        self._apply_changes_live()
+
     # ── CS-70 (Phase 4ar): live-refresh of Secondary X link greying ──
     def _apply_secondary_x_link_greying(self) -> None:
         """Set Secondary X tab widget states from ``_secondary_x_linked``.
@@ -1604,6 +1751,18 @@ class PlotConfigDialog(tk.Toplevel):
                 # Widget may be in teardown; swallow rather than raise
                 # through a Tk var trace.
                 pass
+            # CS-73 (Phase 4at) D8: grey the per-row ∀ next to this
+            # widget so the user can't broadcast from an inert source.
+            apply_btn = self._axis_apply_to_all_buttons.get(
+                ("secondary_x", key)
+            )
+            if apply_btn is not None:
+                try:
+                    apply_btn.configure(
+                        state=("disabled" if linked else "normal")
+                    )
+                except tk.TclError:
+                    pass
         label = self._secondary_x_greying_label
         if label is not None:
             try:
@@ -1739,6 +1898,20 @@ class PlotConfigDialog(tk.Toplevel):
                     widget.configure(state="normal")
             except tk.TclError:
                 pass
+            # CS-73 (Phase 4at) D8: grey the per-row ∀ alongside the
+            # range Entry. Broadcasting the canonical StringVar's
+            # (possibly empty) value while the displayed value is what
+            # the user actually sees would surprise; gating on the
+            # Entry's inert state preserves the principle that ∀ only
+            # broadcasts from an interactive source.
+            apply_btn = self._axis_apply_to_all_buttons.get((role, key))
+            if apply_btn is not None:
+                try:
+                    apply_btn.configure(
+                        state=("disabled" if autoscale else "normal")
+                    )
+                except tk.TclError:
+                    pass
 
     def refresh_axis_displayed_limits(
         self, limits: "dict[str, tuple[float, float]]",
