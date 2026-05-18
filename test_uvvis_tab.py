@@ -39,7 +39,7 @@ except Exception:  # pragma: no cover — only hit on headless CI
     _HAS_DISPLAY = False
 
 
-from graph import ProjectGraph
+from graph import ProjectGraph, GraphEvent, GraphEventType
 from nodes import DataNode, NodeState, NodeType, OperationNode, OperationType
 
 
@@ -7439,6 +7439,547 @@ class TestUVVisTabLivePreviewModelessPhase4ap(unittest.TestCase):
             self.assertEqual(
                 self.tab._plot_config["legend_position"], "best",
                 "Cancel must revert live-applied edits via _snapshot",
+            )
+        finally:
+            try:
+                dlg.destroy()
+            except Exception:
+                pass
+
+
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestUVVisTabAutoscaleLiveDisplayPhase4as(unittest.TestCase):
+    """CS-71 (Phase 4as) — host-side displayed-limits notification.
+
+    Pins the three new UVVisTab methods that feed the dialog's CS-71
+    surface:
+
+    * ``_compute_axis_displayed_limits`` — translates from the
+      renderer's axis-role-key space (``_axes_by_role``) to the
+      dialog's tab-role-key space; primary ax → primary_x + primary_y;
+      twins → secondary_y / tertiary_y; secondary_x always omitted.
+
+    * ``_notify_axis_displayed_limits_change`` — looks up
+      ``plot_settings_dialog._open_dialogs[id(self)]`` and calls
+      ``refresh_axis_displayed_limits`` with the computed limits.
+      No-op when no dialog is open.
+
+    Wiring sentinels: ``_redraw`` end fires the notification;
+    ``_draw_empty`` end fires the notification too; ``_open_plot_settings``
+    fires it once after construction so the dialog's display vars
+    are seeded before the user sees the dialog.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from uvvis_tab import UVVisTab
+        import plot_settings_dialog as psd
+        cls.UVVisTab = UVVisTab
+        cls.psd = psd
+
+    def setUp(self):
+        self.psd._open_dialogs.clear()
+        self.psd._USER_DEFAULTS.clear()
+        self.host = tk.Frame(_root)
+        self.host.pack()
+        self.graph = ProjectGraph()
+        self.tab = self.UVVisTab(self.host, graph=self.graph)
+
+    def tearDown(self):
+        for dlg in list(self.psd._open_dialogs.values()):
+            try:
+                dlg.destroy()
+            except Exception:
+                pass
+        self.psd._open_dialogs.clear()
+        try:
+            self.tab.destroy()
+        except Exception:
+            pass
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    # ---- _compute_axis_displayed_limits ----
+
+    def test_compute_returns_primary_x_and_primary_y(self):
+        out = self.tab._compute_axis_displayed_limits()
+        self.assertIn("primary_x", out)
+        self.assertIn("primary_y", out)
+        lo, hi = out["primary_x"]
+        self.assertIsInstance(lo, float)
+        self.assertIsInstance(hi, float)
+
+    def test_compute_omits_missing_twins(self):
+        # Fresh tab — no SECOND_DERIVATIVE / PEAK_LIST nodes — so no
+        # twins exist in _axes_by_role.
+        out = self.tab._compute_axis_displayed_limits()
+        self.assertNotIn("secondary_y", out)
+        self.assertNotIn("tertiary_y", out)
+
+    def test_compute_excludes_secondary_x(self):
+        # secondary_x is governed by CS-69 / CS-70 link greying; the
+        # CS-71 display path never carries an entry for it.
+        out = self.tab._compute_axis_displayed_limits()
+        self.assertNotIn("secondary_x", out)
+
+    def test_compute_includes_secondary_y_when_twin_exists(self):
+        # Manually install a twin under the "secondary" axis-role key
+        # — bypasses the SECOND_DERIVATIVE node setup that normally
+        # creates it via _redraw.
+        primary_ax = self.tab._axes_by_role["primary"]
+        twin = primary_ax.twinx()
+        self.tab._axes_by_role["secondary"] = twin
+        twin.set_ylim(-2.0, 3.0)
+        out = self.tab._compute_axis_displayed_limits()
+        self.assertIn("secondary_y", out)
+        lo, hi = out["secondary_y"]
+        self.assertAlmostEqual(lo, -2.0)
+        self.assertAlmostEqual(hi, 3.0)
+
+    def test_compute_includes_tertiary_y_when_twin_exists(self):
+        primary_ax = self.tab._axes_by_role["primary"]
+        twin = primary_ax.twinx()
+        self.tab._axes_by_role["tertiary"] = twin
+        twin.set_ylim(0.5, 1.5)
+        out = self.tab._compute_axis_displayed_limits()
+        self.assertIn("tertiary_y", out)
+
+    # ---- _notify_axis_displayed_limits_change ----
+
+    def test_notify_noop_when_no_dialog_open(self):
+        self.psd._open_dialogs.clear()
+        # Must not raise.
+        self.tab._notify_axis_displayed_limits_change()
+
+    def test_notify_calls_refresh_on_open_dialog(self):
+        dlg = self.psd.open_plot_config_dialog(self.tab, {})
+        try:
+            calls = []
+            original = dlg.refresh_axis_displayed_limits
+
+            def _spy(limits):
+                calls.append(dict(limits))
+                return original(limits)
+            dlg.refresh_axis_displayed_limits = _spy  # type: ignore[method-assign]
+            self.tab._notify_axis_displayed_limits_change()
+            self.assertEqual(len(calls), 1)
+            self.assertIn("primary_x", calls[0])
+            self.assertIn("primary_y", calls[0])
+        finally:
+            try:
+                dlg.destroy()
+            except Exception:
+                pass
+
+    def test_notify_uses_id_self_lookup(self):
+        # Mirror of CS-70's id(self) lookup sentinel: a dialog whose
+        # parent is a DIFFERENT host must NOT receive notifications
+        # from this tab.
+        other_host = tk.Frame(_root)
+        other_host.pack()
+        try:
+            other_tab = self.UVVisTab(other_host, graph=ProjectGraph())
+            try:
+                self_dlg = self.psd.open_plot_config_dialog(self.tab, {})
+                other_dlg = self.psd.open_plot_config_dialog(other_tab, {})
+                self_calls = []
+                other_calls = []
+                original_self = self_dlg.refresh_axis_displayed_limits
+                original_other = other_dlg.refresh_axis_displayed_limits
+
+                def _spy_self(limits):
+                    self_calls.append(dict(limits))
+                    return original_self(limits)
+
+                def _spy_other(limits):
+                    other_calls.append(dict(limits))
+                    return original_other(limits)
+                self_dlg.refresh_axis_displayed_limits = _spy_self  # type: ignore[method-assign]
+                other_dlg.refresh_axis_displayed_limits = _spy_other  # type: ignore[method-assign]
+                self.tab._notify_axis_displayed_limits_change()
+                self.assertEqual(len(self_calls), 1)
+                self.assertEqual(len(other_calls), 0)
+            finally:
+                try:
+                    other_tab.destroy()
+                except Exception:
+                    pass
+        finally:
+            try:
+                other_host.destroy()
+            except Exception:
+                pass
+
+    # ---- _redraw end + _draw_empty end wiring ----
+
+    def test_redraw_fires_displayed_limits_notification(self):
+        # _redraw end calls _notify_axis_displayed_limits_change. Spy
+        # on the host method and trigger a redraw.
+        calls = [0]
+        original = self.tab._notify_axis_displayed_limits_change
+
+        def _spy(*a, **kw):
+            calls[0] += 1
+            return original(*a, **kw)
+        self.tab._notify_axis_displayed_limits_change = _spy  # type: ignore[method-assign]
+        self.tab._redraw()
+        self.assertGreaterEqual(
+            calls[0], 1,
+            "_redraw end must fire _notify_axis_displayed_limits_change",
+        )
+
+    def test_draw_empty_fires_displayed_limits_notification(self):
+        # _draw_empty fires CS-71 only. CS-72 is intentionally NOT
+        # fired from _draw_empty — _redraw falls through to
+        # _draw_empty when there are no live nodes; if _draw_empty
+        # fired CS-72, any event triggering _redraw on an empty
+        # graph (including NODE_STYLE_CHANGED) would inadvertently
+        # fire CS-72, violating D15. The explicit dispatch in
+        # _on_graph_event is the sole CS-72 source.
+        calls_disp = [0]
+        calls_plots = [0]
+        original_disp = self.tab._notify_axis_displayed_limits_change
+        original_plots = self.tab._notify_plots_by_role_change
+
+        def _spy_disp(*a, **kw):
+            calls_disp[0] += 1
+            return original_disp(*a, **kw)
+
+        def _spy_plots(*a, **kw):
+            calls_plots[0] += 1
+            return original_plots(*a, **kw)
+        self.tab._notify_axis_displayed_limits_change = _spy_disp  # type: ignore[method-assign]
+        self.tab._notify_plots_by_role_change = _spy_plots  # type: ignore[method-assign]
+        self.tab._draw_empty()
+        self.assertGreaterEqual(calls_disp[0], 1)
+        self.assertEqual(
+            calls_plots[0], 0,
+            "_draw_empty must NOT fire _notify_plots_by_role_change "
+            "(D15 lock — CS-72 fires only through explicit dispatch)",
+        )
+
+    # ---- _open_plot_settings seed-on-open ----
+
+    def test_open_plot_settings_seeds_dialog_display_vars(self):
+        # Opening via _open_plot_settings must leave the dialog's
+        # _axis_displayed_limits non-empty (the post-open notify
+        # fires once so the user sees ax limits in the disabled
+        # range Entries immediately).
+        self.tab._open_plot_settings()
+        dlg = self.psd._open_dialogs.get(id(self.tab))
+        self.assertIsNotNone(dlg)
+        self.assertGreater(
+            len(dlg._axis_displayed_limits), 0,
+            "_open_plot_settings must seed _axis_displayed_limits "
+            "via the post-open notify call",
+        )
+
+    def test_open_plot_settings_seeds_display_var_text(self):
+        # And the parallel display StringVars on the four
+        # greying-eligible roles carry formatted values (NOT "" the
+        # construction default).
+        self.tab._open_plot_settings()
+        dlg = self.psd._open_dialogs.get(id(self.tab))
+        self.assertIsNotNone(dlg)
+        for role in ("primary_x", "primary_y"):
+            lo_var = dlg._axis_range_display_vars[(role, "range_lo")]
+            self.assertNotEqual(
+                lo_var.get(), "",
+                f"{role}.range_lo display var should be seeded "
+                f"after _open_plot_settings",
+            )
+
+
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestUVVisTabPlotsByRoleLiveRefreshPhase4as(unittest.TestCase):
+    """CS-72 (Phase 4as) — host-side plots-by-role live notification.
+
+    Pins ``_notify_plots_by_role_change`` and its wiring into
+    ``_on_graph_event`` for the six events that can change role
+    mapping, plus ``_on_unit_change`` / ``_on_nm_cb_toggle`` for the
+    secondary_x_active flip path.
+
+    D15 lock sentinel: ``NODE_STYLE_CHANGED`` does NOT fire CS-72.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from uvvis_tab import UVVisTab
+        import plot_settings_dialog as psd
+        cls.UVVisTab = UVVisTab
+        cls.psd = psd
+
+    def setUp(self):
+        self.psd._open_dialogs.clear()
+        self.psd._USER_DEFAULTS.clear()
+        self.host = tk.Frame(_root)
+        self.host.pack()
+        self.graph = ProjectGraph()
+        self.tab = self.UVVisTab(self.host, graph=self.graph)
+
+    def tearDown(self):
+        for dlg in list(self.psd._open_dialogs.values()):
+            try:
+                dlg.destroy()
+            except Exception:
+                pass
+        self.psd._open_dialogs.clear()
+        try:
+            self.tab.destroy()
+        except Exception:
+            pass
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    def _make_event(self, et: GraphEventType, node_id: str = "n1") -> GraphEvent:
+        # Helper: build a synthetic GraphEvent without touching the
+        # graph state (events fire as if they came from the graph).
+        return GraphEvent(et, node_id)
+
+    def _spy_on_cs72_notify(self):
+        # Returns a counter list whose [0] is the call count.
+        calls = [0]
+        original = self.tab._notify_plots_by_role_change
+
+        def _spy(*a, **kw):
+            calls[0] += 1
+            return original(*a, **kw)
+        self.tab._notify_plots_by_role_change = _spy  # type: ignore[method-assign]
+        return calls
+
+    # ---- _notify_plots_by_role_change itself ----
+
+    def test_notify_noop_when_no_dialog_open(self):
+        self.psd._open_dialogs.clear()
+        # Must not raise.
+        self.tab._notify_plots_by_role_change()
+
+    def test_notify_calls_refresh_on_open_dialog(self):
+        dlg = self.psd.open_plot_config_dialog(
+            self.tab, {},
+            plots_by_role=self.tab._compute_plots_by_role(),
+        )
+        try:
+            calls = []
+            original = dlg.refresh_plots_by_role
+
+            def _spy(plots):
+                calls.append(dict(plots))
+                return original(plots)
+            dlg.refresh_plots_by_role = _spy  # type: ignore[method-assign]
+            self.tab._notify_plots_by_role_change()
+            self.assertEqual(len(calls), 1)
+        finally:
+            try:
+                dlg.destroy()
+            except Exception:
+                pass
+
+    # ---- _on_graph_event dispatch — events that MUST fire CS-72 ----
+
+    def test_on_graph_event_NODE_ADDED_fires_cs72(self):
+        calls = self._spy_on_cs72_notify()
+        self.tab._on_graph_event(self._make_event(GraphEventType.NODE_ADDED))
+        self.assertEqual(calls[0], 1)
+
+    def test_on_graph_event_NODE_DISCARDED_fires_cs72(self):
+        calls = self._spy_on_cs72_notify()
+        self.tab._on_graph_event(self._make_event(GraphEventType.NODE_DISCARDED))
+        self.assertEqual(calls[0], 1)
+
+    def test_on_graph_event_NODE_LABEL_CHANGED_fires_cs72(self):
+        calls = self._spy_on_cs72_notify()
+        self.tab._on_graph_event(self._make_event(GraphEventType.NODE_LABEL_CHANGED))
+        self.assertEqual(calls[0], 1)
+
+    def test_on_graph_event_NODE_GROUP_MEMBERS_CHANGED_fires_cs72(self):
+        calls = self._spy_on_cs72_notify()
+        self.tab._on_graph_event(
+            self._make_event(GraphEventType.NODE_GROUP_MEMBERS_CHANGED),
+        )
+        self.assertEqual(calls[0], 1)
+
+    def test_on_graph_event_GRAPH_LOADED_fires_cs72(self):
+        calls = self._spy_on_cs72_notify()
+        self.tab._on_graph_event(self._make_event(GraphEventType.GRAPH_LOADED))
+        self.assertEqual(calls[0], 1)
+
+    def test_on_graph_event_GRAPH_CLEARED_fires_cs72(self):
+        calls = self._spy_on_cs72_notify()
+        self.tab._on_graph_event(self._make_event(GraphEventType.GRAPH_CLEARED))
+        self.assertEqual(calls[0], 1)
+
+    # ---- _on_graph_event dispatch — events that MUST NOT fire CS-72 ----
+
+    def test_on_graph_event_NODE_STYLE_CHANGED_does_NOT_fire_cs72(self):
+        # D15 lock sentinel: refreshing plots-by-role on
+        # NODE_STYLE_CHANGED would destroy the Move-to picker the
+        # user is interacting with. The dispatch path must skip
+        # CS-72 entirely for this event.
+        calls = self._spy_on_cs72_notify()
+        self.tab._on_graph_event(
+            self._make_event(GraphEventType.NODE_STYLE_CHANGED),
+        )
+        self.assertEqual(
+            calls[0], 0,
+            "NODE_STYLE_CHANGED must NOT fire _notify_plots_by_role_change "
+            "(D15 lock — Move-to picker stays alive)",
+        )
+
+    def test_on_graph_event_NODE_ACTIVE_CHANGED_does_NOT_fire_cs72(self):
+        # Activation toggles visibility, not role mapping.
+        calls = self._spy_on_cs72_notify()
+        self.tab._on_graph_event(
+            self._make_event(GraphEventType.NODE_ACTIVE_CHANGED),
+        )
+        self.assertEqual(calls[0], 0)
+
+    def test_on_graph_event_NODE_COMMITTED_does_NOT_fire_cs72(self):
+        calls = self._spy_on_cs72_notify()
+        self.tab._on_graph_event(
+            self._make_event(GraphEventType.NODE_COMMITTED),
+        )
+        self.assertEqual(calls[0], 0)
+
+    # ---- _on_nm_cb_toggle + _on_unit_change wiring ----
+
+    def test_on_nm_cb_toggle_fires_cs72(self):
+        # The nm-axis Checkbutton's command path appends a CS-72
+        # notify after the CS-70 link-state notify (secondary_x_active
+        # can flip → plots routed to secondary_x change).
+        self.tab._x_unit.set("cm-1")
+        self.tab._x_unit_prev = "cm-1"
+        self.tab._update_nm_cb_state()
+        calls = self._spy_on_cs72_notify()
+        self.tab._show_nm_axis.set(True)
+        self.tab._on_nm_cb_toggle()
+        self.assertGreaterEqual(calls[0], 1)
+
+    def test_on_unit_change_fires_cs72(self):
+        # Unit change is the other path that can flip
+        # secondary_x_active. Notify-plots is inserted between the
+        # existing notify-link and _redraw.
+        self.tab._x_unit_prev = self.tab._x_unit.get()
+        calls = self._spy_on_cs72_notify()
+        self.tab._x_unit.set("cm-1")
+        self.tab._on_unit_change()
+        self.assertGreaterEqual(calls[0], 1)
+
+    # ---- _on_unit_change call order (CS-70 chain + CS-72 inserted) ----
+
+    def test_on_unit_change_call_order_with_cs72(self):
+        # CS-70 pinned the chain as update -> notify-link -> redraw.
+        # CS-72 inserts notify-plots between notify-link and redraw:
+        # update -> notify-link -> notify-plots -> redraw.
+        events = []
+        original_update = self.tab._update_nm_cb_state
+        original_notify_link = self.tab._notify_axis_link_state_change
+        original_notify_plots = self.tab._notify_plots_by_role_change
+        original_redraw = self.tab._redraw
+
+        def _u(*a, **kw):
+            events.append("update")
+            return original_update(*a, **kw)
+
+        def _nl(*a, **kw):
+            events.append("notify_link")
+            return original_notify_link(*a, **kw)
+
+        def _np(*a, **kw):
+            events.append("notify_plots")
+            return original_notify_plots(*a, **kw)
+
+        def _r(*a, **kw):
+            events.append("redraw")
+            return original_redraw(*a, **kw)
+        self.tab._update_nm_cb_state = _u  # type: ignore[method-assign]
+        self.tab._notify_axis_link_state_change = _nl  # type: ignore[method-assign]
+        self.tab._notify_plots_by_role_change = _np  # type: ignore[method-assign]
+        self.tab._redraw = _r  # type: ignore[method-assign]
+        self.tab._x_unit_prev = self.tab._x_unit.get()
+        self.tab._on_unit_change()
+        # Filter to only the four events of interest (redraw fires
+        # additional notify_plots / notify_disp calls internally via
+        # _draw_empty when there are no nodes; we care about the
+        # _on_unit_change chain order only).
+        first_occurrences = []
+        for name in events:
+            if name in {"update", "notify_link", "notify_plots", "redraw"} \
+                    and name not in first_occurrences:
+                first_occurrences.append(name)
+        self.assertEqual(
+            first_occurrences,
+            ["update", "notify_link", "notify_plots", "redraw"],
+        )
+
+    # ---- End-to-end: dialog refreshes on dispatched graph event ----
+
+    def test_dialog_plots_by_role_refreshes_on_NODE_ADDED_dispatch(self):
+        # Open dialog with empty graph, then mock _compute_plots_by_role
+        # to return a non-empty mapping. Dispatch a NODE_ADDED event
+        # via _on_graph_event — the dialog's _plots_by_role snapshot
+        # should pick up the new mapping (no fixture file needed).
+        dlg = self.psd.open_plot_config_dialog(
+            self.tab, {},
+            plots_by_role=self.tab._compute_plots_by_role(),
+        )
+        try:
+            dlg.update_idletasks()
+            self.assertEqual(dlg._plots_by_role.get("primary_y", ()), ())
+            # Inject a synthetic plots-by-role result.
+            self.tab._compute_plots_by_role = lambda: {  # type: ignore[method-assign]
+                "primary_y": ("Synthetic Plot",),
+            }
+            self.tab._on_graph_event(
+                self._make_event(GraphEventType.NODE_ADDED),
+            )
+            dlg.update_idletasks()
+            # Dialog's snapshot has been replaced via CS-72 refresh.
+            self.assertEqual(
+                dlg._plots_by_role.get("primary_y", ()),
+                ("Synthetic Plot",),
+            )
+            # And the plots block now contains a Listbox with that row.
+            parent = dlg._plots_block_parents["primary_y"]
+            listboxes = [
+                c for c in parent.winfo_children()
+                if isinstance(c, tk.Listbox)
+            ]
+            self.assertEqual(len(listboxes), 1)
+            self.assertEqual(str(listboxes[0].get(0)), "Synthetic Plot")
+        finally:
+            try:
+                dlg.destroy()
+            except Exception:
+                pass
+
+    # ---- CS-66 _on_destroy filter regression sentinel ----
+
+    def test_refresh_plots_by_role_does_not_pop_dialog_from_registry(self):
+        # CS-72's destroy-rebuild pattern in refresh_plots_by_role
+        # destroys children of plots-block parents. Tk's <Destroy>
+        # event propagates up the tree; without CS-66's
+        # event.widget-is-self filter, the propagated event would
+        # trigger PlotConfigDialog._on_destroy and pop the dialog
+        # from _open_dialogs mid-lifetime. This test pins the filter.
+        dlg = self.psd.open_plot_config_dialog(
+            self.tab, {},
+            plots_by_role={"primary_y": ("alpha",)},
+        )
+        try:
+            self.assertIs(self.psd._open_dialogs.get(id(self.tab)), dlg)
+            # Drive a CS-72 refresh and verify dialog is still
+            # registered afterward.
+            self.tab._notify_plots_by_role_change()
+            dlg.update_idletasks()
+            self.assertIs(
+                self.psd._open_dialogs.get(id(self.tab)), dlg,
+                "dialog must remain in _open_dialogs after a CS-72 "
+                "refresh (CS-66 _on_destroy filter regression)",
             )
         finally:
             try:

@@ -692,6 +692,42 @@ class PlotConfigDialog(tk.Toplevel):
         # built (or when the dialog has no Secondary X tab at all).
         self._secondary_x_greying_label: "tk.Widget | None" = None
 
+        # CS-71 (Phase 4as): per-role displayed-limit snapshot, populated
+        # by :meth:`refresh_axis_displayed_limits` from the host's
+        # post-redraw notification. Value is a ``(lo, hi)`` float pair —
+        # the matplotlib ``ax.get_xlim`` / ``get_ylim`` result the user
+        # sees on screen right now. Empty until the host fires its first
+        # refresh. When a role is present here AND its ``autoscale`` is
+        # True, the per-axis range Entries render this snapshot (via the
+        # parallel :attr:`_axis_range_display_vars`) instead of the
+        # canonical schema StringVar. ``secondary_x`` is never present —
+        # CS-69 / CS-70 govern that role's range widgets.
+        self._axis_displayed_limits: "dict[str, tuple[float, float]]" = {}
+
+        # CS-71 (Phase 4as): parallel display StringVars for the per-axis
+        # ``range_lo`` / ``range_hi`` Entries. The canonical schema
+        # StringVars in :attr:`_axis_control_vars` hold the user's range
+        # bounds (sole source of truth for :attr:`_working`); these
+        # display vars hold a formatted view of the current ax limits,
+        # bound as the Entry ``textvariable`` WHILE the role's
+        # ``autoscale`` is True. Toggling autoscale swaps the Entry's
+        # ``textvariable`` between the two registries via
+        # :meth:`_apply_axis_autoscale_greying`. CS-64 D-lock relaxation:
+        # the Entry's textvariable is no longer permanently the
+        # canonical schema StringVar — these display vars are
+        # widget-only and never written into :attr:`_working`.
+        self._axis_range_display_vars: (
+            "dict[tuple[str, str], tk.StringVar]"
+        ) = {}
+
+        # CS-72 (Phase 4as): per-role parent Frame for each per-axis
+        # tab's "Plots on this axis" block, captured at build time so
+        # :meth:`refresh_plots_by_role` can destroy children and
+        # re-invoke :meth:`_build_axis_tab_plots` in place. Missing
+        # roles (no Plot Settings tab built for that role) are skipped
+        # silently by the refresh path.
+        self._plots_block_parents: "dict[str, tk.Widget]" = {}
+
         # CS-68 (Phase 4ap): keys whose trace target writes to the
         # working copy ONLY and defers the live commit to
         # ``<FocusOut>`` / ``<Return>`` on the bound text Entry.
@@ -888,7 +924,14 @@ class PlotConfigDialog(tk.Toplevel):
         callback. X-axis tabs keep ``state="disabled"`` — every
         visible plot is necessarily on primary_x, so there is
         nowhere to route to.
+
+        CS-72 (Phase 4as): capture ``parent`` so
+        :meth:`refresh_plots_by_role` can destroy children and
+        re-invoke this builder in place. The capture is unconditional
+        — even empty roles (with just the italic placeholder Label)
+        need to re-render when a node lands on them.
         """
+        self._plots_block_parents[role] = parent
         labels = self._plots_by_role.get(role, ())
         if not labels:
             tk.Label(
@@ -1239,6 +1282,15 @@ class PlotConfigDialog(tk.Toplevel):
         # empty-Entry-no-clamp semantics carried over by the renderer).
         # CS-68 (Phase 4ap): typed Entries — defer per-keystroke
         # commit; <FocusOut>/<Return> trigger the live commit.
+        # CS-71 (Phase 4as): also build parallel display StringVars
+        # for both Entries. These hold the formatted current ax-limit
+        # values and are bound as the Entry textvariable (in place of
+        # the canonical schema StringVar) WHILE autoscale=True. They
+        # are widget-only: never written into :attr:`_working`. The
+        # initial swap happens in :meth:`_apply_axis_autoscale_greying`
+        # called at the end of this builder. The parallel
+        # registration intentionally skips ``secondary_x`` — CS-69 /
+        # CS-70 govern that role's range widgets via the link greying.
         range_row = tk.Frame(parent)
         range_row.pack(fill=tk.X, anchor="w", pady=(8, 2))
         tk.Label(
@@ -1246,6 +1298,10 @@ class PlotConfigDialog(tk.Toplevel):
         ).pack(side=tk.LEFT)
         self._defer_apply_axis_keys.add((role, "range_lo"))
         lo_var = self._make_axis_string_var(role, "range_lo")
+        if role != "secondary_x":
+            self._axis_range_display_vars[(role, "range_lo")] = tk.StringVar(
+                value=""
+            )
         lo_entry = tk.Entry(
             range_row, textvariable=lo_var, width=8, font=("", 9),
         )
@@ -1255,6 +1311,10 @@ class PlotConfigDialog(tk.Toplevel):
         tk.Label(range_row, text="to", font=("", 9)).pack(side=tk.LEFT)
         self._defer_apply_axis_keys.add((role, "range_hi"))
         hi_var = self._make_axis_string_var(role, "range_hi")
+        if role != "secondary_x":
+            self._axis_range_display_vars[(role, "range_hi")] = tk.StringVar(
+                value=""
+            )
         hi_entry = tk.Entry(
             range_row, textvariable=hi_var, width=8, font=("", 9),
         )
@@ -1279,9 +1339,19 @@ class PlotConfigDialog(tk.Toplevel):
         # CS-69 (Phase 4aq): capture the Checkbutton handle so the
         # secondary-X-linked greying block at the end of this function
         # can disable it. Same for the Scale combobox below.
+        # CS-71 (Phase 4as): ``command`` callback runs
+        # :meth:`_on_axis_autoscale_toggle` in addition to the
+        # BooleanVar trace (which still handles the actual
+        # ``_working`` write + ``_apply_changes_live``). On True→False
+        # the callback seeds the canonical range StringVars from the
+        # displayed-limits snapshot; on either toggle it re-applies
+        # the autoscale greying so the range Entries flip between the
+        # canonical and display textvariables. No-op for
+        # ``secondary_x`` (CS-69 / CS-70 own that role's range).
         autoscale_cb = tk.Checkbutton(
             autoscale_row, text="Autoscale", variable=autoscale_var,
             font=("", 9, "bold"),
+            command=lambda r=role: self._on_axis_autoscale_toggle(r),
         )
         autoscale_cb.pack(side=tk.LEFT)
         self._axis_control_widgets[(role, "autoscale")] = autoscale_cb
@@ -1488,6 +1558,16 @@ class PlotConfigDialog(tk.Toplevel):
             )
             self._apply_secondary_x_link_greying()
 
+        # ---- CS-71 (Phase 4as): initial autoscale greying ----
+        # Run for every role except ``secondary_x``. Picks up the
+        # role's current ``autoscale`` value from
+        # :attr:`_axis_control_vars` and configures the range Entries
+        # accordingly. The displayed-limits snapshot is empty at this
+        # point — the host fires :meth:`refresh_axis_displayed_limits`
+        # immediately after dialog construction so the values land
+        # before the user can perceive the blank state.
+        self._apply_axis_autoscale_greying(role)
+
     # ── CS-70 (Phase 4ar): live-refresh of Secondary X link greying ──
     def _apply_secondary_x_link_greying(self) -> None:
         """Set Secondary X tab widget states from ``_secondary_x_linked``.
@@ -1554,6 +1634,253 @@ class PlotConfigDialog(tk.Toplevel):
         """
         self._secondary_x_linked = bool(linked)
         self._apply_secondary_x_link_greying()
+
+    # ── CS-71 (Phase 4as): Autoscale ↔ Range Entry seed + live display ──
+    def _on_axis_autoscale_toggle(self, role: str) -> None:
+        """Handle a user toggle of the per-axis Autoscale Checkbutton (CS-71).
+
+        Fires from the Checkbutton's ``command`` callback (in addition
+        to the BooleanVar trace, which still owns the actual
+        ``_working`` write and :meth:`_apply_changes_live`). On a
+        True→False transition this method seeds the canonical range
+        StringVars from the displayed-limits snapshot so the user
+        starts editing from a known reasonable baseline (not blank).
+        On either transition it re-applies the autoscale greying so
+        the range Entries flip between the canonical and display
+        textvariables.
+
+        No-op for ``secondary_x`` — CS-69 / CS-70 own that role's
+        range widgets via the wavelength↔energy link greying. No-op
+        when the role's autoscale var isn't in the registry (e.g.
+        the per-axis tab wasn't built).
+        """
+        if role == "secondary_x":
+            return
+        var = self._axis_control_vars.get((role, "autoscale"))
+        if var is None:
+            return
+        try:
+            new_autoscale = bool(var.get())
+        except tk.TclError:
+            return
+        if not new_autoscale:
+            self._seed_range_entries_from_display(role)
+        self._apply_axis_autoscale_greying(role)
+
+    def _seed_range_entries_from_display(self, role: str) -> None:
+        """Push current displayed ax limits into the canonical range vars (CS-71).
+
+        Reads ``(lo, hi)`` from :attr:`_axis_displayed_limits` for the
+        role, formats each via :meth:`_format_axis_limit`, and writes
+        through the canonical schema StringVars in
+        :attr:`_axis_control_vars`. The ``var.set`` call fires the
+        normal trace path (``_on_axis_var_write`` → ``_apply_changes_live``)
+        so the seeded values land in :attr:`_working` and propagate
+        to the host's redraw exactly like a typed Entry edit.
+
+        Silent no-op when the host hasn't yet fired a displayed-limits
+        notification for the role (snapshot missing) — the user just
+        sees the previous canonical values restored on toggle-to-False.
+        """
+        limits = self._axis_displayed_limits.get(role)
+        if limits is None:
+            return
+        lo, hi = limits
+        for key, value in (("range_lo", lo), ("range_hi", hi)):
+            var = self._axis_control_vars.get((role, key))
+            if var is None:
+                continue
+            try:
+                var.set(self._format_axis_limit(value))
+            except tk.TclError:
+                pass
+
+    def _apply_axis_autoscale_greying(self, role: str) -> None:
+        """Swap range Entry textvariable + state from autoscale state (CS-71).
+
+        For both ``range_lo`` and ``range_hi`` of the role: when
+        autoscale=True, configure the Entry to render the parallel
+        display StringVar with ``state="disabled"``; when autoscale=False,
+        configure back to the canonical schema StringVar with
+        ``state="normal"``. The display StringVar's value is whatever
+        :meth:`refresh_axis_displayed_limits` most recently wrote (or
+        ``""`` if the host hasn't fired yet).
+
+        Safe no-op for ``secondary_x`` (CS-69 / CS-70 greying owns it),
+        and when the role's autoscale var or range widgets aren't in
+        the registries (per-axis tab not built). Composes cleanly with
+        CS-70: if both this method and ``_apply_secondary_x_link_greying``
+        would touch a widget, the secondary_x check here exits first
+        and CS-70's greying wins.
+        """
+        if role == "secondary_x":
+            return
+        var = self._axis_control_vars.get((role, "autoscale"))
+        if var is None:
+            return
+        try:
+            autoscale = bool(var.get())
+        except tk.TclError:
+            return
+        for key in ("range_lo", "range_hi"):
+            widget = self._axis_control_widgets.get((role, key))
+            if widget is None:
+                continue
+            display_var = self._axis_range_display_vars.get((role, key))
+            canonical_var = self._axis_control_vars.get((role, key))
+            try:
+                if autoscale and display_var is not None:
+                    widget.configure(
+                        textvariable=display_var, state="disabled",
+                    )
+                else:
+                    if canonical_var is not None:
+                        widget.configure(textvariable=canonical_var)
+                    widget.configure(state="normal")
+            except tk.TclError:
+                pass
+
+    def refresh_axis_displayed_limits(
+        self, limits: "dict[str, tuple[float, float]]",
+    ) -> None:
+        """Refresh displayed-limits snapshot + display vars (CS-71 public API).
+
+        Public entry point called by the host (UVVisTab) at the end of
+        every ``_redraw`` while the dialog is open. ``limits`` carries
+        the current ``ax.get_xlim`` / ``get_ylim`` result for each role
+        whose ax exists in the host's ``_axes_by_role`` map; missing
+        roles (e.g. ``secondary_y`` when no plot is on it) are simply
+        absent from the dict and their display vars are left unchanged.
+
+        Widget-state only — does NOT touch :attr:`_working`, does NOT
+        trigger :meth:`_apply_changes_live`, and does NOT clear
+        :attr:`_modified_tabs` markers. The user's in-progress edits
+        on any tab (including a non-autoscale range Entry the user is
+        currently typing into) survive the refresh. Mirrors CS-70's
+        :meth:`refresh_axis_link_state` contract verbatim.
+        """
+        self._axis_displayed_limits = dict(limits)
+        for (role, key), display_var in self._axis_range_display_vars.items():
+            if role == "secondary_x":
+                continue
+            role_limits = self._axis_displayed_limits.get(role)
+            if role_limits is None:
+                continue
+            lo, hi = role_limits
+            value = lo if key == "range_lo" else hi
+            try:
+                display_var.set(self._format_axis_limit(value))
+            except tk.TclError:
+                pass
+
+    @staticmethod
+    def _format_axis_limit(value: float) -> str:
+        """Format a matplotlib ax-limit float for display in a range Entry.
+
+        Plain ``str(value)`` produces 13+ significant digits for
+        arbitrary floats; the Entry width is 8. Use a ``%.6g`` format
+        so the value fits and reads cleanly, matching the precision
+        convention the user would type by hand. Non-finite inputs
+        (NaN / inf) collapse to ``""`` so a transient bad ax-limit
+        state doesn't render gibberish into the disabled Entry.
+        """
+        if not isinstance(value, (int, float)):
+            return ""
+        if value != value or value in (float("inf"), float("-inf")):
+            return ""
+        return f"{value:.6g}"
+
+    # ── CS-72 (Phase 4as): live-refresh of _plots_by_role inventory ──
+    def refresh_plots_by_role(
+        self, plots: "dict[str, tuple[str, ...]]",
+    ) -> None:
+        """Refresh per-axis "Plots on this axis" blocks in place (CS-72).
+
+        Replaces :attr:`_plots_by_role` snapshot, then for every role
+        whose plots-block parent Frame was captured by
+        :meth:`_build_axis_tab_plots` destroys the frame's children
+        and re-invokes the builder. The Move-to picker (CS-50,
+        Y-axis tabs) rebuilds automatically via the builder's
+        existing chain. Selection is preserved by label match: rows
+        still present in the new tuple keep their selection; rows
+        that disappeared (e.g. ``NODE_DISCARDED``) leave the
+        selection cleared.
+
+        Widget-state-only contract (mirrors CS-70 / CS-71): does NOT
+        touch :attr:`_working`, does NOT trigger
+        :meth:`_apply_changes_live`, and does NOT clear
+        :attr:`_modified_tabs` markers. Per CS-72 D15,
+        ``NODE_STYLE_CHANGED`` is deliberately NOT in the host's
+        wiring — the Move-to picker is the only path that emits
+        ``NODE_STYLE_CHANGED`` with a role-mapping effect, and
+        refreshing from inside that callback would destroy the
+        picker the user is interacting with.
+        """
+        self._plots_by_role = dict(plots)
+        for role, parent in list(self._plots_block_parents.items()):
+            if parent is None:
+                continue
+            selected_label = self._capture_plots_listbox_selection(parent)
+            try:
+                for child in list(parent.winfo_children()):
+                    child.destroy()
+                self._build_axis_tab_plots(parent, role)
+                if selected_label is not None:
+                    self._restore_plots_listbox_selection(
+                        parent, selected_label,
+                    )
+            except tk.TclError:
+                pass
+
+    @staticmethod
+    def _capture_plots_listbox_selection(
+        parent: tk.Widget,
+    ) -> "str | None":
+        """Read the currently-selected label from a plots-block Listbox (CS-72).
+
+        Walks the parent's children looking for a ``tk.Listbox``;
+        returns the text of the first selected row, or ``None`` if
+        no Listbox / no selection / Listbox is in teardown. Used by
+        :meth:`refresh_plots_by_role` to preserve selection across
+        destroy + rebuild (D16).
+        """
+        try:
+            for child in parent.winfo_children():
+                if isinstance(child, tk.Listbox):
+                    sel = child.curselection()
+                    if sel:
+                        return str(child.get(sel[0]))
+                    return None
+        except tk.TclError:
+            pass
+        return None
+
+    @staticmethod
+    def _restore_plots_listbox_selection(
+        parent: tk.Widget, label: str,
+    ) -> None:
+        """Re-select the row matching ``label`` in the plots-block Listbox (CS-72).
+
+        Walks the parent's children for a ``tk.Listbox``, then scans
+        its rows for one whose text matches ``label``. Sets the
+        selection and active index when found. Silent no-op when no
+        Listbox child exists (role newly empty), when the label
+        isn't present in the rebuilt Listbox (row was discarded),
+        or when the widget is in teardown.
+        """
+        try:
+            for child in parent.winfo_children():
+                if isinstance(child, tk.Listbox):
+                    size = child.size()
+                    for idx in range(size):
+                        if str(child.get(idx)) == label:
+                            child.selection_clear(0, tk.END)
+                            child.selection_set(idx)
+                            child.activate(idx)
+                            return
+                    return
+        except tk.TclError:
+            pass
 
     def _make_axis_string_var(
         self, role: str, key: str,
@@ -2314,6 +2641,14 @@ class PlotConfigDialog(tk.Toplevel):
         added the per-axis refresh pass — every ``(role, key)``
         registered in :attr:`_axis_control_refresh` is fed the
         matching ``self._working["axes"][role][key]`` value.
+
+        CS-71 (Phase 4as): after the refresh loop, re-applies the
+        autoscale greying for every non-secondary_x role. Refresh
+        closures intentionally skip the var trace path (via
+        ``_suspend_writes``), so the autoscale toggle command
+        callback that normally drives greying does not fire. The
+        explicit re-greying here keeps the Entry textvariable +
+        state in sync with the just-restored autoscale value.
         """
         self._suspend_writes = True
         try:
@@ -2342,17 +2677,34 @@ class PlotConfigDialog(tk.Toplevel):
                     )
         finally:
             self._suspend_writes = False
+        # CS-71 (Phase 4as): re-grey after the silent var refresh.
+        # secondary_x is omitted — CS-69 / CS-70 own that role's
+        # range Entry state via the wavelength↔energy link greying.
+        for axis_role in ("primary_x", "primary_y", "secondary_y",
+                          "tertiary_y"):
+            self._apply_axis_autoscale_greying(axis_role)
 
     # ------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------
 
-    def _on_destroy(self, _event: tk.Event) -> None:
+    def _on_destroy(self, event: tk.Event) -> None:
         """Drop the registry entry when the Toplevel is destroyed.
 
         Idempotent — both Tk's <Destroy> event and the WM close hook
         can fire, but a missing key is harmless.
+
+        CS-72 (Phase 4as): filter on ``event.widget is self``. Tk's
+        ``<Destroy>`` event propagates up the widget tree, so any
+        descendant destruction (e.g. CS-72's
+        :meth:`refresh_plots_by_role` destroying + rebuilding plots
+        blocks) would otherwise pop the dialog from
+        :data:`_open_dialogs` mid-lifetime — silently breaking
+        subsequent notifications. The filter narrows handling to the
+        actual Toplevel destruction.
         """
+        if event.widget is not self:
+            return
         key = id(self._parent)
         if _open_dialogs.get(key) is self:
             _open_dialogs.pop(key, None)
