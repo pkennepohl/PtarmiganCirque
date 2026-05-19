@@ -4792,5 +4792,379 @@ class TestPlotConfigDialogPlotsByRoleRefreshPhase4as(unittest.TestCase):
         )
 
 
+@unittest.skipUnless(_HAS_DISPLAY, "no Tk display")
+class TestPlotConfigDialogApplyToAllPhase4at(unittest.TestCase):
+    """CS-73 (Phase 4at) — Per-row ∀ Apply-to-all on per-axis tabs.
+
+    Pins the contract for the per-axis Apply-to-all (∀) buttons:
+
+    * ``_axis_apply_to_all_buttons[(role, key)]`` registry exists for
+      every broadcast-capable per-axis widget on every per-axis tab.
+    * D1 lock — ``axis_label_override`` is the sole control without a
+      ∀ button (its Global-tab mirror surface is the canonical
+      broadcast affordance for label text).
+    * D2 lock — broadcasting writes to the four OTHER per-axis roles'
+      ``_working["axes"][role][key]`` slots + Tk vars + marks each
+      target tab dirty. Source role is unchanged.
+    * D4 lock — fires :meth:`_apply_changes_live` exactly once per
+      broadcast (not once per target).
+    * D8 lock — CS-71 (autoscale=True) greying disables the ∀ buttons
+      next to ``range_lo`` / ``range_hi``. CS-70 (secondary_x linked)
+      greying disables the ∀ buttons next to
+      ``range_lo`` / ``range_hi`` / ``autoscale`` / ``scale`` on the
+      Secondary X tab.
+    """
+
+    BROADCAST_KEYS = (
+        "tick_direction", "range_lo", "range_hi",
+        "autoscale", "scale", "tick_major", "tick_minor",
+        "custom_ticks", "grid_show", "axis_color",
+    )
+    PER_AXIS_ROLES = (
+        "primary_x", "secondary_x", "primary_y", "secondary_y",
+        "tertiary_y",
+    )
+
+    @classmethod
+    def setUpClass(cls):
+        import plot_settings_dialog
+        cls.psd = plot_settings_dialog
+        cls.PlotConfigDialog = plot_settings_dialog.PlotConfigDialog
+
+    def setUp(self):
+        self.psd._open_dialogs.clear()
+        self.psd._USER_DEFAULTS.clear()
+        self.host = tk.Frame(_root)
+        self.host.pack()
+        self.config: dict = {}
+
+    def tearDown(self):
+        for dlg in list(self.psd._open_dialogs.values()):
+            try:
+                dlg.destroy()
+            except Exception:
+                pass
+        self.psd._open_dialogs.clear()
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    # ---- Registry shape (D1) ----
+
+    def test_apply_to_all_button_built_for_every_broadcast_key(self):
+        # Pin: ∀ button exists for every (role, key) pair where key is
+        # in the broadcast-capable set, for every per-axis tab.
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        for role in self.PER_AXIS_ROLES:
+            for key in self.BROADCAST_KEYS:
+                self.assertIn(
+                    (role, key), dlg._axis_apply_to_all_buttons,
+                    f"missing ∀ button for ({role!r}, {key!r})",
+                )
+
+    def test_apply_to_all_button_total_count(self):
+        # 10 broadcast keys × 5 per-axis roles = 50 ∀ buttons exactly.
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        self.assertEqual(
+            len(dlg._axis_apply_to_all_buttons),
+            len(self.BROADCAST_KEYS) * len(self.PER_AXIS_ROLES),
+        )
+
+    def test_axis_label_override_has_no_apply_to_all_button(self):
+        # D1: axis_label_override is EXEMPT. Its Global-tab mirror
+        # section is the canonical broadcast surface for label text.
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        for role in self.PER_AXIS_ROLES:
+            self.assertNotIn(
+                (role, "axis_label_override"),
+                dlg._axis_apply_to_all_buttons,
+                f"axis_label_override on {role!r} must NOT have a "
+                f"∀ button (D1 lock)",
+            )
+
+    def test_apply_to_all_button_is_tk_button_with_glyph(self):
+        # Pin: glyph is "∀" and the widget is a real tk.Button so
+        # ``invoke()`` works for tests.
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        for (role, key), btn in dlg._axis_apply_to_all_buttons.items():
+            self.assertIsInstance(
+                btn, tk.Button,
+                f"({role!r}, {key!r}) should be a tk.Button",
+            )
+            self.assertEqual(
+                str(btn.cget("text")), "∀",
+                f"({role!r}, {key!r}) glyph should be ∀",
+            )
+
+    # ---- Broadcast mechanics (D2 + D4) ----
+
+    def test_broadcast_tick_direction_writes_other_roles_working(self):
+        # Click ∀ on primary_x's tick_direction with value "out".
+        # All four other per-axis roles should receive that value in
+        # their ``_working["axes"][role]["tick_direction"]`` slot.
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        src_var = dlg._axis_control_vars[("primary_x", "tick_direction")]
+        src_var.set("out")
+        dlg._axis_apply_to_all_buttons[("primary_x", "tick_direction")].invoke()
+        for target in ("secondary_x", "primary_y", "secondary_y", "tertiary_y"):
+            self.assertEqual(
+                dlg._working["axes"][target]["tick_direction"], "out",
+                f"target {target!r} should receive broadcast value",
+            )
+
+    def test_broadcast_writes_target_tk_vars(self):
+        # After ∀, the four other roles' Tk vars hold the broadcast
+        # value (so the widgets visually reflect the broadcast).
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        dlg._axis_control_vars[("primary_x", "tick_direction")].set("inout")
+        dlg._axis_apply_to_all_buttons[
+            ("primary_x", "tick_direction")
+        ].invoke()
+        for target in ("secondary_x", "primary_y", "secondary_y", "tertiary_y"):
+            self.assertEqual(
+                dlg._axis_control_vars[(target, "tick_direction")].get(),
+                "inout",
+            )
+
+    def test_broadcast_boolean_var_grid_show(self):
+        # BooleanVar broadcast path. Source primary_y grid_show=False
+        # (factory default for non-primary already varies, so explicit
+        # set on source); after broadcast every target has it.
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        dlg._axis_control_vars[("primary_y", "grid_show")].set(False)
+        dlg._axis_apply_to_all_buttons[("primary_y", "grid_show")].invoke()
+        for target in ("primary_x", "secondary_x", "secondary_y", "tertiary_y"):
+            self.assertEqual(
+                dlg._working["axes"][target]["grid_show"], False,
+                f"target {target!r} grid_show should be False",
+            )
+
+    def test_broadcast_range_lo_string_var(self):
+        # range_lo is defer-commit but ∀ bypasses the per-keystroke
+        # trace and drives the commit directly. Source primary_y at
+        # autoscale=False with range_lo="0.25" → targets receive "0.25".
+        cfg = {"axes": {"primary_y": {"autoscale": False}}}
+        dlg = self.PlotConfigDialog(self.host, cfg)
+        dlg.update_idletasks()
+        dlg._axis_control_vars[("primary_y", "range_lo")].set("0.25")
+        dlg._axis_apply_to_all_buttons[("primary_y", "range_lo")].invoke()
+        for target in ("primary_x", "secondary_x", "secondary_y", "tertiary_y"):
+            self.assertEqual(
+                dlg._working["axes"][target]["range_lo"], "0.25",
+            )
+
+    def test_broadcast_does_not_modify_source(self):
+        # Source role's value is read, not written. After ∀ the source
+        # tab's _working slot is whatever it was before (here we set
+        # it explicitly first).
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        src_var = dlg._axis_control_vars[("primary_x", "tick_direction")]
+        src_var.set("in")
+        dlg._axis_apply_to_all_buttons[
+            ("primary_x", "tick_direction")
+        ].invoke()
+        # Source still has "in" — the broadcast wrote to targets only.
+        self.assertEqual(
+            dlg._working["axes"]["primary_x"]["tick_direction"], "in",
+        )
+
+    def test_broadcast_marks_each_target_tab_modified(self):
+        # Every target role joins _modified_tabs (the user sees a
+        # bullet on each target tab title). Source tab is NOT marked.
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        dlg._modified_tabs.clear()
+        dlg._axis_control_vars[("primary_y", "tick_direction")].set("out")
+        # The .set above marks primary_y modified through the trace.
+        # Clear it to isolate ∀'s contribution.
+        dlg._modified_tabs.clear()
+        dlg._axis_apply_to_all_buttons[
+            ("primary_y", "tick_direction")
+        ].invoke()
+        for target in ("primary_x", "secondary_x", "secondary_y", "tertiary_y"):
+            self.assertIn(
+                target, dlg._modified_tabs,
+                f"target {target!r} should be in _modified_tabs",
+            )
+        self.assertNotIn(
+            "primary_y", dlg._modified_tabs,
+            "source role primary_y should NOT be marked by ∀",
+        )
+
+    def test_broadcast_fires_apply_changes_live_exactly_once(self):
+        # D4: one ∀ click → one on_apply invocation, regardless of how
+        # many targets receive the broadcast. Critical: without
+        # _suspend_writes, the per-target var.set would re-enter
+        # _on_axis_var_write and fire on_apply per target (4 extra
+        # paints).
+        seen = []
+        dlg = self.PlotConfigDialog(
+            self.host, self.config, on_apply=lambda: seen.append(1),
+        )
+        dlg.update_idletasks()
+        seen.clear()
+        dlg._axis_control_vars[("primary_x", "tick_direction")].set("out")
+        # The .set above fires on_apply once (source's normal trace).
+        seen.clear()
+        dlg._axis_apply_to_all_buttons[
+            ("primary_x", "tick_direction")
+        ].invoke()
+        self.assertEqual(
+            len(seen), 1,
+            f"∀ should fire on_apply exactly once; got {len(seen)}",
+        )
+
+    def test_broadcast_excludes_source_role(self):
+        # The handler's target list must not include the source role.
+        # Verified by sentinel: pre-set source to a unique value,
+        # broadcast, then check source's Tk var was not re-written by
+        # the broadcast loop (it stays at its pre-broadcast value).
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        src_var = dlg._axis_control_vars[("primary_x", "scale")]
+        src_var.set("log")
+        # Pre-broadcast: target scales are factory defaults ("linear").
+        dlg._axis_apply_to_all_buttons[("primary_x", "scale")].invoke()
+        # Source remains "log" (never overwritten by the loop).
+        self.assertEqual(src_var.get(), "log")
+        # Every target now equals "log".
+        for target in ("secondary_x", "primary_y", "secondary_y", "tertiary_y"):
+            self.assertEqual(
+                dlg._axis_control_vars[(target, "scale")].get(), "log",
+            )
+
+    # ---- D8: CS-71 greying composition ----
+
+    def test_apply_to_all_button_disabled_with_autoscale_true(self):
+        # CS-71 ↔ CS-73 composition: while autoscale=True for a role,
+        # range_lo and range_hi widgets are state="disabled" and the
+        # ∀ buttons next to them are too. Factory default
+        # autoscale=True for every non-secondary_x role.
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        for role in ("primary_x", "primary_y", "secondary_y", "tertiary_y"):
+            for key in ("range_lo", "range_hi"):
+                btn = dlg._axis_apply_to_all_buttons[(role, key)]
+                self.assertEqual(
+                    str(btn.cget("state")), "disabled",
+                    f"∀ for ({role!r}, {key!r}) should be disabled "
+                    f"while autoscale=True (CS-71 composition)",
+                )
+
+    def test_apply_to_all_button_enabled_when_autoscale_false(self):
+        # Reverse of the previous: autoscale=False → range Entries
+        # editable → their ∀ buttons enabled.
+        cfg = {"axes": {"primary_y": {"autoscale": False}}}
+        dlg = self.PlotConfigDialog(self.host, cfg)
+        dlg.update_idletasks()
+        for key in ("range_lo", "range_hi"):
+            btn = dlg._axis_apply_to_all_buttons[("primary_y", key)]
+            self.assertEqual(str(btn.cget("state")), "normal")
+
+    def test_autoscale_toggle_propagates_to_apply_to_all_button(self):
+        # Toggling the source autoscale from True→False re-enables the
+        # ∀ for range_lo/range_hi alongside the Entry textvariable
+        # swap. The autoscale Checkbutton command fires the greying
+        # method which now also walks the ∀ registry.
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        var = dlg._axis_control_vars[("primary_y", "autoscale")]
+        var.set(False)
+        dlg._on_axis_autoscale_toggle("primary_y")
+        dlg.update_idletasks()
+        for key in ("range_lo", "range_hi"):
+            btn = dlg._axis_apply_to_all_buttons[("primary_y", key)]
+            self.assertEqual(str(btn.cget("state")), "normal")
+
+    # ---- D8: CS-70 greying composition ----
+
+    def test_apply_to_all_disabled_on_secondary_x_when_linked(self):
+        # CS-70 ↔ CS-73 composition: when the host reports the
+        # wavelength↔energy link is active, the four greying-eligible
+        # keys on secondary_x have their widgets + ∀ buttons disabled.
+        dlg = self.PlotConfigDialog(
+            self.host, self.config, secondary_x_linked=True,
+        )
+        dlg.update_idletasks()
+        for key in ("range_lo", "range_hi", "autoscale", "scale"):
+            btn = dlg._axis_apply_to_all_buttons[("secondary_x", key)]
+            self.assertEqual(
+                str(btn.cget("state")), "disabled",
+                f"∀ for ('secondary_x', {key!r}) should be disabled "
+                f"while linked=True (CS-70 composition)",
+            )
+
+    def test_apply_to_all_enabled_on_secondary_x_when_unlinked(self):
+        # Default secondary_x_linked=False: every secondary_x ∀ button
+        # is enabled at build time (modulo CS-71, which doesn't apply
+        # to secondary_x).
+        dlg = self.PlotConfigDialog(
+            self.host, self.config, secondary_x_linked=False,
+        )
+        dlg.update_idletasks()
+        for key in ("range_lo", "range_hi", "autoscale", "scale"):
+            btn = dlg._axis_apply_to_all_buttons[("secondary_x", key)]
+            self.assertEqual(
+                str(btn.cget("state")), "normal",
+                f"∀ for ('secondary_x', {key!r}) should be normal "
+                f"while linked=False",
+            )
+
+    def test_refresh_axis_link_state_toggles_secondary_x_buttons(self):
+        # Live refresh: open with linked=False, host flips to True,
+        # refresh_axis_link_state(True) disables the four ∀ buttons.
+        dlg = self.PlotConfigDialog(
+            self.host, self.config, secondary_x_linked=False,
+        )
+        dlg.update_idletasks()
+        dlg.refresh_axis_link_state(True)
+        dlg.update_idletasks()
+        for key in ("range_lo", "range_hi", "autoscale", "scale"):
+            btn = dlg._axis_apply_to_all_buttons[("secondary_x", key)]
+            self.assertEqual(str(btn.cget("state")), "disabled")
+
+    # ---- Defensive edge cases ----
+
+    def test_apply_to_all_handler_silent_when_var_missing(self):
+        # Call the handler with a (role, key) pair that has no Tk var
+        # registered. Handler returns silently — no _working write,
+        # no exception, no on_apply.
+        seen = []
+        dlg = self.PlotConfigDialog(
+            self.host, self.config, on_apply=lambda: seen.append(1),
+        )
+        dlg.update_idletasks()
+        seen.clear()
+        # ``("global", "tick_direction")`` is not in _axis_control_vars
+        # (global is not a per-axis role).
+        dlg._on_axis_apply_to_all("global", "tick_direction")
+        self.assertEqual(seen, [])
+
+    def test_apply_to_all_restores_suspend_writes(self):
+        # _suspend_writes must end the handler in its pre-call state
+        # even if the broadcast loop ran. (We don't expect
+        # _suspend_writes to be True during normal operation, so post-
+        # broadcast should be False again.)
+        dlg = self.PlotConfigDialog(self.host, self.config)
+        dlg.update_idletasks()
+        self.assertFalse(dlg._suspend_writes)
+        dlg._axis_apply_to_all_buttons[
+            ("primary_x", "tick_direction")
+        ].invoke()
+        self.assertFalse(
+            dlg._suspend_writes,
+            "_suspend_writes must be restored to False after ∀ handler",
+        )
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
