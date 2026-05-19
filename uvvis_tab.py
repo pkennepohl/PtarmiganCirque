@@ -1820,6 +1820,14 @@ class UVVisTab(tk.Frame):
             GraphEventType.NODE_ACTIVE_CHANGED,
             GraphEventType.NODE_STYLE_CHANGED,
             GraphEventType.NODE_LABEL_CHANGED,
+            # Phase 4at (item α from the Phase 4as carry-forward):
+            # NODE_GROUP_MEMBERS_CHANGED can change which underlying
+            # raw spectra a group renders, so the plot must redraw
+            # alongside the CS-72 plots-by-role inventory refresh
+            # (which already fires below). Pre-Phase 4at this event
+            # only refreshed the dialog's listbox; the figure went
+            # stale until the next unrelated trigger.
+            GraphEventType.NODE_GROUP_MEMBERS_CHANGED,
             GraphEventType.GRAPH_LOADED,
             GraphEventType.GRAPH_CLEARED,
         ):
