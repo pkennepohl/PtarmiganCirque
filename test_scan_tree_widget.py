@@ -4036,5 +4036,166 @@ class TestScanTreeWidgetNodeGroupsPhase4ag(unittest.TestCase):
         self.assertNotIn("Remove from group", labels)
 
 
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestScanTreeWidgetHistoryCollapsePhase4at(unittest.TestCase):
+    """Phase 4at item β — provenance steps collapse to one line each.
+
+    Pre-Phase 4at every "step" in the inline history pane took two
+    lines: one for the OperationNode and one for the DataNode it
+    produced. This class pins the collapse: each (op, output-data)
+    pair renders as a single ``↳ op [engine ver] → data_label`` line.
+    Root DataNodes (no parent op in scope) still render standalone,
+    and multi-input operations' source DataNodes are preserved as
+    standalone lines too — only the op-and-its-output pair collapses.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from scan_tree_widget import ScanTreeWidget
+        cls.ScanTreeWidget = ScanTreeWidget
+
+    def setUp(self):
+        self.host = tk.Frame(_root)
+        self.host.pack()
+        self.graph = ProjectGraph()
+
+    def tearDown(self):
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    def _fresh_widget(self):
+        _, cb = _redraw_calls()
+        widget = self.ScanTreeWidget(
+            self.host, self.graph, [NodeType.UVVIS], cb,
+        )
+        widget.pack()
+        return widget
+
+    def _build_linear_two_step_chain(self):
+        # raw "d_raw" → op1 BASELINE → "d_base" → op2 SMOOTHING → "d_smooth"
+        d_raw = _data("d_raw", state=NodeState.COMMITTED, label="Raw")
+        d_base = _data(
+            "d_base", state=NodeState.COMMITTED, label="Baselined",
+        )
+        d_smooth = _data(
+            "d_smooth", state=NodeState.COMMITTED, label="Smoothed",
+        )
+        op1 = _op(
+            "op1", otype=OperationType.BASELINE,
+            inputs=["d_raw"], outputs=["d_base"],
+        )
+        op2 = _op(
+            "op2", otype=OperationType.SMOOTH,
+            inputs=["d_base"], outputs=["d_smooth"],
+        )
+        self.graph.add_node(d_raw)
+        self.graph.add_node(d_base)
+        self.graph.add_node(d_smooth)
+        self.graph.add_node(op1)
+        self.graph.add_node(op2)
+        self.graph.add_edge("d_raw", "op1")
+        self.graph.add_edge("op1", "d_base")
+        self.graph.add_edge("d_base", "op2")
+        self.graph.add_edge("op2", "d_smooth")
+        return d_smooth
+
+    # ---- _collapse_history_chain shape ----
+
+    def test_collapse_linear_two_steps_returns_three_entries(self):
+        # Pre-4at: 5 entries (D_raw, op1, D_base, op2, D_smooth).
+        # 4at β: 3 entries (D_raw standalone, op1→D_base, op2→D_smooth).
+        focused = self._build_linear_two_step_chain()
+        widget = self._fresh_widget()
+        chain = self.graph.provenance_chain(focused.id)
+        entries = widget._collapse_history_chain(chain)
+        self.assertEqual(
+            len(entries), 3,
+            f"expected 3 collapsed entries; got {len(entries)}: {entries}",
+        )
+
+    def test_collapse_first_entry_is_root_data_standalone(self):
+        focused = self._build_linear_two_step_chain()
+        widget = self._fresh_widget()
+        chain = self.graph.provenance_chain(focused.id)
+        text, focus_id = widget._collapse_history_chain(chain)[0]
+        self.assertEqual(focus_id, "d_raw")
+        self.assertIn("Raw", text)
+        self.assertNotIn("→", text)
+
+    def test_collapse_op_pair_merges_into_single_arrow_line(self):
+        focused = self._build_linear_two_step_chain()
+        widget = self._fresh_widget()
+        chain = self.graph.provenance_chain(focused.id)
+        entries = widget._collapse_history_chain(chain)
+        # Second entry: op1 (BASELINE) → d_base ("Baselined")
+        text, focus_id = entries[1]
+        self.assertIn("baseline", text)
+        self.assertIn("→", text)
+        self.assertIn("Baselined", text)
+        self.assertEqual(focus_id, "d_base")
+        # Third entry: op2 (SMOOTHING) → d_smooth ("Smoothed")
+        text2, focus_id2 = entries[2]
+        self.assertIn("smooth", text2)
+        self.assertIn("→", text2)
+        self.assertIn("Smoothed", text2)
+        self.assertEqual(focus_id2, "d_smooth")
+
+    def test_collapse_focus_id_for_merged_line_is_output_data(self):
+        # Click semantics: merged "op → data" line dispatches with
+        # the OUTPUT DataNode's id (the natural "preview the result").
+        focused = self._build_linear_two_step_chain()
+        widget = self._fresh_widget()
+        chain = self.graph.provenance_chain(focused.id)
+        entries = widget._collapse_history_chain(chain)
+        for text, focus_id in entries:
+            if "→" in text:
+                self.assertFalse(
+                    focus_id.startswith("op"),
+                    f"merged line {text!r} should focus the output "
+                    f"DataNode, not the op (got {focus_id!r})",
+                )
+
+    # ---- _render_history Label count ----
+
+    def test_render_history_packs_one_label_per_collapsed_entry(self):
+        # The visible artifact: one tk.Label per collapsed step, not
+        # one per raw provenance_chain item.
+        focused = self._build_linear_two_step_chain()
+        widget = self._fresh_widget()
+        widget.update_idletasks()
+        widget._toggle_history("d_smooth")
+        widget.update_idletasks()
+        sub = widget._history_frames["d_smooth"]
+        labels = [
+            c for c in sub.pack_slaves() if isinstance(c, tk.Label)
+        ]
+        self.assertEqual(
+            len(labels), 3,
+            f"expected 3 history Labels (1 per collapsed step); "
+            f"got {len(labels)}: {[l.cget('text') for l in labels]}",
+        )
+
+    def test_render_history_text_matches_collapsed_format(self):
+        # The Labels' text values match the collapse output verbatim.
+        focused = self._build_linear_two_step_chain()
+        widget = self._fresh_widget()
+        widget.update_idletasks()
+        widget._toggle_history("d_smooth")
+        widget.update_idletasks()
+        sub = widget._history_frames["d_smooth"]
+        labels = [
+            c for c in sub.pack_slaves() if isinstance(c, tk.Label)
+        ]
+        rendered = [str(l.cget("text")) for l in labels]
+        expected = [
+            text for text, _ in widget._collapse_history_chain(
+                self.graph.provenance_chain("d_smooth"),
+            )
+        ]
+        self.assertEqual(rendered, expected)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
