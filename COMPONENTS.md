@@ -10822,7 +10822,203 @@ the canonical recipe is established.
 
 ---
 
-*Document version: 1.45 — May 2026*
+## CS-73 — Per-row ∀ Apply-to-all buttons on per-axis Plot Settings tabs (Phase 4at)
+
+Closes the USER-FLAGGED Phase 4ak friction — the canonical entry
+in BACKLOG: *"Apply-to-all icon on per-axis Plot Settings tabs
+— UI consistency with data-node settings."* Pre-CS-73 the
+per-axis tabs offered only the dialog-level "Apply to All Tabs"
+button at the bottom (CS-60 button row) which broadcasts the
+ENTIRE config; there was no in-tab affordance for "apply this
+specific widget's value to every other axis." After CS-73 every
+broadcast-capable per-axis widget carries a flat `∀` button
+that fans out its value to the four other per-axis roles in
+one gesture.
+
+### Dialog-side surfaces (`plot_settings_dialog.py`)
+
+* `_axis_apply_to_all_buttons[(role, key)]: dict[tuple[str, str], tk.Button]`
+  — registry of every per-row ∀ button. Populated by
+  `_make_axis_apply_to_all_button`. CS-71's `_apply_axis_autoscale_greying`
+  and CS-70's `_apply_secondary_x_link_greying` walk it (D8).
+* `_make_axis_apply_to_all_button(parent, role, key) -> tk.Button`
+  — factory matching the CS-05 `style_dialog` per-row ∀
+  convention (`text="∀"`, `font=("", 8)`, `relief=tk.FLAT`,
+  `padx=4`, `pady=0`). Click closure binds `(role, key)` and
+  dispatches to `_on_axis_apply_to_all`.
+* `_on_axis_apply_to_all(source_role, key)` — broadcast handler.
+  Reads source value from `_axis_control_vars[(source_role, key)]`;
+  for each of the four OTHER per-axis roles writes
+  `_working["axes"][target][key]`, sets the target Tk var, and
+  marks the target tab dirty via `_mark_tab_modified`. Fires
+  `_apply_changes_live` exactly once at the end (D4). The
+  `_suspend_writes` guard is engaged across the loop so the
+  trace path (which would re-enter `_on_axis_var_write` and,
+  for non-deferred keys, fire `_apply_changes_live` per target)
+  does not double-write. Defer-commit Entries (CS-68:
+  `range_lo` / `range_hi` / `tick_major` / `tick_minor` /
+  `custom_ticks` / `axis_label_override`) broadcast in one
+  click without per-target focus events.
+
+### Per-axis tab layout
+
+Each per-axis Settings frame builder packs a ∀ button next to
+every broadcast-capable widget. Ten controls × five per-axis
+roles = **50 ∀ buttons** exactly.
+
+Controls carrying a ∀:
+
+* `tick_direction` (Radiobutton row — broadcasts the in/out/inout choice)
+* `range_lo` (Entry — D8: greyed when source autoscale=True)
+* `range_hi` (Entry — D8)
+* `autoscale` (Checkbutton — D8: greyed on secondary_x when linked)
+* `scale` (Combobox — D8: greyed on secondary_x when linked)
+* `tick_major` (Entry)
+* `tick_minor` (Entry)
+* `custom_ticks` (Entry)
+* `grid_show` (Checkbutton)
+* `axis_color` (Button + swatch — broadcasts the hex)
+
+The sole exemption (D1): `axis_label_override`. Broadcasting
+axis label text across roles makes no semantic sense — different
+axes typically display different physical quantities — and the
+Global tab's "Per-axis label overrides" mirror section is the
+canonical surface for cross-axis label management.
+
+### Lock decisions (D1–D8)
+
+* **D1 — Scope.** Per-row ∀ on 10 of the 11 per-axis controls.
+  `axis_label_override` exempt; the Global-tab mirror is the
+  canonical broadcast surface for label text.
+* **D2 — Targets.** The four OTHER per-axis roles in `_TAB_KEYS[1:]`.
+  Source tab is unchanged. X-or-Y axis shape is NOT a filter — a
+  ∀ on Primary X's `tick_direction` broadcasts to every Y axis
+  too. The user gets one click for "make every axis match."
+* **D3 — secondary_x as target.** Broadcast writes to
+  `_working["axes"]["secondary_x"][key]` unconditionally. CS-70's
+  link greying is UI-only; the underlying model accepts the
+  broadcast value silently and it becomes effective when the
+  user later unlinks (e.g. toggles `_show_nm_axis` off).
+* **D4 — Commit semantics.** `_suspend_writes` guard + manual
+  `_working` write + `target_var.set(value)` + `_mark_tab_modified`
+  + ONE `_apply_changes_live` at the end. Bypasses the per-key
+  trace path so defer-commit Entries don't require per-target
+  focus events.
+* **D5 — Visual.** `∀` glyph (universal quantifier) matching
+  CS-05 `style_dialog`'s per-row ∀ convention. Flat relief,
+  8-pt font, snug padding so the button sits cleanly inline
+  with the widget without dominating the row.
+* **D6 — CS-72/CS-71 interaction.** ∀ buttons live in the per-axis
+  Settings frame, which CS-72's `refresh_plots_by_role` does NOT
+  destroy (only the "Plots on this axis" block frame is
+  refreshed). CS-71's range Entry textvariable swap on autoscale
+  toggle continues to work — when target's autoscale=True, the
+  ∀-broadcast value writes to the canonical StringVar (the
+  display var still wins the textvariable assignment), so the
+  user sees no immediate change while autoscale=True but the
+  value becomes effective on the next autoscale=False.
+* **D7 — Component number.** CS-73.
+* **D8 — Greying composition.** When a widget is greyed by
+  CS-71 (`range_lo` / `range_hi` while autoscale=True) or CS-70
+  (`range_lo` / `range_hi` / `autoscale` / `scale` on secondary_x
+  while linked), the ∀ button next to it is ALSO greyed.
+  `_apply_axis_autoscale_greying` and `_apply_secondary_x_link_greying`
+  both walk `_axis_apply_to_all_buttons` and configure the same
+  `state="disabled" / "normal"` they apply to the widget.
+  Rationale: broadcasting from an inert source widget makes no
+  sense — the visible value isn't the source-of-truth value the
+  ∀ would broadcast.
+
+### Phase 4at also bundled
+
+* **Item α** — single-line addition of
+  `GraphEventType.NODE_GROUP_MEMBERS_CHANGED` to the `_redraw`
+  trigger tuple in `UVVisTab._on_graph_event` (carried forward
+  from Phase 4as). Pre-α this event triggered the CS-72
+  plots-by-role refresh correctly but did NOT fire the canvas
+  redraw — group-member changes alter which underlying raw
+  spectra a group renders, so the figure went stale until
+  something else fired a redraw. Pinned by three regression
+  sentinels in `TestUVVisTabNodeGroupMembersRedrawPhase4at`.
+* **Item β** — `ScanTreeWidget._render_history` collapses each
+  `(OperationNode, output DataNode)` pair into a single
+  `↳ <op> [engine ver] → <output_label>` line via the new
+  `_collapse_history_chain(chain)` helper. Pre-β each "step"
+  rendered as two lines (op alone, then output data alone).
+  Root DataNodes and multi-input operations' source DataNodes
+  preserve their standalone line; only the op-and-its-output
+  pair collapses. Clicks on a merged line dispatch with the
+  output DataNode's id (the natural "preview the result of
+  this step"). Pinned by six tests in
+  `TestScanTreeWidgetHistoryCollapsePhase4at`.
+
+### Test sentinels
+
+`TestPlotConfigDialogApplyToAllPhase4at` — 20 unit tests:
+
+* Registry shape (4): ∀ built for every (role, key) pair; total
+  count 50; `axis_label_override` exempt; widget is `tk.Button`
+  with `text="∀"`.
+* Broadcast mechanics (8): `tick_direction` / `grid_show` (Bool)
+  / `range_lo` (defer-commit Entry) / source unchanged / targets
+  marked modified / source NOT marked / on_apply fires exactly
+  once / source excluded from target list / target Tk vars set.
+* CS-71 greying composition (3): autoscale=True disables range
+  ∀; autoscale=False enables; autoscale toggle propagates.
+* CS-70 greying composition (3): linked=True disables four
+  secondary_x ∀; linked=False enables; `refresh_axis_link_state`
+  live-toggles.
+* Defensive edges (2): missing var → silent no-op;
+  `_suspend_writes` restored after handler.
+
+`TestUVVisTabApplyToAllIntegrationPhase4at` — 3 integration
+tests: `tick_direction` propagation to host `_plot_config`;
+`grid_show` boolean propagation; host `_redraw` fires exactly
+once per ∀ click (regression against trace re-entry).
+
+`TestUVVisTabNodeGroupMembersRedrawPhase4at` — 3 integration
+tests for item α.
+
+`TestScanTreeWidgetHistoryCollapsePhase4at` — 6 unit tests for
+item β.
+
+### Phase 4at landing
+
+Phase 4at landed in six commits on `redesign/phase-4at-node-
+group-redraw-and-apply-to-all-icon`, then merged into
+`redesign/main`:
+
+1. `30ee73e` — `plot_settings_dialog.py` pure-module CS-73
+   additions (registry, factory, handler, ∀ button placement
+   in `_build_axis_tab_settings`, greying composition into
+   CS-70 + CS-71 methods).
+2. `2cd3ac0` — `test_plot_settings_dialog.py` 20 new unit-test
+   sentinels.
+3. `2c5a255` — `uvvis_tab.py` item α one-liner.
+4. `0498ebe` — `test_uvvis_tab.py` 6 new integration-test
+   sentinels (3 for item α + 3 for CS-73 graph-level).
+5. `c8be698` — `scan_tree_widget.py` item β collapse logic.
+6. `c63d86b` — `test_scan_tree_widget.py` 6 item β tests.
+
+Plus this bookkeeping commit. 1473 tests, all green (1441
+baseline + 32 net new). PTMG_FORMAT_VERSION unchanged — no
+schema keys added.
+
+### Architectural follow-up
+
+CS-73 is the first phase to add a fourth concurrent surface to
+the ∀ broadcast pattern: `style_dialog`'s per-row ∀ already
+existed (CS-05) and broadcasts within a single node's style
+across sibling nodes; CS-73 adds the per-axis broadcast within
+the dialog's own tabs. The two surfaces share the glyph and
+visual style but are independent — different registries,
+different handlers, different scope. Any future broadcast
+surface (e.g. Compare-tab cross-axis broadcast) has TWO
+playbooks to copy from.
+
+---
+
+*Document version: 1.46 — May 2026*
 *1.1: CS-13 implementation notes added in Phase 4a.*
 *1.2: CS-14 Plot Settings Dialog added in Phase 4b.*
 *1.3: CS-15 UV/Vis Baseline Correction + CS-04 implementation
@@ -12148,5 +12344,28 @@ commits: (1) `fd93182` pure-module dialog surfaces;
 `97a6536` host wiring + CS-66 fix; (4) `fa70f9b` 28 integration
 tests + D15 polish; (5) bookkeeping (this entry). 1441 tests,
 all green (1379 + 62 net new).*
+*1.46: CS-73 added in Phase 4at. Per-row ∀ Apply-to-all buttons
+on every per-axis Plot Settings widget except
+`axis_label_override` (Global-tab mirror is the canonical label
+broadcast surface). 50 ∀ buttons exactly (10 controls × 5
+per-axis roles). Closes USER-FLAGGED Phase 4ak friction —
+"Apply-to-all icon on per-axis Plot Settings tabs." `_suspend_writes`
+guard + manual `_working` write + ONE `_apply_changes_live`
+fire (D4) bypasses the trace path so defer-commit Entries
+broadcast in one click and non-deferred widgets don't fire
+on_apply per target. Greying composition (D8): CS-71 and CS-70
+both walk `_axis_apply_to_all_buttons[(role, key)]` so a ∀
+next to an inert widget is itself inert. Bundled with item α
+— `NODE_GROUP_MEMBERS_CHANGED` added to `_on_graph_event`'s
+`_redraw` trigger (Phase 4as carry-forward) — and item β —
+`ScanTreeWidget._render_history` collapses each
+`(OperationNode, output DataNode)` pair into a single
+`↳ <op> [engine ver] → <output_label>` line (USER-surfaced at
+step 5). No schema keys added — PTMG_FORMAT_VERSION unchanged.
+Six phase commits: (1) `30ee73e` pure-module CS-73;
+(2) `2cd3ac0` 20 unit tests; (3) `2c5a255` item α one-liner;
+(4) `0498ebe` 6 integration tests; (5) `c8be698` item β
+collapse logic; (6) `c63d86b` 6 item β tests; plus bookkeeping
+(this entry). 1473 tests, all green (1441 + 32 net new).*
 *To be updated as Open Questions are resolved and new components
 are specified.*

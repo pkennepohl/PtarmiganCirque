@@ -1987,8 +1987,12 @@ class ScanTreeWidget(tk.Frame):
         sub.pack(after=row, side="top", fill="x", padx=(20, 4), pady=(0, 2))
         self._history_frames[node_id] = sub
 
-        for ancestor in chain:
-            text = self._format_history_entry(ancestor)
+        # Phase 4at item β: collapse each (OperationNode, output
+        # DataNode) pair into a single line so one logical "step"
+        # renders as one line instead of two. Source DataNodes for
+        # multi-input operations (e.g. the two inputs to an AVERAGE)
+        # and root DataNodes keep their own standalone line.
+        for text, focus_id in self._collapse_history_chain(chain):
             lbl = tk.Label(
                 sub, text=text, anchor="w", fg="#444444",
                 cursor="hand2",
@@ -1996,8 +2000,77 @@ class ScanTreeWidget(tk.Frame):
             lbl.pack(side="top", fill="x")
             lbl.bind(
                 "<Button-1>",
-                lambda _e, nid=ancestor.id: self._on_history_click(nid),
+                lambda _e, nid=focus_id: self._on_history_click(nid),
             )
+
+    def _collapse_history_chain(
+        self, chain: list,
+    ) -> list[tuple[str, str]]:
+        """Collapse a provenance chain to one line per logical step (4at β).
+
+        Walks the topo-ordered ``chain`` and pairs each
+        :class:`OperationNode` with its output :class:`DataNode` (the
+        DataNode that is both a child of the op AND in the same chain).
+        Returns a list of ``(text, focus_id)`` tuples where ``focus_id``
+        is the node id click bindings should dispatch to.
+
+        Linear chains (the common case ``raw → baseline → smoothed``)
+        collapse to one line per op-plus-output pair. DAGs with
+        multi-input operations preserve their source DataNodes as
+        standalone lines and merge only the operation with its
+        produced output. Root DataNodes (no parent operation in scope)
+        also render standalone.
+
+        Clicks on a merged "op → data" line dispatch with the OUTPUT
+        DataNode's id (the natural "preview the result of this step"
+        affordance).
+        """
+        chain_ids = {n.id for n in chain}
+        consumed_data_ids: set[str] = set()
+        entries: list[tuple[str, str]] = []
+        for item in chain:
+            if isinstance(item, OperationNode):
+                # Find the output DataNode for this op within the
+                # chain. Operations produce a single DataNode child in
+                # the current schema; defensively take the first
+                # matching child if multiple exist.
+                output_data: Union[DataNode, None] = None
+                try:
+                    child_ids = self._graph.children_of(item.id)
+                except KeyError:
+                    child_ids = []
+                for child_id in child_ids:
+                    if child_id not in chain_ids:
+                        continue
+                    try:
+                        child_node = self._graph.get_node(child_id)
+                    except KeyError:
+                        continue
+                    if isinstance(child_node, DataNode):
+                        output_data = child_node
+                        break
+                if output_data is not None:
+                    consumed_data_ids.add(output_data.id)
+                    text = self._format_collapsed_history_entry(
+                        item, output_data,
+                    )
+                    entries.append((text, output_data.id))
+                else:
+                    # Defensive fallback: op with no output DataNode
+                    # in the chain (shouldn't happen with the current
+                    # operation schema). Render the op alone with its
+                    # own id so the line is still clickable.
+                    entries.append(
+                        (self._format_history_entry(item), item.id),
+                    )
+            elif isinstance(item, DataNode):
+                if item.id in consumed_data_ids:
+                    # Already merged into the preceding op line.
+                    continue
+                entries.append(
+                    (self._format_history_entry(item), item.id),
+                )
+        return entries
 
     def _format_history_entry(
         self, ancestor: Union[DataNode, OperationNode],
@@ -2009,6 +2082,22 @@ class ScanTreeWidget(tk.Frame):
             )
         # DataNode
         return f"  ↳ {ancestor.label}"
+
+    def _format_collapsed_history_entry(
+        self, op: OperationNode, output_data: DataNode,
+    ) -> str:
+        """One-line "op → output_label" rendering (Phase 4at item β).
+
+        Merges the OperationNode's engine signature with the produced
+        DataNode's label so each logical step in the provenance chain
+        renders as a single line in the inline history pane (was two
+        lines pre-4at: op on its own, then the produced data on the
+        next line).
+        """
+        return (
+            f"  ↳ {op.type.name.lower()} "
+            f"[{op.engine} {op.engine_version}] → {output_data.label}"
+        )
 
     def _on_history_click(self, ancestor_id: str) -> None:
         """Preview an ancestor on the plot via redraw_cb(focus=...)."""

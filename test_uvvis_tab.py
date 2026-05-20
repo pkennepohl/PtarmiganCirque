@@ -7988,5 +7988,213 @@ class TestUVVisTabPlotsByRoleLiveRefreshPhase4as(unittest.TestCase):
                 pass
 
 
+@unittest.skipUnless(_HAS_DISPLAY, "no Tk display")
+class TestUVVisTabNodeGroupMembersRedrawPhase4at(unittest.TestCase):
+    """Phase 4at item α — NODE_GROUP_MEMBERS_CHANGED triggers ``_redraw``.
+
+    Pre-Phase 4at the event fired only the CS-72 plots-by-role
+    inventory refresh (correctly — the dialog's listbox cared) but
+    the canvas redraw tuple in ``_on_graph_event`` did not include
+    it, so the figure went stale when a group's membership changed
+    until something else fired a redraw. Item α was carried forward
+    from Phase 4as as a one-line gap; this class pins the fix.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from uvvis_tab import UVVisTab
+        import plot_settings_dialog as psd
+        cls.UVVisTab = UVVisTab
+        cls.psd = psd
+
+    def setUp(self):
+        self.psd._open_dialogs.clear()
+        self.psd._USER_DEFAULTS.clear()
+        self.host = tk.Frame(_root)
+        self.host.pack()
+        self.graph = ProjectGraph()
+        self.tab = self.UVVisTab(self.host, graph=self.graph)
+
+    def tearDown(self):
+        for dlg in list(self.psd._open_dialogs.values()):
+            try:
+                dlg.destroy()
+            except Exception:
+                pass
+        self.psd._open_dialogs.clear()
+        try:
+            self.tab.destroy()
+        except Exception:
+            pass
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    def _spy_on_redraw(self):
+        calls = [0]
+        original = self.tab._redraw
+
+        def _r(*a, **kw):
+            calls[0] += 1
+            return original(*a, **kw)
+        self.tab._redraw = _r  # type: ignore[method-assign]
+        return calls
+
+    def _evt(self, et: GraphEventType) -> GraphEvent:
+        return GraphEvent(et, "n1")
+
+    def test_NODE_GROUP_MEMBERS_CHANGED_fires_redraw(self):
+        # The α fix: NODE_GROUP_MEMBERS_CHANGED is now in the
+        # _redraw-trigger tuple in _on_graph_event.
+        calls = self._spy_on_redraw()
+        self.tab._on_graph_event(
+            self._evt(GraphEventType.NODE_GROUP_MEMBERS_CHANGED),
+        )
+        self.assertEqual(
+            calls[0], 1,
+            "NODE_GROUP_MEMBERS_CHANGED must fire _redraw (Phase 4at α)",
+        )
+
+    def test_NODE_GROUP_MEMBERS_CHANGED_still_fires_cs72(self):
+        # The α fix is purely additive: the existing CS-72 dispatch
+        # for this event must still fire (Phase 4as wiring intact).
+        calls = [0]
+        original = self.tab._notify_plots_by_role_change
+
+        def _spy(*a, **kw):
+            calls[0] += 1
+            return original(*a, **kw)
+        self.tab._notify_plots_by_role_change = _spy  # type: ignore[method-assign]
+        self.tab._on_graph_event(
+            self._evt(GraphEventType.NODE_GROUP_MEMBERS_CHANGED),
+        )
+        self.assertEqual(calls[0], 1)
+
+    def test_other_redraw_events_still_fire(self):
+        # Sanity: the α fix didn't break the existing redraw triggers.
+        for et in (
+            GraphEventType.NODE_ADDED,
+            GraphEventType.NODE_DISCARDED,
+            GraphEventType.NODE_STYLE_CHANGED,
+            GraphEventType.NODE_LABEL_CHANGED,
+            GraphEventType.GRAPH_LOADED,
+            GraphEventType.GRAPH_CLEARED,
+        ):
+            calls = self._spy_on_redraw()
+            self.tab._on_graph_event(self._evt(et))
+            self.assertGreaterEqual(
+                calls[0], 1,
+                f"{et!s} should still fire _redraw",
+            )
+            # Restore the spied attribute for the next iteration.
+            self.tab._redraw = type(self.tab)._redraw.__get__(self.tab)
+
+
+@unittest.skipUnless(_HAS_DISPLAY, "no Tk display")
+class TestUVVisTabApplyToAllIntegrationPhase4at(unittest.TestCase):
+    """CS-73 (Phase 4at) — graph-level integration of the per-row ∀ button.
+
+    Pins that clicking a ∀ button in an open Plot Settings dialog
+    propagates the broadcast value into the host's ``_plot_config``
+    for every target role, and that the host's on_apply seam (the
+    dialog's live-commit path) drives one host repaint per ∀ click.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from uvvis_tab import UVVisTab
+        import plot_settings_dialog as psd
+        cls.UVVisTab = UVVisTab
+        cls.psd = psd
+
+    def setUp(self):
+        self.psd._open_dialogs.clear()
+        self.psd._USER_DEFAULTS.clear()
+        self.host = tk.Frame(_root)
+        self.host.pack()
+        self.graph = ProjectGraph()
+        self.tab = self.UVVisTab(self.host, graph=self.graph)
+
+    def tearDown(self):
+        for dlg in list(self.psd._open_dialogs.values()):
+            try:
+                dlg.destroy()
+            except Exception:
+                pass
+        self.psd._open_dialogs.clear()
+        try:
+            self.tab.destroy()
+        except Exception:
+            pass
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    def test_apply_to_all_tick_direction_propagates_to_host_plot_config(self):
+        # Open the dialog, set source role's tick_direction, click ∀,
+        # verify the host's _plot_config received the change for every
+        # target role via the on_apply live-commit seam.
+        self.tab._open_plot_settings()
+        dlg = next(iter(self.psd._open_dialogs.values()))
+        dlg.update_idletasks()
+        dlg._axis_control_vars[("primary_x", "tick_direction")].set("out")
+        dlg._axis_apply_to_all_buttons[
+            ("primary_x", "tick_direction")
+        ].invoke()
+        # Host's _plot_config (the live config the renderer reads) now
+        # carries the broadcast value for every target role.
+        for target in ("secondary_x", "primary_y", "secondary_y", "tertiary_y"):
+            self.assertEqual(
+                self.tab._plot_config["axes"][target]["tick_direction"],
+                "out",
+                f"host _plot_config target {target!r} should reflect "
+                f"the ∀ broadcast",
+            )
+
+    def test_apply_to_all_grid_show_propagates_boolean_to_host(self):
+        # BooleanVar broadcast lands in the host's live config too.
+        self.tab._open_plot_settings()
+        dlg = next(iter(self.psd._open_dialogs.values()))
+        dlg.update_idletasks()
+        dlg._axis_control_vars[("primary_y", "grid_show")].set(True)
+        dlg._axis_apply_to_all_buttons[
+            ("primary_y", "grid_show")
+        ].invoke()
+        for target in ("primary_x", "secondary_x", "secondary_y", "tertiary_y"):
+            self.assertEqual(
+                self.tab._plot_config["axes"][target]["grid_show"],
+                True,
+            )
+
+    def test_apply_to_all_fires_host_redraw_once_per_click(self):
+        # The dialog's on_apply seam drives the host's _redraw. One ∀
+        # click → one host repaint (the _suspend_writes guard prevents
+        # the trace re-entry that would multiply paints by target count).
+        self.tab._open_plot_settings()
+        dlg = next(iter(self.psd._open_dialogs.values()))
+        dlg.update_idletasks()
+        # Pre-seed source value via a direct var.set so the source's
+        # own trace fires before we start counting.
+        dlg._axis_control_vars[("primary_x", "scale")].set("log")
+        dlg.update_idletasks()
+        # Now spy on _redraw and click ∀.
+        calls = [0]
+        original = self.tab._redraw
+
+        def _r(*a, **kw):
+            calls[0] += 1
+            return original(*a, **kw)
+        self.tab._redraw = _r  # type: ignore[method-assign]
+        dlg._axis_apply_to_all_buttons[("primary_x", "scale")].invoke()
+        dlg.update_idletasks()
+        self.assertEqual(
+            calls[0], 1,
+            f"∀ broadcast should fire host _redraw exactly once; "
+            f"got {calls[0]}",
+        )
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
