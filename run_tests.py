@@ -26,6 +26,7 @@ TEST_MODULES = (
     "test_collapsible_section",
     "test_scan_tree_widget",
     "test_style_dialog",
+    "test_node_styles_dialog",
     "test_plot_settings_dialog",
     "test_plot_axis_hit_test",
     "test_uvvis_baseline",
