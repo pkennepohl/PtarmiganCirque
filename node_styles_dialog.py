@@ -95,10 +95,10 @@ _log = logging.getLogger(__name__)
 # ───────────────────────────────────────────────────────────────────
 
 _LS_OPTIONS: tuple[tuple[str, str], ...] = (
-    ("Solid",     "-"),
-    ("Dashed",    "--"),
-    ("Dotted",    ":"),
-    ("Dash-dot",  "-."),
+    ("Solid",     "solid"),
+    ("Dashed",    "dashed"),
+    ("Dotted",    "dotted"),
+    ("Dash-dot",  "dashdot"),
 )
 
 _Y_AXIS_DISPLAY_DEFAULT: str = "(default)"
@@ -134,7 +134,7 @@ _UNIVERSAL_KEYS: tuple[str, ...] = (
 # Mirrors scan_tree_widget._DEFAULT_STYLE plus the universal-section
 # additions Phase 4d (visible / in_legend) and Phase 4y (y_axis).
 _UNIVERSAL_DEFAULTS: dict[str, Any] = {
-    "linestyle":  "-",
+    "linestyle":  "solid",
     "linewidth":  1.5,
     "alpha":      1.0,
     "color":      "#1f77b4",
