@@ -47,6 +47,7 @@ from scan_tree_widget import ScanTreeWidget, _SIDEBAR_MIN_WIDTH_PX
 from style_dialog import open_style_dialog
 from tooltip import Tooltip
 import plot_settings_dialog
+import node_styles_dialog
 import plot_axis_hit_test
 import uvvis_baseline
 import uvvis_normalise
@@ -965,6 +966,16 @@ class UVVisTab(tk.Frame):
         )
         self._plot_settings_btn.pack(side=tk.LEFT, padx=2)
 
+        # ⚙ Node Styles (CS-74, Phase 4au): cross-node modeless style
+        # dropdown. Sibling to the per-node CS-05 StyleDialog reached
+        # via the per-row ⚙ gear button; this surface walks every
+        # renderable DataNode through a Combobox at the top.
+        self._node_styles_btn = tk.Button(
+            bar, text="⚙ Node Styles", font=F9,
+            command=self._open_node_styles_dialog,
+        )
+        self._node_styles_btn.pack(side=tk.LEFT, padx=2)
+
         self._status_lbl = tk.Label(bar, text="Load a UV/Vis file to begin.",
                                     fg="gray", font=("", 8))
         self._status_lbl.pack(side=tk.LEFT, padx=10)
@@ -1862,6 +1873,23 @@ class UVVisTab(tk.Frame):
             GraphEventType.GRAPH_CLEARED,
         ):
             self._notify_plots_by_role_change()
+        # CS-74 (Phase 4au): refresh any open NodeStylesDialog's
+        # Combobox node list for the same six events. NODE_STYLE_CHANGED
+        # is deliberately omitted — style changes don't affect list
+        # membership and refreshing would interrupt the user's edit.
+        # NODE_ACTIVE_CHANGED is also omitted because the dropdown
+        # already filters to active nodes and a deactivated node's
+        # removal from the list is acceptable; the dialog handles
+        # selection fall-back if needed.
+        if et in (
+            GraphEventType.NODE_ADDED,
+            GraphEventType.NODE_DISCARDED,
+            GraphEventType.NODE_LABEL_CHANGED,
+            GraphEventType.NODE_GROUP_MEMBERS_CHANGED,
+            GraphEventType.GRAPH_LOADED,
+            GraphEventType.GRAPH_CLEARED,
+        ):
+            self._notify_node_list_change()
 
     def _on_destroy_unsubscribe(self, _event) -> None:
         try:
@@ -2027,6 +2055,73 @@ class UVVisTab(tk.Frame):
             targets = self._spectrum_nodes()
         for node in targets:
             self._graph.set_style(node.id, {param: value})
+
+    # ══════════════════════════════════════════════════════════════════════════
+    #  Cross-node Styles dialog hand-off (CS-74, Phase 4au)
+    # ══════════════════════════════════════════════════════════════════════════
+
+    def _all_renderable_nodes(self) -> List[DataNode]:
+        """Return every DataNode the CS-74 dropdown lists.
+
+        Union of :meth:`_spectrum_nodes` (UVVIS / BASELINE /
+        NORMALISED / SMOOTHED), :meth:`_second_derivative_nodes`
+        (SECOND_DERIVATIVE), and :meth:`_peak_list_nodes` (PEAK_LIST).
+        Matches the widened CS-50 ``y_axis`` fan-out scope on
+        :meth:`_on_uvvis_apply_to_all`, so the per-row ∀ button on the
+        Node Styles dialog's ``y_axis`` row writes to exactly the set
+        of nodes the dropdown lists.
+        """
+        return (
+            self._spectrum_nodes()
+            + self._second_derivative_nodes()
+            + self._peak_list_nodes()
+        )
+
+    def _open_node_styles_dialog(self) -> None:
+        """⚙ Node Styles button hand-off: open the cross-node Style
+        dialog for this tab.
+
+        Per-host singleton via :data:`node_styles_dialog._open_dialogs`
+        (mirrors CS-66 for PlotConfigDialog). Reuses the host's CS-05
+        :meth:`_on_uvvis_apply_to_all` callback so per-row ∀ broadcasts
+        from the new dialog respect the same widened-for-y_axis scope
+        the existing per-node CS-05 StyleDialog uses.
+        """
+        node_styles_dialog.open_node_styles_dialog(
+            self, self._graph, self._all_renderable_nodes(),
+            on_apply_to_all=self._on_uvvis_apply_to_all,
+        )
+
+    def _notify_node_list_change(self) -> None:
+        """Push current renderable-node list to any open NodeStylesDialog.
+
+        CS-74 (Phase 4au): canonical CS-72 refresh recipe — looks up
+        the per-host dialog in
+        :data:`node_styles_dialog._open_dialogs` and calls
+        :meth:`NodeStylesDialog.refresh_node_list` with the freshly
+        computed list. No-op when no dialog is open.
+
+        Fires from selected branches of :meth:`_on_graph_event` for
+        the six events that can change the renderable-node membership:
+        NODE_ADDED, NODE_DISCARDED, NODE_LABEL_CHANGED,
+        NODE_GROUP_MEMBERS_CHANGED, GRAPH_LOADED, GRAPH_CLEARED.
+        NODE_STYLE_CHANGED is deliberately excluded — style changes
+        don't affect list membership, and refreshing during a CS-74
+        widget's own write would interrupt the user mid-edit.
+        NODE_ACTIVE_CHANGED is also excluded — activation flips
+        visibility on the canvas but the CS-74 dropdown lists every
+        active node (filter mirrors :meth:`_spectrum_nodes` etc).
+
+        Widget-state only on the dialog side: no graph mutation, no
+        live commit, no working-copy touch.
+        """
+        dialog = node_styles_dialog._open_dialogs.get(id(self))
+        if dialog is None:
+            return
+        try:
+            dialog.refresh_node_list(self._all_renderable_nodes())
+        except tk.TclError:
+            pass
 
     # ══════════════════════════════════════════════════════════════════════════
     #  Plot Settings dialog hand-off (CS-06)
