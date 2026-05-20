@@ -8196,5 +8196,362 @@ class TestUVVisTabApplyToAllIntegrationPhase4at(unittest.TestCase):
         )
 
 
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestUVVisTabNodeStylesDialogPhase4au(unittest.TestCase):
+    """CS-74 (Phase 4au) — cross-node modeless Style dropdown wiring.
+
+    Mirrors the CS-72 ``TestUVVisTabPlotsByRoleLiveRefreshPhase4as``
+    shape: host-side ``_notify_*_change`` semantics, six-event refresh
+    dispatch, ∀-broadcast end-to-end, CS-05 coexistence.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from uvvis_tab import UVVisTab
+        import node_styles_dialog
+        import style_dialog
+        cls.UVVisTab = UVVisTab
+        cls.node_styles_dialog = node_styles_dialog
+        cls.style_dialog = style_dialog
+
+    def setUp(self):
+        self.node_styles_dialog._open_dialogs.clear()
+        self.style_dialog._open_dialogs.clear()
+        self.host = tk.Frame(_root)
+        self.graph = ProjectGraph()
+        self.tab = self.UVVisTab(self.host, graph=self.graph)
+
+    def tearDown(self):
+        for dlg in list(self.node_styles_dialog._open_dialogs.values()):
+            try:
+                dlg.destroy()
+            except Exception:
+                pass
+        for dlg in list(self.style_dialog._open_dialogs.values()):
+            try:
+                dlg.destroy()
+            except Exception:
+                pass
+        self.node_styles_dialog._open_dialogs.clear()
+        self.style_dialog._open_dialogs.clear()
+        try:
+            self.tab.destroy()
+        except Exception:
+            pass
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    # ---- helpers ----
+
+    def _add_uvvis(self, nid: str, style: dict | None = None,
+                   label: str | None = None):
+        wl = np.linspace(300, 600, 10)
+        absorb = np.linspace(0.1, 0.9, 10)
+        node = DataNode(
+            id=nid,
+            type=NodeType.UVVIS,
+            arrays={"wavelength_nm": wl, "absorbance": absorb},
+            metadata={"source_file": "synthetic"},
+            label=label or nid,
+            state=NodeState.COMMITTED,
+            style=dict(style) if style else {"linewidth": 1.5},
+        )
+        self.graph.add_node(node)
+        return node
+
+    def _add_second_deriv(self, nid: str):
+        wl = np.linspace(300, 600, 10)
+        d2 = np.zeros_like(wl)
+        node = DataNode(
+            id=nid,
+            type=NodeType.SECOND_DERIVATIVE,
+            arrays={"wavelength_nm": wl, "absorbance": d2},
+            metadata={},
+            label=nid,
+            state=NodeState.COMMITTED,
+            style={"linewidth": 1.0},
+        )
+        self.graph.add_node(node)
+        return node
+
+    def _add_peak_list(self, nid: str):
+        node = DataNode(
+            id=nid,
+            type=NodeType.PEAK_LIST,
+            arrays={
+                "peak_wavelengths_nm": np.array([350.0]),
+                "peak_absorbances": np.array([0.5]),
+            },
+            metadata={},
+            label=nid,
+            state=NodeState.COMMITTED,
+            style={},
+        )
+        self.graph.add_node(node)
+        return node
+
+    # ---- top-bar button + open dialog ----
+
+    def test_top_bar_node_styles_button_exists(self):
+        self.assertTrue(hasattr(self.tab, "_node_styles_btn"))
+        self.assertEqual(
+            str(self.tab._node_styles_btn.cget("text")),
+            "⚙ Node Styles",
+        )
+
+    def test_open_creates_dialog_and_registers(self):
+        self._add_uvvis("a")
+        self.tab._open_node_styles_dialog()
+        self.assertIn(id(self.tab), self.node_styles_dialog._open_dialogs)
+        dlg = self.node_styles_dialog._open_dialogs[id(self.tab)]
+        self.assertIsInstance(
+            dlg, self.node_styles_dialog.NodeStylesDialog,
+        )
+
+    def test_open_twice_focuses_same_dialog(self):
+        self._add_uvvis("a")
+        self.tab._open_node_styles_dialog()
+        dlg1 = self.node_styles_dialog._open_dialogs[id(self.tab)]
+        self.tab._open_node_styles_dialog()
+        dlg2 = self.node_styles_dialog._open_dialogs[id(self.tab)]
+        self.assertIs(dlg1, dlg2)
+        self.assertEqual(len(self.node_styles_dialog._open_dialogs), 1)
+
+    def test_open_threads_uvvis_apply_to_all_callback(self):
+        self._add_uvvis("a")
+        self.tab._open_node_styles_dialog()
+        dlg = self.node_styles_dialog._open_dialogs[id(self.tab)]
+        # Bound methods compare equal across freshly-bound instances of
+        # the same (function, instance) pair; identity (`is`) doesn't
+        # hold because each attribute access creates a fresh bound
+        # method object.
+        self.assertEqual(
+            dlg._on_apply_to_all, self.tab._on_uvvis_apply_to_all,
+        )
+
+    # ---- _all_renderable_nodes scope ----
+
+    def test_all_renderable_nodes_union_of_three(self):
+        self._add_uvvis("a")
+        self._add_uvvis("b")
+        self._add_second_deriv("d2")
+        self._add_peak_list("pk")
+        nodes = self.tab._all_renderable_nodes()
+        ids = {n.id for n in nodes}
+        self.assertEqual(ids, {"a", "b", "d2", "pk"})
+
+    def test_all_renderable_nodes_empty_when_no_nodes(self):
+        self.assertEqual(self.tab._all_renderable_nodes(), [])
+
+    # ---- _notify_node_list_change semantics ----
+
+    def test_notify_no_dialog_is_noop(self):
+        # Should not raise when no dialog is open
+        self.tab._notify_node_list_change()
+
+    def test_notify_with_dialog_refreshes_combobox(self):
+        self._add_uvvis("a")
+        self.tab._open_node_styles_dialog()
+        dlg = self.node_styles_dialog._open_dialogs[id(self.tab)]
+        calls: list = []
+        original = dlg.refresh_node_list
+
+        def _spy(nodes):
+            calls.append(list(nodes))
+            return original(nodes)
+        dlg.refresh_node_list = _spy  # type: ignore[method-assign]
+        self.tab._notify_node_list_change()
+        self.assertEqual(len(calls), 1)
+        self.assertEqual([n.id for n in calls[0]], ["a"])
+
+    # ---- six-event refresh dispatch ----
+
+    def _open_and_spy(self):
+        self.tab._open_node_styles_dialog()
+        dlg = self.node_styles_dialog._open_dialogs[id(self.tab)]
+        calls: list = []
+        original = dlg.refresh_node_list
+
+        def _spy(nodes):
+            calls.append(list(nodes))
+            return original(nodes)
+        dlg.refresh_node_list = _spy  # type: ignore[method-assign]
+        return dlg, calls
+
+    def test_NODE_ADDED_fires_refresh(self):
+        self._add_uvvis("a")
+        dlg, calls = self._open_and_spy()
+        self._add_uvvis("b")
+        self.tab.update()
+        self.assertGreaterEqual(len(calls), 1)
+        last_ids = [n.id for n in calls[-1]]
+        self.assertIn("b", last_ids)
+
+    def test_NODE_DISCARDED_fires_refresh(self):
+        self._add_uvvis("a")
+        # Provisional state required by graph.discard_node contract.
+        wl = np.linspace(300, 600, 5)
+        prov = DataNode(
+            id="b", type=NodeType.UVVIS,
+            arrays={"wavelength_nm": wl,
+                    "absorbance": np.linspace(0.1, 0.5, 5)},
+            metadata={}, label="b",
+            state=NodeState.PROVISIONAL, style={"linewidth": 2.0},
+        )
+        self.graph.add_node(prov)
+        dlg, calls = self._open_and_spy()
+        calls.clear()
+        self.graph.discard_node("b")
+        self.tab.update()
+        self.assertGreaterEqual(len(calls), 1)
+
+    def test_NODE_LABEL_CHANGED_fires_refresh(self):
+        self._add_uvvis("a", label="original")
+        dlg, calls = self._open_and_spy()
+        calls.clear()
+        self.graph.set_label("a", "renamed")
+        self.tab.update()
+        self.assertGreaterEqual(len(calls), 1)
+
+    def test_GRAPH_CLEARED_fires_refresh(self):
+        self._add_uvvis("a")
+        dlg, calls = self._open_and_spy()
+        calls.clear()
+        # Direct subscriber notify — bypasses any clear/load API.
+        self.graph._notify(GraphEvent(
+            type=GraphEventType.GRAPH_CLEARED,
+            node_id=None, payload={},
+        ))
+        self.tab.update()
+        self.assertGreaterEqual(len(calls), 1)
+
+    def test_GRAPH_LOADED_fires_refresh(self):
+        self._add_uvvis("a")
+        dlg, calls = self._open_and_spy()
+        calls.clear()
+        self.graph._notify(GraphEvent(
+            type=GraphEventType.GRAPH_LOADED,
+            node_id=None, payload={},
+        ))
+        self.tab.update()
+        self.assertGreaterEqual(len(calls), 1)
+
+    def test_NODE_GROUP_MEMBERS_CHANGED_fires_refresh(self):
+        self._add_uvvis("a")
+        dlg, calls = self._open_and_spy()
+        calls.clear()
+        self.graph._notify(GraphEvent(
+            type=GraphEventType.NODE_GROUP_MEMBERS_CHANGED,
+            node_id="a", payload={},
+        ))
+        self.tab.update()
+        self.assertGreaterEqual(len(calls), 1)
+
+    # ---- negative dispatch sentinels (deliberate exclusions) ----
+
+    def test_NODE_STYLE_CHANGED_does_not_fire_refresh(self):
+        self._add_uvvis("a", style={"linewidth": 1.5})
+        dlg, calls = self._open_and_spy()
+        calls.clear()
+        self.graph.set_style("a", {"linewidth": 3.0})
+        self.tab.update()
+        self.assertEqual(
+            len(calls), 0,
+            "NODE_STYLE_CHANGED should NOT trigger refresh_node_list",
+        )
+
+    def test_NODE_ACTIVE_CHANGED_does_not_fire_refresh(self):
+        self._add_uvvis("a")
+        dlg, calls = self._open_and_spy()
+        calls.clear()
+        self.graph.set_active("a", False)
+        self.tab.update()
+        self.assertEqual(
+            len(calls), 0,
+            "NODE_ACTIVE_CHANGED should NOT trigger refresh_node_list",
+        )
+
+    # ---- end-to-end widget effects ----
+
+    def test_NODE_ADDED_combobox_grows(self):
+        self._add_uvvis("a")
+        self.tab._open_node_styles_dialog()
+        dlg = self.node_styles_dialog._open_dialogs[id(self.tab)]
+        values_before = list(dlg._combobox.cget("values"))
+        self._add_uvvis("b", label="newbie")
+        self.tab.update()
+        values_after = list(dlg._combobox.cget("values"))
+        self.assertEqual(len(values_after), len(values_before) + 1)
+        self.assertIn("newbie (UVVIS)", values_after)
+
+    def test_apply_to_all_linewidth_broadcasts_via_host(self):
+        """∀ linewidth from the dialog broadcasts via the host's
+        callback to every spectrum node (not 2nd-deriv / peak-list —
+        those are CS-50 y_axis-only widened scope)."""
+        self._add_uvvis("a")
+        self._add_uvvis("b")
+        self._add_second_deriv("d2")
+        self._add_peak_list("pk")
+        self.tab._open_node_styles_dialog()
+        dlg = self.node_styles_dialog._open_dialogs[id(self.tab)]
+        dlg._select_node("a")
+        dlg._delegate_apply_one("linewidth", 4.2)
+
+        self.assertAlmostEqual(
+            self.graph.get_node("a").style["linewidth"], 4.2,
+        )
+        self.assertAlmostEqual(
+            self.graph.get_node("b").style["linewidth"], 4.2,
+        )
+        # 2nd-deriv didn't (linewidth is in spectrum-only scope)
+        self.assertAlmostEqual(
+            self.graph.get_node("d2").style["linewidth"], 1.0,
+        )
+
+    def test_apply_to_all_y_axis_widens_scope(self):
+        """∀ y_axis from the dialog broadcasts via the host callback
+        with the CS-50 widened scope — spectrum + 2nd-deriv +
+        peak-list all receive it."""
+        self._add_uvvis("a")
+        self._add_second_deriv("d2")
+        self._add_peak_list("pk")
+        self.tab._open_node_styles_dialog()
+        dlg = self.node_styles_dialog._open_dialogs[id(self.tab)]
+        dlg._select_node("a")
+        dlg._delegate_apply_one("y_axis", "secondary")
+
+        for nid in ("a", "d2", "pk"):
+            self.assertEqual(
+                self.graph.get_node(nid).style.get("y_axis"),
+                "secondary",
+                f"node {nid} should have y_axis=secondary",
+            )
+
+    # ---- CS-05 coexistence ----
+
+    def test_node_styles_and_style_dialogs_can_coexist(self):
+        """CS-74 sibling dialog can be open while a per-node CS-05
+        StyleDialog is also open. Both write through graph.set_style
+        and stay mutually in sync via NODE_STYLE_CHANGED."""
+        self._add_uvvis("a", style={"linewidth": 1.5})
+        self.tab._open_node_styles_dialog()
+        self.tab._open_style_dialog_for_node("a")
+        self.assertEqual(len(self.node_styles_dialog._open_dialogs), 1)
+        self.assertEqual(len(self.style_dialog._open_dialogs), 1)
+        # Edit from CS-05 dialog. CS-05's linewidth Scale clamps to
+        # [0.5, 5.0], so use a value inside the range.
+        cs05_dlg = self.style_dialog._open_dialogs["a"]
+        cs05_dlg._control_vars["linewidth"].set(3.7)
+        self.tab.update()
+        # CS-74 dialog's linewidth widget should mirror the change
+        cs74_dlg = self.node_styles_dialog._open_dialogs[id(self.tab)]
+        self.assertAlmostEqual(
+            float(cs74_dlg._control_vars["linewidth"].get()), 3.7,
+            places=5,
+        )
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
