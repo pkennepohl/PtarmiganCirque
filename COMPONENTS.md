@@ -11018,7 +11018,336 @@ playbooks to copy from.
 
 ---
 
-*Document version: 1.46 — May 2026*
+## CS-74 — Cross-node modeless Style dropdown (Phase 4au)
+
+Closes the Phase 4ap USER-FLAGGED carry-forward — the canonical
+BACKLOG entry: *"Cross-node Style dropdown / multi-node style
+window."* User quote (Phase 4ap step-5 elicitation): *"just like
+plot settings, I'd like a way of having access to all node plot
+settings from the pop up window. dropdown menu with all of the
+loaded nodes?"* Pre-CS-74 the only per-node style affordance was
+CS-05's `StyleDialog`, opened one-per-node via the ScanTreeWidget
+gear button. After CS-74 a sibling **`NodeStylesDialog`** opens
+once per host tab, exposes every renderable DataNode in a
+Combobox, and switches the editing focus on selection without
+tearing down the widgets.
+
+### Module surface (`node_styles_dialog.py`)
+
+* `_open_dialogs: dict[int, NodeStylesDialog]` — per-host
+  singleton registry keyed by `id(parent)`. Mirrors
+  `PlotConfigDialog`'s CS-66 registry, distinct from
+  `style_dialog._open_dialogs` which is keyed by `node_id`
+  (per-node-coexisting, multiple can stack).
+* `open_node_styles_dialog(parent, graph, nodes, on_apply_to_all)`
+  — module-level factory. Second open from the same host focuses
+  the existing Toplevel rather than creating a duplicate.
+* `class NodeStylesDialog(tk.Toplevel)` — the dialog. Constructor
+  signature `(parent, graph, nodes, on_apply_to_all=None)`.
+
+### Body layout
+
+Two sections, top to bottom:
+
+1. **Combobox header.** `ttk.Combobox(state="readonly")` listing
+   every supplied DataNode by display string
+   `f"{label} ({type.name})"`. Bracketed type name disambiguates
+   similarly-labelled nodes across types. `<<ComboboxSelected>>`
+   binding routes user-driven selection through
+   `_on_combobox_selected` → `_select_node(node_id)`.
+
+2. **Universal section.** Nine rows mirroring the CS-05 universal
+   section, packed in a 4-column grid (`label · control · value · ∀`):
+
+   * Label rename Entry (Phase 4aa pattern, NO ∀ — fanning one
+     label across siblings would collapse their display names).
+   * Line style Radiobutton row (Solid / Dashed / Dotted /
+     Dash-dot — values `"solid" / "dashed" / "dotted" / "dashdot"`
+     matching CS-05's canonical strings).
+   * Line width Scale (0.5–5.0 pt).
+   * Line opacity Scale (0.0–1.0).
+   * Colour swatch Button + Reset Button.
+   * Fill area Checkbutton.
+   * Fill opacity Scale (0.0–0.5).
+   * Visible Checkbutton.
+   * In legend Checkbutton.
+   * Y-axis Combobox (`(default) / primary / secondary / tertiary`).
+
+   Each broadcast-capable row carries a per-row ∀ Button.
+
+Single "Close" button at the bottom.
+
+### Lock decisions (D1–D7)
+
+* **D1 — Container.** New sibling modeless `Toplevel` in its own
+  module, NOT a 7th tab on `PlotConfigDialog`. Rationale:
+  PlotConfigDialog carries a CS-23 working-copy + Apply/Save/Cancel
+  contract for tab-private UI state (mutate `_working`, commit on
+  Apply, revert from `_snapshot` on Cancel). Node styles are
+  graph-resident via `ProjectGraph.set_style`. Mixing the two
+  semantics inside one dialog would force either (a) a Cancel that
+  reverts graph mutations (which the graph contract doesn't
+  support — `set_style` is merge-only, no "remove key" verb), or
+  (b) a Cancel that silently excludes the new tab (asymmetric
+  contract on a unified surface). The sibling dialog inherits
+  CS-05's live-write contract directly.
+
+* **D2 — Dropdown scope.** Union of `_spectrum_nodes()` (UVVIS /
+  BASELINE / NORMALISED / SMOOTHED) + `_second_derivative_nodes()`
+  + `_peak_list_nodes()`. Matches the CS-50 widened `y_axis`
+  fan-out scope on `_on_uvvis_apply_to_all`, so the per-row ∀
+  on the dialog's y_axis row writes to exactly the set of nodes
+  the dropdown lists. Phase 4 scope: UVVIS-tab-private. Cross-tab
+  adoption deferred (the same module is reusable from any host
+  that supplies `(graph, nodes, on_apply_to_all)`).
+
+* **D3 — Refresh recipe.** CS-72 playbook reused exactly. Public
+  `refresh_node_list(nodes)` method on the dialog (widget-state
+  only — no graph mutation). Host-side
+  `_notify_node_list_change()` looks up the dialog via
+  `node_styles_dialog._open_dialogs.get(id(self))` and calls
+  `refresh_node_list` with the freshly enumerated list. Fires
+  from `UVVisTab._on_graph_event` for the same six events as
+  CS-72: NODE_ADDED, NODE_DISCARDED, NODE_LABEL_CHANGED,
+  NODE_GROUP_MEMBERS_CHANGED, GRAPH_LOADED, GRAPH_CLEARED.
+  NODE_STYLE_CHANGED + NODE_ACTIVE_CHANGED excluded — style
+  changes don't affect list membership; refreshing during a
+  style-change callback would interrupt the user mid-edit
+  (D15-analogue). Selection preservation by node id (not label —
+  labels mutate via NODE_LABEL_CHANGED which fires this very
+  refresh; id is the stable identifier; D16-analogue).
+
+* **D4 — CS-05 coexistence.** The ScanTreeWidget per-row gear
+  button still opens an independent CS-05 `StyleDialog` for the
+  clicked node. Both surfaces write through
+  `ProjectGraph.set_style`; the resulting `NODE_STYLE_CHANGED`
+  event drives both dialogs' refresh paths so they stay
+  mutually in sync. The two surfaces serve complementary
+  workflows: CS-05 = "focus this one node's full style without
+  context-switching" (per-node-coexisting, N can open);
+  NodeStylesDialog = "step through every node's style
+  efficiently" (per-host-singleton). No CS-05 retirement; zero
+  migration risk on the existing per-node test suite.
+
+* **D5 — Per-row ∀ broadcast.** Each universal-section row
+  carries a `∀` Button matching the CS-05 visual exactly
+  (`text="∀"`, `font=("", 8)`, `relief=tk.FLAT`,
+  `cursor="hand2"`, `fg="#004400"`). The handler
+  `_delegate_apply_one(key, value)` writes the value to the
+  dialog's own node first (so the row reflects the gesture even
+  if the host's fan-out skips the source), then invokes
+  `self._on_apply_to_all(key, value)`. Host's existing
+  `_on_uvvis_apply_to_all` carries the CS-50 key-conditional
+  widening — y_axis fans across spectrum + second-deriv +
+  peak-list; every other key stays in `_spectrum_nodes`-only
+  scope.
+
+* **D6 — Close-only button row.** No working-copy, no
+  per-session snapshot, no Cancel/Save dichotomy. Live writes
+  via `graph.set_style` / `graph.set_label` ARE the save; the
+  user closes the dialog when done; edits remain. The button
+  row is a single "Close" Button. `WM_DELETE_WINDOW` routes to
+  the same close handler. Rationale: a multi-node Cancel would
+  have ambiguous blast radius (which session of edits does it
+  revert when the user has switched Combobox selection several
+  times?); a per-current-node Cancel would fire surprisingly
+  on window-close after the user had moved away from the
+  most-recently-edited node. CS-05's per-node snapshot revert
+  remains available via the gear button — NodeStylesDialog is
+  the "browse N nodes quickly" surface, complementary not
+  redundant.
+
+* **D7 — Component number.** CS-74.
+
+### Re-entrancy guard
+
+`_suspend_writes: bool` mirrors CS-05's pattern exactly. Set
+True throughout the constructor (so trace callbacks created by
+the row builders don't fire write-backs against an in-flight
+init); flipped False at the end of `__init__`. Set True during
+`_write_partial` / `_write_label_partial` (so the resulting
+`NODE_STYLE_CHANGED` / `NODE_LABEL_CHANGED` event delivered back
+to `_on_graph_event` is recognized as "ours" and the widget
+refresher skips re-entry). Set True during external-event
+widget refreshes (`_refresh_widgets_from_style`,
+`_refresh_label_from_event`, `_refresh_widgets_from_node`) so
+the trace callbacks don't loop back into `set_style`.
+
+### Constants mirrored from style_dialog
+
+To prevent the cross-surface NODE_STYLE_CHANGED sync from
+reading different values across the two dialogs, four
+module-level constants are duplicated locally with a sentinel
+test pinning equality:
+
+* `_LS_OPTIONS` — canonical long-form linestyle strings
+  (`solid / dashed / dotted / dashdot`, NOT matplotlib glyphs).
+* `_Y_AXIS_OPTIONS` — Combobox display strings for the
+  y_axis row.
+* `_Y_AXIS_VISIBLE_NODETYPES` — six NodeTypes whose
+  `_DEFAULT_Y_AXIS_BY_NODETYPE` entry is meaningful.
+* `_UNIVERSAL_KEYS` — render order of the universal-section
+  rows. Order pinned by `test_universal_keys_order_matches_render_order`.
+
+Round-trip helpers `_y_axis_display_to_value` /
+`_y_axis_value_to_display` mirror style_dialog's translation
+pair so the persisted `style["y_axis"]` value matches whichever
+surface the user edited from.
+
+### CS-66 `_on_destroy` defensive filter (D8 ref)
+
+The destroy handler narrows to `event.widget is self` —
+descendant destroys (e.g. Combobox dropdown popdown) don't
+trigger the registry pop. Currently no path destroys
+dialog descendants (Combobox-switch updates values in place),
+but the filter is the canonical CS-72 D17 pattern carried
+forward defensively against future destroy-rebuild use cases.
+
+### UVVisTab integration
+
+* New top-bar Button `_node_styles_btn` (`text="⚙ Node Styles"`)
+  next to the existing `_plot_settings_btn`. Command routes to
+  `_open_node_styles_dialog`.
+* New helper `_all_renderable_nodes() -> List[DataNode]`:
+  `_spectrum_nodes() + _second_derivative_nodes() + _peak_list_nodes()`.
+* New method `_open_node_styles_dialog()` delegates to the
+  module factory with `on_apply_to_all=self._on_uvvis_apply_to_all`.
+* New method `_notify_node_list_change()`: per-host dialog
+  lookup + `refresh_node_list` call. Mirrors the shape of
+  `_notify_plots_by_role_change` / `_notify_axis_link_state_change`
+  / `_notify_axis_displayed_limits_change`.
+* New dispatch block in `_on_graph_event` fires
+  `_notify_node_list_change()` for the six refresh events.
+
+### Test sentinels
+
+`TestNodeStylesDialogShellPhase4au` (8) — construction with real
+graph; transient set, no grab; source has no `self.grab_set()`
+call; factory returns same dialog on second call; registry keyed
+by `id(parent)`; distinct hosts get distinct dialogs; destroy
+drops graph subscription; destroy pops registry entry.
+
+`TestNodeStylesDialogComboboxPhase4au` (7) — Combobox values
+match nodes; initial selection is first node; widgets seeded
+from selection's style; Combobox switch propagates label;
+Combobox switch propagates style values; same-node reselect is
+a no-op; empty-list construction.
+
+`TestNodeStylesDialogRowControlsPhase4au` (11) — every
+universal-section row writes through `graph.set_style`; label
+Entry writes through `graph.set_label`; `_suspend_writes`
+engaged during `_write_partial`; `_write_partial` honours the
+suspend flag (no graph mutation when set).
+
+`TestNodeStylesDialogApplyToAllPhase4au` (6) — delegate calls
+callback with `(param, value)`; also writes to source node;
+∀ button registered for every broadcast-capable key (9 keys
+total — linestyle / linewidth / alpha / color / fill /
+fill_alpha / visible / in_legend / y_axis); label row has no
+∀ button; buttons disabled when callback is `None`; callback
+exception swallowed.
+
+`TestNodeStylesDialogRefreshNodeListPhase4au` (5) — grown
+list adds to Combobox values; selection preserved by id;
+fall-back to first when selected removed; empty list clears
+selection; widget-state-only contract (no graph mutation).
+
+`TestNodeStylesDialogGraphEventSyncPhase4au` (4) —
+`NODE_STYLE_CHANGED` on selected refreshes widget;
+`NODE_STYLE_CHANGED` on other node ignored;
+`NODE_LABEL_CHANGED` on selected refreshes Entry; self-write
+doesn't loop through refresher.
+
+`TestNodeStylesDialogConstantsMirrorPhase4au` (4) — sentinel
+that `_Y_AXIS_VISIBLE_NODETYPES` / `_Y_AXIS_OPTIONS` /
+`_LS_OPTIONS` / `_UNIVERSAL_KEYS` shape match the style_dialog
+canonical sources.
+
+`TestUVVisTabNodeStylesDialogPhase4au` (20) — integration:
+top-bar button exists; `_open_node_styles_dialog` creates +
+registers; second open focuses existing; callback threading;
+`_all_renderable_nodes` union; `_notify_node_list_change`
+semantics; six positive-fire sentinels (one per event); two
+negative-fire sentinels (NODE_STYLE_CHANGED + NODE_ACTIVE_CHANGED);
+end-to-end NODE_ADDED grows Combobox; ∀ linewidth broadcast
+to spectrum scope only; ∀ y_axis broadcast to widened scope;
+CS-05 coexistence sync.
+
+**45 unit + 20 integration = 65 net new tests.** 1538 total
+(1473 baseline + 65 new).
+
+### Phase 4au landing
+
+Phase 4au landed in five code commits on `redesign/phase-4au-
+cross-node-style`, then merged into `redesign/main`:
+
+1. `1863c31` — `node_styles_dialog.py` pure module (≈1162 lines
+   including the docstring + the seven row builders + the
+   refresh recipe + the close handler).
+2. `dcb0c02` — `test_node_styles_dialog.py` 45 unit-test
+   sentinels across six test classes + bundled `_LS_OPTIONS`
+   sync (matplotlib glyphs → canonical long-form names) caught
+   by the constants-mirror sentinel.
+3. `831d057` — `uvvis_tab.py` integration (top-bar button +
+   `_open_node_styles_dialog` + `_all_renderable_nodes` +
+   `_notify_node_list_change` + six-event dispatch in
+   `_on_graph_event`).
+4. `d867a4b` — `test_uvvis_tab.py` 20 integration-test
+   sentinels in `TestUVVisTabNodeStylesDialogPhase4au`.
+5. `f1868f5` — `run_tests.py` registers `test_node_styles_dialog`
+   in `TEST_MODULES` (without it the 45 unit tests are
+   invisible to the canonical runner).
+
+Plus this bookkeeping commit. 1538 tests, all green (1473
+baseline + 65 net new). `PTMG_FORMAT_VERSION` unchanged — no
+schema keys added.
+
+### Architectural follow-up
+
+CS-74 is the **fifth** concurrent refresh consumer of the CS-72
+host→dialog `refresh_*(state)` pattern (alongside
+`refresh_axis_link_state` / CS-70,
+`refresh_axis_displayed_limits` / CS-71,
+`refresh_plots_by_role` / CS-72, and CS-73's greying methods
+which read the registry). The recipe is now
+load-bearing across four phases (4ar / 4as / 4at / 4au) and
+should be the first thing any future "dialog reflects live host
+state" feature reaches for.
+
+CS-74 is also the **second** per-host modeless dialog surface
+(after CS-66's `PlotConfigDialog`). The two share the
+`_open_dialogs[id(parent)]` registry pattern and can be open
+simultaneously without contention. Any third per-host modeless
+surface (e.g. a Compare-tab cross-spectrum overlay editor)
+would follow the same recipe.
+
+### Carry-forward (per the original Phase 4ap canonical entry)
+
+Closed.
+
+### Friction surfaced at step 5 (Claude-surfaced; ALL FOUR
+USER-CONFIRMED to register entries)
+
+* Combobox display string omits NodeState badge — small
+  follow-up phase, low risk. Cross-refs CS-04's per-row state
+  indicator.
+* Colour Reset writes a constant default instead of a
+  palette-picked value — CS-21 `pick_default_color`
+  integration. CS-21 SPECTRUM_PALETTE lock relaxation
+  (D3 extends to a third caller).
+* Keyboard navigation through the Combobox not bound — pairs
+  with the USER-FLAGGED Accessibility umbrella (Phase 4al
+  keyboard-shortcuts sub-axis).
+* Y-axis row always built regardless of selected NodeType —
+  harmless on UVVisTab today; becomes a misleading affordance
+  when cross-tab adoption lands.
+
+All four documented in BACKLOG's "Friction points carried
+forward from Phase 4au" section.
+
+---
+
+*Document version: 1.47 — May 2026*
 *1.1: CS-13 implementation notes added in Phase 4a.*
 *1.2: CS-14 Plot Settings Dialog added in Phase 4b.*
 *1.3: CS-15 UV/Vis Baseline Correction + CS-04 implementation
@@ -12367,5 +12696,49 @@ Six phase commits: (1) `30ee73e` pure-module CS-73;
 (4) `0498ebe` 6 integration tests; (5) `c8be698` item β
 collapse logic; (6) `c63d86b` 6 item β tests; plus bookkeeping
 (this entry). 1473 tests, all green (1441 + 32 net new).*
+*1.47: CS-74 added in Phase 4au. Cross-node modeless Style
+dropdown — closes USER-FLAGGED Phase 4ap carry-forward
+("Cross-node Style dropdown / multi-node style window";
+canonical BACKLOG entry now ✅). New module
+`node_styles_dialog.py` carries `NodeStylesDialog` Toplevel
+with per-host `_open_dialogs[id(parent)]` singleton, Combobox
+header listing every renderable DataNode on the host tab
+(union of `_spectrum_nodes + _second_derivative_nodes +
+_peak_list_nodes`), CS-05 universal-section rows below for
+the selected node, and a single Close button. Modeless via
+`transient(parent)` without grab (CS-66 pattern). Live writes
+through `graph.set_style` / `graph.set_label` with the
+`_suspend_writes` re-entrancy guard. **All five canonical
+lock decisions closed:** (i) sibling modeless dialog (not a
+7th PlotConfigDialog tab — avoids CS-23 working-copy /
+Apply-Cancel contract clash); (ii) refresh recipe = CS-72
+playbook reused exactly (`refresh_node_list(nodes)` public
+method + host's `_notify_node_list_change()` six-event
+dispatch); (iii) CS-05 StyleDialog coexists (per-row gear
+button still opens it independently; both write through
+`set_style` and sync via `NODE_STYLE_CHANGED`); (iv) per-row
+∀ reuses host's `_on_uvvis_apply_to_all` callback (CS-50
+widened scope for y_axis); (v) UVVIS-tab-private scope.
+Additional locks: D6 Close-only button row (no Cancel/Save
+dichotomy — live writes are the save), D7 CS-74 component
+number. New top-bar "⚙ Node Styles" button on UVVisTab next
+to "⚙ Plot Settings". CS-74 is the FIFTH consumer of the
+CS-72 host→dialog `refresh_*(state)` pattern and the SECOND
+per-host modeless dialog surface (after CS-66 PlotConfigDialog).
+65 net new tests pin the contract: 45 unit (across 6 test
+classes — Shell, Combobox, RowControls, ApplyToAll, Refresh,
+GraphEventSync, ConstantsMirror) + 20 integration in
+`TestUVVisTabNodeStylesDialogPhase4au`. 1538 tests, all green
+(1473 + 65 new). PTMG_FORMAT_VERSION unchanged — no schema
+keys added. Five code commits: (1) `1863c31` pure module;
+(2) `dcb0c02` 45 unit tests + `_LS_OPTIONS` sync (matplotlib
+glyphs → canonical long-form names caught by the constants-
+mirror sentinel); (3) `831d057` UVVisTab integration;
+(4) `d867a4b` 20 integration tests; (5) `f1868f5` test
+runner registration. Plus bookkeeping (this entry). Four
+Claude-surfaced friction items elevated to register entries
+at step 5 (user opted-in all four): Combobox state-badge
+prefix, palette-picked colour Reset, keyboard Combobox
+navigation, Y-axis row NodeType guard (cross-tab readiness).*
 *To be updated as Open Questions are resolved and new components
 are specified.*
