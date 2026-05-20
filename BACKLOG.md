@@ -1681,7 +1681,7 @@ subsequent Phase 4 session.**
 | ⏳ | 🟡 | **Cross-node Style dropdown / multi-node style window (USER-FLAGGED, Phase 4ap)** | USER-FLAGGED at end of Phase 4ap (step 5 elicitation). User: "just like plot settings, I'd like a way of having access to all node plot settings from the pop up window. dropdown menu with all of the loaded nodes?" Today CS-05 `StyleDialog` is opened per-node — there is no single window listing every loaded node's style. The user's request: extend the modeless Plot Settings paradigm (CS-66 / CS-68) to per-node styles, with a Combobox listing every loaded node, switching the per-node controls on selection. **Architecture proposal (lock pending):** spawn a new modeless dialog (working title `NodeStylesDialog` or similar) — OR add a "Node styles" Notebook tab to the existing `PlotConfigDialog` — that carries (a) a Combobox listing every loaded node by `(label, id)`, (b) the existing CS-05 universal section (color, linestyle, linewidth, alpha, visible, in_legend) for the selected node, (c) the per-NodeType extension sections (peak-marker style for PEAK_LIST, etc.) that CS-05 already provides. Live-preview semantic from CS-68 carries forward — every edit writes to the selected node's `style` dict via `graph.set_style` and `GraphEvent.NODE_STYLE_CHANGED` fires the redraw. **Lock decisions for the implementing session:** (i) extend `PlotConfigDialog` as a new "Node Styles" tab (cross-tab routing map / per-tab dirty markers extend) vs. spawn a new sibling dialog (cleaner separation, but the user has to remember two windows); (ii) when a node is added / discarded mid-session, refresh the Combobox (pairs with the long-standing `_plots_by_role` frozen-at-open friction — CS-62 lock relaxation needed); (iii) interaction with the existing per-node CS-05 `StyleDialog` (right-click "Edit Style…") — coexist or subsume; (iv) per-node ∀ apply-to-all flows (CS-05 universal `_push_to_all` factory) — surface the Combobox as the source of "Apply to all of THIS node's siblings"; (v) what does "all loaded nodes" mean — UVVIS only, or every NodeType across every tab (Compare / XANES / EXAFS will eventually have nodes too)? Phase 4 scope answer: UVVIS-tab-private node list. **Affected:** new module `node_styles_dialog.py` (or new tab inside `plot_settings_dialog.py`), new `_open_dialogs`-style registry, host wiring on `UVVisTab`, integration tests. Multi-phase: design + scope decision (extra-high) → Plot Settings tab vs. new dialog (high) → cross-tab adoption later. Pairs naturally with CS-05 / CS-06 / CS-66 / CS-68. |
 | ✅ | 🟡 | **Autoscale ↔ Range Entry seed semantics (USER-FLAGGED, Phase 4ap)** ✅ Resolved Phase 4as (CS-71). | Resolved Phase 4as (CS-71) — commits `fd93182` (pure module) + `c5cffc6` (32 unit tests + 2 reframed) + `97a6536` (host wiring + CS-66 fix) + `fa70f9b` (28 integration tests + D15 polish). Lock-decision closures: (i) read-back source — the host's `_compute_axis_displayed_limits()` reads `_axes_by_role["primary"].get_xlim()/get_ylim()` for primary_x/primary_y plus twin axes for secondary_y/tertiary_y; fires from `_redraw` end + `_draw_empty` end + once after `open_plot_config_dialog` returns (the seed-on-open path) — so the dialog sees the limits without needing a separate `on_apply` hook. (ii) seed-on-toggle policy CLOSED — True→False fires `_seed_range_entries_from_display(role)` which writes the displayed-limits snapshot into the canonical schema StringVars via `var.set()`; False→True does NOT touch the canonical StringVars (the user's typed values are preserved in `_working`). (iii) dialog-open with autoscale=True CLOSED — the parallel display StringVar shows the displayed limits AND the Entry is `state="disabled"` from build time; the post-open notify call populates the display var immediately so the user sees actual values not the construction-default empty string. (iv) CS-65 interaction CLOSED — `tick_major`/`tick_minor` Entries are untouched; CS-71's mechanism is exclusive to `range_lo`/`range_hi`. **Mechanism:** new parallel `_axis_range_display_vars[(role, key)]` StringVars built for the four non-secondary_x roles; `Entry.configure(textvariable=…)` swaps between the canonical schema StringVar (autoscale=False, editable) and the display StringVar (autoscale=True, disabled). CS-64 D8 lock relaxation explicit: the Entry's textvariable is no longer permanently the canonical StringVar. **CS-70 composition:** CS-71's `_apply_axis_autoscale_greying(role)` short-circuits for `secondary_x` so CS-69 / CS-70's link greying wins for that role. Two pre-existing CS-69 / CS-70 tests narrowed for the relaxation (`test_other_role_widgets_not_disabled_when_secondary_x_linked` + `test_other_roles_unaffected_by_refresh` — both now skip `range_lo`/`range_hi` in their inner key loops with a CS-71 cross-ref comment). 32 unit + 10 integration test sentinels pin the contract. |
 | ✅ | 🟠 | **USER-FLAGGED bug: wavelength as linked secondary axis is broken (B-005, Phase 4ap)** ✅ Resolved Phase 4aq (CS-69). | Resolved Phase 4aq (CS-69) — commits `aedfd81` + `cdd6f61` + `df2542a` + `ab6a178`. Root cause: the secondary X axis was correctly using matplotlib's linked `ax.secondary_xaxis(functions=(_fwd, _fwd))` API, but the renderer then called `sec.set_xlim(...)` from the CS-64 `range_lo` / `range_hi` / `autoscale` schema path. On a linked secondary that call back-propagates through the inverse of `_fwd` and CORRUPTS the primary axis — the user-visible symptom. **Fix landed:** (1) renderer NEVER calls `sec.set_xlim` / `sec.set_xscale` (matplotlib owns linked limits); (2) new per-axis schema key `custom_ticks: str` (comma-separated explicit nm positions like `"300, 400, 500"`) paints `FixedLocator` major ticks via the new `_apply_major_locator` helper, uniform across all per-axis roles (D6b lock); (3) D8 lock relaxation extends the link to BOTH cm⁻¹ (via `1e7 / x`) AND eV (via `_HC_NM_EV / x`); both are self-inverse; (4) new `secondary_x_linked: bool` dialog kwarg snapshotted at open greys out Secondary X tab's range_lo / range_hi / autoscale / scale widgets so the user can't fight the link — custom_ticks / tick_major / tick_minor stay editable. Logged as **B-005** in the Known Bugs table below (now ✅). 45 new tests pin the fix: 27 unit (parse, accessor, link cm⁻¹+eV, renderer FixedLocator) + 18 integration (greying, custom_ticks Entry round-trip, migration shim). |
-| ⏳ | 🟡 | **Apply-to-all icon on per-axis Plot Settings tabs — UI consistency with data-node settings (USER-FLAGGED, Phase 4ak)** | USER-FLAGGED at end of Phase 4ak (step 5 elicitation). User: "Use same apply-to-all icon used for data node settings in the axis setting popups." Data-node settings (the per-row → icon on `ScanTreeWidget` rows surfaced by CS-27 / Phase 4n) carry a recognisable "Apply to all" affordance; Plot Settings → per-axis tabs offer only the dialog-level "Apply to All Tabs" button at the bottom (CS-60 button row). The per-axis tabs lack an in-tab "Apply this axis's settings to every other axis" gesture — useful for cases like "apply this tick direction to every axis at once" or "broadcast this axis label override to every Y axis". **Architecture proposal (lock pending):** add a small icon button next to each per-axis widget (or at the per-axis tab top) labelled with the same icon used by `ScanTreeWidget`'s send-to-compare row icon (the → symbol per CS-27). Click → confirm dialog → write the widget's value into every other per-axis role's slot in `self._working`, mark every other per-axis tab dirty. **Lock decisions for the implementing session:** (i) per-widget icon (one per widget on the per-axis tab) or per-tab icon (one icon broadcasts every widget on the tab)? (ii) does the broadcast respect axis-shape semantics (e.g. an X-axis tab's value broadcast to other X tabs only, not Y)? (iii) does the broadcast write through `_USER_DEFAULTS["axes"][role]` directly or stage through `_on_axis_var_write` per-widget (the latter is consistent with the existing dirty-marker contract)? (iv) does the icon match `_send_to_compare_btn`'s exact glyph or use a slightly different one to distinguish axis-to-axis from tab-to-compare? **Affected:** `plot_settings_dialog.py` (new icon widget + broadcast handler; CS-62 `_axis_control_vars` walk), CS-61 / CS-62 layout (icon adds a row or column to the Settings frame), tests for the broadcast path. Cross-refs CS-27 (the existing per-row send-to-compare icon pattern), CS-60 (the dialog-level Apply to All Tabs button — different scope), CS-62 (per-axis Tk var registry). Small-medium phase; depends on having more than one populated per-axis widget (Phase 4ak ships two: tick_direction + axis_label_override, so this is actionable from 4al onward). |
+| ✅ | 🟡 | **Apply-to-all icon on per-axis Plot Settings tabs — UI consistency with data-node settings (USER-FLAGGED, Phase 4ak)** ✅ Resolved Phase 4at (CS-73). | Resolved Phase 4at (CS-73) — commits `30ee73e` (pure module) + `2cd3ac0` (20 unit tests) + `2c5a255` (α one-liner) + `0498ebe` (3 integration tests) + bookkeeping. **Lock-decision closures:** (i) per-widget ∀ buttons (one per broadcast-capable widget on every per-axis tab) — NOT per-tab. 10 controls × 5 roles = 50 buttons exactly. `axis_label_override` is the sole exemption (D1) — the Global-tab mirror section is the canonical broadcast surface for label text. (ii) broadcast targets are the four OTHER per-axis roles (X-or-Y agnostic — the user gets one click for full broadcast across every axis); secondary_x is a target unconditionally, with CS-70's link greying being a UI-only concern (D3). (iii) commit semantics go through a `_suspend_writes` guard + manual `_working` write + `_mark_tab_modified` + ONE `_apply_changes_live` at the end (D4) — bypasses the per-keystroke trace path so defer-commit Entries broadcast in one click instead of needing per-target focus events. (iv) glyph is `∀` matching CS-05 `style_dialog`'s per-row ∀ convention; flat relief, 8-pt font, snug padding. **Greying composition (D8):** CS-71's `_apply_axis_autoscale_greying` and CS-70's `_apply_secondary_x_link_greying` both walk the new `_axis_apply_to_all_buttons[(role, key)]` registry so a ∀ next to an inert widget is itself inert. Broadcasting from a disabled source widget makes no sense. **Original USER quote:** "Use same apply-to-all icon used for data node settings in the axis setting popups." Data-node settings (the per-row → icon on `ScanTreeWidget` rows surfaced by CS-27 / Phase 4n) carry a recognisable "Apply to all" affordance; Plot Settings → per-axis tabs offer only the dialog-level "Apply to All Tabs" button at the bottom (CS-60 button row). The per-axis tabs lack an in-tab "Apply this axis's settings to every other axis" gesture — useful for cases like "apply this tick direction to every axis at once" or "broadcast this axis label override to every Y axis". **Architecture proposal (lock pending):** add a small icon button next to each per-axis widget (or at the per-axis tab top) labelled with the same icon used by `ScanTreeWidget`'s send-to-compare row icon (the → symbol per CS-27). Click → confirm dialog → write the widget's value into every other per-axis role's slot in `self._working`, mark every other per-axis tab dirty. **Lock decisions for the implementing session:** (i) per-widget icon (one per widget on the per-axis tab) or per-tab icon (one icon broadcasts every widget on the tab)? (ii) does the broadcast respect axis-shape semantics (e.g. an X-axis tab's value broadcast to other X tabs only, not Y)? (iii) does the broadcast write through `_USER_DEFAULTS["axes"][role]` directly or stage through `_on_axis_var_write` per-widget (the latter is consistent with the existing dirty-marker contract)? (iv) does the icon match `_send_to_compare_btn`'s exact glyph or use a slightly different one to distinguish axis-to-axis from tab-to-compare? **Affected:** `plot_settings_dialog.py` (new icon widget + broadcast handler; CS-62 `_axis_control_vars` walk), CS-61 / CS-62 layout (icon adds a row or column to the Settings frame), tests for the broadcast path. Cross-refs CS-27 (the existing per-row send-to-compare icon pattern), CS-60 (the dialog-level Apply to All Tabs button — different scope), CS-62 (per-axis Tk var registry). Small-medium phase; depends on having more than one populated per-axis widget (Phase 4ak ships two: tick_direction + axis_label_override, so this is actionable from 4al onward). |
 | ⏳ | 🟡 | **Axis nomenclature rename: primary/secondary/tertiary → bottom/top/left/right with `*` suffix for offset (USER-FLAGGED, Phase 4ak)** | USER-FLAGGED at end of Phase 4ak (step 5 elicitation). User: "Maybe we should not use primary, secondary, tertiary for axes and use clear location designations such as bottom/top for the main x-axes and something like bottom* and top* for offset secondary axes for a total of 4 possible axes along x. Similar structure for y with left/right/left*/right*. Open to better nomenclature." The current taxonomy (CS-44: `primary` / `secondary` / `tertiary`; CS-60: `primary_x` / `secondary_x` / `primary_y` / `secondary_y` / `tertiary_y`) is renderer-internal and dialog-facing. Position-based names ("bottom", "top", "left", "right", with `*` for offset/secondary instance) are more discoverable for the user — a UV/Vis researcher doesn't need to know that "secondary" specifically means twinx. The proposal also opens the door to a fourth axis on each side (currently `*` suffix denotes offset, but the rename allows growth to "right*" being a tertiary-stack-style offset on top of "right"). **Architecture proposal (lock pending):** rename across the codebase. Affects: `_AXIS_ROLES = ("primary", "secondary", "tertiary")` (CS-44 lock), `_TAB_KEYS = ("global", "primary_x", "secondary_x", "primary_y", "secondary_y", "tertiary_y")` (CS-60 lock), `_TAB_TITLES` strings (CS-60 lock), `_DEFAULT_Y_AXIS_BY_NODETYPE`'s values (CS-44 lock), `_resolve_y_axis_role`'s return values (CS-44 lock), every test asserting any of the above, plot_settings_dialog's per-axis tab keys, `_Y_AXIS_ROLE_TO_TAB` (CS-62 lock), the `y_axis` style key's value set (CS-50 lock), the manifest's nested `axes` sub-dict keys (round-trip across `_USER_DEFAULTS` via project_io). **Lock decisions for the implementing session:** (i) exact name set — is the `*` suffix preserved or replaced with something more keyboard-friendly (e.g. `"bottom_offset"`)? `*` reads well in UI but parses awkwardly in code paths. (ii) does the rename happen all-at-once (one massive sweep phase) or incrementally with an alias dict mapping old → new during transition? (iii) does the `y_axis` style key's value set (CS-50: `"primary"` / `"secondary"` / `"tertiary"`) rename in lockstep — yes for consistency but increases blast radius. (iv) does the manifest schema gain a migration shim for projects saved with old names (yes, since `.ptmg` files can be years old). (v) what about the existing `_axes_by_role` dict key names (used by tests + matplotlib introspection)? **Affected:** Massive cross-codebase rename. CS-44 / CS-50 / CS-60 / CS-61 / CS-62 locks all need deliberate relaxation. Carries through to manifest round-trip migration shim + every test pinning role names. Multi-phase task — the cleanest path is one phase for the schema rename + migration shim, one phase for the dialog labels + tab titles, one phase for the renderer's internal names, with a final cleanup pass. **Risk:** high blast radius. Could combine with the "Refactor uvvis_tab.py — extract host shell" register entry since both touch axis-handling code paths. |
 | ⏳ | 🟡 | **Rich-text axis labels — subscript / superscript / equation markup (USER-FLAGGED, Phase 4ak)** | USER-FLAGGED at end of Phase 4ak (step 5 elicitation). User: "Allow for subscript/superscript and equations in axis labels. How can we do that?" Today axis labels are plain strings written through matplotlib's `set_xlabel` / `set_ylabel` (CS-62's `axis_label_override` is a plain `str`). matplotlib supports a `mathtext` subset of LaTeX inline (e.g. `r"$d^2 A / d\lambda^2$"`) AND the full `usetex=True` LaTeX rendering when a LaTeX installation is on `$PATH`. The user wants the override Entry to accept LaTeX-style markup and render it in the figure. **Architecture proposal (lock pending):** enable matplotlib's mathtext on every axis label setter. Simplest path: change `set_xlabel(text, ...)` → `set_xlabel(text, ...)` with matplotlib's default mathtext parser (no extra config needed — `$...$` is parsed automatically). User types `$d^2 A / d\lambda^2$` into the Plot Settings → Primary Y axis label override Entry → matplotlib renders the math expression. **Lock decisions for the implementing session:** (i) does the Entry widget need any preprocessing or do we trust the user to type `$...$` directly? (ii) is there a "Markup help" tooltip or pop-up showing example expressions (`$\alpha$`, `$d^2A/d\lambda^2$`, `$\Delta E$`)? (iii) does we expose mathtext only, or also the full LaTeX path (`usetex=True`) which requires a LaTeX install? (iv) does the manifest round-trip preserve the raw markup string (yes — it's a plain `str` already). (v) does the same support extend to title (`title_text`) and the legacy xlabel/ylabel custom text path? (likely yes for consistency). **Affected:** `plot_settings_dialog.py` per-axis Entry widgets + the legacy Title-and-labels section's Entry widgets — the markup goes in transparently since `set_xlabel` already supports it. Possibly a tooltip module for the markup help. New test asserting `set_xlabel($d^2A$)` renders without error. Small phase — enabling mathtext is essentially free; the lift is testing + documenting the gesture for users. Cross-refs CS-62 (`axis_label_override` Entry widgets), the legacy "Title and labels" section. **Caveat:** matplotlib's mathtext is a SUBSET of LaTeX (most math symbols work, but `\text{}`, fancy spacing, and some packages don't). Decision (iii) determines whether power users get full LaTeX. |
 | ⏳ | 🟡 | **Accessibility features (USER-FLAGGED, Phase 4al)** | USER-FLAGGED at end of Phase 4al (step 5 elicitation). User: "can we implement any accessibility features in the software?" Open-ended architectural question with multiple sub-axes. Today the app has effectively zero accessibility support: no keyboard navigation in the unified PlotConfigDialog or StyleDialog beyond Tab/Enter (no chord shortcuts, no menu mnemonics), no screen-reader hints, no high-contrast / dark mode (background is hardcoded `#ffffff` in `_FACTORY_DEFAULTS["background_color"]`), no colour-blind-safe palette toggle on `node_styles.SPECTRUM_PALETTE` (CS-21 — 10-colour palette with several red/green near-collisions), no large-text / scaling override on the matplotlib font sizes, no focus-visible outline polish for keyboard navigation. **Architecture proposal (lock pending):** scope a first batch by impact-vs-cost. Likely high-impact / low-cost: (1) keyboard shortcuts for common gestures (already a USER-FLAGGED register entry from Phase 4ah — pairs naturally); (2) colour-blind-safe palette as an opt-in `SPECTRUM_PALETTE` swap (e.g. Wong's 8-colour palette or the matplotlib `tab10` deuteranopia-safe variant); (3) global tk option/theme that enlarges font sizes by an `accessibility.scale` multiplier (touches every `font=("", N, ...)` literal across the dialog modules); (4) dialog dismiss via Escape (some dialogs already wire it; auditing for consistency). Lower priority but worth recording: (5) screen reader hints via `accessibility.title` on widgets (Tk has limited a11y story; depends on platform — Windows via UIA, macOS via AX, Linux via AT-SPI); (6) high-contrast mode (toggle that swaps background + grid + spine colours); (7) dyslexia-friendly font option. **Lock decisions for the implementing session:** (i) does accessibility get a new top-level Settings section (e.g. an "Accessibility" tab in PlotConfigDialog or a new app-level Preferences dialog), or live as scattered toggles? (ii) does the colour-blind palette swap commit on click (immediate redraw of every scan) or stage as a working-copy edit? (iii) which dialogs are in scope for the keyboard-nav audit — every modal, or just the high-traffic Plot Settings / Style? (iv) does the font-scale multiplier round-trip through `_USER_DEFAULTS` (yes — it's a persistent preference)? (v) which platforms / screen readers are in the supported matrix? **Affected:** Wide — `node_styles.py` (palette), `plot_settings_dialog.py` (font sizes, possibly a new Accessibility section), `style_dialog.py`, every dialog with `grab_set` (Escape audit), possibly new `accessibility.py` module. Cross-refs CS-21 (SPECTRUM_PALETTE), CS-06 / CS-23 / CS-60 (dialog patterns), existing Keyboard shortcuts USER-FLAGGED register entry (pairs). Multi-phase task — design + scope decision is one phase; first batch (palette + Escape audit + keyboard shortcuts) one phase; broader rollout follows. **Risk:** screen reader support has the highest cost-per-platform; defer until the rest of the batch lands. |
@@ -3754,14 +3754,10 @@ relevant subsequent Phase 4 session.**
    record** — later cross-refs in 4al/4am/4an/4ao friction
    sections collapse to one-liners pointing here.
 
-4. 🟡 **USER-FLAGGED Apply-to-all icon on per-axis tabs**
-   continues. See the new canonical register entry above
-   (added in Phase 4ak step 5). Becomes actionable from
-   Phase 4al onward — multiple per-axis widgets per tab
-   make the broadcast affordance meaningful. **Cross-ref:**
-   see canonical register entry "Apply-to-all icon on
-   per-axis Plot Settings tabs — UI consistency with
-   data-node settings (USER-FLAGGED, Phase 4ak)" above.
+4. 🟡 ~~**USER-FLAGGED Apply-to-all icon on per-axis tabs.**~~
+   ✅ Resolved Phase 4at (CS-73). Per-row ∀ buttons on every
+   per-axis Settings widget except `axis_label_override`.
+   See canonical register entry above.
 
 5. 🟡 **USER-FLAGGED Axis nomenclature rename
    (primary/secondary/tertiary → bottom/top/left/right
@@ -3923,13 +3919,9 @@ relevant subsequent Phase 4 session.**
    Phase 4ak friction #3 above (canonical resolution
    record).
 
-6. 🟡 **USER-FLAGGED Apply-to-all icon on per-axis tabs**
-   continues. Cross-ref Phase 4ak friction #4. Now more
-   actionable: per-axis tabs carry three real widgets
-   (tick_direction + axis_label_override from Phase 4ak +
-   the Phase 4al Move-to Combobox). See canonical register
-   entry "Apply-to-all icon on per-axis Plot Settings tabs"
-   above.
+6. 🟡 ~~**USER-FLAGGED Apply-to-all icon on per-axis tabs.**~~
+   ✅ Resolved Phase 4at (CS-73). Cross-ref Phase 4ak
+   friction #4 (canonical resolution record).
 
 7. 🟡 **USER-FLAGGED Axis nomenclature rename** continues.
    Cross-ref Phase 4ak friction #5. Phase 4al's CS-63
@@ -4053,13 +4045,9 @@ session.**
    Phase 4ak friction #3 above (canonical resolution
    record).
 
-6. 🟡 **USER-FLAGGED Apply-to-all icon on per-axis tabs**
-   continues. Cross-ref Phase 4al friction #6. Even more
-   actionable now: per-axis tabs carry five widget rows
-   (tick_direction + axis_label_override + Range Entry pair
-   + Autoscale Checkbutton + Scale Combobox + Move-to
-   Combobox on Y tabs). See canonical register entry
-   "Apply-to-all icon on per-axis Plot Settings tabs".
+6. 🟡 ~~**USER-FLAGGED Apply-to-all icon on per-axis tabs.**~~
+   ✅ Resolved Phase 4at (CS-73). Cross-ref Phase 4ak
+   friction #4 (canonical resolution record).
 
 7. 🟡 **USER-FLAGGED Axis nomenclature rename** continues.
    Cross-ref Phase 4al friction #7. CS-64 inherits CS-62 /
@@ -4182,14 +4170,9 @@ relevant subsequent Phase 4 session.**
    effect — the Range Entries debounce to `<FocusOut>` / `<Return>`
    per the CS-68 text-Entry policy.
 
-5. 🟡 **USER-FLAGGED Apply-to-all icon on per-axis tabs**
-   continues. Cross-ref Phase 4am friction #6. Even more
-   actionable now: per-axis tabs carry **nine** widget rows
-   each (tick_direction + axis_label_override + Range Entry
-   pair + Autoscale Checkbutton + Scale Combobox + Tick
-   spacing Entry pair + Show gridlines Checkbutton + Axis
-   colour picker + Move-to Combobox on Y tabs). Reasoning
-   level: **medium**.
+5. 🟡 ~~**USER-FLAGGED Apply-to-all icon on per-axis tabs.**~~
+   ✅ Resolved Phase 4at (CS-73). Cross-ref Phase 4ak
+   friction #4 (canonical resolution record).
 
 6. 🟡 **USER-FLAGGED Axis nomenclature rename** continues.
    Cross-ref Phase 4am friction #7. CS-65 inherits CS-62 /
@@ -4299,9 +4282,9 @@ the relevant subsequent Phase 4 session.**
    ✅ Resolved in Phase 4ap (CS-68). Cross-ref Phase 4ak friction
    #3 above (canonical resolution record).
 
-3. 🟡 **USER-FLAGGED Apply-to-all icon on per-axis tabs**
-   continues. Cross-ref Phase 4an friction #5. Reasoning
-   level: **medium**.
+3. 🟡 ~~**USER-FLAGGED Apply-to-all icon on per-axis tabs.**~~
+   ✅ Resolved Phase 4at (CS-73). Cross-ref Phase 4ak
+   friction #4 (canonical resolution record).
 
 4. 🟡 **USER-FLAGGED Axis nomenclature rename** continues.
    Cross-ref Phase 4an friction #6. Massive cross-codebase
@@ -4416,13 +4399,9 @@ subsequent Phase 4 session.**
    `_compute_axis_displayed_limits()` post-redraw; Entry
    textvariable swaps on autoscale toggle.
 
-4. 🟡 **USER-FLAGGED Apply-to-all icon on per-axis tabs**
-   continues. Cross-ref Phase 4ao friction #3. Even more
-   actionable now that live-preview shipped — the "I changed
-   the tick direction on Primary Y, now I want it on every Y
-   axis" gesture has no affordance, and the live commit means
-   every per-axis change requires manual repetition. Reasoning
-   level: **medium**.
+4. 🟡 ~~**USER-FLAGGED Apply-to-all icon on per-axis tabs.**~~
+   ✅ Resolved Phase 4at (CS-73). Cross-ref Phase 4ak
+   friction #4 (canonical resolution record).
 
 5. 🟡 **USER-FLAGGED Accessibility features umbrella**
    continues. Cross-ref Phase 4ao friction #1. Reasoning
@@ -4651,26 +4630,17 @@ added — PTMG_FORMAT_VERSION unchanged. USER had nothing to add
 at step 5. **One new carry-forward item** (α below) plus a
 clean **architectural-opening closure note**.
 
-1. 🟢 **`NODE_GROUP_MEMBERS_CHANGED` is missing from
+1. 🟢 ~~**`NODE_GROUP_MEMBERS_CHANGED` is missing from
    `_on_graph_event`'s `_redraw` trigger list (Claude-surfaced,
-   Phase 4as artifact).** The pre-existing dispatch at
-   `uvvis_tab.py:_on_graph_event` triggers `_redraw` for
-   NODE_ADDED / NODE_DISCARDED / NODE_ACTIVE_CHANGED /
-   NODE_STYLE_CHANGED / NODE_LABEL_CHANGED / GRAPH_LOADED /
-   GRAPH_CLEARED — but **not** NODE_GROUP_MEMBERS_CHANGED.
-   Grouping or ungrouping nodes today doesn't repaint the
-   plot (only the sidebar updates via its own listener). CS-72
-   correctly fires `_notify_plots_by_role_change` for that
-   event so the dialog's Listbox updates, but the plot visual
-   stays stale until some other event triggers `_redraw`. Pre-
-   existing issue surfaced during the CS-72 wiring pass; not
-   in Phase 4as scope. Suggested fix: add
-   `GraphEventType.NODE_GROUP_MEMBERS_CHANGED` to the existing
-   `_redraw` trigger tuple at `uvvis_tab.py:_on_graph_event`
-   (one-line change). Reasoning level: **low** — narrow
-   single-token addition + 1 regression test. Could be
-   bundled into any larger Phase 4at intent at near-zero
-   marginal cost.
+   Phase 4as artifact).**~~ ✅ Resolved Phase 4at (item α) —
+   commit `2c5a255` adds `GraphEventType.NODE_GROUP_MEMBERS_CHANGED`
+   to the `_redraw`-trigger tuple at
+   `uvvis_tab.py:_on_graph_event`, and commit `0498ebe` pins
+   three regression sentinels in
+   `TestUVVisTabNodeGroupMembersRedrawPhase4at` (redraw fires;
+   CS-72 wiring still intact; other redraw triggers still
+   fire). Grouping or ungrouping nodes now repaints the plot
+   in lockstep with the dialog's listbox refresh.
 
 2. ✅ **Architectural opening from Phase 4ar closed.** Phase
    4ar's bookkeeping flagged the CS-70 host→dialog notification
@@ -4714,6 +4684,42 @@ clean **architectural-opening closure note**.
    filter (CS-66 lock relaxation, documented in CS-72). The
    pattern's other adopters benefit too — any future
    destroy-rebuild path now operates on a robust handler.
+
+### Friction points carried forward from Phase 4at
+
+These are concrete obstacles the next Phase 4 session will hit.
+Phase 4at bundled **three landings** in one session: (i) CS-73
+— per-row ∀ Apply-to-all buttons on every per-axis Settings
+widget except `axis_label_override` (USER-FLAGGED from Phase 4ak,
+resolved with the canonical record updated above); (ii) item α
+— `NODE_GROUP_MEMBERS_CHANGED` added to `_on_graph_event`'s
+`_redraw` trigger tuple (Phase 4as carry-forward); (iii) item
+β — collapse the inline provenance pane's "two lines per step"
+into a single `↳ op [engine ver] → output_label` line (USER-
+surfaced at step 5 — *"every step actually takes two lines to
+show ... I want to collapse that so each step is only a single
+line"*). 32 net new tests pinned (20 unit + 6 integration on
+the dialog/host axis-broadcast surface; 6 unit on the history
+collapse). 1473 tests, all green (1441 baseline + 32 new). CS-73
+adopts the CS-05 `style_dialog` ∀-glyph convention with a fresh
+greying composition (D8): CS-71's `_apply_axis_autoscale_greying`
+and CS-70's `_apply_secondary_x_link_greying` now both walk the
+new `_axis_apply_to_all_buttons[(role, key)]` registry so a ∀
+next to an inert widget is itself inert. The `_suspend_writes`
+guard + manual `_working` write + single `_apply_changes_live`
+fire (D4) is the load-bearing efficiency tweak — without it
+defer-commit Entries would require per-target focus events and
+non-deferred widgets would fire on_apply once per target. PTMG
+schema unchanged — no `PTMG_FORMAT_VERSION` bump. **No new
+carry-forward items.** All three landings closed cleanly; the
+implementation passes surfaced no new friction.
+
+1. ✅ **No new carry-forward.** Phase 4at touched three
+   surfaces (plot_settings_dialog, uvvis_tab, scan_tree_widget)
+   plus their test modules; each landing was scoped tight and
+   nothing surfaced during implementation that needs deferral.
+   The next session has a clean queue — see "Pick the next
+   intent" in the hand-off brief.
 
 ---
 
@@ -4930,7 +4936,7 @@ the resolving phase + commit SHA appended to the row.
 
 ---
 
-*Document version: 1.44 — May 2026*
+*Document version: 1.45 — May 2026*
 *1.1: Known Bugs register added 2026-04-27 after Phase 4b manual testing.*
 *1.2: Phase 4c — baseline correction lands; B-001 / B-003 / B-004
 resolved; Phase 4c friction points logged.*
