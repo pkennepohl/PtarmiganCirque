@@ -1678,7 +1678,7 @@ subsequent Phase 4 session.**
 | ✅ | 🟡 | **"Show hidden" toggle should disable when no hidden rows exist (USER-FLAGGED polish)** | USER-FLAGGED at end of Phase 4ag (step 5 elicitation; "If it's not relevant, then it should be greyed out when it's not relevant"). Originally surfaced as a 🟢 Claude polish in Phase 4af friction #5 ("'Show hidden' footer toggle behaviour is opaque"). **Resolved Phase 4ah (CS-59 Thread A, commit 2):** new `_has_hidden_rows()` predicate returns True iff ≥1 non-DISCARDED DataNode with `active=False` passes the tab predicate (or is itself a NODE_GROUP). New companion `_refresh_show_hidden_button_state()` flips the Checkbutton (now stored as `self._show_hidden_btn`) between `"normal"` and `"disabled"`. Called at the end of every `_rebuild` immediately after `_refresh_group_button_state` — the cluster of `_refresh_*_button_state` methods is now the canonical pattern for state-aware footer controls. **Lock decisions taken:** (i) disable-only — no count badge or tooltip (minimal scope, matches the user's "greyed out" phrasing); (ii) cascade preserves `_show_hidden` ON when the last hidden row disappears (toggle stays ON + becomes disabled — never silently flipped, the disabled state is the affordance); (iii) hidden group members count regardless of whether their parent group is expanded (avoids whiplash on expand/collapse — see CS-59 lock 2). 11 new tests in `TestShowHiddenButtonGatingPhase4ah`: 6 pure-helper coverage (empty graph, all-active, one-hidden, discarded-ignored, predicate-excluded-ignored, NODE_GROUP-counts), 5 button-state coverage (fresh-disabled, becomes-hidden, un-hidden-redisables, cascade discard preserves `_show_hidden` ON, hidden group member counts). Closes the chain with Phase 4af friction #5 (now ✅). |
 | ⏳ | 🟡 | **External-output plot style presets — journal / presentation / web formatting (USER-FLAGGED, Phase 4aj)** | USER-FLAGGED at end of Phase 4aj (step 5 elicitation). User: "Include plot style formatting defaults that are tailored to specific external outputs. For example, for a figure for J. Am. Chem. Soc. or for a two column powerpoint presentation, etc. I have implemented this in some jupyter notebooks and we can steal some of the code and information from there. This will be a per plot type setting and will need some thought on how to do that." Today every plot inherits the same `_FACTORY_DEFAULTS` (`title_font_size = 12`, `xlabel_font_size = 10`, `tick_label_font_size = 9`, etc. in `plot_settings_dialog.py`) — appropriate for an interactive UI but typically wrong for a journal-figure target (smaller, denser, narrower aspect) or a presentation slide (larger, bolder, wider). **Architecture proposal (lock pending):** new `_OUTPUT_PRESETS: dict[str, dict[str, Any]]` registry mapping preset names → working-copy patch dicts. Concrete first-batch candidates: `"jacs_single_column"` (JACS single-column figure), `"jacs_double_column"` (JACS double-column figure), `"nature_main"` (Nature main-text figure), `"powerpoint_two_column"` (two-column 16:9 slide), `"powerpoint_full"` (full-slide), `"web_compact"` (web/notebook-embed). The user has reference Jupyter notebook code with concrete `rcParams` blocks; **lifting those values is half the work**. New "Preset:" combobox at the top of Plot Settings → Global tab (above the existing section stack) applies the patch on selection; a `"(custom)"` sentinel surfaces when the user departs from any preset. **Lock decisions for the implementing session:** (i) where do presets live — bundled in `plot_settings_dialog.py`, a new `plot_style_presets.py` module (preferred for testability + future user-extensibility), or an external JSON/YAML config the user can extend without code edits? (ii) **"per plot type setting"** — does each tab type (UV/Vis / XANES / EXAFS / Compare) get its own preset list with tab-aware tweaks (JACS-UV/Vis has different sizing than JACS-EXAFS k-space), or is the preset list shared and tab-aware nuances ride elsewhere? Pairs with the existing `_USER_DEFAULTS` tab-type split register entry; should probably wait for that schema to land first (Phase 4ak+). (iii) does selecting a preset commit immediately to working-copy + flip every modified tab dirty, or stage as a separate preview/apply gesture? (iv) is figure aspect ratio / dimensions part of the preset, or out of scope (matplotlib `figure.figsize` lives at canvas-creation time, not in Plot Settings today — would require canvas-recreate plumbing if included)? (v) does the manifest schema (CS-46 `plot_defaults` key) round-trip the preset NAME (so a `.ptmg` "remembers" the user picked JACS), or just the resolved values? **Affected:** `plot_settings_dialog.py` (preset registry + Global-tab picker + "(custom)" sentinel detection on any edit that departs from the active preset), CS-46 manifest schema (maybe — depends on lock (v)), new tests for preset application + the custom-sentinel transitions, possibly `uvvis_tab.py` if figure dimensions land in scope (lock (iv)). Cross-refs: `_FACTORY_DEFAULTS` (CS-23 / CS-56 / CS-60) — presets layer ON TOP of factory defaults, never replace; `_USER_DEFAULTS` tab-type split register entry (per-tab-type behaviour pairs with per-preset behaviour); the existing Plot Settings → Appearance section (Fonts / Background colour / Grid colour). Multi-phase task — design + first-batch (~3-4 presets bundled, single tab type) is one phase; per-tab-type expansion is a later phase. **Reference code source:** user's Jupyter notebooks (paths to be supplied at start of the implementing phase). |
 | ✅ | 🟡 | **Live-preview vs Apply button — modal-vs-instant settings reconciliation (USER-FLAGGED, Phase 4ak)** ✅ Resolved Phase 4ap (CS-68). | Resolved Phase 4ap (CS-68). Live-preview lands on `PlotConfigDialog` only — discrete widgets (Combobox, Checkbutton, Spinbox, color picker, Radiobutton) commit every edit immediately via `_apply_changes_live` (mirror `_working` → `_config` + fire `on_apply`); text Entry widgets defer the live commit to `<FocusOut>` / `<Return>` so per-keystroke typing does not redraw a 100-spectrum canvas. Apply button retired. Button row collapses to `Save · Apply to All Tabs · Cancel`. **Lock decisions taken:** (i) live-preview replaces the working-copy commit gesture entirely — `_working` retained as the widget-bound mirror, `_config` is mutated in place by `_apply_changes_live`; (ii) Cancel still reverts via the `_snapshot` copy taken at `__init__` (no undo stack); (iii) scope is Plot Settings only — CS-05 `StyleDialog` was already write-through, project-load mismatch dialog stays modal/working-copy as a confirmation gate; (iv) per-keystroke redraw deferred via `<FocusOut>` / `<Return>` on text Entries — no debounce framework needed. The CS-60 `_modified_tabs` markers semantic broadens to "touched since open" — they persist through live commits and clear only on Cancel revert or destroy. Defaults / Factory Reset bulk reload coalesces to one redraw. Pairs with CS-66 modeless: Phase 4ao friction #9 (modeless × per-row baseline toggle) covered by `TestUVVisTabLivePreviewModelessPhase4ap.test_per_row_toggle_redraws_canvas_with_dialog_open`. 1302 tests green (1285 + 17 new). |
-| ⏳ | 🟡 | **Cross-node Style dropdown / multi-node style window (USER-FLAGGED, Phase 4ap)** | USER-FLAGGED at end of Phase 4ap (step 5 elicitation). User: "just like plot settings, I'd like a way of having access to all node plot settings from the pop up window. dropdown menu with all of the loaded nodes?" Today CS-05 `StyleDialog` is opened per-node — there is no single window listing every loaded node's style. The user's request: extend the modeless Plot Settings paradigm (CS-66 / CS-68) to per-node styles, with a Combobox listing every loaded node, switching the per-node controls on selection. **Architecture proposal (lock pending):** spawn a new modeless dialog (working title `NodeStylesDialog` or similar) — OR add a "Node styles" Notebook tab to the existing `PlotConfigDialog` — that carries (a) a Combobox listing every loaded node by `(label, id)`, (b) the existing CS-05 universal section (color, linestyle, linewidth, alpha, visible, in_legend) for the selected node, (c) the per-NodeType extension sections (peak-marker style for PEAK_LIST, etc.) that CS-05 already provides. Live-preview semantic from CS-68 carries forward — every edit writes to the selected node's `style` dict via `graph.set_style` and `GraphEvent.NODE_STYLE_CHANGED` fires the redraw. **Lock decisions for the implementing session:** (i) extend `PlotConfigDialog` as a new "Node Styles" tab (cross-tab routing map / per-tab dirty markers extend) vs. spawn a new sibling dialog (cleaner separation, but the user has to remember two windows); (ii) when a node is added / discarded mid-session, refresh the Combobox (pairs with the long-standing `_plots_by_role` frozen-at-open friction — CS-62 lock relaxation needed); (iii) interaction with the existing per-node CS-05 `StyleDialog` (right-click "Edit Style…") — coexist or subsume; (iv) per-node ∀ apply-to-all flows (CS-05 universal `_push_to_all` factory) — surface the Combobox as the source of "Apply to all of THIS node's siblings"; (v) what does "all loaded nodes" mean — UVVIS only, or every NodeType across every tab (Compare / XANES / EXAFS will eventually have nodes too)? Phase 4 scope answer: UVVIS-tab-private node list. **Affected:** new module `node_styles_dialog.py` (or new tab inside `plot_settings_dialog.py`), new `_open_dialogs`-style registry, host wiring on `UVVisTab`, integration tests. Multi-phase: design + scope decision (extra-high) → Plot Settings tab vs. new dialog (high) → cross-tab adoption later. Pairs naturally with CS-05 / CS-06 / CS-66 / CS-68. |
+| ✅ | 🟡 | **Cross-node Style dropdown / multi-node style window (USER-FLAGGED, Phase 4ap)** ✅ Resolved Phase 4au (CS-74). | Resolved Phase 4au (CS-74) — commits `1863c31` (pure module) + `dcb0c02` (45 unit tests + `_LS_OPTIONS` sync) + `831d057` (UVVisTab integration) + `d867a4b` (20 integration tests) + `f1868f5` (test runner registration). **Lock-decision closures (all five from the canonical entry):** (i) **Container — sibling modeless dialog, not a 7th PlotConfigDialog tab.** New `node_styles_dialog.py` module with its own `_open_dialogs[id(parent)]` per-host singleton registry. Avoids mixing PlotConfigDialog's CS-23 working-copy + Apply/Save/Cancel contract (tab-private UI state) with graph-resident node-style writes — Cancel-revert across graph mutations is not a supported contract today. (ii) **Refresh recipe — CS-72 playbook reused exactly.** Public `refresh_node_list(nodes)` method on the dialog (widget-state only); host's `_notify_node_list_change()` looks up the dialog and fires the refresh for the same six events as CS-72: NODE_ADDED, NODE_DISCARDED, NODE_LABEL_CHANGED, NODE_GROUP_MEMBERS_CHANGED, GRAPH_LOADED, GRAPH_CLEARED. NODE_STYLE_CHANGED + NODE_ACTIVE_CHANGED explicitly excluded (D15 / D17 analogues). Selection preservation by node id, not label (labels mutate). (iii) **CS-05 coexistence — both surfaces remain.** Per-row gear button on ScanTreeWidget still opens an independent per-node CS-05 StyleDialog; the new dialog is the per-host-singleton sibling. Both write through `graph.set_style` so they self-sync via NODE_STYLE_CHANGED. Pinned by `test_node_styles_and_style_dialogs_can_coexist`. (iv) **Per-row ∀ — reuses host's existing `_on_uvvis_apply_to_all` callback.** Same widened-for-y_axis scope as the existing CS-05 ∀ broadcasts (spectrum-only for most keys, widened to `+ second-deriv + peak-list` for y_axis). Visual matches CS-05 ∀ glyph convention (text="∀", font 8pt, flat relief). (v) **Phase 4 scope — UVVIS-tab-private node list** as planned. Cross-tab adoption (XANES/EXAFS/Compare) deferred to later phases; the same module is reusable from any host that supplies `(graph, nodes, on_apply_to_all)`. **Additional locks taken at implementation:** D6 — Close-only button row (no Cancel/Save dichotomy — live writes via `graph.set_style` ARE the save; multi-node Cancel has ambiguous blast radius). D7 — CS-74 component number. Constants `_LS_OPTIONS` / `_Y_AXIS_OPTIONS` / `_Y_AXIS_VISIBLE_NODETYPES` / `_UNIVERSAL_KEYS` mirror style_dialog's canonical sources; `TestNodeStylesDialogConstantsMirrorPhase4au` pins them. **Module surface:** `open_node_styles_dialog(parent, graph, nodes, on_apply_to_all)` factory + `NodeStylesDialog` class (modeless `transient(parent)` without grab, Combobox header + 9 universal-section rows + single Close button) + `_open_dialogs[id(parent)]` registry. **Host wiring on UVVisTab:** new top-bar "⚙ Node Styles" Button (next to "⚙ Plot Settings"), `_open_node_styles_dialog` method, `_all_renderable_nodes` helper (union of `_spectrum_nodes + _second_derivative_nodes + _peak_list_nodes`), `_notify_node_list_change` method, six-event dispatch in `_on_graph_event`. 65 net new tests (45 unit + 20 integration) pin the contract. 1538 tests green (1473 baseline + 65 net new). PTMG schema unchanged — no `PTMG_FORMAT_VERSION` bump (every style key already round-trips via CS-46). |
 | ✅ | 🟡 | **Autoscale ↔ Range Entry seed semantics (USER-FLAGGED, Phase 4ap)** ✅ Resolved Phase 4as (CS-71). | Resolved Phase 4as (CS-71) — commits `fd93182` (pure module) + `c5cffc6` (32 unit tests + 2 reframed) + `97a6536` (host wiring + CS-66 fix) + `fa70f9b` (28 integration tests + D15 polish). Lock-decision closures: (i) read-back source — the host's `_compute_axis_displayed_limits()` reads `_axes_by_role["primary"].get_xlim()/get_ylim()` for primary_x/primary_y plus twin axes for secondary_y/tertiary_y; fires from `_redraw` end + `_draw_empty` end + once after `open_plot_config_dialog` returns (the seed-on-open path) — so the dialog sees the limits without needing a separate `on_apply` hook. (ii) seed-on-toggle policy CLOSED — True→False fires `_seed_range_entries_from_display(role)` which writes the displayed-limits snapshot into the canonical schema StringVars via `var.set()`; False→True does NOT touch the canonical StringVars (the user's typed values are preserved in `_working`). (iii) dialog-open with autoscale=True CLOSED — the parallel display StringVar shows the displayed limits AND the Entry is `state="disabled"` from build time; the post-open notify call populates the display var immediately so the user sees actual values not the construction-default empty string. (iv) CS-65 interaction CLOSED — `tick_major`/`tick_minor` Entries are untouched; CS-71's mechanism is exclusive to `range_lo`/`range_hi`. **Mechanism:** new parallel `_axis_range_display_vars[(role, key)]` StringVars built for the four non-secondary_x roles; `Entry.configure(textvariable=…)` swaps between the canonical schema StringVar (autoscale=False, editable) and the display StringVar (autoscale=True, disabled). CS-64 D8 lock relaxation explicit: the Entry's textvariable is no longer permanently the canonical StringVar. **CS-70 composition:** CS-71's `_apply_axis_autoscale_greying(role)` short-circuits for `secondary_x` so CS-69 / CS-70's link greying wins for that role. Two pre-existing CS-69 / CS-70 tests narrowed for the relaxation (`test_other_role_widgets_not_disabled_when_secondary_x_linked` + `test_other_roles_unaffected_by_refresh` — both now skip `range_lo`/`range_hi` in their inner key loops with a CS-71 cross-ref comment). 32 unit + 10 integration test sentinels pin the contract. |
 | ✅ | 🟠 | **USER-FLAGGED bug: wavelength as linked secondary axis is broken (B-005, Phase 4ap)** ✅ Resolved Phase 4aq (CS-69). | Resolved Phase 4aq (CS-69) — commits `aedfd81` + `cdd6f61` + `df2542a` + `ab6a178`. Root cause: the secondary X axis was correctly using matplotlib's linked `ax.secondary_xaxis(functions=(_fwd, _fwd))` API, but the renderer then called `sec.set_xlim(...)` from the CS-64 `range_lo` / `range_hi` / `autoscale` schema path. On a linked secondary that call back-propagates through the inverse of `_fwd` and CORRUPTS the primary axis — the user-visible symptom. **Fix landed:** (1) renderer NEVER calls `sec.set_xlim` / `sec.set_xscale` (matplotlib owns linked limits); (2) new per-axis schema key `custom_ticks: str` (comma-separated explicit nm positions like `"300, 400, 500"`) paints `FixedLocator` major ticks via the new `_apply_major_locator` helper, uniform across all per-axis roles (D6b lock); (3) D8 lock relaxation extends the link to BOTH cm⁻¹ (via `1e7 / x`) AND eV (via `_HC_NM_EV / x`); both are self-inverse; (4) new `secondary_x_linked: bool` dialog kwarg snapshotted at open greys out Secondary X tab's range_lo / range_hi / autoscale / scale widgets so the user can't fight the link — custom_ticks / tick_major / tick_minor stay editable. Logged as **B-005** in the Known Bugs table below (now ✅). 45 new tests pin the fix: 27 unit (parse, accessor, link cm⁻¹+eV, renderer FixedLocator) + 18 integration (greying, custom_ticks Entry round-trip, migration shim). |
 | ✅ | 🟡 | **Apply-to-all icon on per-axis Plot Settings tabs — UI consistency with data-node settings (USER-FLAGGED, Phase 4ak)** ✅ Resolved Phase 4at (CS-73). | Resolved Phase 4at (CS-73) — commits `30ee73e` (pure module) + `2cd3ac0` (20 unit tests) + `2c5a255` (α one-liner) + `0498ebe` (3 integration tests) + bookkeeping. **Lock-decision closures:** (i) per-widget ∀ buttons (one per broadcast-capable widget on every per-axis tab) — NOT per-tab. 10 controls × 5 roles = 50 buttons exactly. `axis_label_override` is the sole exemption (D1) — the Global-tab mirror section is the canonical broadcast surface for label text. (ii) broadcast targets are the four OTHER per-axis roles (X-or-Y agnostic — the user gets one click for full broadcast across every axis); secondary_x is a target unconditionally, with CS-70's link greying being a UI-only concern (D3). (iii) commit semantics go through a `_suspend_writes` guard + manual `_working` write + `_mark_tab_modified` + ONE `_apply_changes_live` at the end (D4) — bypasses the per-keystroke trace path so defer-commit Entries broadcast in one click instead of needing per-target focus events. (iv) glyph is `∀` matching CS-05 `style_dialog`'s per-row ∀ convention; flat relief, 8-pt font, snug padding. **Greying composition (D8):** CS-71's `_apply_axis_autoscale_greying` and CS-70's `_apply_secondary_x_link_greying` both walk the new `_axis_apply_to_all_buttons[(role, key)]` registry so a ∀ next to an inert widget is itself inert. Broadcasting from a disabled source widget makes no sense. **Original USER quote:** "Use same apply-to-all icon used for data node settings in the axis setting popups." Data-node settings (the per-row → icon on `ScanTreeWidget` rows surfaced by CS-27 / Phase 4n) carry a recognisable "Apply to all" affordance; Plot Settings → per-axis tabs offer only the dialog-level "Apply to All Tabs" button at the bottom (CS-60 button row). The per-axis tabs lack an in-tab "Apply this axis's settings to every other axis" gesture — useful for cases like "apply this tick direction to every axis at once" or "broadcast this axis label override to every Y axis". **Architecture proposal (lock pending):** add a small icon button next to each per-axis widget (or at the per-axis tab top) labelled with the same icon used by `ScanTreeWidget`'s send-to-compare row icon (the → symbol per CS-27). Click → confirm dialog → write the widget's value into every other per-axis role's slot in `self._working`, mark every other per-axis tab dirty. **Lock decisions for the implementing session:** (i) per-widget icon (one per widget on the per-axis tab) or per-tab icon (one icon broadcasts every widget on the tab)? (ii) does the broadcast respect axis-shape semantics (e.g. an X-axis tab's value broadcast to other X tabs only, not Y)? (iii) does the broadcast write through `_USER_DEFAULTS["axes"][role]` directly or stage through `_on_axis_var_write` per-widget (the latter is consistent with the existing dirty-marker contract)? (iv) does the icon match `_send_to_compare_btn`'s exact glyph or use a slightly different one to distinguish axis-to-axis from tab-to-compare? **Affected:** `plot_settings_dialog.py` (new icon widget + broadcast handler; CS-62 `_axis_control_vars` walk), CS-61 / CS-62 layout (icon adds a row or column to the Settings frame), tests for the broadcast path. Cross-refs CS-27 (the existing per-row send-to-compare icon pattern), CS-60 (the dialog-level Apply to All Tabs button — different scope), CS-62 (per-axis Tk var registry). Small-medium phase; depends on having more than one populated per-axis widget (Phase 4ak ships two: tick_direction + axis_label_override, so this is actionable from 4al onward). |
@@ -4369,17 +4369,15 @@ node window; wavelength secondary axis broken — B-005; Autoscale
 are polish-level and deferrable. **Do not fix until the relevant
 subsequent Phase 4 session.**
 
-1. 🟡 **USER-FLAGGED Cross-node Style dropdown / multi-node
-   style window.** See the new canonical register entry above
-   (added in Phase 4ap step 5). Becomes actionable any time —
-   open scope question is "extend `PlotConfigDialog` with a new
-   Notebook tab" vs "spawn a new sibling modeless dialog". Pairs
-   with CS-05 / CS-06 / CS-66 / CS-68. Reasoning level:
-   **extra-high** for the first design pass + lock decisions
-   (5 lock decisions span dialog scope + dropdown semantics +
-   refresh-on-graph-event interaction + ∀ apply-to-all
-   coexistence + cross-tab vs UVVIS-only scope), **high** for
-   the implementation phase that follows.
+1. 🟡 ~~**USER-FLAGGED Cross-node Style dropdown / multi-node
+   style window.**~~ ✅ **Resolved in Phase 4au (CS-74).** The
+   canonical register entry above is now ✅. All five lock
+   decisions closed: sibling modeless dialog (not 7th tab),
+   CS-72 refresh recipe, CS-05 coexistence, ∀ via host's
+   `_on_uvvis_apply_to_all` callback, UVVIS-tab-private scope.
+   D6 Close-only button row + D7 component number locked at
+   implementation. Top-bar "⚙ Node Styles" button on UVVisTab
+   opens the dialog; 65 net new tests pin the contract.
 
 2. 🟠 ~~**USER-FLAGGED Wavelength secondary axis broken (B-005).**~~
    ✅ Resolved Phase 4aq (CS-69) — commits `aedfd81` + `cdd6f61`
@@ -4721,6 +4719,121 @@ implementation passes surfaced no new friction.
    The next session has a clean queue — see "Pick the next
    intent" in the hand-off brief.
 
+### Friction points carried forward from Phase 4au
+
+These are concrete obstacles the next Phase 4 session will hit.
+Phase 4au shipped CS-74 — the cross-node modeless Style dropdown
+(closes the Phase 4ap USER-FLAGGED carry-forward). New module
+`node_styles_dialog.py` carries a `NodeStylesDialog` Toplevel with
+a Combobox header listing every renderable DataNode on the host
+tab and the CS-05 universal-section rows below for the selected
+node. Modeless via `transient(parent)` without grab (CS-66 pattern);
+per-host singleton via `_open_dialogs[id(parent)]`. Live writes
+through `graph.set_style` / `graph.set_label` with the same
+`_suspend_writes` re-entrancy guard CS-05 uses. CS-72 refresh
+recipe reused exactly: `refresh_node_list(nodes)` public method
+fired from the host's `_notify_node_list_change()` for six events
+(NODE_ADDED, NODE_DISCARDED, NODE_LABEL_CHANGED,
+NODE_GROUP_MEMBERS_CHANGED, GRAPH_LOADED, GRAPH_CLEARED).
+NODE_STYLE_CHANGED + NODE_ACTIVE_CHANGED explicitly excluded.
+Per-row ∀ buttons reuse host's existing `_on_uvvis_apply_to_all`
+callback (CS-50 widened-for-y_axis scope). New top-bar
+"⚙ Node Styles" button on UVVisTab next to "⚙ Plot Settings".
+65 net new tests (45 unit + 20 integration). 1538 tests, all
+green (1473 baseline + 65 new). CS-05 StyleDialog coexists — no
+retirement. Four Claude-surfaced items elevated to register
+entries at step 5 (none promote to USER-FLAGGED but the user
+explicitly opted-in all four).
+
+1. 🟢 **Combobox display string omits NodeState badge
+   (Claude-surfaced, Phase 4au artifact).** Today the dropdown
+   reads `"{label} ({TYPE})"` — a PROVISIONAL spectrum and a
+   COMMITTED spectrum sharing a label are visually identical in
+   the Combobox. The user surfaced no observed confusion during
+   Phase 4au, but the affordance is missing. Small follow-up:
+   prepend a state glyph (`⋯` provisional / `🔒` committed)
+   matching the ScanTreeWidget convention. Cross-refs CS-04's
+   per-row state indicator. Affected: `node_styles_dialog.py
+   :_combobox_label_for`. Small phase, low risk. Reasoning
+   level: **medium**.
+
+2. 🟢 **Colour Reset writes a constant default instead of a
+   palette-picked value (Claude-surfaced, Phase 4au artifact).**
+   `_on_colour_reset` writes `_UNIVERSAL_DEFAULTS["color"]`
+   (`"#1f77b4"`) unconditionally. CS-05's Reset restores the
+   per-node snapshot taken at dialog open — but NodeStylesDialog
+   has no snapshot (D6: live writes, no working copy). Result:
+   "Reset" on the cross-node dialog flattens the node to the
+   palette's first slot regardless of current siblings. Could
+   integrate `node_styles.pick_default_color(graph)` (CS-21
+   helper) to surface a fresh palette index based on the current
+   renderable scope, mirroring how the loader picks defaults
+   for new UVVIS nodes. CS-21 SPECTRUM_PALETTE relaxation —
+   D3 of the CS-21 locks (palette-helper invocation site) would
+   extend to a third caller. Affected: `node_styles_dialog
+   :_on_colour_reset` + new test pinning the picked-index
+   semantics. Reasoning level: **medium**.
+
+3. 🟢 **Keyboard navigation through the Combobox not bound
+   (Claude-surfaced, Phase 4au artifact).** The "walk every
+   node" workflow that motivated the dialog still requires a
+   mouse click on the Combobox dropdown to step through nodes.
+   `<Down>` / `<Up>` arrow bindings on the dialog (or
+   `<Control-Down>` / `<Control-Up>` to avoid conflicting with
+   Combobox-internal navigation) would let the user step through
+   without reaching for the mouse. Pairs naturally with the
+   USER-FLAGGED Accessibility umbrella (Phase 4al carry-forward,
+   keyboard-shortcuts sub-axis) — could bundle into the first
+   accessibility sub-batch. Affected: `node_styles_dialog
+   .NodeStylesDialog.__init__` (binding setup) +
+   `_step_combobox_selection(delta)` helper + tests. Reasoning
+   level: **medium**.
+
+4. 🟢 **Y-axis row always built regardless of selected
+   NodeType (Claude-surfaced, Phase 4au artifact, cross-tab
+   readiness).** On UVVisTab today this is harmless — every
+   NodeType the dropdown lists (UVVIS / BASELINE / NORMALISED /
+   SMOOTHED / PEAK_LIST / SECOND_DERIVATIVE) is in
+   `_Y_AXIS_VISIBLE_NODETYPES` so the row is always meaningful.
+   When other tabs (Compare / XANES / EXAFS) adopt the dialog,
+   non-Y-routable NodeTypes (TDDFT / FEFF_PATHS / XANES / EXAFS
+   / DEGLITCHED / AVERAGED / BXAS_RESULT) will see a misleading
+   affordance — the CS-50 / CS-52 footgun documented in
+   `style_dialog._Y_AXIS_VISIBLE_NODETYPES`. Two paths: (a)
+   destroy-rebuild the y_axis row on Combobox switch when the
+   selection's NodeType changes y-axis-visibility, or (b)
+   build once + dynamically `config(state="disabled")` based on
+   selection type. (b) is simpler and matches the CS-71 / CS-70
+   "widget-state only" greying pattern. Becomes actionable when
+   the second tab adopts the dialog. Affected:
+   `node_styles_dialog._build_y_axis_row` + `_select_node`
+   gain a state-update branch. Reasoning level: **medium**
+   (per sub-batch) — bundles with cross-tab adoption phases.
+
+5. 🟡 **USER-FLAGGED Accessibility features umbrella**
+   continues. Cross-ref Phase 4ao friction #1. The keyboard-
+   shortcuts sub-axis pairs with Phase 4au friction #3 above.
+   Reasoning level: **high** for the first design pass,
+   **medium** for individual sub-batches.
+
+6. 🟡 **USER-FLAGGED Axis nomenclature rename** continues.
+   Cross-ref Phase 4ao friction #4. Massive cross-codebase
+   rename. Reasoning level: **extra-high**.
+
+7. 🟡 **USER-FLAGGED Rich-text axis labels (mathtext)**
+   continues. Cross-ref Phase 4ao friction #5. Reasoning
+   level: **medium**.
+
+8. 🟡 **USER-FLAGGED External-output plot style presets**
+   continues. Cross-ref Phase 4ao friction #6. User has
+   reference Jupyter notebook code (paths TBD at session
+   start). Reasoning level: **high**.
+
+9. 🟡 **USER-FLAGGED Keyboard shortcuts — first batch**
+   continues. Cross-ref Phase 4ao friction #7. Pairs with
+   the accessibility umbrella and with Phase 4au friction #3
+   above. Reasoning level: **medium**.
+
 ---
 
 ## Phase 5 — XANES Tab
@@ -4936,7 +5049,7 @@ the resolving phase + commit SHA appended to the row.
 
 ---
 
-*Document version: 1.45 — May 2026*
+*Document version: 1.46 — May 2026*
 *1.1: Known Bugs register added 2026-04-27 after Phase 4b manual testing.*
 *1.2: Phase 4c — baseline correction lands; B-001 / B-003 / B-004
 resolved; Phase 4c friction points logged.*
@@ -5970,4 +6083,38 @@ green (1379 baseline + 62 net new). One new carry-forward
 (item α: NODE_GROUP_MEMBERS_CHANGED missing from `_redraw`
 trigger list — pre-existing one-line gap, suggested for
 low-cost bundling into Phase 4at).*
+*1.46: Phase 4au — CS-74 cross-node modeless Style dropdown.
+Closes the Phase 4ap USER-FLAGGED carry-forward
+("Cross-node Style dropdown / multi-node style window";
+canonical register entry now ✅). New module
+`node_styles_dialog.py` carries `NodeStylesDialog` Toplevel
+with per-host `_open_dialogs[id(parent)]` singleton + Combobox
+header listing every renderable DataNode + CS-05 universal-
+section rows + single Close button. Modeless via
+`transient(parent)` without grab (CS-66 pattern). Live writes
+through `graph.set_style` / `graph.set_label` with the
+`_suspend_writes` re-entrancy guard. **All five canonical
+lock decisions closed:** (i) sibling modeless dialog not a
+PlotConfigDialog tab; (ii) refresh recipe = CS-72 playbook
+(refresh_node_list + 6-event dispatch in
+`UVVisTab._on_graph_event`); (iii) CS-05 StyleDialog
+coexists (per-row gear button still opens it independently);
+(iv) per-row ∀ reuses host's `_on_uvvis_apply_to_all`
+callback (CS-50 widened scope for y_axis); (v) UVVIS-tab-
+private node list (Phase 4 scope confirmed). Additional
+locks: D6 Close-only button row (no Cancel/Save dichotomy),
+D7 CS-74 component number. New top-bar "⚙ Node Styles"
+button on UVVisTab next to "⚙ Plot Settings". 65 net new
+tests pin the contract (45 unit in 6 classes + 20
+integration in 1 class). 1538 tests, all green (1473
+baseline + 65 new). PTMG_FORMAT_VERSION unchanged — no
+schema keys added. **Four Claude-surfaced friction items
+elevated** to register entries at step 5 (user explicitly
+opted-in all four): Combobox state-badge prefix, palette-
+picked colour Reset, keyboard Combobox navigation, Y-axis
+row NodeType guard for cross-tab readiness. Six phase
+commits: pure module (`1863c31`) + 45 unit tests +
+LS_OPTIONS sync (`dcb0c02`) + UVVisTab integration
+(`831d057`) + 20 integration tests (`d867a4b`) + run_tests
+registration (`f1868f5`) + this bookkeeping.*
 *Supersedes: BACKLOG.md (original)*
