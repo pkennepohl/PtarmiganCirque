@@ -8484,7 +8484,8 @@ class TestUVVisTabNodeStylesDialogPhase4au(unittest.TestCase):
         self.tab.update()
         values_after = list(dlg._combobox.cget("values"))
         self.assertEqual(len(values_after), len(values_before) + 1)
-        self.assertIn("newbie (UVVIS)", values_after)
+        # Phase 4av item #1: state glyph prefix (committed → 🔒).
+        self.assertIn("🔒 newbie (UVVIS)", values_after)
 
     def test_apply_to_all_linewidth_broadcasts_via_host(self):
         """∀ linewidth from the dialog broadcasts via the host's
