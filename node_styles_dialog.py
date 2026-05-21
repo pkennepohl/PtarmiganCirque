@@ -62,6 +62,31 @@ CS-74 lock decisions (Phase 4au):
   quickly" surface, complementary not redundant.
 * **D7 — Component number.** CS-74.
 
+Phase 4av polish-bundle additions (still CS-74; not a new lock set):
+
+* **Item #1 — Combobox state-badge prefix.** Display string becomes
+  ``f"{glyph} {label} ({TYPE})"`` where glyph is ``🔒`` for COMMITTED
+  and ``⋯`` for PROVISIONAL (matches the
+  :mod:`scan_tree_widget` convention exactly). Disambiguates two
+  same-labelled siblings differing only in NodeState.
+* **Item #2 — Palette-picked colour Reset.** ``_on_colour_reset``
+  delegates to :func:`node_styles.pick_default_color`. CS-21 D3
+  (palette-helper invocation site) grows from two callers to three;
+  the helper is unchanged.
+* **Item #3 — Keyboard Combobox navigation.** ``<Control-Down>`` /
+  ``<Control-Up>`` step through the Combobox without touching the
+  mouse. Bound on the Toplevel (not on the Combobox itself) so the
+  bindings fire regardless of focus inside the dialog. ``Control``
+  modifier avoids conflicting with Combobox-internal arrow nav.
+  Clamps at list ends (no wrap).
+* **Item #4 — Y-axis NodeType guard.** Row is built once
+  unconditionally, then dynamically state-gated by
+  :meth:`_update_y_axis_row_state` whenever the selected node's
+  NodeType falls outside :data:`_Y_AXIS_VISIBLE_NODETYPES`. No-op on
+  UVVisTab today (every dropdown NodeType passes the filter); becomes
+  load-bearing when Compare / XANES / EXAFS adopt the dialog and the
+  Combobox starts listing non-Y-routable types.
+
 Re-entrancy guard ``_suspend_writes`` mirrors CS-05's pattern: set
 during every ``set_style`` / ``set_label`` write so the resulting
 graph event is recognized as "ours" and the widget-refresh callback
@@ -82,8 +107,9 @@ import tkinter.colorchooser
 from tkinter import ttk
 from typing import Any, Callable, Iterable, Optional
 
-from nodes import DataNode, NodeType
+from nodes import DataNode, NodeState, NodeType
 from graph import GraphEvent, GraphEventType, ProjectGraph
+from node_styles import pick_default_color
 
 _log = logging.getLogger(__name__)
 
@@ -277,6 +303,10 @@ class NodeStylesDialog(tk.Toplevel):
         self._combobox_var: tk.StringVar | None = None
         # Colour swatch reference (for refresh).
         self._color_swatch: tk.Button | None = None
+        # Y-axis Combobox reference (Phase 4av item #4). Stored so
+        # :meth:`_update_y_axis_row_state` can flip its state without
+        # walking the widget tree.
+        self._y_axis_combobox: ttk.Combobox | None = None
 
         # CS-66 (Phase 4ao): transient binds the dialog above the
         # parent in the WM Z-order without grabbing input. Distinct
@@ -299,6 +329,14 @@ class NodeStylesDialog(tk.Toplevel):
 
         self.bind("<Destroy>", self._on_destroy, add="+")
         self.protocol("WM_DELETE_WINDOW", self._on_close_requested)
+
+        # Phase 4av item #3: keyboard Combobox stepping. Ctrl modifier
+        # so the bindings don't shadow Tk's built-in Combobox arrow
+        # behaviour when the Combobox itself holds focus. Bound on the
+        # Toplevel so they fire regardless of which descendant has
+        # focus.
+        self.bind("<Control-Down>", self._on_keyboard_step_next, add="+")
+        self.bind("<Control-Up>", self._on_keyboard_step_prev, add="+")
 
         _open_dialogs[id(parent)] = self
 
@@ -680,6 +718,7 @@ class NodeStylesDialog(tk.Toplevel):
             values=list(_Y_AXIS_OPTIONS), width=12,
         )
         cb.grid(row=row, column=1, columnspan=2, sticky="w", padx=4)
+        self._y_axis_combobox = cb
 
         def _on_selected(_event=None, _v=var):
             self._write_partial(
@@ -770,15 +809,26 @@ class NodeStylesDialog(tk.Toplevel):
         """Reset colour to a freshly-picked palette default.
 
         Distinct from CS-05's "snapshot" reset semantics — we have no
-        snapshot. Here Reset means "give me an obviously distinct
-        colour" — we delegate to the host via on_apply_to_all = None
-        guard by writing the default colour from _UNIVERSAL_DEFAULTS.
-        Future enhancement could pick from the palette; current MVP
-        writes the constant default.
+        snapshot. Phase 4av item #2: delegates to
+        :func:`node_styles.pick_default_color` (CS-21 D3 — third
+        caller) so the colour the user lands on rotates through
+        :data:`node_styles.SPECTRUM_PALETTE` based on the current
+        renderable scope. Previously this wrote the constant
+        ``_UNIVERSAL_DEFAULTS["color"]`` (``"#1f77b4"``), which
+        flattened every node to palette index 0.
         """
         if self._node_id is None:
             return
-        self._write_partial({"color": str(_UNIVERSAL_DEFAULTS["color"])})
+        try:
+            new_colour = pick_default_color(self._graph)
+        except Exception:
+            _log.warning(
+                "node_styles_dialog: pick_default_color raised "
+                "(node %r) — falling back to universal default",
+                self._node_id, exc_info=True,
+            )
+            new_colour = str(_UNIVERSAL_DEFAULTS["color"])
+        self._write_partial({"color": new_colour})
 
     # ------------------------------------------------------------
     # Combobox selection handling
@@ -802,12 +852,60 @@ class NodeStylesDialog(tk.Toplevel):
 
         Refreshes every universal-section widget from the new node's
         style + label. The Combobox display is updated to match.
+        Phase 4av item #4: after the universal section re-enables,
+        the Y-axis row's state is gated by the new selection's
+        NodeType.
         """
         self._node_id = node_id
         if self._combobox_var is not None:
             self._combobox_var.set(self._combobox_label_for(node_id))
         self._refresh_widgets_from_node(node_id)
         self._set_universal_disabled(False)
+        self._update_y_axis_row_state(self._node_type_for(node_id))
+
+    # ------------------------------------------------------------
+    # Keyboard Combobox stepping (Phase 4av item #3)
+    # ------------------------------------------------------------
+
+    def _on_keyboard_step_next(self, _event: tk.Event | None = None) -> str:
+        """Bound to ``<Control-Down>`` — step Combobox forward by one."""
+        self._step_combobox_selection(+1)
+        return "break"
+
+    def _on_keyboard_step_prev(self, _event: tk.Event | None = None) -> str:
+        """Bound to ``<Control-Up>`` — step Combobox backward by one."""
+        self._step_combobox_selection(-1)
+        return "break"
+
+    def _step_combobox_selection(self, delta: int) -> None:
+        """Move the Combobox selection by ``delta`` rows.
+
+        Clamps at list ends (no wrap). No-op when the list is empty
+        or when stepping past either boundary. Calls
+        :meth:`_select_node` so the universal section refreshes
+        identically to a mouse-driven Combobox selection — the only
+        difference is the input gesture.
+        """
+        if not self._nodes:
+            return
+        if self._node_id is None:
+            target = self._nodes[0]
+        else:
+            try:
+                idx = next(
+                    i for i, n in enumerate(self._nodes)
+                    if n.id == self._node_id
+                )
+            except StopIteration:
+                target = self._nodes[0]
+            else:
+                new_idx = idx + delta
+                if new_idx < 0 or new_idx >= len(self._nodes):
+                    return
+                target = self._nodes[new_idx]
+        if target.id == self._node_id:
+            return
+        self._select_node(target.id)
 
     # ------------------------------------------------------------
     # Refresh — both internally-driven (Combobox switch) and
@@ -1078,21 +1176,101 @@ class NodeStylesDialog(tk.Toplevel):
 
         Bracketed type name disambiguates similarly-labelled nodes
         across types (e.g. a UVVIS and a BASELINE both labelled
-        "Sample A"). Falls back to ``"<missing>"`` if the id is no
-        longer in the graph — defensive against a race between
-        refresh_node_list and a NODE_DISCARDED event.
+        "Sample A"). Phase 4av item #1: a leading state glyph
+        (``🔒`` committed / ``⋯`` provisional, matching
+        :mod:`scan_tree_widget`'s convention) further disambiguates
+        siblings differing only in NodeState. Falls back to
+        ``"<missing>"`` if the id is no longer in the graph —
+        defensive against a race between refresh_node_list and a
+        NODE_DISCARDED event.
         """
         for n in self._nodes:
             if n.id == node_id:
-                return f"{n.label} ({n.type.name})"
+                glyph = self._state_glyph_for(n.state)
+                return f"{glyph} {n.label} ({n.type.name})"
         # Out-of-list id — defer to the graph as a fallback.
         try:
             node = self._graph.get_node(node_id)
         except KeyError:
             return "<missing>"
         if isinstance(node, DataNode):
-            return f"{node.label} ({node.type.name})"
+            glyph = self._state_glyph_for(node.state)
+            return f"{glyph} {node.label} ({node.type.name})"
         return "<missing>"
+
+    @staticmethod
+    def _state_glyph_for(state: NodeState) -> str:
+        """Return the leading NodeState glyph for a Combobox row.
+
+        Mirrors :mod:`scan_tree_widget`'s
+        ``"🔒" if node.state == NodeState.COMMITTED else "⋯"``
+        binary check exactly — non-COMMITTED renders as provisional.
+        Discarded nodes shouldn't appear in the dialog's node list,
+        but if they did, they'd surface as ``⋯``.
+        """
+        if state == NodeState.COMMITTED:
+            return "🔒"
+        return "⋯"
+
+    def _node_type_for(self, node_id: str) -> Optional[NodeType]:
+        """Return the NodeType for ``node_id`` (helper for Y-axis guard).
+
+        Prefers the local ``self._nodes`` cache, falls back to the
+        graph. Returns ``None`` if the id resolves to no DataNode.
+        """
+        for n in self._nodes:
+            if n.id == node_id:
+                return n.type
+        try:
+            node = self._graph.get_node(node_id)
+        except KeyError:
+            return None
+        if isinstance(node, DataNode):
+            return node.type
+        return None
+
+    def _update_y_axis_row_state(
+        self, node_type: Optional[NodeType],
+    ) -> None:
+        """Enable / disable the Y-axis row based on NodeType.
+
+        Phase 4av item #4: when the selected node's NodeType is not in
+        :data:`_Y_AXIS_VISIBLE_NODETYPES` the Y-axis Combobox and its
+        ∀ button render disabled. On UVVisTab today every dropdown
+        NodeType passes the filter so this is a visual no-op; the gate
+        becomes load-bearing when Compare / XANES / EXAFS adopt the
+        dialog and feed in non-Y-routable NodeTypes.
+
+        Also explicitly re-sets the Combobox state to ``"readonly"``
+        on re-enable so the pre-existing
+        :meth:`_set_universal_disabled` walk (which sets
+        ``state=tk.NORMAL`` indiscriminately) does not leave the
+        Combobox in a free-text-entry mode.
+        """
+        if self._y_axis_combobox is None:
+            return
+        in_scope = (
+            node_type is not None
+            and node_type in _Y_AXIS_VISIBLE_NODETYPES
+        )
+        cb_state = "readonly" if in_scope else tk.DISABLED
+        btn = self._apply_one_buttons.get("y_axis")
+        if in_scope:
+            btn_state = (
+                tk.NORMAL if self._on_apply_to_all is not None
+                else tk.DISABLED
+            )
+        else:
+            btn_state = tk.DISABLED
+        try:
+            self._y_axis_combobox.config(state=cb_state)
+        except tk.TclError:
+            pass
+        if btn is not None:
+            try:
+                btn.config(state=btn_state)
+            except tk.TclError:
+                pass
 
     def _node_id_for_display(self, display: str) -> Optional[str]:
         for n in self._nodes:
