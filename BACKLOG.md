@@ -4745,7 +4745,7 @@ retirement. Four Claude-surfaced items elevated to register
 entries at step 5 (none promote to USER-FLAGGED but the user
 explicitly opted-in all four).
 
-1. 🟢 **Combobox display string omits NodeState badge
+1. ~~🟢 **Combobox display string omits NodeState badge
    (Claude-surfaced, Phase 4au artifact).** Today the dropdown
    reads `"{label} ({TYPE})"` — a PROVISIONAL spectrum and a
    COMMITTED spectrum sharing a label are visually identical in
@@ -4755,9 +4755,14 @@ explicitly opted-in all four).
    matching the ScanTreeWidget convention. Cross-refs CS-04's
    per-row state indicator. Affected: `node_styles_dialog.py
    :_combobox_label_for`. Small phase, low risk. Reasoning
-   level: **medium**.
+   level: **medium**.~~ ✅ **Resolved in Phase 4av (CS-74
+   polish item #1).** `_combobox_label_for` now prefixes the
+   glyph via the new `_state_glyph_for` static (`🔒` committed
+   / `⋯` provisional — binary match on `scan_tree_widget`
+   line 776). Sibling disambiguation by state pinned by
+   `TestNodeStylesDialogStateBadgePhase4av` (8 sentinels).
 
-2. 🟢 **Colour Reset writes a constant default instead of a
+2. ~~🟢 **Colour Reset writes a constant default instead of a
    palette-picked value (Claude-surfaced, Phase 4au artifact).**
    `_on_colour_reset` writes `_UNIVERSAL_DEFAULTS["color"]`
    (`"#1f77b4"`) unconditionally. CS-05's Reset restores the
@@ -4772,9 +4777,17 @@ explicitly opted-in all four).
    D3 of the CS-21 locks (palette-helper invocation site) would
    extend to a third caller. Affected: `node_styles_dialog
    :_on_colour_reset` + new test pinning the picked-index
-   semantics. Reasoning level: **medium**.
+   semantics. Reasoning level: **medium**.~~ ✅ **Resolved in
+   Phase 4av (CS-74 polish item #2).** `_on_colour_reset` now
+   delegates to `node_styles.pick_default_color(self._graph)`
+   with defensive fallback to `_UNIVERSAL_DEFAULTS["color"]` if
+   the picker raises. CS-21 D3 grew from two to three callers;
+   helper itself unchanged. Pinned by
+   `TestNodeStylesDialogColourResetPalettePhase4av` (5
+   sentinels including picker-raise fallback + deterministic
+   over-graph-state idempotency).
 
-3. 🟢 **Keyboard navigation through the Combobox not bound
+3. ~~🟢 **Keyboard navigation through the Combobox not bound
    (Claude-surfaced, Phase 4au artifact).** The "walk every
    node" workflow that motivated the dialog still requires a
    mouse click on the Combobox dropdown to step through nodes.
@@ -4787,9 +4800,21 @@ explicitly opted-in all four).
    accessibility sub-batch. Affected: `node_styles_dialog
    .NodeStylesDialog.__init__` (binding setup) +
    `_step_combobox_selection(delta)` helper + tests. Reasoning
-   level: **medium**.
+   level: **medium**.~~ ✅ **Resolved in Phase 4av (CS-74
+   polish item #3).** `<Control-Down>` / `<Control-Up>` bound
+   on the Toplevel (Ctrl modifier — avoids conflicting with
+   Combobox-internal arrow nav, fires regardless of focused
+   descendant). New helpers
+   `_on_keyboard_step_next` / `_on_keyboard_step_prev` /
+   `_step_combobox_selection(delta)` clamp at list ends (no
+   wrap) and route through `_select_node` so the refresh path
+   is identical to a mouse selection. Pinned by
+   `TestNodeStylesDialogKeyboardNavPhase4av` (8 sentinels). The
+   broader USER-FLAGGED keyboard-shortcuts umbrella stays
+   open — this is one shortcut in one dialog, not a global
+   convention.
 
-4. 🟢 **Y-axis row always built regardless of selected
+4. ~~🟢 **Y-axis row always built regardless of selected
    NodeType (Claude-surfaced, Phase 4au artifact, cross-tab
    readiness).** On UVVisTab today this is harmless — every
    NodeType the dropdown lists (UVVIS / BASELINE / NORMALISED /
@@ -4808,7 +4833,21 @@ explicitly opted-in all four).
    the second tab adopts the dialog. Affected:
    `node_styles_dialog._build_y_axis_row` + `_select_node`
    gain a state-update branch. Reasoning level: **medium**
-   (per sub-batch) — bundles with cross-tab adoption phases.
+   (per sub-batch) — bundles with cross-tab adoption phases.~~
+   ✅ **Resolved in Phase 4av (CS-74 polish item #4).** Option
+   (b) chosen — `_build_y_axis_row` stores the Combobox on
+   `self._y_axis_combobox`; new
+   `_update_y_axis_row_state(node_type)` called from
+   `_select_node` flips both the Combobox state and the ∀
+   button state based on whether the selected NodeType is in
+   `_Y_AXIS_VISIBLE_NODETYPES`. Visual no-op on UVVisTab today;
+   load-bearing when cross-tab adoption lands. Incidentally
+   fixes a latent bug where `_set_universal_disabled(False)`
+   would leave the readonly y_axis Combobox in `tk.NORMAL` —
+   the guard re-asserts `"readonly"`. Pinned by
+   `TestNodeStylesDialogYAxisGuardPhase4av` (8 sentinels;
+   `NodeType.TDDFT` used as the non-Y-routable proxy until
+   cross-tab adoption lands real test subjects).
 
 5. 🟡 **USER-FLAGGED Accessibility features umbrella**
    continues. Cross-ref Phase 4ao friction #1. The keyboard-
@@ -4831,8 +4870,117 @@ explicitly opted-in all four).
 
 9. 🟡 **USER-FLAGGED Keyboard shortcuts — first batch**
    continues. Cross-ref Phase 4ao friction #7. Pairs with
-   the accessibility umbrella and with Phase 4au friction #3
-   above. Reasoning level: **medium**.
+   the accessibility umbrella; the dialog-scoped first
+   instance landed in Phase 4av item #3 (above, resolved),
+   but the global convention + discoverability is still open
+   (cross-ref Phase 4av friction #1 below). Reasoning level:
+   **medium**.
+
+### Friction points carried forward from Phase 4av
+
+These are concrete obstacles the next Phase 4 session will hit.
+Phase 4av landed the CS-74 polish bundle — four Claude-surfaced
+items elevated from the Phase 4au step-5 elicitation (all
+USER-CONFIRMED for inclusion, including item #2 which carried a
+small CS-21 D3 lock relaxation). 29 net new tests across four
+new TestCase classes (8 + 5 + 8 + 8 sentinels). 1567 tests, all
+green (1538 baseline + 29 new). No new CS number — every item
+composes under the CS-74 umbrella. PTMG_FORMAT_VERSION
+unchanged. Three commits + this bookkeeping.
+
+1. 🟢 **Keyboard-shortcut discoverability (Claude-surfaced,
+   Phase 4av artifact).** The new `<Control-Down>` /
+   `<Control-Up>` Combobox-stepping bindings (Phase 4av item
+   #3) are invisible to users — no tooltip, no menu hint, no
+   on-screen indicator. A new user walking the dialog would
+   never discover them. Options: (a) a single-line hint label
+   below the Combobox ("Ctrl+↑/↓ to step"), (b) a Tooltip
+   (CS-42) on the Combobox itself, (c) defer to whatever
+   unified discoverability convention lands with the broader
+   USER-FLAGGED keyboard-shortcuts first batch (Phase 4ah
+   carry-forward) — that batch will need a convention anyway
+   and a one-off here would drift. Pairs naturally with the
+   Accessibility umbrella's keyboard-shortcuts sub-axis.
+   Affected: `node_styles_dialog.NodeStylesDialog._build_combobox`
+   (header area). Reasoning level: **low** if standalone,
+   **medium** if bundled into the global convention pass.
+
+2. 🟢 **"Reset" button label semantics changed silently
+   (Claude-surfaced, Phase 4av artifact).** Phase 4av item #2
+   changed the colour Reset behaviour from "back to constant
+   default" to "next palette colour" — but the button still
+   reads "Reset". A user familiar with CS-05's snapshot-revert
+   semantics (where Reset means "back to what it was at dialog
+   open") will be surprised. Options: (a) keep "Reset" + add a
+   Tooltip (CS-42) clarifying "next palette colour", (b)
+   relabel to "↻ Palette" or "Pick", (c) two buttons — a
+   "Reset" that writes `_UNIVERSAL_DEFAULTS["color"]` and a
+   "Pick" that calls `pick_default_color`. UX nit; the
+   functional change is correct. Affected:
+   `node_styles_dialog._build_colour_row` (label text +
+   optional Tooltip wiring). Reasoning level: **low**.
+
+3. 🟢 **`_set_universal_disabled` readonly-Combobox latent bug
+   (Claude-surfaced, Phase 4av artifact).** Phase 4av item #4's
+   `_update_y_axis_row_state` incidentally fixed the readonly-
+   preservation bug for the y_axis Combobox by explicitly
+   re-asserting `state="readonly"` on re-enable. The root bug
+   in `_set_universal_disabled(False)` is unfixed: the walk
+   indiscriminately sets `state=tk.NORMAL` on every child,
+   which would put any future readonly `ttk.Combobox` added to
+   the universal section into free-text-entry mode. Currently
+   only the y_axis row exposes the bug, and it's masked by the
+   new guard. Small refactor: detect `ttk.Combobox` widgets in
+   `_iter_widgets` and use `"readonly"` for them. Pairs with
+   any future readonly-Combobox row addition. Affected:
+   `node_styles_dialog.NodeStylesDialog._set_universal_disabled`.
+   Reasoning level: **low**.
+
+4. 🟢 **State glyph doesn't surface NodeState.DISCARDED
+   (Claude-surfaced, Phase 4av artifact).** `_state_glyph_for`
+   uses a binary check mirroring `scan_tree_widget` exactly —
+   any non-COMMITTED state renders as `⋯`, including DISCARDED.
+   Discarded nodes shouldn't appear in the renderable list (host
+   enumeration filters them out and the dialog refreshes via the
+   six-event dispatch from CS-72), but if one ever leaks via a
+   race against NODE_DISCARDED, it would surface as a provisional
+   node. A defensive third glyph (e.g. `🗑`) would distinguish.
+   Probably tiny; tracking against the broader question of what
+   NodeState values the dialog should intentionally render vs.
+   defensively render. Affected:
+   `node_styles_dialog.NodeStylesDialog._state_glyph_for` (move
+   from binary to three-way) + the matching test in
+   `TestNodeStylesDialogStateBadgePhase4av`. Reasoning level:
+   **low**.
+
+5. 🟡 **USER-FLAGGED Accessibility features umbrella**
+   continues. Cross-ref Phase 4ao friction #1. Keyboard-
+   shortcuts sub-axis advanced one rung by Phase 4av item #3
+   (one dialog-scoped shortcut, no global convention). Pairs
+   with Phase 4av friction #1 (discoverability) which should
+   probably land before the next shortcut bundle. Reasoning
+   level: **high** for the first design pass, **medium** for
+   individual sub-batches.
+
+6. 🟡 **USER-FLAGGED Axis nomenclature rename** continues.
+   Cross-ref Phase 4ao friction #4. Massive cross-codebase
+   rename. Reasoning level: **extra-high**.
+
+7. 🟡 **USER-FLAGGED Rich-text axis labels (mathtext)**
+   continues. Cross-ref Phase 4ao friction #5. Reasoning
+   level: **medium**.
+
+8. 🟡 **USER-FLAGGED External-output plot style presets**
+   continues. Cross-ref Phase 4ao friction #6. User has
+   reference Jupyter notebook code (paths TBD at session
+   start). Reasoning level: **high**.
+
+9. 🟡 **USER-FLAGGED Keyboard shortcuts — first batch**
+   continues. Cross-ref Phase 4ao friction #7. Pairs with the
+   accessibility umbrella + Phase 4av friction #1
+   (discoverability). The first dialog-scoped shortcut shipped
+   in Phase 4av item #3; a global convention is still open.
+   Reasoning level: **medium**.
 
 ---
 
@@ -5049,7 +5197,7 @@ the resolving phase + commit SHA appended to the row.
 
 ---
 
-*Document version: 1.46 — May 2026*
+*Document version: 1.47 — May 2026*
 *1.1: Known Bugs register added 2026-04-27 after Phase 4b manual testing.*
 *1.2: Phase 4c — baseline correction lands; B-001 / B-003 / B-004
 resolved; Phase 4c friction points logged.*

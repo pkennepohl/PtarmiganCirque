@@ -11345,9 +11345,115 @@ USER-CONFIRMED to register entries)
 All four documented in BACKLOG's "Friction points carried
 forward from Phase 4au" section.
 
+### Phase 4av polish-bundle additions (no new CS, CS-21 D3 relaxed)
+
+Four Claude-surfaced items from the Phase 4au step-5 elicitation
+landed as a unified CS-74 follow-through. No new component
+number; no CS-74 lock changes (D1–D7 unchanged). One small CS-21
+D3 lock relaxation: `node_styles.pick_default_color`'s call-site
+list grew from two to three (the helper itself is unchanged).
+
+* **Item #1 — Combobox state-badge prefix.** `_combobox_label_for`
+  now prefixes a NodeState glyph: `f"{glyph} {label} ({TYPE})"`.
+  Glyph from the new `_state_glyph_for(state)` static — `🔒`
+  for COMMITTED, `⋯` for any other state (binary match on
+  `scan_tree_widget` line 776). Disambiguates two siblings
+  sharing a label but differing in state. The reverse lookup
+  `_node_id_for_display` round-trips through the same helper so
+  no separate parsing layer is needed.
+
+* **Item #2 — Palette-picked colour Reset.** `_on_colour_reset`
+  now delegates to `node_styles.pick_default_color(self._graph)`
+  instead of writing the constant `_UNIVERSAL_DEFAULTS["color"]`.
+  Reset rotates through `SPECTRUM_PALETTE` based on the current
+  renderable scope rather than flattening every node to palette
+  index 0. Defensive fallback to the universal default if the
+  picker raises (logged + swallowed). CS-21 D3 lock relaxation:
+  palette-helper invocation site grows from two callers to three.
+
+* **Item #3 — Keyboard Combobox navigation.** `<Control-Down>` /
+  `<Control-Up>` bindings on the Toplevel step the Combobox
+  forward / backward by one. Ctrl modifier so the bindings
+  don't shadow Tk's built-in Combobox arrow behaviour when the
+  Combobox itself holds focus; bound on the Toplevel so they
+  fire regardless of which descendant has focus. Three new
+  helpers: `_on_keyboard_step_next` (event handler returning
+  `"break"`), `_on_keyboard_step_prev`, `_step_combobox_selection
+  (delta)` (clamps at list ends, no wrap; routes through
+  `_select_node` so the refresh path is identical to a mouse
+  Combobox selection).
+
+* **Item #4 — Y-axis NodeType guard.** Y-axis row is built
+  unconditionally, then dynamically state-gated by the new
+  `_update_y_axis_row_state(node_type)` whenever the selected
+  node's NodeType falls outside `_Y_AXIS_VISIBLE_NODETYPES`.
+  Visual no-op on UVVisTab today (every dropdown NodeType
+  passes); load-bearing when Compare / XANES / EXAFS adopt the
+  dialog and start listing non-Y-routable NodeTypes (TDDFT /
+  FEFF_PATHS / XANES / EXAFS / DEGLITCHED / AVERAGED /
+  BXAS_RESULT). Two new helpers: `_node_type_for(node_id)
+  -> NodeType` (resolves from local cache, falls back to graph),
+  `_update_y_axis_row_state(node_type)` (flips both the Combobox
+  state and the ∀ button state). Stored Combobox handle:
+  `self._y_axis_combobox`. **Incidentally fixes a latent bug**
+  where `_set_universal_disabled(False)` would leave the
+  readonly y_axis Combobox in `tk.NORMAL` (free-text-entry
+  mode) — the guard re-asserts `"readonly"` on every enable.
+
+### Phase 4av test sentinels (29 net new)
+
+* `TestNodeStylesDialogStateBadgePhase4av` (8) —
+  `_state_glyph_for` binary check on both states; committed +
+  provisional combobox label format; same-label different-state
+  sibling disambiguation; round-trip through
+  `_node_id_for_display`; missing-id fallback (no glyph);
+  exact prefix shape (glyph + space).
+* `TestNodeStylesDialogColourResetPalettePhase4av` (5) — Reset
+  writes a `SPECTRUM_PALETTE` member; matches
+  `pick_default_color(graph)` exactly at reset time; no-op when
+  no node selected; idempotent over consecutive calls
+  (deterministic over graph state, not call count); fallback to
+  universal default when picker raises.
+* `TestNodeStylesDialogKeyboardNavPhase4av` (8) — Ctrl+Down
+  steps forward; Ctrl+Up steps backward; clamp at end (no
+  wrap); clamp at start (no wrap); empty-list no-op;
+  widget-refresh path identical to mouse Combobox selection;
+  `_combobox_var` updates on step (glyph-prefixed format);
+  bindings registered on Toplevel.
+* `TestNodeStylesDialogYAxisGuardPhase4av` (8) — combobox
+  reference stored on self; enabled for UVVIS selection;
+  disabled for TDDFT (non-Y-routable proxy); re-enabled after
+  switching back to UVVIS; readonly re-asserted on the
+  incidental-bug path; ∀ button disabled when callback unwired;
+  None NodeType disables; `_node_type_for` resolves from local
+  cache + graph fallback.
+
+**1567 tests total, all green (1538 Phase 4au baseline + 29
+Phase 4av net new).**
+
+### Phase 4av landing
+
+Three code commits on `redesign/phase-4av-polish-bundle`, plus
+this bookkeeping commit:
+
+1. `2028ff1` — `node_styles_dialog.py` module changes (state
+   glyph prefix; palette-picked Reset; Ctrl+Arrow bindings;
+   Y-axis guard + ancillary helpers).
+2. `dea7b03` — `test_node_styles_dialog.py` + `test_uvvis_tab.py`:
+   29 new sentinels across four new TestCase classes + 9
+   existing-test string-pin updates (6 in
+   `TestNodeStylesDialogComboboxPhase4au`, 2 in
+   `TestNodeStylesDialogRefreshNodeListPhase4au`, 1 in
+   `TestUVVisTabNodeStylesDialogPhase4au::
+   test_NODE_ADDED_combobox_grows`).
+3. Bookkeeping (this entry).
+
+PTMG_FORMAT_VERSION unchanged — no schema keys added or
+modified.
+
 ---
 
-*Document version: 1.47 — May 2026*
+*Document version: 1.48 — May 2026*
 *1.1: CS-13 implementation notes added in Phase 4a.*
 *1.2: CS-14 Plot Settings Dialog added in Phase 4b.*
 *1.3: CS-15 UV/Vis Baseline Correction + CS-04 implementation
@@ -12740,5 +12846,39 @@ Claude-surfaced friction items elevated to register entries
 at step 5 (user opted-in all four): Combobox state-badge
 prefix, palette-picked colour Reset, keyboard Combobox
 navigation, Y-axis row NodeType guard (cross-tab readiness).*
+*1.48: Phase 4av polish-bundle additions landed under the CS-74
+umbrella (no new CS, one small CS-21 D3 relaxation —
+palette-helper invocation site grows from two callers to
+three). Four Claude-surfaced items from the Phase 4au step-5
+elicitation land together: (#1) Combobox display string
+prefixes the NodeState glyph (🔒 committed / ⋯ provisional)
+matching scan_tree_widget exactly via the new
+`_state_glyph_for` static; (#2) `_on_colour_reset` delegates to
+`node_styles.pick_default_color(self._graph)` so Reset rotates
+through SPECTRUM_PALETTE based on current renderable scope
+rather than flattening to palette index 0; (#3) `<Control-Down>`
+/ `<Control-Up>` bindings on the Toplevel step the Combobox
+without mouse interaction (clamp at ends, no wrap; route
+through `_select_node` so refresh path matches mouse
+selection); (#4) Y-axis row dynamically state-gated by the new
+`_update_y_axis_row_state(node_type)` based on whether the
+selected NodeType is in `_Y_AXIS_VISIBLE_NODETYPES` — no-op on
+UVVisTab today (every dropdown type passes), load-bearing on
+cross-tab adoption. Item #4 incidentally fixes a latent
+`_set_universal_disabled(False)` bug that would have left
+readonly ttk.Combobox children in tk.NORMAL mode. 29 net new
+tests across four new TestCase classes
+(StateBadge / ColourResetPalette / KeyboardNav / YAxisGuard,
+8 + 5 + 8 + 8 sentinels) + 9 existing-test string-pin updates
+for the new Combobox format. 1567 tests, all green (1538 +
+29 new). Three code commits: (1) `2028ff1` module changes;
+(2) `dea7b03` 29 sentinels + 9 string-pin updates; plus
+bookkeeping (this entry). PTMG_FORMAT_VERSION unchanged.
+Four new Claude-surfaced friction items elevated to BACKLOG's
+"Friction points carried forward from Phase 4av" section
+(discoverability for Ctrl+Arrow / "Reset" label semantics
+shift / `_set_universal_disabled` root readonly bug /
+DISCARDED glyph distinguishability) — all low-reasoning
+follow-ups.*
 *To be updated as Open Questions are resolved and new components
 are specified.*

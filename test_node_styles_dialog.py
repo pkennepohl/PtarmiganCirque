@@ -193,15 +193,16 @@ class TestNodeStylesDialogComboboxPhase4au(unittest.TestCase):
         # Tk returns a tuple-like; coerce to list of strings
         values = list(values)
         self.assertEqual(len(values), 3)
-        self.assertIn("spec-A (UVVIS)", values)
-        self.assertIn("base-B (BASELINE)", values)
-        self.assertIn("deriv-C (SECOND_DERIVATIVE)", values)
+        # Phase 4av item #1: state glyph prefix (🔒 committed / ⋯ provisional).
+        self.assertIn("🔒 spec-A (UVVIS)", values)
+        self.assertIn("🔒 base-B (BASELINE)", values)
+        self.assertIn("🔒 deriv-C (SECOND_DERIVATIVE)", values)
 
     def test_initial_selection_is_first_node(self):
         self.assertEqual(self.dlg._node_id, "a")
         self.assertEqual(
             self.dlg._combobox_var.get(),
-            "spec-A (UVVIS)",
+            "🔒 spec-A (UVVIS)",
         )
 
     def test_initial_widgets_seeded_from_first_node(self):
@@ -215,7 +216,7 @@ class TestNodeStylesDialogComboboxPhase4au(unittest.TestCase):
         )
 
     def test_combobox_select_switches_active_node(self):
-        self.dlg._combobox_var.set("base-B (BASELINE)")
+        self.dlg._combobox_var.set("🔒 base-B (BASELINE)")
         self.dlg._on_combobox_selected()
         self.assertEqual(self.dlg._node_id, "b")
         self.assertAlmostEqual(
@@ -228,7 +229,7 @@ class TestNodeStylesDialogComboboxPhase4au(unittest.TestCase):
         )
 
     def test_combobox_select_updates_label_entry(self):
-        self.dlg._combobox_var.set("base-B (BASELINE)")
+        self.dlg._combobox_var.set("🔒 base-B (BASELINE)")
         self.dlg._on_combobox_selected()
         self.assertEqual(
             str(self.dlg._control_vars["label"].get()),
@@ -240,7 +241,7 @@ class TestNodeStylesDialogComboboxPhase4au(unittest.TestCase):
         original_linewidth = float(
             self.dlg._control_vars["linewidth"].get()
         )
-        self.dlg._combobox_var.set("spec-A (UVVIS)")
+        self.dlg._combobox_var.set("🔒 spec-A (UVVIS)")
         self.dlg._on_combobox_selected()
         self.assertEqual(self.dlg._node_id, "a")
         self.assertAlmostEqual(
@@ -504,7 +505,7 @@ class TestNodeStylesDialogRefreshNodeListPhase4au(unittest.TestCase):
         self.graph.add_node(n_c)
         self.dlg.refresh_node_list([self.n_a, self.n_b, n_c])
         values = list(self.dlg._combobox.cget("values"))
-        self.assertIn("norm-C (NORMALISED)", values)
+        self.assertIn("🔒 norm-C (NORMALISED)", values)
 
     def test_refresh_preserves_current_selection_by_id(self):
         # Switch to node B, then refresh — selection should stay B.
@@ -514,7 +515,7 @@ class TestNodeStylesDialogRefreshNodeListPhase4au(unittest.TestCase):
         self.dlg.refresh_node_list([self.n_a, self.n_b, n_c])
         self.assertEqual(self.dlg._node_id, "b")
         self.assertEqual(
-            self.dlg._combobox_var.get(), "base-B (BASELINE)",
+            self.dlg._combobox_var.get(), "🔒 base-B (BASELINE)",
         )
 
     def test_refresh_when_selected_removed_falls_back_to_first(self):
@@ -678,6 +679,424 @@ class TestNodeStylesDialogConstantsMirrorPhase4au(unittest.TestCase):
             "y_axis",
         )
         self.assertEqual(self.nsd._UNIVERSAL_KEYS, expected)
+
+
+# ════════════════════════════════════════════════════════════════════
+# Phase 4av polish-bundle sentinels (CS-74 follow-through, no new CS).
+# Four Claude-surfaced items from the Phase 4au friction section:
+#   #1 Combobox state-badge prefix
+#   #2 Palette-picked colour Reset (CS-21 D3 third caller)
+#   #3 <Control-Down>/<Control-Up> Combobox stepping
+#   #4 Y-axis row NodeType guard (load-bearing on cross-tab adoption)
+# ════════════════════════════════════════════════════════════════════
+
+
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestNodeStylesDialogStateBadgePhase4av(unittest.TestCase):
+    """Item #1: NodeState glyph prefixes the Combobox display string."""
+
+    @classmethod
+    def setUpClass(cls):
+        import node_styles_dialog
+        cls.mod = node_styles_dialog
+        cls.NodeStylesDialog = node_styles_dialog.NodeStylesDialog
+
+    def setUp(self):
+        self.mod._open_dialogs.clear()
+        self.host = tk.Frame(_root)
+        self.graph = ProjectGraph()
+        self.committed = _data("c", NodeType.UVVIS, "shared",
+                               {"color": "#ff0000"})
+        self.provisional = DataNode(
+            id="p", type=NodeType.UVVIS,
+            arrays={"x": np.arange(3)}, metadata={},
+            label="shared", state=NodeState.PROVISIONAL, style={},
+        )
+        self.graph.add_node(self.committed)
+        self.graph.add_node(self.provisional)
+        self.dlg = self.NodeStylesDialog(
+            self.host, self.graph,
+            [self.committed, self.provisional],
+        )
+
+    def tearDown(self):
+        try:
+            self.dlg.destroy()
+        except Exception:
+            pass
+        self.mod._open_dialogs.clear()
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    def test_state_glyph_for_committed_is_lock(self):
+        self.assertEqual(
+            self.NodeStylesDialog._state_glyph_for(NodeState.COMMITTED),
+            "🔒",
+        )
+
+    def test_state_glyph_for_provisional_is_ellipsis(self):
+        self.assertEqual(
+            self.NodeStylesDialog._state_glyph_for(NodeState.PROVISIONAL),
+            "⋯",
+        )
+
+    def test_committed_node_combobox_label_prefixed_lock(self):
+        self.assertEqual(
+            self.dlg._combobox_label_for("c"),
+            "🔒 shared (UVVIS)",
+        )
+
+    def test_provisional_node_combobox_label_prefixed_ellipsis(self):
+        self.assertEqual(
+            self.dlg._combobox_label_for("p"),
+            "⋯ shared (UVVIS)",
+        )
+
+    def test_combobox_values_disambiguate_same_label_by_state(self):
+        # Both nodes share label "shared" — state glyph is what makes
+        # them visually distinguishable in the dropdown.
+        values = list(self.dlg._combobox.cget("values"))
+        self.assertIn("🔒 shared (UVVIS)", values)
+        self.assertIn("⋯ shared (UVVIS)", values)
+        self.assertEqual(len(values), 2)
+
+    def test_display_to_node_id_round_trips_through_glyph(self):
+        self.assertEqual(
+            self.dlg._node_id_for_display("⋯ shared (UVVIS)"), "p",
+        )
+        self.assertEqual(
+            self.dlg._node_id_for_display("🔒 shared (UVVIS)"), "c",
+        )
+
+    def test_missing_node_id_still_returns_sentinel(self):
+        # Removed node — defensive path returns "<missing>", not
+        # a glyph-prefixed string.
+        self.assertEqual(
+            self.dlg._combobox_label_for("nope"), "<missing>",
+        )
+
+    def test_label_format_starts_with_glyph_then_space(self):
+        # The leading character must be the glyph and the second must
+        # be a space — pins the exact prefix shape for downstream
+        # parsing / regex-driven UI tooling.
+        for display in self.dlg._combobox.cget("values"):
+            self.assertIn(display[0], ("🔒", "⋯"))
+            self.assertEqual(display[1], " ")
+
+
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestNodeStylesDialogColourResetPalettePhase4av(unittest.TestCase):
+    """Item #2: _on_colour_reset delegates to pick_default_color
+    (CS-21 D3 third caller)."""
+
+    @classmethod
+    def setUpClass(cls):
+        import node_styles_dialog
+        import node_styles
+        cls.mod = node_styles_dialog
+        cls.NodeStylesDialog = node_styles_dialog.NodeStylesDialog
+        cls.node_styles = node_styles
+
+    def setUp(self):
+        self.mod._open_dialogs.clear()
+        self.host = tk.Frame(_root)
+        self.graph = ProjectGraph()
+        # Pre-existing nodes consume palette slots — the dialog's
+        # Reset must land at a non-zero palette index.
+        self.n_a = _data("a", NodeType.UVVIS, "spec-A",
+                         {"color": "#abcdef"})
+        self.n_b = _data("b", NodeType.BASELINE, "base-B",
+                         {"color": "#abcdef"})
+        self.graph.add_node(self.n_a)
+        self.graph.add_node(self.n_b)
+        self.dlg = self.NodeStylesDialog(
+            self.host, self.graph, [self.n_a, self.n_b],
+        )
+
+    def tearDown(self):
+        try:
+            self.dlg.destroy()
+        except Exception:
+            pass
+        self.mod._open_dialogs.clear()
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    def test_reset_writes_palette_member(self):
+        # Reset must write a colour drawn from SPECTRUM_PALETTE,
+        # not the constant _UNIVERSAL_DEFAULTS["color"].
+        self.dlg._on_colour_reset()
+        new_colour = self.graph.get_node("a").style["color"]
+        self.assertIn(new_colour, self.node_styles.SPECTRUM_PALETTE)
+
+    def test_reset_picks_via_palette_helper(self):
+        # The picked colour must match what
+        # node_styles.pick_default_color(graph) returns at reset time.
+        expected = self.node_styles.pick_default_color(self.graph)
+        self.dlg._on_colour_reset()
+        self.assertEqual(
+            self.graph.get_node("a").style["color"], expected,
+        )
+
+    def test_reset_no_node_selected_is_noop(self):
+        # Empty list → no selection → reset must not raise.
+        host2 = tk.Frame(_root)
+        try:
+            dlg = self.NodeStylesDialog(host2, self.graph, [])
+            dlg._on_colour_reset()
+            dlg.destroy()
+        finally:
+            host2.destroy()
+
+    def test_reset_advances_when_called_repeatedly(self):
+        # pick_default_color counts existing nodes; if Reset is
+        # called twice consecutively without intervening graph
+        # changes the colour stays at the same palette index (the
+        # picker is deterministic over graph state, not call count).
+        # This is the correct behaviour — pinning it so a future
+        # refactor doesn't silently make Reset random.
+        self.dlg._on_colour_reset()
+        first = self.graph.get_node("a").style["color"]
+        self.dlg._on_colour_reset()
+        second = self.graph.get_node("a").style["color"]
+        self.assertEqual(first, second)
+
+    def test_reset_falls_back_when_picker_raises(self):
+        # Defensive: if pick_default_color blows up, Reset still
+        # writes a colour (universal default fallback) rather than
+        # leaving the row unwritten.
+        original = self.mod.pick_default_color
+
+        def _boom(_g):
+            raise RuntimeError("picker exploded")
+        self.mod.pick_default_color = _boom  # type: ignore[assignment]
+        try:
+            self.dlg._on_colour_reset()
+        finally:
+            self.mod.pick_default_color = original  # type: ignore[assignment]
+        self.assertEqual(
+            self.graph.get_node("a").style["color"],
+            self.mod._UNIVERSAL_DEFAULTS["color"],
+        )
+
+
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestNodeStylesDialogKeyboardNavPhase4av(unittest.TestCase):
+    """Item #3: <Control-Down>/<Control-Up> step Combobox without
+    mouse; clamp at list ends (no wrap)."""
+
+    @classmethod
+    def setUpClass(cls):
+        import node_styles_dialog
+        cls.mod = node_styles_dialog
+        cls.NodeStylesDialog = node_styles_dialog.NodeStylesDialog
+
+    def setUp(self):
+        self.mod._open_dialogs.clear()
+        self.host = tk.Frame(_root)
+        self.graph = ProjectGraph()
+        self.n_a = _data("a", NodeType.UVVIS, "A")
+        self.n_b = _data("b", NodeType.BASELINE, "B")
+        self.n_c = _data("c", NodeType.NORMALISED, "C")
+        for n in (self.n_a, self.n_b, self.n_c):
+            self.graph.add_node(n)
+        self.dlg = self.NodeStylesDialog(
+            self.host, self.graph,
+            [self.n_a, self.n_b, self.n_c],
+        )
+
+    def tearDown(self):
+        try:
+            self.dlg.destroy()
+        except Exception:
+            pass
+        self.mod._open_dialogs.clear()
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    def test_control_down_steps_forward(self):
+        self.assertEqual(self.dlg._node_id, "a")
+        self.dlg._step_combobox_selection(+1)
+        self.assertEqual(self.dlg._node_id, "b")
+        self.dlg._step_combobox_selection(+1)
+        self.assertEqual(self.dlg._node_id, "c")
+
+    def test_control_up_steps_backward(self):
+        self.dlg._select_node("c")
+        self.dlg._step_combobox_selection(-1)
+        self.assertEqual(self.dlg._node_id, "b")
+        self.dlg._step_combobox_selection(-1)
+        self.assertEqual(self.dlg._node_id, "a")
+
+    def test_step_past_end_clamps_no_wrap(self):
+        # Step from c (last) forward — must stay at c, not wrap to a.
+        self.dlg._select_node("c")
+        self.dlg._step_combobox_selection(+1)
+        self.assertEqual(self.dlg._node_id, "c")
+
+    def test_step_past_start_clamps_no_wrap(self):
+        # At a (first), step backward — must stay at a.
+        self.assertEqual(self.dlg._node_id, "a")
+        self.dlg._step_combobox_selection(-1)
+        self.assertEqual(self.dlg._node_id, "a")
+
+    def test_step_with_empty_list_is_noop(self):
+        host2 = tk.Frame(_root)
+        try:
+            dlg = self.NodeStylesDialog(host2, self.graph, [])
+            self.assertIsNone(dlg._node_id)
+            dlg._step_combobox_selection(+1)
+            self.assertIsNone(dlg._node_id)
+            dlg._step_combobox_selection(-1)
+            self.assertIsNone(dlg._node_id)
+            dlg.destroy()
+        finally:
+            host2.destroy()
+
+    def test_step_refreshes_universal_section_widgets(self):
+        # Stepping must drive the same widget refresh path as a
+        # mouse Combobox selection — _select_node is the join point.
+        self.graph.set_style("b", {"linewidth": 4.2})
+        self.dlg._step_combobox_selection(+1)
+        self.assertAlmostEqual(
+            float(self.dlg._control_vars["linewidth"].get()),
+            4.2, places=5,
+        )
+
+    def test_combobox_var_updates_on_step(self):
+        self.dlg._step_combobox_selection(+1)
+        self.assertEqual(
+            self.dlg._combobox_var.get(), "🔒 B (BASELINE)",
+        )
+
+    def test_control_arrow_bindings_present_on_toplevel(self):
+        # bind(...) returns a Tcl handler string; "" means unbound.
+        self.assertNotEqual(self.dlg.bind("<Control-Down>"), "")
+        self.assertNotEqual(self.dlg.bind("<Control-Up>"), "")
+
+
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestNodeStylesDialogYAxisGuardPhase4av(unittest.TestCase):
+    """Item #4: Y-axis row state-gated by selected NodeType.
+
+    On UVVisTab today the gate is a no-op (every dropdown NodeType
+    is Y-routable); becomes load-bearing on Compare / XANES / EXAFS
+    adoption. Tests use NodeType.TDDFT as a stand-in non-Y-routable
+    node to exercise the gating before that adoption lands.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import node_styles_dialog
+        cls.mod = node_styles_dialog
+        cls.NodeStylesDialog = node_styles_dialog.NodeStylesDialog
+
+    def setUp(self):
+        self.mod._open_dialogs.clear()
+        self.host = tk.Frame(_root)
+        self.graph = ProjectGraph()
+        self.n_uvvis = _data("u", NodeType.UVVIS, "uv")
+        self.n_tddft = DataNode(
+            id="t", type=NodeType.TDDFT,
+            arrays={"x": np.arange(3)}, metadata={},
+            label="tddft", state=NodeState.COMMITTED, style={},
+        )
+        self.graph.add_node(self.n_uvvis)
+        self.graph.add_node(self.n_tddft)
+        self.dlg = self.NodeStylesDialog(
+            self.host, self.graph,
+            [self.n_uvvis, self.n_tddft],
+            on_apply_to_all=lambda _k, _v: None,
+        )
+
+    def tearDown(self):
+        try:
+            self.dlg.destroy()
+        except Exception:
+            pass
+        self.mod._open_dialogs.clear()
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    def test_y_axis_combobox_reference_stored_on_dialog(self):
+        self.assertIsNotNone(self.dlg._y_axis_combobox)
+
+    def test_y_axis_enabled_for_uvvis_selection(self):
+        # Initial selection is UVVIS — combobox must be readonly,
+        # ∀ button must be NORMAL (callback wired).
+        self.assertEqual(
+            str(self.dlg._y_axis_combobox.cget("state")), "readonly",
+        )
+        btn = self.dlg._apply_one_buttons["y_axis"]
+        self.assertEqual(str(btn.cget("state")), tk.NORMAL)
+
+    def test_y_axis_disabled_for_tddft_selection(self):
+        self.dlg._select_node("t")
+        self.assertEqual(
+            str(self.dlg._y_axis_combobox.cget("state")),
+            str(tk.DISABLED),
+        )
+        btn = self.dlg._apply_one_buttons["y_axis"]
+        self.assertEqual(str(btn.cget("state")), str(tk.DISABLED))
+
+    def test_y_axis_re_enabled_after_switching_back_to_uvvis(self):
+        # Switch to TDDFT (disable), then back to UVVIS (enable).
+        self.dlg._select_node("t")
+        self.dlg._select_node("u")
+        self.assertEqual(
+            str(self.dlg._y_axis_combobox.cget("state")), "readonly",
+        )
+
+    def test_y_axis_combobox_state_is_readonly_not_normal_when_enabled(self):
+        # Incidental bug fix: _set_universal_disabled(False) would
+        # leave the ttk.Combobox in "normal" (free-text-entry) mode.
+        # The guard pins it back to "readonly".
+        self.dlg._set_universal_disabled(True)
+        self.dlg._set_universal_disabled(False)
+        # _set_universal_disabled alone would now show "normal"; the
+        # guard must restore "readonly".
+        self.dlg._update_y_axis_row_state(NodeType.UVVIS)
+        self.assertEqual(
+            str(self.dlg._y_axis_combobox.cget("state")), "readonly",
+        )
+
+    def test_y_axis_apply_button_disabled_when_no_callback(self):
+        host2 = tk.Frame(_root)
+        try:
+            dlg = self.NodeStylesDialog(
+                host2, self.graph, [self.n_uvvis],
+                on_apply_to_all=None,
+            )
+            btn = dlg._apply_one_buttons["y_axis"]
+            self.assertEqual(str(btn.cget("state")), str(tk.DISABLED))
+            dlg.destroy()
+        finally:
+            host2.destroy()
+
+    def test_y_axis_disabled_when_node_type_resolution_fails(self):
+        # _update_y_axis_row_state called with None must disable.
+        self.dlg._update_y_axis_row_state(None)
+        self.assertEqual(
+            str(self.dlg._y_axis_combobox.cget("state")),
+            str(tk.DISABLED),
+        )
+
+    def test_node_type_for_helper_resolves_from_local_cache(self):
+        self.assertEqual(
+            self.dlg._node_type_for("u"), NodeType.UVVIS,
+        )
+        self.assertEqual(
+            self.dlg._node_type_for("t"), NodeType.TDDFT,
+        )
+        self.assertIsNone(self.dlg._node_type_for("nope"))
 
 
 if __name__ == "__main__":  # pragma: no cover
