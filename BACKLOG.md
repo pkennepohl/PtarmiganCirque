@@ -3900,6 +3900,7 @@ relevant subsequent Phase 4 session.**
    for the first design pass (scope decision + lock decisions
    span ~5 sub-axes), **normal** for individual sub-batches
    thereafter.
+   ✅ **Scope-locked Phase 4aw (CS-75).** Decomposed into four sub-axis-canonical rows (A / B / C / D) in the Phase 4q register table; implementation ladder Phase 4ax → 4ba. This friction item remains the canonical chain-collapse breadcrumb.
 
 3. ~~🟡 **USER-FLAGGED Modeless dialogs — drop `grab_set` from
    Plot Settings.** See the new canonical register entry
@@ -4032,6 +4033,7 @@ session.**
    canonical register entry "Accessibility features
    umbrella". Reasoning level: **high** for the first
    design pass, **medium** for individual sub-batches.
+   ✅ **Scope-locked Phase 4aw (CS-75).** Cross-ref Phase 4al friction #2 (canonical scope-lock record).
 
 3. ~~🟡 **USER-FLAGGED Modeless dialogs — drop `grab_set`
    from Plot Settings** continues. Cross-ref Phase 4al
@@ -4150,6 +4152,7 @@ relevant subsequent Phase 4 session.**
    lock decisions span ~5 sub-axes), **medium** for individual
    sub-batches thereafter (keyboard shortcuts, colour-blind
    palette, Escape-dismiss audit, font-scale).
+   ✅ **Scope-locked Phase 4aw (CS-75).** Cross-ref Phase 4al friction #2 (canonical scope-lock record).
 
 2. ~~🟡 **USER-FLAGGED Modeless dialogs — drop `grab_set` from
    Plot Settings** continues. Cross-ref Phase 4am friction #3.
@@ -4284,6 +4287,7 @@ the relevant subsequent Phase 4 session.**
    register entry "Accessibility features umbrella". Reasoning
    level: **high** for the first design pass, **medium** for
    individual sub-batches thereafter.
+   ✅ **Scope-locked Phase 4aw (CS-75).** Cross-ref Phase 4al friction #2 (canonical scope-lock record).
 
 2. 🟡 ~~**USER-FLAGGED Live-preview vs Apply button** continues.~~
    ✅ Resolved in Phase 4ap (CS-68). Cross-ref Phase 4ak friction
@@ -4412,6 +4416,7 @@ subsequent Phase 4 session.**
    continues. Cross-ref Phase 4ao friction #1. Reasoning
    level: **high** for the first design pass, **medium** for
    individual sub-batches thereafter.
+   ✅ **Scope-locked Phase 4aw (CS-75).** Cross-ref Phase 4al friction #2 (canonical scope-lock record).
 
 6. 🟡 **USER-FLAGGED Axis nomenclature rename** continues.
    Cross-ref Phase 4ao friction #4. Massive cross-codebase
@@ -4429,6 +4434,7 @@ subsequent Phase 4 session.**
 9. 🟡 **USER-FLAGGED Keyboard shortcuts — first batch**
    continues. Cross-ref Phase 4ao friction #7. Pairs with
    the accessibility umbrella. Reasoning level: **medium**.
+   ✅ **Subsumed Phase 4aw (CS-75) into Accessibility sub-axis C (Phase 4az candidate).** Cross-ref the new Phase 4aw friction item 13 above + canonical sub-axis C row in the Phase 4q register table.
 
 10. 🟢 ~~**`_plots_by_role` staleness even more reachable now
     (Claude-surfaced, Phase 4ap artifact).**~~ ✅ **Resolved
@@ -4861,6 +4867,7 @@ explicitly opted-in all four).
    shortcuts sub-axis pairs with Phase 4au friction #3 above.
    Reasoning level: **high** for the first design pass,
    **medium** for individual sub-batches.
+   ✅ **Scope-locked Phase 4aw (CS-75).** Cross-ref Phase 4al friction #2 (canonical scope-lock record).
 
 6. 🟡 **USER-FLAGGED Axis nomenclature rename** continues.
    Cross-ref Phase 4ao friction #4. Massive cross-codebase
@@ -4911,6 +4918,7 @@ unchanged. Three commits + this bookkeeping.
    Affected: `node_styles_dialog.NodeStylesDialog._build_combobox`
    (header area). Reasoning level: **low** if standalone,
    **medium** if bundled into the global convention pass.
+   ✅ **Folded into Phase 4ax sub-axis A bundle (CS-75 D6 — Tooltip-only discoverability convention).** Retroactive `attach_shortcut_tooltip` wire-up on the Phase 4av Ctrl+↑/↓ binding lands as part of the Phase 4ax accessibility.py module shell + Escape-dismiss audit phase.
 
 2. 🟢 **"Reset" button label semantics changed silently
    (Claude-surfaced, Phase 4av artifact).** Phase 4av item #2
@@ -4968,6 +4976,7 @@ unchanged. Three commits + this bookkeeping.
    probably land before the next shortcut bundle. Reasoning
    level: **high** for the first design pass, **medium** for
    individual sub-batches.
+   ✅ **Scope-locked Phase 4aw (CS-75).** Cross-ref Phase 4al friction #2 (canonical scope-lock record).
 
 6. 🟡 **USER-FLAGGED Axis nomenclature rename** continues.
    Cross-ref Phase 4ao friction #4. Massive cross-codebase
@@ -4988,6 +4997,146 @@ unchanged. Three commits + this bookkeeping.
    (discoverability). The first dialog-scoped shortcut shipped
    in Phase 4av item #3; a global convention is still open.
    Reasoning level: **medium**.
+
+### Friction points carried forward from Phase 4aw
+
+These are concrete obstacles the next Phase 4 session will hit.
+Phase 4aw was a **scope-deciding session** — the first scope-only
+phase in the Phase 4 series. Zero production code, zero test
+deltas (1567 tests, all green — Phase 4av baseline unchanged).
+Two doc commits + this bookkeeping commit. The canonical
+"Accessibility features (USER-FLAGGED, Phase 4al)" BACKLOG row
+is now decomposed into four implementable sub-axis-canonical
+rows (A Escape-dismiss audit, B colour-blind palette opt-in,
+C keyboard shortcuts first batch, D font-scale multiplier) + three
+deferred stub rows (E screen-reader, F high-contrast / dark
+mode, G dyslexia-friendly font). Full lock content lives in
+COMPONENTS.md CS-75 (D1–D7). Phase ladder locked: 4ax (Escape +
+Ctrl+↑/↓ Tooltip) → 4ay (palette) → 4az (keyboard) → 4ba
+(font-scale). User had nothing to add at step 5 elicitation.
+**Do not fix until the relevant subsequent Phase 4 session.**
+
+1. 🟡 **USER-FLAGGED Accessibility sub-axis A — Escape-dismiss
+   audit (Phase 4ax candidate, NEXT-UP).** Scope locked in
+   Phase 4aw (CS-75 D3 / D6); see canonical sub-axis A row in
+   the Phase 4q register table. First-deliverable Phase 4ax: new
+   `accessibility.py` module shell hosting
+   `bind_escape_to_close(toplevel, handler)` +
+   `attach_shortcut_tooltip(widget, text)` recipe entry points,
+   audit inventory of every `tk.Toplevel` construction site
+   captured in the Phase 4ax decision lock, bundles Phase 4av
+   friction #1 (Ctrl+↑/↓ Tooltip on `NodeStylesDialog`).
+   Reasoning level: **medium**.
+
+2. 🟡 **USER-FLAGGED Accessibility sub-axis B — Colour-blind
+   palette opt-in (Phase 4ay candidate).** Scope locked in
+   Phase 4aw (CS-75 D2); see canonical sub-axis B row in the
+   Phase 4q register table. First-deliverable Phase 4ay: new
+   `node_styles.SPECTRUM_PALETTE_NAME` constant +
+   `active_palette()` getter + Wong 2011 deuteranopia-safe
+   8-colour palette + new "Accessibility" tab in
+   `PlotConfigDialog` (CS-75 D1 first surface). CS-21 D3 lock
+   additive relaxation. Reasoning level: **medium**.
+
+3. 🟡 **USER-FLAGGED Accessibility sub-axis C — Keyboard
+   shortcuts first batch + KEYBINDINGS.md (Phase 4az
+   candidate).** Scope locked in Phase 4aw (CS-75 D3 / D6); see
+   canonical sub-axis C row in the Phase 4q register table.
+   Subsumes the Phase 4af "Keyboard shortcuts whole-interface
+   evaluation pass" canonical row (annotated inline with the
+   subsumption note in commit 2). First batch candidates:
+   Ctrl+G group, Ctrl+Shift+G ungroup, Delete discard, F2
+   rename. Per-component `bind` pattern (CS-74 precedent), new
+   `KEYBINDINGS.md` sister doc. Reasoning level: **medium**.
+
+4. 🟡 **USER-FLAGGED Accessibility sub-axis D — Font-scale
+   multiplier (Phase 4ba candidate).** Scope locked in Phase
+   4aw (CS-75 D4); see canonical sub-axis D row in the Phase 4q
+   register table. First-deliverable Phase 4ba: new
+   `accessibility.scale_font_size` helper +
+   `accessibility.font_scale: float` _USER_DEFAULTS key + bulk
+   migration of every dialog `font=("", N, ...)` literal +
+   slider in the Accessibility tab. Reasoning level: **high**
+   (touches every dialog module).
+
+5. 🟢 **Phase 4av carry-forward items #2 / #3 / #4 still open.**
+   Phase 4aw deliberately did NOT fold the three
+   non-accessibility Phase 4av Claude-surfaced items into this
+   scope pass — they remain in the Phase 4av friction section
+   as open low-reasoning follow-ups: (#2) "Reset" button label
+   semantics shift, (#3) `_set_universal_disabled` root
+   readonly-Combobox latent bug, (#4) DISCARDED glyph
+   distinguishability. Candidates for a separate
+   "Phase 4av polish follow-through" mini-phase OR fold-in to a
+   later sub-batch if a natural pairing emerges. Reasoning
+   level: **low** if standalone.
+
+6. 🟢 **Phase 4ax sub-axis A bundling risk (Claude-surfaced,
+   Phase 4aw artifact).** Phase 4aw locks the Phase 4ax
+   first-deliverable as "Escape-dismiss audit + Ctrl+↑/↓
+   Tooltip wire-up + `accessibility.py` shell" — three
+   concerns in one phase. The bundling is intentional (the
+   module shell needs at least one consumer to justify
+   existence; the Tooltip wire-up is the natural consumer
+   alongside the Escape audit). Risk: if the Toplevel
+   inventory surfaces ~10+ non-compliant dialogs the audit may
+   not fit a single medium-reasoning phase. Mitigation:
+   Phase 4ax may relax to **high** reasoning if the inventory
+   is large, OR split into 4ax (module shell + Tooltip
+   retrofit) and 4ay-prefix (Escape audit alone). Decide at
+   Phase 4ax decision-lock time. No register entry.
+
+7. 🟢 **CS-75 D6 Tooltip convention retroactive-only-in-4ax
+   (Claude-surfaced, Phase 4aw artifact).** The Ctrl+↑/↓
+   binding shipped in Phase 4av item #3 remains undiscoverable
+   until Phase 4ax lands the retroactive Tooltip wire-up. If
+   Phase 4ax slips by ≥2 phases, consider whether to ship the
+   Tooltip retrofit as a one-off mini-phase. Currently
+   acceptable — a single keyboard-savvy power user might
+   discover the binding from the CS-74 docstring; the broader
+   discoverability convention lands the moment Phase 4ax does.
+   No register entry.
+
+8. 🟢 **`accessibility.py` module shell lock drift risk
+   (Claude-surfaced, Phase 4aw artifact).** CS-75 locks the
+   module shell to host `bind_escape_to_close` +
+   `attach_shortcut_tooltip` initially, growing to
+   `active_palette` (4ay) and `scale_font_size` (4ba). If
+   Phase 4ax landing is delayed beyond ~2 phases (say a
+   non-accessibility phase intervenes), the lock content may
+   drift from reality. Re-validate the locks at Phase 4ax
+   session start before relying on the recipe pattern. No
+   register entry.
+
+9. 🟡 **USER-FLAGGED Axis nomenclature rename** continues.
+   Cross-ref Phase 4ao friction #4. Massive cross-codebase
+   rename. Reasoning level: **extra-high**.
+
+10. 🟡 **USER-FLAGGED Rich-text axis labels (mathtext)**
+    continues. Cross-ref Phase 4ao friction #5. Reasoning
+    level: **medium**.
+
+11. 🟡 **USER-FLAGGED External-output plot style presets**
+    continues. Cross-ref Phase 4ao friction #6. User has
+    reference Jupyter notebook code (paths TBD at session
+    start). Reasoning level: **high**.
+
+12. 🟡 ~~**USER-FLAGGED Accessibility features umbrella**~~
+    ✅ **Scope-locked Phase 4aw (CS-75).** Cross-ref Phase 4ao
+    friction #1 (canonical scope-lock record). The umbrella is
+    no longer open — it has been decomposed into four
+    implementable sub-axis-canonical rows (items 1–4 above) and
+    three deferred stub rows. Implementation continues across
+    Phase 4ax → 4ba.
+
+13. 🟡 ~~**USER-FLAGGED Keyboard shortcuts — first batch**~~
+    ✅ **Subsumed Phase 4aw (CS-75) into Accessibility sub-axis
+    C (item 3 above).** Cross-ref Phase 4ao friction #7
+    (canonical subsumption record). The Phase 4af canonical
+    "Keyboard shortcuts — whole-interface evaluation pass"
+    register row remains as the inventory + design-pass record
+    with an inline [Phase 4aw note] annotation.
+   ✅ **Scope-locked Phase 4aw (CS-75).** Cross-ref Phase 4al friction #2 (canonical scope-lock record).
 
 ---
 
@@ -5204,7 +5353,7 @@ the resolving phase + commit SHA appended to the row.
 
 ---
 
-*Document version: 1.47 — May 2026*
+*Document version: 1.48 — May 2026*
 *1.1: Known Bugs register added 2026-04-27 after Phase 4b manual testing.*
 *1.2: Phase 4c — baseline correction lands; B-001 / B-003 / B-004
 resolved; Phase 4c friction points logged.*
@@ -6272,4 +6421,6 @@ commits: pure module (`1863c31`) + 45 unit tests +
 LS_OPTIONS sync (`dcb0c02`) + UVVisTab integration
 (`831d057`) + 20 integration tests (`d867a4b`) + run_tests
 registration (`f1868f5`) + this bookkeeping.*
+*1.47: Phase 4av — CS-74 polish-bundle additions (no new CS, one small CS-21 D3 relaxation). Four Claude-surfaced items from the Phase 4au step-5 elicitation landed together: state-badge Combobox prefix, palette-picked colour Reset, Ctrl+↑/↓ Combobox navigation, Y-axis NodeType guard. 29 net new tests across four TestCase classes + 9 existing-test string-pin updates. 1567 tests, all green (1538 + 29 new). PTMG_FORMAT_VERSION unchanged. See COMPONENTS.md CS-74 sub-section "Phase 4av polish-bundle additions" for the full bookkeeping record.*
+*1.48: Phase 4aw scope pass — first scope-only phase in the Phase 4 series. Decomposed the canonical Accessibility features umbrella row (USER-FLAGGED Phase 4al) into seven sub-axis rows (A Escape-dismiss audit, B colour-blind palette opt-in, C keyboard shortcuts first batch, D font-scale multiplier — all four implementable; E screen-reader, F high-contrast, G dyslexia font — all three deferred). Subsumed the Phase 4af keyboard shortcuts whole-interface evaluation pass row into sub-axis C (inline annotation kept on the original row). Walked the Accessibility umbrella friction chain across phases 4al → 4av — every prior cross-ref gained a Phase 4aw scope-lock annotation; Phase 4av friction #1 (Ctrl+↑/↓ discoverability) folded into Phase 4ax sub-axis A bundle. Two doc commits (COMPONENTS CS-75 + BACKLOG sub-axis decomposition) + this bookkeeping. 1567 tests, all green — zero deltas vs Phase 4av baseline. PTMG_FORMAT_VERSION unchanged.*
 *Supersedes: BACKLOG.md (original)*
