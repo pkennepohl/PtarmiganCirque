@@ -11453,7 +11453,212 @@ modified.
 
 ---
 
-*Document version: 1.48 — May 2026*
+## CS-75 — Accessibility umbrella scope (Phase 4aw)
+
+Closes the design-pass slot of the canonical BACKLOG row
+*"Accessibility features (USER-FLAGGED, Phase 4al)"* — the
+USER-FLAGGED architectural question first raised at Phase 4al
+step 5 (*"can we implement any accessibility features in the
+software?"*) and carried forward as friction across every phase
+4al → 4av. Phase 4aw is the **scope-deciding session**: zero
+production code lands, every sub-axis is enumerated with a
+binding scope + lock decisions, and the canonical BACKLOG row
+is decomposed into one canonical sub-row per implementable
+sub-axis. The first concrete sub-batch ships in Phase 4ax.
+
+### Sub-axis decomposition
+
+The original canonical entry listed seven sub-axes (numbered 1–7
+in the Phase 4al text). Phase 4aw locks the implementation status
+of each and orders the four implementable sub-axes into a
+defined ladder:
+
+| Sub-axis | Phase 4al # | Scope (Phase 4aw locks) | First sub-batch |
+|---|---|---|---|
+| **A — Escape-dismiss audit** | (4) | Every `tk.Toplevel` with a Cancel/Close action binds `<Escape>` to that action and returns `"break"`. Audit inventory captured in the Phase 4ax decision lock. Cheapest sub-batch; bundles Phase 4av friction #1 (Ctrl+↑/↓ discoverability via CS-42 Tooltip). | **Phase 4ax** |
+| **B — Colour-blind palette opt-in** | (2) | New `node_styles.SPECTRUM_PALETTE_NAME` constant (`"default"` \| `"wong_2011"`). New `node_styles.active_palette() -> tuple[str, ...]` getter routes every palette read through the chosen name. New `accessibility.palette` key on `_USER_DEFAULTS` (persisted via CS-46's `plot_defaults` slot). Commit-on-click semantics (no working-copy) — live-redraws via the existing six-event dispatch (CS-72). | **Phase 4ay** |
+| **C — Keyboard shortcuts first batch** | (1) | Per-component `bind` calls co-located with the gesture (NOT a central `key_bindings.py` — matches CS-74's `<Control-Down>` pattern, avoids a sync-target dependency). New `KEYBINDINGS.md` sister doc captures the registered table; every sub-batch that adds shortcuts also updates the sister doc as part of its bookkeeping. Discoverability via CS-42 `Tooltip` exclusively — no inline hint labels. | **Phase 4az** |
+| **D — Font-scale multiplier** | (3) | New `accessibility.scale_font_size(base_pt: int) -> int` helper. New `accessibility.font_scale: float` in `_USER_DEFAULTS` (default 1.0, range 0.75–2.0, persisted via CS-46's `plot_defaults["accessibility"]` slot). Every dialog font literal eventually routes through the helper (Phase 4ba's bulk pass). | **Phase 4ba** |
+| ⚪ E — Screen-reader hints | (5) | **Deferred.** Lock only: when accessibility work cross-cuts a widget the implementer SHOULD add `accessibility.title=...` strings opportunistically. No per-platform screen-reader matrix until non-Windows demand surfaces. Windows-only v1. | — |
+| ⚪ F — High-contrast / dark mode | (6) | **Deferred.** Tied to spine / grid / background palette; revisit after sub-axes A–D land. | — |
+| ⚪ G — Dyslexia-friendly font | (7) | **Deferred.** Folds into sub-axis D's font-scale infrastructure once that lands. | — |
+
+### Lock decisions (D1–D7)
+
+The five canonical Phase 4al questions (i–v) plus two additional
+locks Phase 4aw needs to take:
+
+* **D1 — Settings UI surface (Phase 4al question i).** New
+  "Accessibility" tab in `PlotConfigDialog`. NOT a new
+  app-level Preferences dialog. Rationale: CS-66 favours fewer
+  modals; PlotConfigDialog already carries the modeless
+  contract (CS-66) + live-preview semantics (CS-68) that the
+  accessibility settings reuse. The new tab joins the existing
+  notebook alongside the per-axis tabs and Appearance.
+
+* **D2 — Palette commit-on-click (Phase 4al question ii).**
+  Commit-on-click. No working-copy. Matches CS-50's per-node-
+  style-edits-commit-on-pick model — flipping the
+  `accessibility.palette` key fires the renderer immediately,
+  every visible node redraws via the existing six-event
+  dispatch (CS-72). User has no "preview without commit" path
+  for palette swap (consistent with CS-50; deliberate
+  asymmetry vs the rest of `PlotConfigDialog`'s Apply/Save/Cancel).
+
+* **D3 — Keyboard-nav audit scope (Phase 4al question iii).**
+  Every modeless / modal dialog in scope: `PlotConfigDialog`
+  (CS-66 / CS-14), `StyleDialog` (CS-05), `NodeStylesDialog`
+  (CS-74), plus the three high-traffic left-pane surfaces
+  (ScanTreeWidget row gestures from CS-04, footer
+  Combine/Group gestures from CS-57 / CS-58, the
+  Send-to-Compare gesture from CS-27). **Out of scope:** Tk-
+  native file pickers (`tkinter.filedialog.*`) — Tk-internal,
+  no API surface to instrument.
+
+* **D4 — Font-scale persistence (Phase 4al question iv).**
+  YES, via `_USER_DEFAULTS`. Round-trips through CS-46's
+  manifest schema under `plot_defaults["accessibility"]
+  ["font_scale"]`. Default 1.0. Persistent app-level
+  preference (a single user adjusts it once and every project
+  thereafter inherits).
+
+* **D5 — Platform / screen-reader matrix (Phase 4al question
+  v).** Windows-only v1. The codebase is Windows-only today
+  (PowerShell shell on win32 platform); a Mac / Linux
+  contributor would surface the cross-platform question
+  organically. Screen-reader sub-axis E is gated on that
+  event. macOS AX / Linux AT-SPI work is NOT in any Phase 4
+  sub-batch.
+
+* **D6 — Discoverability convention.** Tooltip-only via CS-42
+  `Tooltip` class. No inline hint labels — would compete with
+  row content for horizontal space, especially in CS-04's
+  responsive collapse modes (CS-26 / CS-30). Every sub-batch
+  that adds a keyboard shortcut OR adds a non-obvious gesture
+  affordance ALSO wires a Tooltip describing the shortcut.
+  Phase 4ax retroactively applies this to the Phase 4av
+  Ctrl+↑/↓ binding (carried-forward friction #1).
+
+* **D7 — Component number.** CS-75.
+
+### Convention locks (load-bearing for sub-batches 4ax–4ba)
+
+These locks describe the recipes each sub-batch follows. Future
+phases consult these BEFORE writing the sub-batch's own design
+lock — the umbrella locks the recipe so sub-batches don't
+re-derive it.
+
+* **Escape-binding recipe.** For every `tk.Toplevel` with a
+  Cancel-or-Close action: `self.bind("<Escape>", lambda
+  event: self._on_cancel())` (or `self._on_close()`). Handler
+  returns `"break"` to prevent default Tk propagation. Sub-
+  batch 4ax inventories every Toplevel and audits each for
+  compliance. Existing compliance baseline: `StyleDialog`
+  (CS-05) already binds `<Escape>` via `WM_DELETE_WINDOW`
+  routing; `PlotConfigDialog` partial; `NodeStylesDialog`
+  TBD-audit.
+
+* **Palette getter recipe.** Direct readers of
+  `node_styles.SPECTRUM_PALETTE` continue to work (additive
+  relaxation — Phase 4ay does NOT remove the constant). New
+  code reads via `node_styles.active_palette()`. The
+  `pick_default_color` helper (CS-21 D3, current three-caller
+  list per Phase 4av) is rewritten in Phase 4ay to consult
+  `active_palette()` internally, so the three existing
+  call-sites become palette-aware "for free". **CS-21 D3
+  lock relaxation:** the three-caller list grows where needed
+  for the `active_palette()` migration (palette-aware getter
+  may be invoked by additional rendering paths in Phase 4ay).
+
+* **Keyboard-shortcut registration recipe.** Each dialog's
+  `_build_*` method registers its own shortcuts via
+  per-widget `bind` calls. NOT a central `key_bindings.py`
+  module. Rationale: matches CS-74's `<Control-Down>`
+  pattern; avoids a sync-target dependency between gesture-
+  adding phases and a central registry that risks drift.
+  `KEYBINDINGS.md` sister doc carries the registered table
+  (audit-friendly read-only view); every sub-batch updates
+  the sister doc in its bookkeeping commit alongside
+  COMPONENTS / BACKLOG. First shortcuts table lands in
+  Phase 4az alongside the sister doc.
+
+* **Font-scale helper recipe.** `accessibility.scale_font_size
+  (base_pt: int) -> int` returns `max(6, round(base_pt *
+  _USER_DEFAULTS["accessibility"]["font_scale"]))`. Every
+  dialog font literal — `font=("", N, ...)` — is the
+  call-site list to migrate in Phase 4ba's bulk pass. The
+  helper module (`accessibility.py`) is created in Phase 4ax
+  to host the Escape-binding convention helper + Tooltip
+  helper; the font-scale helper joins it in Phase 4ba.
+
+* **`accessibility.py` module surface (created in Phase
+  4ax).** New module hosting cross-axis helpers:
+  `bind_escape_to_close(toplevel, handler)` (Phase 4ax),
+  `attach_shortcut_tooltip(widget, text)` (Phase 4ax),
+  `active_palette() -> tuple[str, ...]` (Phase 4ay, may
+  delegate to / live in `node_styles.py` per migration
+  taste), `scale_font_size(base_pt)` (Phase 4ba). Each helper
+  is the recipe-canonical entry point — every implementation
+  goes through it rather than re-deriving.
+
+### Phase ladder (locked by Phase 4aw)
+
+The ladder below is the locked sub-batch order. Each row
+specifies the canonical first-deliverable, the reasoning level
+recommendation, and the major CS sections relaxed or extended.
+
+| Phase | Sub-axis | First deliverable | Reasoning | Locks touched |
+|---|---|---|---|---|
+| **4aw** *(this)* | umbrella scope | CS-75 + BACKLOG sub-axis decomposition | high (scope-deciding) | new CS-75 |
+| 4ax | A (Escape) + Phase 4av friction #1 | `accessibility.py` shell + `bind_escape_to_close` + `attach_shortcut_tooltip` + Toplevel audit inventory + Tooltip on Phase 4av Ctrl+↑/↓ | medium | CS-75 D3 / D6, additive |
+| 4ay | B (palette) | `node_styles.SPECTRUM_PALETTE_NAME` + `active_palette()` + Wong 2011 deuteranopia-safe palette + new "Accessibility" tab in `PlotConfigDialog` (D1) with palette Combobox | medium | **CS-21 D3** (additive), **CS-66 / CS-68** (new tab joins notebook), new `accessibility.palette` _USER_DEFAULTS key (CS-46 schema additive) |
+| 4az | C (keyboard) | First batch shortcuts (Ctrl+G group / Ctrl+Shift+G ungroup / Delete discard / F2 rename) + `KEYBINDINGS.md` sister doc + per-component bindings + Tooltip on each | medium | CS-04 (row gestures), CS-57 / CS-58 (group), CS-32 (rename), additive |
+| 4ba | D (font-scale) | `accessibility.scale_font_size` helper + `accessibility.font_scale` _USER_DEFAULTS key + bulk migration of every dialog `font=("", N, ...)` literal + slider in the Accessibility tab | high | every dialog module (additive routing), CS-46 schema additive |
+
+### Phase 4aw landing
+
+Phase 4aw is **doc-only** — no module changes, no test changes.
+The test suite stays at 1567 (the Phase 4av baseline). Two doc
+commits + a bookkeeping commit:
+
+1. COMPONENTS.md — this CS-75 section (+ doc-version footer
+   bump 1.48 → 1.49).
+2. BACKLOG.md — the canonical "Accessibility features
+   (USER-FLAGGED, Phase 4al)" row at the Phase 4q register
+   table replaced by a brief umbrella row + cross-ref to
+   CS-75, plus four new sub-axis-canonical rows (A / B / C /
+   D) listing the locked scope per sub-batch.
+3. Bookkeeping commit — "Friction points carried forward from
+   Phase 4aw" + strike-through walk + chain collapse +
+   BACKLOG doc-version footer bump.
+
+PTMG_FORMAT_VERSION unchanged — no schema keys added (the
+`accessibility.*` keys land additively in Phase 4ay / 4ba).
+
+### Architectural follow-up
+
+CS-75 is the FIRST scope-only CS section in the Phase 4 series
+(every prior CS shipped at least one module change). The
+precedent: scope passes for cross-cutting umbrella tickets get
+their own CS number to anchor the sub-batch ladder.
+Sub-batches each get their own CS section (CS-76 candidate for
+Phase 4ax, etc.) so the CS chain reflects the implementation
+phases — the umbrella CS stays as the canonical scope
+reference, sub-batches CS-cross-ref back to it.
+
+### Carry-forward
+
+Sub-axes E (screen-reader), F (high-contrast / dark mode), G
+(dyslexia-friendly font) are explicitly deferred. They become
+actionable IF non-Windows demand surfaces (E), the user flags
+a contrast / dark-mode need (F), or sub-axis D's infrastructure
+naturally invites font-family work (G). Each deferred sub-axis
+remains in BACKLOG as a stub row cross-referencing CS-75; no
+phase ladder slot is reserved.
+
+---
+
+*Document version: 1.49 — May 2026*
 *1.1: CS-13 implementation notes added in Phase 4a.*
 *1.2: CS-14 Plot Settings Dialog added in Phase 4b.*
 *1.3: CS-15 UV/Vis Baseline Correction + CS-04 implementation
@@ -12880,5 +13085,26 @@ Four new Claude-surfaced friction items elevated to BACKLOG's
 shift / `_set_universal_disabled` root readonly bug /
 DISCARDED glyph distinguishability) — all low-reasoning
 follow-ups.*
+*1.49: CS-75 added in Phase 4aw. First scope-only CS section in
+the Phase 4 series — zero production code, zero test deltas.
+Decomposes the canonical Phase 4al USER-FLAGGED row
+"Accessibility features" into seven sub-axes (A Escape-dismiss
+audit, B colour-blind palette opt-in, C keyboard shortcuts
+first batch, D font-scale multiplier — all four implementable;
+E screen-reader, F high-contrast / dark mode, G dyslexia font
+— all three deferred). Five canonical Phase 4al lock decisions
+answered (D1–D5: new "Accessibility" tab in PlotConfigDialog;
+palette commit-on-click; keyboard-nav scope covers every
+dialog + three high-traffic left-pane surfaces; font-scale
+persists via _USER_DEFAULTS + CS-46 manifest; Windows-only v1).
+Plus two umbrella locks (D6 Tooltip-only discoverability via
+CS-42; D7 component number). Phase ladder locked: 4ax Escape
++ Ctrl+↑/↓ discoverability fix (medium); 4ay palette (medium,
+relaxes CS-21 D3); 4az keyboard shortcuts first batch with
+KEYBINDINGS.md sister doc (medium); 4ba font-scale bulk pass
+(high). New `accessibility.py` module surfaces in Phase 4ax
+hosting `bind_escape_to_close` + `attach_shortcut_tooltip` (D6
+recipe canonical entry points). Test suite stays at 1567
+(Phase 4av baseline). PTMG_FORMAT_VERSION unchanged.*
 *To be updated as Open Questions are resolved and new components
 are specified.*
