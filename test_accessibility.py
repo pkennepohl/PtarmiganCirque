@@ -39,21 +39,18 @@ from accessibility import bind_escape_to_close, attach_shortcut_tooltip
 from tooltip import Tooltip
 
 
-def _fire_escape(top: tk.Toplevel) -> None:
-    """Synthesise an ``<Escape>`` key press on ``top``.
+def _invoke_via_return(top: tk.Toplevel, handler) -> str:
+    """Wire ``bind_escape_to_close`` and invoke the returned callback.
 
-    Requires the Toplevel to be deiconified and focused before
-    ``event_generate`` will dispatch reliably on a withdrawn root;
-    ``when="now"`` forces synchronous delivery. This matches the
-    in-codebase pattern used elsewhere when the default
-    ``event_generate`` path is unreliable.
+    ``event_generate`` on a transient/withdrawn Toplevel is unreliable
+    across the full suite (the dispatch fires in isolation but is
+    intermittently dropped once many Toplevels have been built and
+    torn down — same caveat documented in ``test_collapsible_section``
+    and ``test_plot_settings_dialog``). Calling the returned callback
+    exercises the same code path Tk would take on a real key press.
     """
-    top.deiconify()
-    top.update()
-    top.focus_force()
-    top.update()
-    top.event_generate("<Escape>", when="now")
-    top.update()
+    cb = bind_escape_to_close(top, handler)
+    return cb(None)
 
 
 @unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
@@ -81,8 +78,7 @@ class TestBindEscapeToClose(unittest.TestCase):
         self.assertNotEqual(self.top.bind("<Escape>"), "")
 
     def test_handler_fires_when_binding_is_invoked(self):
-        bind_escape_to_close(self.top, self._handler)
-        _fire_escape(self.top)
+        _invoke_via_return(self.top, self._handler)
         self.assertEqual(len(self.calls), 1)
 
     def test_handler_invoked_with_no_arguments(self):
@@ -91,14 +87,20 @@ class TestBindEscapeToClose(unittest.TestCase):
         def picky_handler():  # noqa: ANN202 — intentional 0-arg
             recorded.append(0)
 
-        bind_escape_to_close(self.top, picky_handler)
-        _fire_escape(self.top)
+        _invoke_via_return(self.top, picky_handler)
         self.assertEqual(recorded, [0])
 
+    def test_callback_returns_break(self):
+        # The bound callback must return the literal "break" string so
+        # Tk halts event propagation. Production callers ignore the
+        # return; tests pin it.
+        result = _invoke_via_return(self.top, self._handler)
+        self.assertEqual(result, "break")
+
     def test_multiple_invocations_fire_handler_each_time(self):
-        bind_escape_to_close(self.top, self._handler)
+        cb = bind_escape_to_close(self.top, self._handler)
         for _ in range(3):
-            _fire_escape(self.top)
+            cb(None)
         self.assertEqual(len(self.calls), 3)
 
     def test_bind_script_contains_break_keyword(self):

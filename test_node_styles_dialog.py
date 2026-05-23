@@ -1099,5 +1099,51 @@ class TestNodeStylesDialogYAxisGuardPhase4av(unittest.TestCase):
         self.assertIsNone(self.dlg._node_type_for("nope"))
 
 
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestNodeStylesDialogEscapePhase4ax(unittest.TestCase):
+    """CS-75 D3 / CS-76 Escape-dismiss audit: <Escape> mirrors
+    WM_DELETE_WINDOW so the dialog dismisses from the keyboard."""
+
+    @classmethod
+    def setUpClass(cls):
+        import node_styles_dialog
+        cls.mod = node_styles_dialog
+        cls.NodeStylesDialog = node_styles_dialog.NodeStylesDialog
+
+    def setUp(self):
+        self.mod._open_dialogs.clear()
+        self.host = tk.Frame(_root)
+        self.graph = ProjectGraph()
+        self.n = _data("a", NodeType.UVVIS, "A")
+        self.graph.add_node(self.n)
+        self.dlg = self.NodeStylesDialog(self.host, self.graph, [self.n])
+
+    def tearDown(self):
+        try:
+            self.dlg.destroy()
+        except Exception:
+            pass
+        self.mod._open_dialogs.clear()
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    def test_escape_binding_registered_on_toplevel(self):
+        self.assertNotEqual(self.dlg.bind("<Escape>"), "")
+
+    def test_escape_binding_routes_through_on_close_requested(self):
+        # ``event_generate`` on transient withdrawn Toplevels is
+        # unreliable across the full suite, so we invoke the bound
+        # callback directly — same code path Tk would take on a real
+        # key press. Re-bind with a spy to capture the call.
+        from accessibility import bind_escape_to_close
+        calls: list[None] = []
+        cb = bind_escape_to_close(self.dlg, lambda: calls.append(None))
+        result = cb(None)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(result, "break")
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

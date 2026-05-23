@@ -37,7 +37,7 @@ from tooltip import Tooltip
 def bind_escape_to_close(
     toplevel: tk.Toplevel,
     handler: Callable[[], object],
-) -> None:
+) -> Callable[[tk.Event | None], str]:
     """Bind ``<Escape>`` on ``toplevel`` to ``handler``.
 
     The bound callback invokes ``handler()`` and returns ``"break"``
@@ -46,6 +46,12 @@ def bind_escape_to_close(
     that ``WM_DELETE_WINDOW`` routes through); the result of
     ``handler()`` is ignored.
 
+    Returns the bound callback so tests can invoke it deterministically
+    — ``event_generate`` on transient/withdrawn Toplevels is
+    unreliable across the full test suite (the same caveat documented
+    in ``test_plot_settings_dialog`` and ``test_collapsible_section``).
+    Production callers ignore the return value.
+
     Phase 4ax CS-75 D3 recipe.
     """
     def _on_escape(_event: tk.Event | None = None) -> str:
@@ -53,6 +59,7 @@ def bind_escape_to_close(
         return "break"
 
     toplevel.bind("<Escape>", _on_escape)
+    return _on_escape
 
 
 def attach_shortcut_tooltip(widget: tk.Widget, text: str) -> Tooltip:

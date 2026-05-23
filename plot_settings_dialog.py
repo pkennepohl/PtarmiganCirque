@@ -101,6 +101,8 @@ import tkinter as tk
 from tkinter import colorchooser, messagebox, ttk
 from typing import Any, Callable, Optional
 
+from accessibility import bind_escape_to_close
+
 _log = logging.getLogger(__name__)
 
 
@@ -796,6 +798,9 @@ class PlotConfigDialog(tk.Toplevel):
 
         self.bind("<Destroy>", self._on_destroy, add="+")
         self.protocol("WM_DELETE_WINDOW", self._on_close_requested)
+        # Phase 4ax CS-75 D3 / CS-76: <Escape> mirrors WM_DELETE_WINDOW
+        # so the user can dismiss the dialog from the keyboard.
+        bind_escape_to_close(self, self._on_close_requested)
 
         # Register so a second open_plot_config_dialog call finds us.
         _open_dialogs[id(parent)] = self
