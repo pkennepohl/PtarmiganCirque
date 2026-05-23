@@ -980,6 +980,18 @@ class TestNodeStylesDialogKeyboardNavPhase4av(unittest.TestCase):
         self.assertNotEqual(self.dlg.bind("<Control-Down>"), "")
         self.assertNotEqual(self.dlg.bind("<Control-Up>"), "")
 
+    def test_combobox_tooltip_describes_keyboard_shortcut_phase4ax(self):
+        # Phase 4ax CS-75 D6 retrofit (Phase 4av friction #1): the
+        # Combobox carries a Tooltip describing the Ctrl+Up/Down
+        # gesture so the binding is discoverable. Pin the helper
+        # produced a Tooltip and its text mentions the shortcut.
+        from tooltip import Tooltip
+        tip = self.dlg._combobox_tooltip
+        self.assertIsInstance(tip, Tooltip)
+        self.assertIn("Ctrl", tip._text)
+        # Both arrows mentioned (either direction is canonical).
+        self.assertTrue("↑" in tip._text or "↓" in tip._text)
+
 
 @unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
 class TestNodeStylesDialogYAxisGuardPhase4av(unittest.TestCase):
