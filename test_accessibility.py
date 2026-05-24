@@ -146,5 +146,37 @@ class TestAttachShortcutTooltip(unittest.TestCase):
         self.assertIs(tip._widget, self.widget)
 
 
+class TestBinahEscapeInventoryPhase4ax(unittest.TestCase):
+    """Source-level sentinel: every ``tk.Toplevel(`` construction site
+    in binah.py has a paired ``bind_escape_to_close(`` call (CS-75 D3
+    scope expanded at Phase 4ax step-5 elicitation to cover the 7
+    app-level binah.py dialogs).
+
+    binah.py has no dedicated test module — the main app is
+    constructed only by ``binah.OrcaTDDFTApp.__init__`` which spins up
+    every tab + the matplotlib backend, too expensive for the unit
+    suite. A source-level count is the cheapest contract pin: if a
+    future commit adds a Toplevel without the recipe (or removes the
+    bind call), the counts diverge and this test fails.
+    """
+
+    def test_binah_toplevels_and_escape_bindings_one_to_one(self):
+        from pathlib import Path
+        src = (Path(__file__).resolve().parent / "binah.py").read_text(
+            encoding="utf-8",
+        )
+        toplevels = src.count("tk.Toplevel(")
+        escape_binds = src.count("bind_escape_to_close(")
+        # All 7 binah.py Toplevels (FEFF Setup, Load Spectrum,
+        # SXRMB, BioXAS, Athena, No-Data diagnostic, Impl Drift
+        # Details) carry the Phase 4ax CS-75 D3 recipe. If a new
+        # dialog lands, increment both counts in lockstep.
+        self.assertEqual(toplevels, 7,
+                         f"expected 7 tk.Toplevel sites, found {toplevels}")
+        self.assertEqual(escape_binds, toplevels,
+                         "every binah.py Toplevel must pair with "
+                         "bind_escape_to_close (Phase 4ax CS-75 D3)")
+
+
 if __name__ == "__main__":
     unittest.main()
