@@ -1685,7 +1685,7 @@ subsequent Phase 4 session.**
 | ⏳ | 🟡 | **Axis nomenclature rename: primary/secondary/tertiary → bottom/top/left/right with `*` suffix for offset (USER-FLAGGED, Phase 4ak)** | USER-FLAGGED at end of Phase 4ak (step 5 elicitation). User: "Maybe we should not use primary, secondary, tertiary for axes and use clear location designations such as bottom/top for the main x-axes and something like bottom* and top* for offset secondary axes for a total of 4 possible axes along x. Similar structure for y with left/right/left*/right*. Open to better nomenclature." The current taxonomy (CS-44: `primary` / `secondary` / `tertiary`; CS-60: `primary_x` / `secondary_x` / `primary_y` / `secondary_y` / `tertiary_y`) is renderer-internal and dialog-facing. Position-based names ("bottom", "top", "left", "right", with `*` for offset/secondary instance) are more discoverable for the user — a UV/Vis researcher doesn't need to know that "secondary" specifically means twinx. The proposal also opens the door to a fourth axis on each side (currently `*` suffix denotes offset, but the rename allows growth to "right*" being a tertiary-stack-style offset on top of "right"). **Architecture proposal (lock pending):** rename across the codebase. Affects: `_AXIS_ROLES = ("primary", "secondary", "tertiary")` (CS-44 lock), `_TAB_KEYS = ("global", "primary_x", "secondary_x", "primary_y", "secondary_y", "tertiary_y")` (CS-60 lock), `_TAB_TITLES` strings (CS-60 lock), `_DEFAULT_Y_AXIS_BY_NODETYPE`'s values (CS-44 lock), `_resolve_y_axis_role`'s return values (CS-44 lock), every test asserting any of the above, plot_settings_dialog's per-axis tab keys, `_Y_AXIS_ROLE_TO_TAB` (CS-62 lock), the `y_axis` style key's value set (CS-50 lock), the manifest's nested `axes` sub-dict keys (round-trip across `_USER_DEFAULTS` via project_io). **Lock decisions for the implementing session:** (i) exact name set — is the `*` suffix preserved or replaced with something more keyboard-friendly (e.g. `"bottom_offset"`)? `*` reads well in UI but parses awkwardly in code paths. (ii) does the rename happen all-at-once (one massive sweep phase) or incrementally with an alias dict mapping old → new during transition? (iii) does the `y_axis` style key's value set (CS-50: `"primary"` / `"secondary"` / `"tertiary"`) rename in lockstep — yes for consistency but increases blast radius. (iv) does the manifest schema gain a migration shim for projects saved with old names (yes, since `.ptmg` files can be years old). (v) what about the existing `_axes_by_role` dict key names (used by tests + matplotlib introspection)? **Affected:** Massive cross-codebase rename. CS-44 / CS-50 / CS-60 / CS-61 / CS-62 locks all need deliberate relaxation. Carries through to manifest round-trip migration shim + every test pinning role names. Multi-phase task — the cleanest path is one phase for the schema rename + migration shim, one phase for the dialog labels + tab titles, one phase for the renderer's internal names, with a final cleanup pass. **Risk:** high blast radius. Could combine with the "Refactor uvvis_tab.py — extract host shell" register entry since both touch axis-handling code paths. |
 | ⏳ | 🟡 | **Rich-text axis labels — subscript / superscript / equation markup (USER-FLAGGED, Phase 4ak)** | USER-FLAGGED at end of Phase 4ak (step 5 elicitation). User: "Allow for subscript/superscript and equations in axis labels. How can we do that?" Today axis labels are plain strings written through matplotlib's `set_xlabel` / `set_ylabel` (CS-62's `axis_label_override` is a plain `str`). matplotlib supports a `mathtext` subset of LaTeX inline (e.g. `r"$d^2 A / d\lambda^2$"`) AND the full `usetex=True` LaTeX rendering when a LaTeX installation is on `$PATH`. The user wants the override Entry to accept LaTeX-style markup and render it in the figure. **Architecture proposal (lock pending):** enable matplotlib's mathtext on every axis label setter. Simplest path: change `set_xlabel(text, ...)` → `set_xlabel(text, ...)` with matplotlib's default mathtext parser (no extra config needed — `$...$` is parsed automatically). User types `$d^2 A / d\lambda^2$` into the Plot Settings → Primary Y axis label override Entry → matplotlib renders the math expression. **Lock decisions for the implementing session:** (i) does the Entry widget need any preprocessing or do we trust the user to type `$...$` directly? (ii) is there a "Markup help" tooltip or pop-up showing example expressions (`$\alpha$`, `$d^2A/d\lambda^2$`, `$\Delta E$`)? (iii) does we expose mathtext only, or also the full LaTeX path (`usetex=True`) which requires a LaTeX install? (iv) does the manifest round-trip preserve the raw markup string (yes — it's a plain `str` already). (v) does the same support extend to title (`title_text`) and the legacy xlabel/ylabel custom text path? (likely yes for consistency). **Affected:** `plot_settings_dialog.py` per-axis Entry widgets + the legacy Title-and-labels section's Entry widgets — the markup goes in transparently since `set_xlabel` already supports it. Possibly a tooltip module for the markup help. New test asserting `set_xlabel($d^2A$)` renders without error. Small phase — enabling mathtext is essentially free; the lift is testing + documenting the gesture for users. Cross-refs CS-62 (`axis_label_override` Entry widgets), the legacy "Title and labels" section. **Caveat:** matplotlib's mathtext is a SUBSET of LaTeX (most math symbols work, but `\text{}`, fancy spacing, and some packages don't). Decision (iii) determines whether power users get full LaTeX. |
 | ⏳ | 🟡 | **Accessibility features umbrella (USER-FLAGGED, Phase 4al — scope locked Phase 4aw)** | USER-FLAGGED at end of Phase 4al (step 5 elicitation). User: "can we implement any accessibility features in the software?" Open-ended architectural question. **Scope locked in Phase 4aw — see COMPONENTS.md CS-75 for full sub-axis decomposition and lock decisions (D1–D7).** Four implementable sub-axes (A Escape-dismiss audit, B colour-blind palette opt-in, C keyboard shortcuts first batch, D font-scale multiplier) decompose into four sub-batch register rows below. Three sub-axes deferred (E screen-reader hints, F high-contrast / dark mode, G dyslexia-friendly font) — see deferred-stub rows below. Phase ladder locked: 4ax Escape + Ctrl+↑/↓ Tooltip (medium); 4ay palette (medium); 4az keyboard first batch (medium); 4ba font-scale (high). Cross-refs CS-21 (palette — relaxed in 4ay), CS-66 / CS-68 (new tab in PlotConfigDialog — 4ay), CS-46 (font-scale + palette _USER_DEFAULTS round-trip), CS-42 (Tooltip discoverability convention), CS-74 (Ctrl+Arrow per-component bind pattern), CS-04 / CS-57 / CS-58 (left-pane keyboard audit surfaces). |
-| ⏳ | 🟡 | **A — Accessibility / Escape-dismiss audit (Phase 4ax candidate)** | Sub-axis A of the Accessibility umbrella above (CS-75 D3 / D6). Scope locked Phase 4aw: every `tk.Toplevel` with a Cancel/Close action binds `<Escape>` to that action and returns `"break"`. New `accessibility.py` module shell hosts `bind_escape_to_close(toplevel, handler)` + `attach_shortcut_tooltip(widget, text)` (CS-42-backed) as the canonical recipe entry points. Phase 4ax also bundles Phase 4av friction #1 — retroactively wires a Tooltip onto the Phase 4av Ctrl+↑/↓ binding in `NodeStylesDialog`. Audit inventory of every Toplevel construction site lands as part of the Phase 4ax decision lock; existing baseline: `StyleDialog` (CS-05) compliant via `WM_DELETE_WINDOW`; `PlotConfigDialog` partial; `NodeStylesDialog` (CS-74) TBD-audit. Reasoning level: **medium**. Affected: every dialog module + new `accessibility.py`. |
+| ✅ | 🟡 | **A — Accessibility / Escape-dismiss audit (Phase 4ax candidate)** ✅ Resolved Phase 4ax (CS-76). | Resolved Phase 4ax (CS-76) — commits `b586982` (accessibility.py module shell + 9 unit tests) + `f7c41f1` (Escape audit integration on three primary dialogs + 6 integration tests + 1 unit sentinel for the return value) + `9c7b177` (Phase 4av friction #1 Tooltip retrofit on NodeStylesDialog Combobox + 1 sentinel) + `2e8f97a` (user-elicited expansion: 7 binah.py app dialogs + 1 source-level inventory sentinel). New `accessibility.py` module hosts `bind_escape_to_close(toplevel, handler)` (returns the bound callback for testability — `event_generate` on transient/withdrawn Toplevels is unreliable across the full suite; production callers ignore the return) + `attach_shortcut_tooltip(widget, text)` (thin delegate over CS-42 `Tooltip`). **Wired Toplevels:** ten total — three primary dialogs (NodeStyles / PlotConfig / Style — all routing through `_on_close_requested`) plus seven binah.py app dialogs (FEFF Setup / Load Spectrum / SXRMB / BioXAS / Athena / No-Data / Impl Drift — all binding to `win.destroy`). **CS-75 D3 lock relaxation:** the binah.py expansion grew the audit scope beyond the Phase 4aw-locked three-primary-dialogs enumeration to also cover the seven app dialogs; user-elicited at Phase 4ax step 5. Phase 4av friction #1 (Ctrl+↑/↓ discoverability) closed via retroactive `attach_shortcut_tooltip` on the NodeStylesDialog Combobox with text `"Ctrl+↑/↓ to step through nodes"`. **Out-of-scope inventory (carry-forward):** plot_widget.py 7 sites, xas_analysis_tab.py 2 sites, ledge_normalizer.py 1 site, nbo_viewer_app.py 13 sites (sibling app); tooltip.py:78 + plot_widget.py:123 are Tooltip-internal infra. 17 net new tests pin the contract (10 unit in test_accessibility including the binah.py source-level inventory sentinel; 7 integration across test_node_styles_dialog (3) / test_style_dialog (2) / test_plot_settings_dialog (2)). 1584 tests green (1567 baseline + 17 new). PTMG_FORMAT_VERSION unchanged — no schema keys added. |
 | ⏳ | 🟡 | **B — Colour-blind palette opt-in (Phase 4ay candidate)** | Sub-axis B of the Accessibility umbrella above (CS-75 D2). Scope locked Phase 4aw: new `node_styles.SPECTRUM_PALETTE_NAME` constant (`"default"` \| `"wong_2011"` — Wong 2011 deuteranopia-safe 8-colour palette). New `node_styles.active_palette() -> tuple[str, ...]` getter routes palette reads through the chosen name; `pick_default_color` consults `active_palette()` internally so the three existing call-sites (CS-21 D3 three-caller list) become palette-aware for free. New `accessibility.palette` key on `_USER_DEFAULTS` persisted via CS-46's `plot_defaults` slot — schema additive (PTMG_FORMAT_VERSION unchanged). Commit-on-click semantics (no working-copy) — flip fires the renderer immediately; every visible node redraws via CS-72's six-event dispatch. UI surface: new "Accessibility" tab in `PlotConfigDialog` (CS-75 D1) introduced here — first sub-batch to surface the tab. Reasoning level: **medium**. Affected: `node_styles.py` (palette registry + getter), `plot_settings_dialog.py` (new tab + Combobox), CS-46 schema additive. CS-21 D3 lock relaxation: additive; existing direct readers of `SPECTRUM_PALETTE` continue to work. |
 | ⏳ | 🟡 | **C — Keyboard shortcuts first batch + KEYBINDINGS.md (Phase 4az candidate)** | Sub-axis C of the Accessibility umbrella above (CS-75 D3 / D6). Subsumes / cross-refs the prior canonical "Keyboard shortcuts — whole-interface evaluation pass" register row from Phase 4af and the Phase 4ah-era "Keyboard shortcuts first batch" carry-forward. Scope locked Phase 4aw: per-component `bind` calls co-located with the gesture (NOT a central `key_bindings.py` — matches CS-74's `<Control-Down>` pattern). First batch candidates: Ctrl+G group (CS-57), Ctrl+Shift+G ungroup (CS-58), Delete discard, F2 rename (CS-33 / CS-32). New `KEYBINDINGS.md` sister doc carries the registered shortcut table — every sub-batch updates it in the bookkeeping commit. Discoverability via CS-42 Tooltip on each shortcut-bearing widget (CS-75 D6). Reasoning level: **medium**. Affected: every dialog + `scan_tree_widget.py` row gestures + new `KEYBINDINGS.md`. |
 | ⏳ | 🟡 | **D — Font-scale multiplier (Phase 4ba candidate)** | Sub-axis D of the Accessibility umbrella above (CS-75 D4). Scope locked Phase 4aw: new `accessibility.scale_font_size(base_pt: int) -> int` helper. New `accessibility.font_scale: float` in `_USER_DEFAULTS` (default 1.0, range 0.75–2.0). Persists via CS-46's `plot_defaults["accessibility"]["font_scale"]` slot — schema additive. Every dialog font literal (`font=("", N, ...)`) routes through the helper in Phase 4ba's bulk pass. UI surface: slider in the "Accessibility" tab introduced in Phase 4ay. Reasoning level: **high** (touches every dialog module). Affected: every dialog module (additive routing only — default 1.0 is a visual no-op), CS-46 schema additive. Pairs with sub-axis G (deferred dyslexia-friendly font — the same infrastructure could host a `font_family` key once that lands). |
@@ -4902,7 +4902,7 @@ green (1538 baseline + 29 new). No new CS number — every item
 composes under the CS-74 umbrella. PTMG_FORMAT_VERSION
 unchanged. Three commits + this bookkeeping.
 
-1. 🟢 **Keyboard-shortcut discoverability (Claude-surfaced,
+1. 🟢 ~~**Keyboard-shortcut discoverability (Claude-surfaced,
    Phase 4av artifact).** The new `<Control-Down>` /
    `<Control-Up>` Combobox-stepping bindings (Phase 4av item
    #3) are invisible to users — no tooltip, no menu hint, no
@@ -4917,8 +4917,17 @@ unchanged. Three commits + this bookkeeping.
    Accessibility umbrella's keyboard-shortcuts sub-axis.
    Affected: `node_styles_dialog.NodeStylesDialog._build_combobox`
    (header area). Reasoning level: **low** if standalone,
-   **medium** if bundled into the global convention pass.
-   ✅ **Folded into Phase 4ax sub-axis A bundle (CS-75 D6 — Tooltip-only discoverability convention).** Retroactive `attach_shortcut_tooltip` wire-up on the Phase 4av Ctrl+↑/↓ binding lands as part of the Phase 4ax accessibility.py module shell + Escape-dismiss audit phase.
+   **medium** if bundled into the global convention pass.~~
+   ✅ **Resolved in Phase 4ax (CS-76).** Commit `9c7b177`
+   wired `attach_shortcut_tooltip(self._combobox, "Ctrl+↑/↓
+   to step through nodes")` in
+   `NodeStylesDialog._build_combobox` right after the
+   `<<ComboboxSelected>>` bind. The Tooltip handle is stored
+   on `self._combobox_tooltip` for future text rotation.
+   Sentinel: `test_combobox_tooltip_describes_keyboard_shortcut_phase4ax`
+   in `TestNodeStylesDialogKeyboardNavPhase4av` pins the
+   Tooltip presence + canonical text shape (mentions Ctrl
+   and at least one arrow glyph).
 
 2. 🟢 **"Reset" button label semantics changed silently
    (Claude-surfaced, Phase 4av artifact).** Phase 4av item #2
@@ -5016,7 +5025,7 @@ Ctrl+↑/↓ Tooltip) → 4ay (palette) → 4az (keyboard) → 4ba
 (font-scale). User had nothing to add at step 5 elicitation.
 **Do not fix until the relevant subsequent Phase 4 session.**
 
-1. 🟡 **USER-FLAGGED Accessibility sub-axis A — Escape-dismiss
+1. 🟡 ~~**USER-FLAGGED Accessibility sub-axis A — Escape-dismiss
    audit (Phase 4ax candidate, NEXT-UP).** Scope locked in
    Phase 4aw (CS-75 D3 / D6); see canonical sub-axis A row in
    the Phase 4q register table. First-deliverable Phase 4ax: new
@@ -5026,7 +5035,13 @@ Ctrl+↑/↓ Tooltip) → 4ay (palette) → 4az (keyboard) → 4ba
    audit inventory of every `tk.Toplevel` construction site
    captured in the Phase 4ax decision lock, bundles Phase 4av
    friction #1 (Ctrl+↑/↓ Tooltip on `NodeStylesDialog`).
-   Reasoning level: **medium**.
+   Reasoning level: **medium**.~~ ✅ **Resolved in Phase 4ax
+   (CS-76).** Cross-ref the sub-axis A canonical register row
+   above (now ✅). Ten Toplevels wired (three primary dialogs
+   + seven binah.py app dialogs); Phase 4av friction #1
+   Tooltip retrofit landed; CS-75 D3 lock relaxed to cover the
+   binah.py expansion (user-elicited at step 5). 17 net new
+   tests pin the contract.
 
 2. 🟡 **USER-FLAGGED Accessibility sub-axis B — Colour-blind
    palette opt-in (Phase 4ay candidate).** Scope locked in
@@ -5071,7 +5086,7 @@ Ctrl+↑/↓ Tooltip) → 4ay (palette) → 4az (keyboard) → 4ba
    later sub-batch if a natural pairing emerges. Reasoning
    level: **low** if standalone.
 
-6. 🟢 **Phase 4ax sub-axis A bundling risk (Claude-surfaced,
+6. 🟢 ~~**Phase 4ax sub-axis A bundling risk (Claude-surfaced,
    Phase 4aw artifact).** Phase 4aw locks the Phase 4ax
    first-deliverable as "Escape-dismiss audit + Ctrl+↑/↓
    Tooltip wire-up + `accessibility.py` shell" — three
@@ -5084,9 +5099,16 @@ Ctrl+↑/↓ Tooltip) → 4ay (palette) → 4az (keyboard) → 4ba
    Phase 4ax may relax to **high** reasoning if the inventory
    is large, OR split into 4ax (module shell + Tooltip
    retrofit) and 4ay-prefix (Escape audit alone). Decide at
-   Phase 4ax decision-lock time. No register entry.
+   Phase 4ax decision-lock time. No register entry.~~
+   ✅ **Resolved in Phase 4ax.** The bundle fit at **medium**
+   reasoning. Three core CS-75 D3 dialogs + Phase 4av friction
+   #1 Tooltip retrofit landed in three commits; user-elicited
+   binah.py expansion (7 additional dialogs) landed as a
+   fourth commit without overrunning the phase budget. Three
+   plot_widget.py + xas_analysis_tab.py + ledge_normalizer.py
+   sites carry forward as out-of-scope inventory.
 
-7. 🟢 **CS-75 D6 Tooltip convention retroactive-only-in-4ax
+7. 🟢 ~~**CS-75 D6 Tooltip convention retroactive-only-in-4ax
    (Claude-surfaced, Phase 4aw artifact).** The Ctrl+↑/↓
    binding shipped in Phase 4av item #3 remains undiscoverable
    until Phase 4ax lands the retroactive Tooltip wire-up. If
@@ -5095,9 +5117,12 @@ Ctrl+↑/↓ Tooltip) → 4ay (palette) → 4az (keyboard) → 4ba
    acceptable — a single keyboard-savvy power user might
    discover the binding from the CS-74 docstring; the broader
    discoverability convention lands the moment Phase 4ax does.
-   No register entry.
+   No register entry.~~ ✅ **Resolved in Phase 4ax (CS-76).**
+   Tooltip retrofit landed in commit `9c7b177`; the Ctrl+↑/↓
+   binding is now discoverable via hover on the NodeStylesDialog
+   Combobox.
 
-8. 🟢 **`accessibility.py` module shell lock drift risk
+8. 🟢 ~~**`accessibility.py` module shell lock drift risk
    (Claude-surfaced, Phase 4aw artifact).** CS-75 locks the
    module shell to host `bind_escape_to_close` +
    `attach_shortcut_tooltip` initially, growing to
@@ -5106,7 +5131,11 @@ Ctrl+↑/↓ Tooltip) → 4ay (palette) → 4az (keyboard) → 4ba
    non-accessibility phase intervenes), the lock content may
    drift from reality. Re-validate the locks at Phase 4ax
    session start before relying on the recipe pattern. No
-   register entry.
+   register entry.~~ ✅ **Resolved in Phase 4ax (CS-76).**
+   Phase 4ax landed immediately after Phase 4aw — no drift
+   window opened. The module surface now exists with the two
+   locked helpers; `active_palette` (Phase 4ay) and
+   `scale_font_size` (Phase 4ba) lock entries remain accurate.
 
 9. 🟡 **USER-FLAGGED Axis nomenclature rename** continues.
    Cross-ref Phase 4ao friction #4. Massive cross-codebase
@@ -5137,6 +5166,139 @@ Ctrl+↑/↓ Tooltip) → 4ay (palette) → 4az (keyboard) → 4ba
     register row remains as the inventory + design-pass record
     with an inline [Phase 4aw note] annotation.
    ✅ **Scope-locked Phase 4aw (CS-75).** Cross-ref Phase 4al friction #2 (canonical scope-lock record).
+
+### Friction points carried forward from Phase 4ax
+
+These are concrete obstacles the next Phase 4 session will hit.
+Phase 4ax landed the first sub-batch of the CS-75 Accessibility
+umbrella — sub-axis A (Escape-dismiss audit + `accessibility.py`
+module shell + Phase 4av friction #1 Tooltip retrofit). Four code
+commits + this bookkeeping commit. User-elicited at step 5: the
+binah.py expansion landed as a fourth commit growing CS-75 D3's
+audit scope from three primary dialogs to ten total Toplevels.
+1584 tests, all green (1567 baseline + 17 net new). PTMG_FORMAT_VERSION
+unchanged. **Do not fix until the relevant subsequent Phase 4
+session.**
+
+1. 🟡 **USER-FLAGGED Accessibility sub-axis B — Colour-blind
+   palette opt-in (Phase 4ay candidate, NEXT-UP).** Scope locked
+   in Phase 4aw (CS-75 D2); see canonical sub-axis B row in the
+   Phase 4q register table. First-deliverable Phase 4ay: new
+   `node_styles.SPECTRUM_PALETTE_NAME` constant +
+   `active_palette()` getter + Wong 2011 deuteranopia-safe
+   8-colour palette + new "Accessibility" tab in
+   `PlotConfigDialog` (CS-75 D1 first surface). CS-21 D3 lock
+   additive relaxation. `pick_default_color` (CS-21 D3
+   three-caller list) becomes palette-aware "for free" once
+   it consults `active_palette()` internally. Reasoning level:
+   **medium**.
+
+2. 🟡 **USER-FLAGGED Accessibility sub-axis C — Keyboard
+   shortcuts first batch + KEYBINDINGS.md (Phase 4az
+   candidate).** Scope locked Phase 4aw (CS-75 D3 / D6); see
+   canonical sub-axis C row in the Phase 4q register table.
+   First batch candidates: Ctrl+G group, Ctrl+Shift+G ungroup,
+   Delete discard, F2 rename. Per-component `bind` pattern
+   (CS-74 / CS-76 precedent — `bind_escape_to_close` is the
+   canonical adapter shape; new shortcut helpers may follow
+   suit if a cross-cut emerges). Phase 4ax's
+   `attach_shortcut_tooltip` is the canonical Tooltip entry
+   point for shortcut discoverability — every Phase 4az
+   shortcut-bearing widget routes through it. Reasoning level:
+   **medium**.
+
+3. 🟡 **USER-FLAGGED Accessibility sub-axis D — Font-scale
+   multiplier (Phase 4ba candidate).** Scope locked Phase 4aw
+   (CS-75 D4); see canonical sub-axis D row in the Phase 4q
+   register table. Adds `accessibility.scale_font_size` helper
+   to the Phase 4ax module shell. Reasoning level: **high**
+   (touches every dialog module).
+
+4. 🟢 **Out-of-scope Toplevel inventory carry-forward
+   (Claude-surfaced, Phase 4ax artifact).** Phase 4ax wired
+   ten of ~30 `tk.Toplevel(` sites repo-wide. Remaining sites
+   to evaluate for Escape-recipe expansion in a future
+   accessibility-adjacent phase:
+   * `plot_widget.py` — 7 user-facing sites (lines 1826,
+     1948, 2169, 2304, 2457, 3355, 3996). Likely user-facing
+     dialogs deserving the recipe; the natural next expansion
+     target if the user signals a need.
+   * `xas_analysis_tab.py` — 2 sites (lines 684, 1300).
+   * `ledge_normalizer.py` — 1 site (line 1218).
+   * `nbo_viewer_app.py` — 13 sites. Sibling-app surface;
+     not reached from the main SpecTRACE entry point today.
+     Out of scope until/unless that app integrates further.
+   * `tooltip.py:78` + `plot_widget.py:123` — Tooltip's own
+     internal infra. Out of scope (CS-42 internal, not
+     user-facing).
+   No register entry — captured in CS-76's out-of-scope
+   inventory subsection. Reasoning level: **low** if pursued
+   as a standalone bundle, **medium** if rolled into Phase
+   4az / 4ba as opportunistic cross-cut wiring.
+
+5. 🟢 **`event_generate` flakiness on transient withdrawn
+   Toplevels (Claude-surfaced, Phase 4ax artifact).** The
+   `bind_escape_to_close` helper now returns the bound
+   callback so tests can invoke it directly — synthetic
+   `event_generate` calls are unreliable across the full
+   suite (the dispatch fires in isolation but is intermittently
+   dropped once many Toplevels have been built and torn down).
+   Production callers ignore the return value. If a future
+   accessibility helper goes through similar event mechanics
+   (e.g. Phase 4az's shortcut handlers), it should follow the
+   same return-the-callback-for-testability pattern. No
+   register entry — captured in CS-76's `bind_escape_to_close`
+   docstring.
+
+6. 🟢 **Hard-coded Tooltip text on the NodeStylesDialog
+   Combobox (Claude-surfaced, Phase 4ax artifact).** The
+   Phase 4av Ctrl+↑/↓ Tooltip text reads `"Ctrl+↑/↓ to step
+   through nodes"`. If the binding grows a third gesture (a
+   plausible Phase 4az addition — Ctrl+Home / Ctrl+End to
+   jump to first/last node), the Tooltip text doesn't
+   auto-update; the implementer would need to manually
+   rotate via `self._combobox_tooltip.update_text(...)`.
+   Mitigation: the Tooltip handle is already stored on the
+   dialog instance for exactly this rotation. No register
+   entry.
+
+7. 🟢 **Phase 4av carry-forward items #2 / #3 / #4 still
+   open (continued from Phase 4aw friction #5).** Phase 4ax
+   deliberately did not fold the three non-accessibility
+   Phase 4av Claude-surfaced items into this scope: (#2)
+   "Reset" button label semantics shift, (#3)
+   `_set_universal_disabled` root readonly-Combobox latent
+   bug, (#4) DISCARDED glyph distinguishability. Each remains
+   in the Phase 4av friction section as an open low-reasoning
+   follow-up. Candidates for a separate "Phase 4av polish
+   follow-through" mini-phase OR fold-in to a later sub-batch.
+   Reasoning level: **low** if standalone.
+
+8. 🟡 **USER-FLAGGED Axis nomenclature rename** continues.
+   Cross-ref Phase 4ao friction #4. Massive cross-codebase
+   rename. Reasoning level: **extra-high**.
+
+9. 🟡 **USER-FLAGGED Rich-text axis labels (mathtext)**
+   continues. Cross-ref Phase 4ao friction #5. Reasoning
+   level: **medium**.
+
+10. 🟡 **USER-FLAGGED External-output plot style presets**
+    continues. Cross-ref Phase 4ao friction #6. User has
+    reference Jupyter notebook code (paths TBD at session
+    start). Reasoning level: **high**.
+
+11. 🟢 **CS-75 D3 lock relaxation precedent set
+    (Claude-surfaced, Phase 4ax artifact).** Phase 4aw locked
+    D3 to enumerate three primary dialogs as the audit scope;
+    Phase 4ax extended it to also cover seven binah.py app
+    dialogs via user direction at step 5. This is the first
+    CS-75 lock relaxation in the umbrella series. Future
+    sub-batches may relax similarly (e.g. Phase 4az might
+    extend D3's keyboard-nav scope beyond the listed surfaces
+    if the user wants broader coverage). The pattern: locks
+    enumerate Phase-4aw-known surfaces; step-5 elicitation is
+    the canonical relaxation gate. No register entry — captured
+    in CS-76's "CS-75 D3 lock relaxation" subsection.
 
 ---
 
@@ -5353,7 +5515,7 @@ the resolving phase + commit SHA appended to the row.
 
 ---
 
-*Document version: 1.48 — May 2026*
+*Document version: 1.49 — May 2026*
 *1.1: Known Bugs register added 2026-04-27 after Phase 4b manual testing.*
 *1.2: Phase 4c — baseline correction lands; B-001 / B-003 / B-004
 resolved; Phase 4c friction points logged.*
@@ -6423,4 +6585,5 @@ LS_OPTIONS sync (`dcb0c02`) + UVVisTab integration
 registration (`f1868f5`) + this bookkeeping.*
 *1.47: Phase 4av — CS-74 polish-bundle additions (no new CS, one small CS-21 D3 relaxation). Four Claude-surfaced items from the Phase 4au step-5 elicitation landed together: state-badge Combobox prefix, palette-picked colour Reset, Ctrl+↑/↓ Combobox navigation, Y-axis NodeType guard. 29 net new tests across four TestCase classes + 9 existing-test string-pin updates. 1567 tests, all green (1538 + 29 new). PTMG_FORMAT_VERSION unchanged. See COMPONENTS.md CS-74 sub-section "Phase 4av polish-bundle additions" for the full bookkeeping record.*
 *1.48: Phase 4aw scope pass — first scope-only phase in the Phase 4 series. Decomposed the canonical Accessibility features umbrella row (USER-FLAGGED Phase 4al) into seven sub-axis rows (A Escape-dismiss audit, B colour-blind palette opt-in, C keyboard shortcuts first batch, D font-scale multiplier — all four implementable; E screen-reader, F high-contrast, G dyslexia font — all three deferred). Subsumed the Phase 4af keyboard shortcuts whole-interface evaluation pass row into sub-axis C (inline annotation kept on the original row). Walked the Accessibility umbrella friction chain across phases 4al → 4av — every prior cross-ref gained a Phase 4aw scope-lock annotation; Phase 4av friction #1 (Ctrl+↑/↓ discoverability) folded into Phase 4ax sub-axis A bundle. Two doc commits (COMPONENTS CS-75 + BACKLOG sub-axis decomposition) + this bookkeeping. 1567 tests, all green — zero deltas vs Phase 4av baseline. PTMG_FORMAT_VERSION unchanged.*
+*1.49: Phase 4ax — first sub-batch of the CS-75 Accessibility umbrella (sub-axis A — Escape-dismiss audit). New `accessibility.py` module shell hosts `bind_escape_to_close(toplevel, handler)` (returns the bound callback for test determinism) + `attach_shortcut_tooltip(widget, text)` (thin delegate over CS-42 `Tooltip`); CS-76 added in COMPONENTS.md. Escape recipe wired into ten Toplevels: three primary dialogs (NodeStyles / PlotConfig / Style — all routing through `_on_close_requested`) plus seven binah.py app dialogs (FEFF Setup / Load Spectrum / SXRMB / BioXAS / Athena / No-Data / Impl Drift — all binding to `win.destroy`); user-elicited at step 5 — the binah.py expansion grew CS-75 D3's audit scope beyond the original three-primary-dialogs enumeration. Phase 4av friction #1 (Ctrl+↑/↓ discoverability) closed via retroactive `attach_shortcut_tooltip` on the NodeStylesDialog Combobox. Sub-axis A canonical register row marked ✅. Phase 4aw friction items 1 / 6 / 7 / 8 struck through (sub-axis A canonical entry / bundling-risk / D6 retroactive-only-in-4ax / module shell lock drift — all resolved); Phase 4av friction #1 upgraded from "Folded into" to ✅ Resolved. Four code commits (b586982 / f7c41f1 / 9c7b177 / 2e8f97a) + this bookkeeping. 1584 tests, all green (1567 baseline + 17 net new: 10 unit in test_accessibility including a source-level binah.py inventory sentinel; 7 integration across the three primary dialog tests; 1 Tooltip-presence sentinel in TestNodeStylesDialogKeyboardNavPhase4av). PTMG_FORMAT_VERSION unchanged — no schema keys added.*
 *Supersedes: BACKLOG.md (original)*

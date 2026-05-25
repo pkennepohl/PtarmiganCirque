@@ -40,6 +40,7 @@ TEST_MODULES = (
     "test_operation_hash",
     "test_project_io",
     "test_persistence_phase_a",
+    "test_accessibility",
 )
 
 

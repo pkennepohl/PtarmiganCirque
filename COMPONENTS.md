@@ -11656,9 +11656,155 @@ naturally invites font-family work (G). Each deferred sub-axis
 remains in BACKLOG as a stub row cross-referencing CS-75; no
 phase ladder slot is reserved.
 
+## CS-76 — Accessibility module shell + Escape-dismiss audit (Phase 4ax)
+
+First sub-batch of the CS-75 Accessibility umbrella. Lands the
+new `accessibility.py` module hosting the recipe-canonical entry
+points the umbrella ladder consults; wires CS-75 D3's Escape
+recipe into every modal/modeless dialog in the audit scope; and
+retroactively applies CS-75 D6's Tooltip-only discoverability
+convention to the Phase 4av Ctrl+↑/↓ Combobox-stepping binding
+(closes Phase 4av friction #1).
+
+### Module surface — `accessibility.py`
+
+Two module-level helpers, both stateless. Each is the
+recipe-canonical entry point — every implementation goes through
+it rather than re-deriving the gesture or constant locally.
+
+* **`bind_escape_to_close(toplevel, handler) -> Callable`** —
+  binds `<Escape>` on `toplevel`; the wrapped callback invokes
+  `handler()` and returns `"break"` so Tk does not propagate
+  the event further. `handler` is typically the dialog's
+  `_on_close_requested` method (the same callable that
+  `WM_DELETE_WINDOW` routes through). Returns the bound callback
+  so tests can invoke it deterministically — `event_generate`
+  on transient/withdrawn Toplevels is unreliable across the full
+  test suite (same caveat documented in
+  `test_collapsible_section` / `test_plot_settings_dialog`).
+  Production callers ignore the return value.
+
+* **`attach_shortcut_tooltip(widget, text) -> Tooltip`** — thin
+  delegate over `tooltip.Tooltip` (CS-42) so call-sites read as
+  shortcut-discoverability intent rather than the generic
+  Tooltip constructor. Returns the constructed Tooltip so
+  callers can rotate the text later via `Tooltip.update_text`.
+
+Phase 4ay adds `active_palette() -> tuple[str, ...]` (sub-axis B
+— may live in `node_styles.py` per migration taste); Phase 4ba
+adds `scale_font_size(base_pt: int) -> int` (sub-axis D).
+
+### Escape-binding recipe — wired sites
+
+Phase 4aw locked CS-75 D3's audit scope as the three primary
+dialogs. Phase 4ax wires those plus — by user direction at
+step-5 elicitation — the seven app-level `binah.py` Toplevels
+that surface user-facing import / load / diagnostic dialogs.
+
+| Site | Module | Handler |
+|---|---|---|
+| `NodeStylesDialog` | `node_styles_dialog.py` | `self._on_close_requested` |
+| `PlotConfigDialog` | `plot_settings_dialog.py` | `self._on_close_requested` |
+| `StyleDialog` | `style_dialog.py` | `self._on_close_requested` |
+| FEFF Setup | `binah.py` | `win.destroy` |
+| Load Spectrum (replace / add / cancel) | `binah.py` | `win.destroy` |
+| SXRMB Import — Select Signal | `binah.py` | `win.destroy` |
+| Load .dat — Options (BioXAS) | `binah.py` | `win.destroy` |
+| Select Scans — Athena project | `binah.py` | `win.destroy` |
+| No Spectrum Data Found | `binah.py` | `win.destroy` |
+| Implementation Drift Details | `binah.py` | `top.destroy` |
+
+All ten sites bind `<Escape>` immediately after the Toplevel's
+title / transient / grab_set setup so the binding is effective
+before any descendant widget construction. The three primary
+dialogs route through `_on_close_requested` (the same handler
+`WM_DELETE_WINDOW` calls); the seven `binah.py` sites bind
+directly to `win.destroy` because their default-cancel state
+already matches the result of a destroy without further
+side-effects.
+
+### CS-75 D3 lock relaxation
+
+CS-75 D3's enumerated audit scope listed the three primary
+dialogs + three high-traffic left-pane gesture surfaces. Phase
+4ax expanded the dialog list to also cover the seven `binah.py`
+app dialogs above. The recipe is unchanged — only the surface
+area covered grew. Left-pane gesture surfaces (ScanTreeWidget
+row gestures, footer Combine/Group, Send-to-Compare) are not
+Toplevels and remain unaddressed here; they're carry-forward
+for the Phase 4az keyboard-shortcuts batch.
+
+### Tooltip retrofit — Phase 4av friction #1
+
+`NodeStylesDialog._build_combobox` now wires
+`attach_shortcut_tooltip(self._combobox, "Ctrl+↑/↓ to step
+through nodes")` immediately after the `<<ComboboxSelected>>`
+bind. The Tooltip handle is stored on
+`self._combobox_tooltip` so future phases can rotate the
+text (e.g. if the binding gains a third gesture). The CS-42
+Tooltip class is unchanged.
+
+### Out-of-scope Toplevel inventory (Phase 4ax decision lock)
+
+Other `tk.Toplevel(` construction sites in the repo at Phase
+4ax landing time. None are wired by this phase; each is a
+future-phase candidate or out-of-scope per CS-75 D5
+(Windows-only v1) / D3 (Tk-internal file pickers excluded).
+
+* `plot_widget.py` — 7 user-facing sites (lines 1826, 1948,
+  2169, 2304, 2457, 3355, 3996); line 123 is the Tooltip's
+  own internal infra and out of scope.
+* `xas_analysis_tab.py` — 2 sites (lines 684, 1300).
+* `ledge_normalizer.py` — 1 site (line 1218).
+* `nbo_viewer_app.py` — 13 sites. Sibling-app surface, not
+  reached from the main SpecTRACE entry point today; out of
+  scope until/unless that app integrates further.
+* `tooltip.py:78` — Tooltip's own Toplevel construction; out
+  of scope (CS-42 internal infra, not user-facing).
+
+A source-level sentinel in
+`test_accessibility.TestBinahEscapeInventoryPhase4ax` pins the
+`tk.Toplevel(` ↔ `bind_escape_to_close(` count parity in
+`binah.py` at 7-to-7; if a future commit adds a Toplevel
+without the recipe, the counts diverge and the sentinel fails.
+
+### Phase 4ax landing
+
+Four code commits + one bookkeeping:
+
+1. `b586982` — `accessibility.py` module shell + 9 unit tests.
+2. `f7c41f1` — Escape audit integration on three primary
+   dialogs + 6 integration tests + 1 new unit sentinel.
+3. `9c7b177` — Phase 4av friction #1 Tooltip retrofit + 1
+   sentinel.
+4. `2e8f97a` — `binah.py` 7-dialog Escape expansion + 1
+   source-level inventory sentinel.
+
+1584 tests, all green (1567 baseline + 17 net new: 10 unit
+in `test_accessibility` including the binah inventory, plus
+7 integration in `test_node_styles_dialog` (3) /
+`test_style_dialog` (2) / `test_plot_settings_dialog` (2)).
+PTMG_FORMAT_VERSION unchanged — no schema keys added.
+
+### Architectural follow-up
+
+Sub-axis A is ✅ landed. The Phase 4aw ladder continues:
+**Phase 4ay** ships sub-axis B (colour-blind palette opt-in)
+including the first surface of the "Accessibility" tab in
+`PlotConfigDialog` (CS-75 D1). **Phase 4az** ships sub-axis C
+(keyboard shortcuts first batch + `KEYBINDINGS.md` sister
+doc). **Phase 4ba** ships sub-axis D (font-scale multiplier
+bulk pass + slider in the Accessibility tab).
+
+The `accessibility.py` module is now established as the
+canonical home for cross-axis accessibility helpers; each
+subsequent sub-batch adds its recipe-canonical helper here
+(Phase 4ay → `active_palette()` if hosted module-level;
+Phase 4ba → `scale_font_size`).
+
 ---
 
-*Document version: 1.49 — May 2026*
+*Document version: 1.50 — May 2026*
 *1.1: CS-13 implementation notes added in Phase 4a.*
 *1.2: CS-14 Plot Settings Dialog added in Phase 4b.*
 *1.3: CS-15 UV/Vis Baseline Correction + CS-04 implementation
@@ -13106,5 +13252,28 @@ KEYBINDINGS.md sister doc (medium); 4ba font-scale bulk pass
 hosting `bind_escape_to_close` + `attach_shortcut_tooltip` (D6
 recipe canonical entry points). Test suite stays at 1567
 (Phase 4av baseline). PTMG_FORMAT_VERSION unchanged.*
+*1.50: CS-76 added in Phase 4ax. First sub-batch of the CS-75
+Accessibility umbrella. New `accessibility.py` module hosts
+`bind_escape_to_close(toplevel, handler)` (returns the bound
+callback for testability) + `attach_shortcut_tooltip(widget,
+text)` (thin delegate over CS-42 `Tooltip`). Escape recipe
+wired into ten Toplevels: three primary dialogs (NodeStyles /
+PlotConfig / Style — all routing through `_on_close_requested`)
+plus seven binah.py app dialogs (FEFF Setup / Load Spectrum /
+SXRMB / BioXAS / Athena / No-Data / Impl Drift — all binding
+to `win.destroy`). User-elicited at step 5: the binah.py
+expansion grew CS-75 D3's audit scope beyond the original
+three-primary-dialogs enumeration. Phase 4av friction #1
+(Ctrl+↑/↓ discoverability) closed via retroactive
+`attach_shortcut_tooltip` on the NodeStylesDialog Combobox.
+17 net new tests (10 in test_accessibility including a
+source-level binah.py inventory sentinel pinning
+`tk.Toplevel(` ↔ `bind_escape_to_close(` parity at 7-to-7;
+2 each in test_node_styles_dialog / test_style_dialog /
+test_plot_settings_dialog; 1 Tooltip-presence sentinel in
+the existing TestNodeStylesDialogKeyboardNavPhase4av).
+1584 tests, all green (1567 baseline + 17 new). Four code
+commits + bookkeeping. PTMG_FORMAT_VERSION unchanged — no
+schema keys added.*
 *To be updated as Open Questions are resolved and new components
 are specified.*

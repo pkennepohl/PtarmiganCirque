@@ -42,6 +42,7 @@ import feff_manager
 from xas_analysis_tab import XASAnalysisTab
 from uvvis_tab import UVVisTab
 import project_manager as pm
+from accessibility import bind_escape_to_close
 
 
 class OrcaTDDFTApp(tk.Tk):
@@ -369,6 +370,7 @@ class OrcaTDDFTApp(tk.Tk):
         win.geometry("760x430")
         win.minsize(620, 320)
         win.transient(self)
+        bind_escape_to_close(win, win.destroy)  # Phase 4ax CS-75 D3
 
         hdr = tk.Frame(win, bg="#003366", padx=12, pady=10)
         hdr.pack(fill=tk.X)
@@ -626,6 +628,7 @@ class OrcaTDDFTApp(tk.Tk):
         win.resizable(False, False)
         win.grab_set()
         win.transient(self)
+        bind_escape_to_close(win, win.destroy)  # Phase 4ax CS-75 D3 (cancel by default)
 
         result = {"action": "cancel"}
 
@@ -737,6 +740,7 @@ class OrcaTDDFTApp(tk.Tk):
         win.title("SXRMB Import — Select Signal")
         win.resizable(False, False)
         win.grab_set()
+        bind_escape_to_close(win, win.destroy)  # Phase 4ax CS-75 D3
 
         hdr = tk.Frame(win, bg="#003366", pady=6)
         hdr.pack(fill=tk.X)
@@ -795,6 +799,7 @@ class OrcaTDDFTApp(tk.Tk):
         win.title("Load .dat — Options")
         win.resizable(False, False)
         win.grab_set()
+        bind_escape_to_close(win, win.destroy)  # Phase 4ax CS-75 D3
 
         # Header
         hdr = tk.Frame(win, bg="#6B0000", padx=12, pady=8)
@@ -883,6 +888,7 @@ class OrcaTDDFTApp(tk.Tk):
         win.title(f"Select Scans — {os.path.basename(path)}")
         win.resizable(True, True)
         win.grab_set()
+        bind_escape_to_close(win, win.destroy)  # Phase 4ax CS-75 D3
 
         hdr = tk.Frame(win, bg="#6B0000", padx=12, pady=8)
         hdr.pack(fill=tk.X)
@@ -986,6 +992,7 @@ class OrcaTDDFTApp(tk.Tk):
         win.title("No Spectrum Data Found")
         win.resizable(False, False)
         win.grab_set()
+        bind_escape_to_close(win, win.destroy)  # Phase 4ax CS-75 D3
 
         hdr = tk.Frame(win, bg="#8B0000", padx=12, pady=8)
         hdr.pack(fill=tk.X)
@@ -1556,6 +1563,7 @@ class OrcaTDDFTApp(tk.Tk):
         top = tk.Toplevel(self)
         top.title("Implementation Drift Details")
         top.transient(self)
+        bind_escape_to_close(top, top.destroy)  # Phase 4ax CS-75 D3
         tk.Label(
             top,
             text=(f"{n} operation{plural} were saved with a different "

@@ -110,6 +110,7 @@ from typing import Any, Callable, Iterable, Optional
 from nodes import DataNode, NodeState, NodeType
 from graph import GraphEvent, GraphEventType, ProjectGraph
 from node_styles import pick_default_color
+from accessibility import bind_escape_to_close, attach_shortcut_tooltip
 
 _log = logging.getLogger(__name__)
 
@@ -329,6 +330,9 @@ class NodeStylesDialog(tk.Toplevel):
 
         self.bind("<Destroy>", self._on_destroy, add="+")
         self.protocol("WM_DELETE_WINDOW", self._on_close_requested)
+        # Phase 4ax CS-75 D3 / CS-76: <Escape> mirrors WM_DELETE_WINDOW
+        # so the user can dismiss the dialog from the keyboard.
+        bind_escape_to_close(self, self._on_close_requested)
 
         # Phase 4av item #3: keyboard Combobox stepping. Ctrl modifier
         # so the bindings don't shadow Tk's built-in Combobox arrow
@@ -391,6 +395,12 @@ class NodeStylesDialog(tk.Toplevel):
         self._combobox.pack(side=tk.LEFT, fill=tk.X, expand=True)
         self._combobox.bind(
             "<<ComboboxSelected>>", self._on_combobox_selected,
+        )
+        # Phase 4ax CS-75 D6 (Phase 4av friction #1 retrofit): Tooltip
+        # describes the Ctrl+Up/Down keyboard-stepping shortcut bound
+        # on the Toplevel (see _on_keyboard_step_next / _prev).
+        self._combobox_tooltip = attach_shortcut_tooltip(
+            self._combobox, "Ctrl+↑/↓ to step through nodes",
         )
 
         # Initial selection: the first node, if any.

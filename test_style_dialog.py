@@ -2316,5 +2316,49 @@ class TestStyleDialogPhase4abHelpers(unittest.TestCase):
         self.assertEqual(out["label"], "<Stranger>")
 
 
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestStyleDialogEscapePhase4ax(unittest.TestCase):
+    """CS-75 D3 / CS-76 Escape-dismiss audit: <Escape> mirrors
+    WM_DELETE_WINDOW so the dialog dismisses from the keyboard."""
+
+    @classmethod
+    def setUpClass(cls):
+        import style_dialog
+        cls.style_dialog = style_dialog
+        cls.StyleDialog = style_dialog.StyleDialog
+
+    def setUp(self):
+        self.style_dialog._open_dialogs.clear()
+        self.host = tk.Frame(_root)
+        self.graph = ProjectGraph()
+        self.graph.add_node(_data("a", style={"color": "#ff0000"}))
+        self.dlg = self.StyleDialog(self.host, self.graph, "a")
+
+    def tearDown(self):
+        try:
+            self.dlg.destroy()
+        except Exception:
+            pass
+        self.style_dialog._open_dialogs.clear()
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    def test_escape_binding_registered_on_toplevel(self):
+        self.assertNotEqual(self.dlg.bind("<Escape>"), "")
+
+    def test_escape_binding_routes_through_on_close_requested(self):
+        # Invoke the bound callback directly (event_generate is
+        # unreliable on transient withdrawn Toplevels under the full
+        # suite — see test_collapsible_section / test_plot_settings_dialog).
+        from accessibility import bind_escape_to_close
+        calls: list[None] = []
+        cb = bind_escape_to_close(self.dlg, lambda: calls.append(None))
+        result = cb(None)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(result, "break")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

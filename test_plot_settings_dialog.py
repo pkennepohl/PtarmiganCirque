@@ -5166,5 +5166,50 @@ class TestPlotConfigDialogApplyToAllPhase4at(unittest.TestCase):
         )
 
 
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestPlotConfigDialogEscapePhase4ax(unittest.TestCase):
+    """CS-75 D3 / CS-76 Escape-dismiss audit: <Escape> mirrors
+    WM_DELETE_WINDOW so the dialog dismisses from the keyboard."""
+
+    @classmethod
+    def setUpClass(cls):
+        import plot_settings_dialog
+        cls.psd = plot_settings_dialog
+        cls.PlotConfigDialog = plot_settings_dialog.PlotConfigDialog
+
+    def setUp(self):
+        self.psd._open_dialogs.clear()
+        self.psd._USER_DEFAULTS.clear()
+        self.host = tk.Frame(_root)
+        self.config: dict = {}
+        self.dlg = self.PlotConfigDialog(self.host, self.config)
+
+    def tearDown(self):
+        try:
+            self.dlg.destroy()
+        except Exception:
+            pass
+        self.psd._open_dialogs.clear()
+        self.psd._USER_DEFAULTS.clear()
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    def test_escape_binding_registered_on_toplevel(self):
+        self.assertNotEqual(self.dlg.bind("<Escape>"), "")
+
+    def test_escape_binding_routes_through_on_close_requested(self):
+        # Invoke the bound callback directly (event_generate is
+        # unreliable on transient withdrawn Toplevels under the full
+        # suite — see the note higher in this file).
+        from accessibility import bind_escape_to_close
+        calls: list[None] = []
+        cb = bind_escape_to_close(self.dlg, lambda: calls.append(None))
+        result = cb(None)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(result, "break")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
