@@ -775,10 +775,14 @@ class TestPlotConfigDialogNotebookPhase4ai(unittest.TestCase):
 
     def test_tab_keys_constant_shape(self):
         # Canonical order. The Notebook pack order matches this tuple
-        # and tests downstream rely on it.
+        # and tests downstream rely on it. Phase 4ay (CS-75 D1)
+        # inserted "accessibility" right after "global" — a non-axis
+        # tab that hosts the palette opt-in (and, in later phases,
+        # the keyboard-shortcut table and font-scale slider).
         self.assertEqual(
             self.psd._TAB_KEYS,
-            ("global", "primary_x", "secondary_x",
+            ("global", "accessibility",
+             "primary_x", "secondary_x",
              "primary_y", "secondary_y", "tertiary_y"),
         )
 
@@ -790,6 +794,9 @@ class TestPlotConfigDialogNotebookPhase4ai(unittest.TestCase):
 
     def test_tab_titles_human_readable(self):
         self.assertEqual(self.psd._TAB_TITLES["global"], "Global")
+        self.assertEqual(
+            self.psd._TAB_TITLES["accessibility"], "Accessibility",
+        )
         self.assertEqual(self.psd._TAB_TITLES["primary_x"], "Primary X")
         self.assertEqual(self.psd._TAB_TITLES["secondary_x"], "Secondary X")
         self.assertEqual(self.psd._TAB_TITLES["primary_y"], "Primary Y")
@@ -808,7 +815,12 @@ class TestPlotConfigDialogNotebookPhase4ai(unittest.TestCase):
         # Notebook handle exposed for downstream tests.
         self.assertIs(dlg._notebook, notebooks[0])
 
-    def test_notebook_has_six_tabs_in_canonical_order(self):
+    def test_notebook_tabs_match_TAB_KEYS_in_canonical_order(self):
+        # Phase 4ay (CS-75 D1) bumped the tab count from 6 to 7 with
+        # the new "Accessibility" tab inserted after "Global". The
+        # assertion is now keyed on len(_TAB_KEYS) instead of the
+        # literal 6 so a future sub-axis tab insertion only needs the
+        # _TAB_KEYS constant update.
         dlg = self.PlotConfigDialog(self.host, self.config)
         dlg.update_idletasks()
         tab_ids = dlg._notebook.tabs()
@@ -5209,6 +5221,225 @@ class TestPlotConfigDialogEscapePhase4ax(unittest.TestCase):
         result = cb(None)
         self.assertEqual(len(calls), 1)
         self.assertEqual(result, "break")
+
+
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestPlotConfigDialogAccessibilityTabPhase4ay(unittest.TestCase):
+    """CS-75 D1 / D2 / Phase 4ay (sub-axis B): new Accessibility tab
+    + palette opt-in Combobox + commit-on-click semantics.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import plot_settings_dialog
+        import node_styles as ns
+        cls.psd = plot_settings_dialog
+        cls.node_styles = ns
+        cls.PlotConfigDialog = plot_settings_dialog.PlotConfigDialog
+
+    def setUp(self):
+        self.psd._open_dialogs.clear()
+        self.psd._USER_DEFAULTS.clear()
+        # Reset the active palette so a test from another module that
+        # flipped it does not leak in.
+        self.node_styles.set_active_palette("default")
+        self.host = tk.Frame(_root)
+        self.config: dict = {}
+        self.dlg = self.PlotConfigDialog(self.host, self.config)
+        self.dlg.update_idletasks()
+
+    def tearDown(self):
+        try:
+            self.dlg.destroy()
+        except Exception:
+            pass
+        self.psd._open_dialogs.clear()
+        self.psd._USER_DEFAULTS.clear()
+        self.node_styles.set_active_palette("default")
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    # ----- factory defaults schema additive (CS-46) ------------------
+
+    def test_factory_defaults_carries_accessibility_subdict(self):
+        # Schema-additive: the new ``accessibility`` sub-dict joins
+        # ``_FACTORY_DEFAULTS`` alongside the existing ``axes``
+        # sub-dict. PTMG_FORMAT_VERSION is NOT bumped.
+        self.assertIn("accessibility", self.psd._FACTORY_DEFAULTS)
+        self.assertEqual(
+            self.psd._FACTORY_DEFAULTS["accessibility"],
+            {"palette": "default"},
+        )
+
+    def test_universal_defaults_carries_accessibility_subdict(self):
+        # _UNIVERSAL_DEFAULTS is a deepcopy of _FACTORY_DEFAULTS so
+        # the new key rides along automatically. Pin so a refactor
+        # that splits the two dicts doesn't drop the slot.
+        self.assertIn("accessibility", self.psd._UNIVERSAL_DEFAULTS)
+
+    def test_working_copy_seeded_with_accessibility_default(self):
+        # The dialog's working copy starts from _FACTORY_DEFAULTS, so
+        # opening with an empty caller config still surfaces the
+        # accessibility sub-dict with palette = "default".
+        self.assertEqual(
+            self.dlg._working["accessibility"]["palette"], "default",
+        )
+
+    # ----- tab presence -----------------------------------------------
+
+    def test_accessibility_tab_frame_exists(self):
+        # CS-75 D1: the new tab must be in the per-tab frame registry
+        # with the canonical key.
+        self.assertIn("accessibility", self.dlg._tab_frames)
+        self.assertIsInstance(
+            self.dlg._tab_frames["accessibility"], tk.Frame,
+        )
+
+    def test_accessibility_tab_is_second_in_notebook(self):
+        # "Global" is first, "Accessibility" is second. This keeps
+        # accessibility settings prominent (close to where users land)
+        # while the axis tabs stay grouped together at the right.
+        tab_ids = self.dlg._notebook.tabs()
+        text_for_each = [
+            self.dlg._notebook.tab(t, "text") for t in tab_ids
+        ]
+        self.assertEqual(text_for_each[0], "Global")
+        self.assertEqual(text_for_each[1], "Accessibility")
+
+    # ----- palette Combobox shape -------------------------------------
+
+    def test_palette_combobox_exists_on_accessibility_tab(self):
+        # The dialog exposes ``_palette_combobox`` after the tab
+        # builds — the explicit handle is the test affordance for the
+        # state + values assertions below.
+        self.assertTrue(hasattr(self.dlg, "_palette_combobox"))
+        cb = self.dlg._palette_combobox
+        self.assertIsInstance(cb, ttk.Combobox)
+
+    def test_palette_combobox_is_readonly(self):
+        # Per CS-75 D2, the palette is opt-in from a fixed set —
+        # free-form text would let the user type a name we don't
+        # know. Pin readonly so a future refactor can't relax it
+        # silently.
+        cb = self.dlg._palette_combobox
+        self.assertEqual(str(cb.cget("state")), "readonly")
+
+    def test_palette_combobox_values_match_palette_labels(self):
+        # The Combobox surfaces human labels; the underlying raw keys
+        # are :data:`node_styles.SPECTRUM_PALETTE_NAMES`. Verify the
+        # mapping is consistent and the dropdown lists each palette.
+        cb = self.dlg._palette_combobox
+        values = tuple(str(v) for v in cb.cget("values"))
+        self.assertEqual(values, self.psd._PALETTE_LABELS)
+        # And the mapping covers every name.
+        for name in self.node_styles.SPECTRUM_PALETTE_NAMES:
+            self.assertIn(name, self.psd._PALETTE_LABEL_BY_NAME)
+
+    def test_palette_combobox_initial_value_is_default_label(self):
+        # Fresh dialog → working palette is "default" → Combobox
+        # shows the "Default" label.
+        cb = self.dlg._palette_combobox
+        self.assertEqual(
+            str(cb.get()),
+            self.psd._PALETTE_LABEL_BY_NAME["default"],
+        )
+
+    # ----- commit-on-click (CS-75 D2) ---------------------------------
+
+    def test_palette_flip_writes_through_to_working_copy(self):
+        # User flips the Combobox to "Wong 2011" → the writer
+        # callback translates label → raw key → writes the nested
+        # ``_working["accessibility"]["palette"]`` slot.
+        self.dlg._suspend_writes = False
+        self.dlg._palette_var.set(
+            self.psd._PALETTE_LABEL_BY_NAME["wong_2011"],
+        )
+        self.assertEqual(
+            self.dlg._working["accessibility"]["palette"], "wong_2011",
+        )
+
+    def test_palette_flip_updates_active_palette(self):
+        # The flip MUST call node_styles.set_active_palette so the
+        # renderer's next pick_default_color uses the chosen palette
+        # for any new node creation.
+        self.dlg._suspend_writes = False
+        self.dlg._palette_var.set(
+            self.psd._PALETTE_LABEL_BY_NAME["wong_2011"],
+        )
+        self.assertIs(
+            self.node_styles.active_palette(),
+            self.node_styles.WONG_2011_PALETTE,
+        )
+
+    def test_palette_flip_marks_accessibility_tab_dirty(self):
+        # CS-60 modified-tab marker convention. The "accessibility"
+        # tab title gains the " •" suffix on the first flip.
+        self.dlg._suspend_writes = False
+        self.dlg._palette_var.set(
+            self.psd._PALETTE_LABEL_BY_NAME["wong_2011"],
+        )
+        # Locate the accessibility tab's frame index + title.
+        frame = self.dlg._tab_frames["accessibility"]
+        title = self.dlg._notebook.tab(frame, "text")
+        self.assertTrue(
+            title.endswith(self.psd._MODIFIED_TAB_SUFFIX),
+            f"expected dirty marker on {title!r}",
+        )
+
+    def test_palette_flip_fires_on_apply_callback(self):
+        # CS-68 live-preview semantics: commit-on-click for discrete
+        # widgets. The Combobox flip must call _apply_changes_live
+        # which fires the constructor-supplied on_apply callback.
+        calls: list[None] = []
+        host2 = tk.Frame(_root)
+        try:
+            self.psd._open_dialogs.clear()
+            dlg2 = self.PlotConfigDialog(
+                host2, {}, on_apply=lambda: calls.append(None),
+            )
+            dlg2.update_idletasks()
+            dlg2._suspend_writes = False
+            dlg2._palette_var.set(
+                self.psd._PALETTE_LABEL_BY_NAME["wong_2011"],
+            )
+            self.assertGreaterEqual(len(calls), 1)
+            dlg2.destroy()
+        finally:
+            try:
+                host2.destroy()
+            except Exception:
+                pass
+
+    # ----- migrate_plot_config additive fill --------------------------
+
+    def test_migrate_plot_config_fills_missing_accessibility(self):
+        # Pre-Phase-4ay configs (loaded from older saves) have no
+        # ``accessibility`` key. The migration shim fills it from
+        # factory defaults.
+        config: dict = {}
+        self.psd.migrate_plot_config(config)
+        self.assertIn("accessibility", config)
+        self.assertEqual(config["accessibility"]["palette"], "default")
+
+    def test_migrate_plot_config_preserves_existing_palette_choice(self):
+        # Idempotent: a config that already opted into Wong 2011
+        # must keep that value across migration.
+        config: dict = {"accessibility": {"palette": "wong_2011"}}
+        self.psd.migrate_plot_config(config)
+        self.assertEqual(
+            config["accessibility"]["palette"], "wong_2011",
+        )
+
+    def test_migrate_plot_config_is_idempotent_on_accessibility(self):
+        # Running the migration twice on the same dict is a no-op
+        # — same shape, same values.
+        config: dict = {"accessibility": {"palette": "wong_2011"}}
+        self.psd.migrate_plot_config(config)
+        snapshot = copy.deepcopy(config["accessibility"])
+        self.psd.migrate_plot_config(config)
+        self.assertEqual(config["accessibility"], snapshot)
 
 
 if __name__ == "__main__":

@@ -568,6 +568,67 @@ class TestPlotDefaultsRoundTrip(unittest.TestCase):
         self.assertEqual(psd._USER_DEFAULTS["sample"], "from-test")
         self.assertEqual(psd._USER_DEFAULTS["font_size"], 13)
 
+    # ----- Phase 4ay (CS-75 D2 / sub-axis B) accessibility palette ----
+
+    def test_accessibility_palette_round_trips_through_manifest(self):
+        # CS-46 schema-additive: the new ``accessibility`` sub-dict
+        # lands inside ``manifest["plot_defaults"]`` alongside any
+        # other user defaults, with PTMG_FORMAT_VERSION unchanged.
+        # Round-trip: save a Wong 2011 opt-in, reload, and confirm
+        # the binah load path can restore the palette from the
+        # manifest into ``_USER_DEFAULTS``.
+        import node_styles
+        try:
+            defaults = {"accessibility": {"palette": "wong_2011"}}
+            project_io.save_project(
+                self.tmp, name="ac", plot_defaults=defaults, tabs={},
+            )
+            loaded = project_io.load_project(self.tmp)
+            psd._USER_DEFAULTS.clear()
+            psd._USER_DEFAULTS.update(loaded.plot_defaults)
+            # Sub-dict survived as-is.
+            self.assertEqual(
+                psd._USER_DEFAULTS.get("accessibility"),
+                {"palette": "wong_2011"},
+            )
+            # Mirror binah._do_open_workflow's set_active_palette call.
+            restored = psd._USER_DEFAULTS.get(
+                "accessibility", {}
+            ).get("palette", "default")
+            node_styles.set_active_palette(restored)
+            self.assertIs(
+                node_styles.active_palette(),
+                node_styles.WONG_2011_PALETTE,
+            )
+        finally:
+            node_styles.set_active_palette("default")
+
+    def test_legacy_manifest_without_accessibility_falls_back_silently(self):
+        # Pre-Phase-4ay saves carry no accessibility key. The load
+        # path's silent-fallback chain (set_active_palette unknown →
+        # "default") must keep the renderer painting in the legacy
+        # palette.
+        import node_styles
+        try:
+            project_io.save_project(
+                self.tmp, name="legacy",
+                plot_defaults={"font_size": 11},
+                tabs={},
+            )
+            loaded = project_io.load_project(self.tmp)
+            psd._USER_DEFAULTS.clear()
+            psd._USER_DEFAULTS.update(loaded.plot_defaults)
+            restored = psd._USER_DEFAULTS.get(
+                "accessibility", {}
+            ).get("palette", "default")
+            node_styles.set_active_palette(restored)
+            self.assertIs(
+                node_styles.active_palette(),
+                node_styles.SPECTRUM_PALETTE,
+            )
+        finally:
+            node_styles.set_active_palette("default")
+
 
 if __name__ == "__main__":
     unittest.main()

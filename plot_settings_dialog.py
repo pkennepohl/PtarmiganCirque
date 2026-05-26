@@ -102,6 +102,7 @@ from tkinter import colorchooser, messagebox, ttk
 from typing import Any, Callable, Optional
 
 from accessibility import bind_escape_to_close
+import node_styles
 
 _log = logging.getLogger(__name__)
 
@@ -251,6 +252,17 @@ _FACTORY_DEFAULTS: dict[str, Any] = {
                         "grid_show": False, "axis_color": "#000000",
                         "custom_ticks": ""},
     },
+    # CS-75 D2 / Phase 4ay (sub-axis B): accessibility settings nested
+    # under a dedicated sub-dict so future Phase 4ba (font scale) +
+    # Phase 4az (keyboard shortcut overrides, if any) share one
+    # canonical home. The Phase 4ay seed key is ``palette`` — the
+    # active palette name; values are :data:`node_styles.SPECTRUM_PALETTE_NAMES`.
+    # Round-trips through CS-46's ``manifest["plot_defaults"]`` slot
+    # via :data:`_USER_DEFAULTS` (binah.py:save / load); schema-additive
+    # — PTMG_FORMAT_VERSION unchanged.
+    "accessibility": {
+        "palette": "default",
+    },
 }
 
 
@@ -291,8 +303,13 @@ _USER_DEFAULTS: dict[str, Any] = {}
 
 # Notebook tab keys (CS-60, Phase 4ai). Canonical order — the Notebook
 # pack order matches this tuple. The first entry is the default tab.
+# CS-75 D1 / Phase 4ay (sub-axis B): "accessibility" tab inserted right
+# after "global". Conceptually a non-axis "general" tab that will grow
+# the keyboard-shortcut discoverability table (sub-axis C) and
+# font-scale slider (sub-axis D) in later phases.
 _TAB_KEYS: tuple[str, ...] = (
     "global",
+    "accessibility",
     "primary_x", "secondary_x",
     "primary_y", "secondary_y", "tertiary_y",
 )
@@ -301,13 +318,46 @@ _TAB_KEYS: tuple[str, ...] = (
 # lookup key for tests that walk `notebook.tabs()`. Modified-edit
 # marker (`" •"`) is appended at runtime by commit 4's state model.
 _TAB_TITLES: dict[str, str] = {
-    "global":      "Global",
-    "primary_x":   "Primary X",
-    "secondary_x": "Secondary X",
-    "primary_y":   "Primary Y",
-    "secondary_y": "Secondary Y",
-    "tertiary_y":  "Tertiary Y",
+    "global":        "Global",
+    "accessibility": "Accessibility",
+    "primary_x":     "Primary X",
+    "secondary_x":   "Secondary X",
+    "primary_y":     "Primary Y",
+    "secondary_y":   "Secondary Y",
+    "tertiary_y":    "Tertiary Y",
 }
+
+
+# CS-75 D1 / Phase 4ay (sub-axis B): palette name → human-readable
+# Combobox label + inverse. Mirrors the ``_MOVE_TO_OPTIONS`` /
+# ``_MOVE_TO_LABELS`` pattern. Raw keys (``"default"``, ``"wong_2011"``)
+# are what land in :attr:`_working["accessibility"]["palette"]` and
+# round-trip through the manifest; the labels are the
+# user-facing strings shown in the Combobox dropdown.
+_PALETTE_LABEL_BY_NAME: dict[str, str] = {
+    "default":   "Default (matplotlib tab10)",
+    "wong_2011": "Wong 2011 (deuteranopia-safe)",
+}
+_PALETTE_NAME_BY_LABEL: dict[str, str] = {
+    label: name for name, label in _PALETTE_LABEL_BY_NAME.items()
+}
+_PALETTE_LABELS: tuple[str, ...] = tuple(
+    _PALETTE_LABEL_BY_NAME[name] for name in node_styles.SPECTRUM_PALETTE_NAMES
+)
+
+
+# CS-75 D1 / Phase 4ay (sub-axis B): the subset of :data:`_TAB_KEYS`
+# that correspond to per-axis tabs. Used by every loop that walks
+# axis-only roles (axis-label mirror builder, "apply-to-all" broadcast
+# targets, autoscale greying). Pre-Phase-4ay these loops used
+# ``_TAB_KEYS[1:]`` or ``if role == "global": continue`` which assumed
+# "global" was the only non-axis entry — true at CS-60 / CS-62, broken
+# the moment Phase 4ay inserted "accessibility". The derived constant
+# is the future-proof affordance: sub-axis C / D may add more non-axis
+# tabs and this single tuple is the only edit point.
+_AXIS_ROLE_TAB_KEYS: tuple[str, ...] = tuple(
+    k for k in _TAB_KEYS if k not in ("global", "accessibility")
+)
 
 # Per-axis-tab subtitle. The dialog can't introspect the figure today
 # (no figure handle in scope), so Phase 4ai shipped these as static
@@ -455,6 +505,21 @@ def migrate_plot_config(config: dict) -> dict:
                 role_dict[key] = legacy_tick_dir
             elif key not in role_dict:
                 role_dict[key] = copy.deepcopy(default)
+
+    # CS-75 D2 / Phase 4ay (sub-axis B): fill the ``accessibility``
+    # sub-dict from factory defaults when missing. Pre-Phase-4ay
+    # saves carry no accessibility key; the additive migration here
+    # ensures the dialog's working copy always has the slot ready
+    # for the palette Combobox. Idempotent: if the user has already
+    # opted into a palette, their value is preserved.
+    factory_accessibility = _FACTORY_DEFAULTS["accessibility"]
+    accessibility = config.get("accessibility")
+    if not isinstance(accessibility, dict):
+        accessibility = {}
+        config["accessibility"] = accessibility
+    for key, default in factory_accessibility.items():
+        if key not in accessibility:
+            accessibility[key] = copy.deepcopy(default)
     return config
 
 
@@ -674,6 +739,16 @@ class PlotConfigDialog(tk.Toplevel):
         self._axis_control_refresh: dict[
             tuple[str, str], Callable[[Any], None]
         ] = {}
+        # CS-75 D2 / Phase 4ay (sub-axis B): per-key Tk-var refresh
+        # closures for the Accessibility tab's nested
+        # ``_working["accessibility"]`` sub-dict. Keyed by the inner
+        # key name (e.g. ``"palette"``). Walked by
+        # :meth:`_refresh_widgets_from_working` after Reset Defaults
+        # / Factory Reset so the Combobox display lines up with the
+        # restored working-copy state.
+        self._accessibility_control_refresh: dict[
+            str, Callable[[Any], None]
+        ] = {}
         # CS-69 (Phase 4aq): parallel registry of per-axis widget refs
         # keyed by ``(role, key)``. Populated by
         # :meth:`_build_axis_tab_settings`. Used by the
@@ -837,6 +912,12 @@ class PlotConfigDialog(tk.Toplevel):
 
             if key == "global":
                 self._build_global_tab(frame)
+            elif key == "accessibility":
+                # CS-75 D1 / Phase 4ay (sub-axis B): non-axis tab —
+                # accessibility-scope widgets only. Palette Combobox
+                # is the Phase 4ay seed; sub-axis C / D land more
+                # widgets here in later phases.
+                self._build_accessibility_tab(frame)
             else:
                 self._build_axis_tab_shell(frame, key)
 
@@ -870,6 +951,136 @@ class PlotConfigDialog(tk.Toplevel):
             frame.pack(fill=tk.X)
             frame.columnconfigure(1, weight=1)
             builder(frame)
+
+    def _build_accessibility_tab(self, parent: tk.Widget) -> None:
+        """Build the Accessibility Notebook tab (CS-75 D1, Phase 4ay).
+
+        The Phase 4ay sub-axis B seed: a single LabelFrame holding the
+        palette opt-in Combobox. Sub-axis C (Phase 4az) adds the
+        keyboard-shortcut discoverability table; sub-axis D (Phase 4ba)
+        adds the font-scale slider — both as additional LabelFrames
+        below this one in canonical order.
+
+        The palette Combobox commits-on-click (CS-75 D2): every change
+        writes through :attr:`_working["accessibility"]["palette"]`,
+        flips :func:`node_styles.set_active_palette`, marks the
+        "accessibility" tab dirty, and fires :meth:`_apply_changes_live`
+        so the renderer paints any subsequent node-creation in the new
+        palette. Existing nodes keep their stored ``style["color"]`` —
+        the "respect explicit user colors" semantic.
+        """
+        # Header — matches the axis-tab header style for visual parity
+        # across the Notebook (so the user reads the tab page as a
+        # peer of "Axis: Primary X" et al rather than a fundamentally
+        # different layout).
+        header = tk.Frame(parent)
+        header.pack(fill=tk.X)
+        tk.Label(
+            header, text="Accessibility",
+            font=("", 10, "bold"),
+        ).pack(side=tk.LEFT)
+        tk.Label(
+            header,
+            text="(applies to every tab + persists with project)",
+            font=("", 9, "italic"), fg="#666666",
+        ).pack(side=tk.RIGHT)
+
+        ttk.Separator(parent, orient=tk.HORIZONTAL).pack(
+            fill=tk.X, pady=(6, 4),
+        )
+
+        # Palette LabelFrame.
+        palette_frame = tk.LabelFrame(
+            parent, text="Spectrum colour palette", padx=8, pady=6,
+        )
+        palette_frame.pack(fill=tk.X)
+        palette_frame.columnconfigure(1, weight=1)
+
+        tk.Label(
+            palette_frame, text="Palette:", font=("", 9, "bold"),
+        ).grid(row=0, column=0, sticky="w", pady=2)
+
+        # Seed the StringVar from the working copy, translated raw key
+        # → label. ``migrate_plot_config`` guarantees the slot exists.
+        current_name = self._working["accessibility"].get(
+            "palette", "default",
+        )
+        current_label = _PALETTE_LABEL_BY_NAME.get(
+            current_name, _PALETTE_LABEL_BY_NAME["default"],
+        )
+        var = tk.StringVar(value=current_label)
+        self._palette_var = var
+
+        cb = ttk.Combobox(
+            palette_frame,
+            textvariable=var,
+            values=list(_PALETTE_LABELS),
+            state="readonly",
+            width=32,
+            font=("", 9),
+        )
+        cb.grid(row=0, column=1, sticky="w", padx=4)
+        self._palette_combobox = cb
+        # Defensive re-seed: under heavy full-suite Tk state (the
+        # standalone ``test_plot_settings_dialog`` module passes but the
+        # full ``run_tests.py`` run can land here with the Combobox's
+        # display value cleared), the ``textvariable=`` initial value
+        # is occasionally dropped before any user gesture. ``trace_add``
+        # has not been registered yet, so this ``cb.set`` cannot loop
+        # back through the writer.
+        cb.set(current_label)
+
+        # Trace on the label var; translate back to raw key inside the
+        # writer. ``_suspend_writes`` re-entrancy guard works the same
+        # way as flat-key / per-axis writers.
+        var.trace_add(
+            "write",
+            lambda *_, v=var: self._on_palette_var_write(v.get()),
+        )
+
+        # Refresh closure: Reset Defaults / Factory Reset push a raw
+        # palette name through here. Translate name → label for the
+        # StringVar, then set silently under ``_suspend_writes``.
+        def _refresh_palette(name, _v=var):
+            label = _PALETTE_LABEL_BY_NAME.get(
+                name, _PALETTE_LABEL_BY_NAME["default"],
+            )
+            _v.set(label)
+        self._accessibility_control_refresh["palette"] = _refresh_palette
+
+        # Italic helper text below the Combobox so users understand
+        # the scope of the flip without having to consult docs.
+        tk.Label(
+            palette_frame,
+            text=(
+                "Affects future node colours only — existing nodes "
+                "keep their current colour."
+            ),
+            font=("", 8, "italic"), fg="#666666",
+            wraplength=420, justify=tk.LEFT,
+        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(2, 0))
+
+    def _on_palette_var_write(self, label: str) -> None:
+        """Commit a palette Combobox flip to the working copy + active state.
+
+        Translates the displayed ``label`` back to the raw palette
+        name, writes the nested ``_working["accessibility"]["palette"]``
+        slot, flips :func:`node_styles.set_active_palette`, marks the
+        Accessibility tab dirty, and fires :meth:`_apply_changes_live`.
+
+        ``_suspend_writes`` skips during widget-refresh passes so
+        Reset/Factory Reset don't loop back through here.
+
+        Phase 4ay CS-75 D2 recipe.
+        """
+        if self._suspend_writes:
+            return
+        name = _PALETTE_NAME_BY_LABEL.get(label, "default")
+        accessibility = self._working.setdefault("accessibility", {})
+        accessibility["palette"] = name
+        node_styles.set_active_palette(name)
+        self._mark_tab_modified("accessibility")
+        self._apply_changes_live()
 
     def _build_axis_tab_shell(self, parent: tk.Widget, role: str) -> None:
         """Build the per-axis Notebook tab shell (CS-60).
@@ -1695,7 +1906,7 @@ class PlotConfigDialog(tk.Toplevel):
         except tk.TclError:
             return
         targets = tuple(
-            r for r in _TAB_KEYS[1:] if r != source_role
+            r for r in _AXIS_ROLE_TAB_KEYS if r != source_role
         )
         if not targets:
             return
@@ -2146,9 +2357,7 @@ class PlotConfigDialog(tk.Toplevel):
         per-axis tab, not on Global (the gesture is conceptually
         per-axis even when surfaced globally).
         """
-        for r, role in enumerate(_TAB_KEYS):
-            if role == "global":
-                continue
+        for r, role in enumerate(_AXIS_ROLE_TAB_KEYS):
             tk.Label(
                 parent, text=f"{_TAB_TITLES[role]}:",
                 font=("", 9, "bold"),
@@ -2853,8 +3062,36 @@ class PlotConfigDialog(tk.Toplevel):
                         "(%r, %r)",
                         role, key, exc_info=True,
                     )
+            # CS-75 D2 / Phase 4ay (sub-axis B): Accessibility tab
+            # refresh pass — every registered ``accessibility`` key
+            # gets pushed back from the working copy. Mirrors the
+            # per-axis pass above. Restoring the palette name here is
+            # widget-display-only; the live ``node_styles`` active
+            # palette is flipped by the explicit ``set_active_palette``
+            # call below so the renderer sees the restored choice
+            # too.
+            accessibility_working = self._working.get("accessibility", {})
+            for key, refresh in self._accessibility_control_refresh.items():
+                if key not in accessibility_working:
+                    continue
+                try:
+                    refresh(accessibility_working[key])
+                except Exception:
+                    _log.warning(
+                        "plot_settings_dialog: accessibility refresh "
+                        "failed for %r",
+                        key, exc_info=True,
+                    )
         finally:
             self._suspend_writes = False
+        # CS-75 D2 / Phase 4ay (sub-axis B): re-flip the active palette
+        # so the renderer (next pick_default_color) aligns with the
+        # just-restored working-copy state. Idempotent when the working
+        # copy carried the already-active palette.
+        restored_palette = self._working.get(
+            "accessibility", {}
+        ).get("palette", "default")
+        node_styles.set_active_palette(restored_palette)
         # CS-71 (Phase 4as): re-grey after the silent var refresh.
         # secondary_x is omitted — CS-69 / CS-70 own that role's
         # range Entry state via the wavelength↔energy link greying.
