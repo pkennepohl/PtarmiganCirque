@@ -19,9 +19,13 @@ from nodes import DataNode, NodeState, NodeType
 from node_styles import (
     DEFAULT_SPECTRUM_STYLE_KEYS,
     SPECTRUM_PALETTE,
+    SPECTRUM_PALETTE_NAMES,
     SPECTRUM_PALETTE_NODE_TYPES,
+    WONG_2011_PALETTE,
+    active_palette,
     default_spectrum_style,
     pick_default_color,
+    set_active_palette,
 )
 
 
@@ -225,6 +229,133 @@ class TestPickDefaultColorOrderIndependence(unittest.TestCase):
         g_b.add_node(_make_data_node("d1", NodeType.SECOND_DERIVATIVE))
 
         self.assertEqual(pick_default_color(g_a), pick_default_color(g_b))
+
+
+# ---------------------------------------------------------------------------
+# Phase 4ay (CS-75 D2 / sub-axis B): colour-blind palette opt-in
+# ---------------------------------------------------------------------------
+
+
+class _PaletteStateMixin:
+    """Reset the module-level active palette to ``"default"`` between
+    tests so a flip in one test does not leak into the next.
+    """
+
+    def tearDown(self):
+        set_active_palette("default")
+        super().tearDown()
+
+
+class TestSpectrumPaletteNames(unittest.TestCase):
+
+    def test_names_tuple_shape(self):
+        # Pin the exact set of valid palette names. A future palette
+        # joins this tuple plus :data:`node_styles._PALETTES`.
+        self.assertEqual(SPECTRUM_PALETTE_NAMES, ("default", "wong_2011"))
+
+    def test_default_name_is_first(self):
+        # The Combobox surfaces the first entry as the default
+        # selection; "default" must lead so a fresh project opens
+        # with the legacy 10-entry palette active.
+        self.assertEqual(SPECTRUM_PALETTE_NAMES[0], "default")
+
+
+class TestWong2011Palette(unittest.TestCase):
+
+    def test_palette_is_a_tuple_of_eight_hex_strings(self):
+        self.assertIsInstance(WONG_2011_PALETTE, tuple)
+        self.assertEqual(len(WONG_2011_PALETTE), 8)
+        for entry in WONG_2011_PALETTE:
+            self.assertIsInstance(entry, str)
+            self.assertTrue(entry.startswith("#"))
+            self.assertEqual(len(entry), 7)
+
+    def test_first_entry_is_wong_black(self):
+        # Pin the canonical Wong (2011) order. First colour is black
+        # ("#000000"); a drift here would mean someone reordered the
+        # tuple — a visible regression for users with the palette
+        # active.
+        self.assertEqual(WONG_2011_PALETTE[0], "#000000")
+
+    def test_contains_canonical_wong_orange(self):
+        # The Wong palette's orange "#E69F00" is the second entry.
+        # Pinning one mid-tuple value catches accidental truncation.
+        self.assertEqual(WONG_2011_PALETTE[1], "#E69F00")
+
+
+class TestActivePaletteGetter(_PaletteStateMixin, unittest.TestCase):
+
+    def test_default_is_the_legacy_ten_entry_palette(self):
+        # No opt-in → :func:`active_palette` is identity-equal to
+        # :data:`SPECTRUM_PALETTE`. The CS-21 D3 additive contract:
+        # external readers of SPECTRUM_PALETTE see the same tuple.
+        self.assertIs(active_palette(), SPECTRUM_PALETTE)
+
+    def test_set_to_wong_2011_swaps_the_returned_tuple(self):
+        set_active_palette("wong_2011")
+        self.assertIs(active_palette(), WONG_2011_PALETTE)
+
+    def test_set_back_to_default_restores_original(self):
+        set_active_palette("wong_2011")
+        set_active_palette("default")
+        self.assertIs(active_palette(), SPECTRUM_PALETTE)
+
+
+class TestSetActivePaletteSilentFallback(_PaletteStateMixin, unittest.TestCase):
+
+    def test_unknown_name_falls_back_to_default(self):
+        # Forward-compatible: a manifest written by a future version
+        # of the app might carry a palette name we don't know yet.
+        # The setter quietly falls back to "default" so the renderer
+        # keeps painting.
+        set_active_palette("wong_2011")  # arrive in a non-default state
+        set_active_palette("totally_made_up")
+        self.assertIs(active_palette(), SPECTRUM_PALETTE)
+
+    def test_empty_string_falls_back_to_default(self):
+        set_active_palette("wong_2011")
+        set_active_palette("")
+        self.assertIs(active_palette(), SPECTRUM_PALETTE)
+
+
+class TestPickDefaultColorIsPaletteAware(_PaletteStateMixin, unittest.TestCase):
+
+    def test_empty_graph_under_default_returns_default_first(self):
+        # Pre-existing behaviour, restated under the new relaxation:
+        # with the default palette active, the first pick is
+        # SPECTRUM_PALETTE[0].
+        graph = ProjectGraph()
+        self.assertEqual(pick_default_color(graph), SPECTRUM_PALETTE[0])
+
+    def test_empty_graph_under_wong_2011_returns_wong_first(self):
+        # Phase 4ay's whole point: existing call sites (uvvis_tab,
+        # peak_picking, second_derivative) become palette-aware for
+        # free because pick_default_color consults active_palette().
+        set_active_palette("wong_2011")
+        graph = ProjectGraph()
+        self.assertEqual(pick_default_color(graph), WONG_2011_PALETTE[0])
+
+    def test_wraparound_under_wong_2011_uses_wong_length(self):
+        # Wong is 8 entries; 8 nodes → 9th pick wraps back to index 0.
+        set_active_palette("wong_2011")
+        graph = ProjectGraph()
+        for i in range(len(WONG_2011_PALETTE)):
+            graph.add_node(_make_data_node(f"u{i}", NodeType.UVVIS))
+        self.assertEqual(pick_default_color(graph), WONG_2011_PALETTE[0])
+
+    def test_palette_flip_affects_subsequent_picks_only(self):
+        # "Respect explicit user colors" semantic: a palette flip only
+        # changes FUTURE pick_default_color outputs. Nodes already in
+        # the graph carry their own style["color"]; the flip has no
+        # effect on them. This test demonstrates the contract by
+        # picking before and after a flip on the same graph state.
+        graph = ProjectGraph()
+        graph.add_node(_make_data_node("u1", NodeType.UVVIS))
+        before = pick_default_color(graph)
+        set_active_palette("wong_2011")
+        after = pick_default_color(graph)
+        self.assertEqual(before, SPECTRUM_PALETTE[1])
+        self.assertEqual(after, WONG_2011_PALETTE[1])
 
 
 if __name__ == "__main__":
