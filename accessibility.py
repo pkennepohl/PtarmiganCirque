@@ -16,13 +16,18 @@ through so the recipe is captured in exactly one place:
   :class:`tooltip.Tooltip` (CS-42) so call-sites read intent
   (a shortcut hint) rather than the generic Tooltip constructor.
 
-Phase 4ay adds ``active_palette()`` (sub-axis B) — palette-aware
-getter that ``pick_default_color`` will consult internally. Phase
-4ba adds ``scale_font_size(base_pt)`` (sub-axis D) — the font-scale
-helper that every dialog font literal eventually routes through.
-Each helper is the recipe-canonical entry point; every
-implementation goes through it rather than re-deriving the gesture
-or constant locally.
+Phase 4ay (sub-axis B) lands the colour-blind palette opt-in. The
+``active_palette()`` getter + ``set_active_palette(name)`` setter
+live in :mod:`node_styles` (alongside :data:`SPECTRUM_PALETTE`)
+rather than here — keeping :mod:`node_styles` as a pure data layer
+without a tkinter dependency, while preserving the CS-75 convention
+that every accessibility helper has a single recipe-canonical home.
+Phase 4ba adds ``scale_font_size(base_pt)`` (sub-axis D) — the
+font-scale helper that every dialog font literal eventually routes
+through; that one DOES live in this module because the call sites
+all already import tkinter. Each helper is the recipe-canonical
+entry point; every implementation goes through it rather than
+re-deriving the gesture or constant locally.
 """
 
 from __future__ import annotations

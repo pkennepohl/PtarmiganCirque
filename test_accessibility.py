@@ -178,5 +178,66 @@ class TestBinahEscapeInventoryPhase4ax(unittest.TestCase):
                          "bind_escape_to_close (Phase 4ax CS-75 D3)")
 
 
+class TestPalettePhase4ayInventory(unittest.TestCase):
+    """Source-level sentinels for Phase 4ay (CS-75 D2 / sub-axis B):
+    palette opt-in surface area is pinned in the canonical places.
+
+    These are source-text counts rather than runtime imports — the
+    cheapest way to flag a future refactor that drops a load-bearing
+    piece of the palette wiring (e.g. removes ``set_active_palette``
+    from binah's load path, or strips the Combobox commit-on-click
+    handler from the dialog). Same convention as the Phase 4ax
+    binah-Toplevel sentinel above.
+    """
+
+    @staticmethod
+    def _read(filename: str) -> str:
+        from pathlib import Path
+        return (
+            Path(__file__).resolve().parent / filename
+        ).read_text(encoding="utf-8")
+
+    def test_node_styles_exports_palette_opt_in_surface(self):
+        # Pin the four Phase 4ay additions on the public surface.
+        src = self._read("node_styles.py")
+        for name in (
+            "WONG_2011_PALETTE",
+            "SPECTRUM_PALETTE_NAMES",
+            "active_palette",
+            "set_active_palette",
+        ):
+            self.assertIn(name, src,
+                          f"node_styles.py is missing {name}")
+
+    def test_plot_settings_dialog_has_accessibility_tab(self):
+        # The Accessibility tab is the first surface of CS-75 D1.
+        # Pin the canonical wiring: the tab key, the build method
+        # name, and the commit-on-click handler.
+        src = self._read("plot_settings_dialog.py")
+        self.assertIn("_build_accessibility_tab", src)
+        self.assertIn("_on_palette_var_write", src)
+        self.assertIn('"accessibility"', src)
+
+    def test_plot_settings_dialog_imports_node_styles(self):
+        # The dialog must call set_active_palette on the Combobox flip
+        # so the renderer sees the new palette. Pin the import + at
+        # least one set_active_palette call site.
+        src = self._read("plot_settings_dialog.py")
+        self.assertIn("import node_styles", src)
+        self.assertIn("node_styles.set_active_palette", src)
+
+    def test_binah_load_path_restores_active_palette(self):
+        # The CS-46 round-trip is only half the story — load must
+        # also flip the active palette so subsequent
+        # pick_default_color calls (e.g. a UVVIS load on the just-
+        # opened project) paint in the user's saved palette.
+        src = self._read("binah.py")
+        self.assertIn("import node_styles", src)
+        self.assertIn("set_active_palette", src,
+                      "binah.py load path must call "
+                      "node_styles.set_active_palette after "
+                      "_USER_DEFAULTS.update")
+
+
 if __name__ == "__main__":
     unittest.main()

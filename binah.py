@@ -43,6 +43,7 @@ from xas_analysis_tab import XASAnalysisTab
 from uvvis_tab import UVVisTab
 import project_manager as pm
 from accessibility import bind_escape_to_close
+import node_styles
 
 
 class OrcaTDDFTApp(tk.Tk):
@@ -1499,6 +1500,19 @@ class OrcaTDDFTApp(tk.Tk):
         # PlotConfigDialog sees the new values immediately).
         psd._USER_DEFAULTS.clear()
         psd._USER_DEFAULTS.update(loaded.plot_defaults)
+
+        # CS-75 D2 / Phase 4ay (sub-axis B): re-flip the active palette
+        # from the restored ``_USER_DEFAULTS`` so any subsequent
+        # ``pick_default_color`` call (e.g. a UVVIS load on the
+        # just-opened project) paints in the user's saved palette.
+        # Pre-Phase-4ay saves carry no accessibility key and default to
+        # ``"default"`` — set_active_palette's silent fallback covers
+        # both that case and any future-version palette name we don't
+        # recognise yet.
+        restored_palette = psd._USER_DEFAULTS.get(
+            "accessibility", {}
+        ).get("palette", "default")
+        node_styles.set_active_palette(restored_palette)
 
         # Restore each tab's state. Tab modules opt in to round-trip via
         # a _restore_workflow_payload(payload) method; tabs that don't

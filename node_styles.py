@@ -46,6 +46,10 @@ __all__ = [
     "DEFAULT_SPECTRUM_STYLE_KEYS",
     "SPECTRUM_PALETTE",
     "SPECTRUM_PALETTE_NODE_TYPES",
+    "SPECTRUM_PALETTE_NAMES",
+    "WONG_2011_PALETTE",
+    "active_palette",
+    "set_active_palette",
     "pick_default_color",
 ]
 
@@ -110,6 +114,84 @@ SPECTRUM_PALETTE: tuple[str, ...] = (
 )
 
 
+# ---------------------------------------------------------------------------
+# Phase 4ay (CS-75 D2 / sub-axis B): colour-blind palette opt-in
+# ---------------------------------------------------------------------------
+#
+# Wong (2011) "Points of view: Color blindness" (Nature Methods 8, 441).
+# Eight-colour qualitative palette engineered to remain distinguishable
+# under deuteranopia and protanopia (red/green colour-vision deficiencies,
+# the two most common types). Tuple (not list) so callers cannot mutate.
+# Order matches the Wong figure left-to-right.
+WONG_2011_PALETTE: tuple[str, ...] = (
+    "#000000",  # black
+    "#E69F00",  # orange
+    "#56B4E9",  # sky blue
+    "#009E73",  # bluish green
+    "#F0E442",  # yellow
+    "#0072B2",  # blue
+    "#D55E00",  # vermillion
+    "#CC79A7",  # reddish purple
+)
+
+
+# Canonical palette name → palette tuple. Adding a new palette is a
+# single insert here plus an entry in :data:`SPECTRUM_PALETTE_NAMES`.
+# ``"default"`` aliases :data:`SPECTRUM_PALETTE` so the pre-Phase-4ay
+# behaviour is the unchanged factory default and CS-21 D3's
+# additive-relaxation contract holds: SPECTRUM_PALETTE is still the
+# 10-entry tuple every external reader has always seen.
+_PALETTES: dict[str, tuple[str, ...]] = {
+    "default":   SPECTRUM_PALETTE,
+    "wong_2011": WONG_2011_PALETTE,
+}
+
+
+# Valid palette names. Surfaced as the Combobox values on the new
+# Accessibility tab in :class:`plot_settings_dialog.PlotConfigDialog`.
+SPECTRUM_PALETTE_NAMES: tuple[str, ...] = ("default", "wong_2011")
+
+
+# Active palette name. Process-lifetime mutable; updated by
+# :func:`set_active_palette` from the dialog's commit-on-click path
+# and from binah.py's project-load path (after the manifest's
+# ``plot_defaults["accessibility"]["palette"]`` slot restores the
+# user's choice into ``plot_settings_dialog._USER_DEFAULTS``).
+_active_palette_name: str = "default"
+
+
+def active_palette() -> tuple[str, ...]:
+    """Return the palette tuple currently selected by the user.
+
+    :func:`pick_default_color` consults this getter on every call so
+    the three pre-existing call sites (uvvis_tab, uvvis_peak_picking,
+    uvvis_second_derivative) become palette-aware "for free" without
+    any per-call-site edit. Defaults to :data:`SPECTRUM_PALETTE` when
+    no palette opt-in is active.
+
+    Phase 4ay CS-75 D2 recipe.
+    """
+    return _PALETTES[_active_palette_name]
+
+
+def set_active_palette(name: str) -> None:
+    """Switch the active palette by name.
+
+    ``name`` must be one of :data:`SPECTRUM_PALETTE_NAMES`. Unknown
+    names fall back to ``"default"`` silently — a defensive choice
+    because the load path may surface a value written by a future
+    version of the app, and the renderer should keep painting with
+    the legacy palette rather than crash on an unknown key.
+
+    Phase 4ay CS-75 D2 recipe.
+    """
+    global _active_palette_name
+    if name in _PALETTES:
+        _active_palette_name = name
+    else:
+        _active_palette_name = "default"
+
+
 # NodeTypes whose existence consumes a palette slot. Every spectrum-
 # shaped node creation site (UVVIS load, BASELINE / NORMALISED /
 # SMOOTHED / SECOND_DERIVATIVE _apply) plus the PEAK_LIST creation site
@@ -150,8 +232,16 @@ def pick_default_color(graph: ProjectGraph) -> str:
 
     Empty graph → first palette entry. Walks past the palette length
     wrap with modulo.
+
+    Phase 4ay (CS-75 D2 / sub-axis B): internals consult
+    :func:`active_palette` so the three call sites become palette-aware
+    without per-site edits. External return type unchanged — still a
+    hex string. CS-21 D3 additive relaxation: SPECTRUM_PALETTE itself
+    is unchanged; this function now picks against whichever palette
+    the user has opted into.
     """
+    palette = active_palette()
     total = 0
     for node_type in SPECTRUM_PALETTE_NODE_TYPES:
         total += len(graph.nodes_of_type(node_type, state=None))
-    return SPECTRUM_PALETTE[total % len(SPECTRUM_PALETTE)]
+    return palette[total % len(palette)]
