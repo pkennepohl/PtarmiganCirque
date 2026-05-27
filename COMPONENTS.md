@@ -11802,9 +11802,201 @@ subsequent sub-batch adds its recipe-canonical helper here
 (Phase 4ay → `active_palette()` if hosted module-level;
 Phase 4ba → `scale_font_size`).
 
+## CS-77 — Accessibility colour-blind palette opt-in + Accessibility tab first surface (Phase 4ay)
+
+Second sub-batch of the CS-75 Accessibility umbrella (sub-axis B).
+Lands the colour-blind palette opt-in plus the FIRST USER-FACING
+SURFACE of the new "Accessibility" tab in `PlotConfigDialog`
+(closing the CS-75 D1 lock from "locked but not yet present" to
+"locked and present"). Schema-additive via the new
+`plot_defaults["accessibility"]["palette"]` slot —
+PTMG_FORMAT_VERSION unchanged.
+
+### Palette registry — `node_styles.py`
+
+Module-level state describing which palette is currently
+"active" for `pick_default_color`'s next call:
+
+* **`SPECTRUM_PALETTE_NAMES: tuple[str, ...]`** — canonical
+  keys for the available palettes. Phase 4ay seeds two:
+  `"default"` (the existing 10-entry matplotlib-tab10-derived
+  `SPECTRUM_PALETTE`) and `"wong_2011"` (the new
+  deuteranopia-safe 8-colour palette from Wong 2011 Nature
+  Methods). Future sub-batches MAY add entries here; the
+  Combobox in `PlotConfigDialog` reads from
+  `SPECTRUM_PALETTE_NAMES` so new palettes light up
+  automatically.
+
+* **`WONG_2011_PALETTE: tuple[str, ...]`** — 8 hex colours
+  (`#000000`, `#E69F00`, `#56B4E9`, `#009E73`, `#F0E442`,
+  `#0072B2`, `#D55E00`, `#CC79A7`). Locked.
+
+* **`_active_palette_name: str`** — module-level state
+  defaulting to `"default"`. Read by `active_palette()`;
+  written by `set_active_palette(name)`. Module-level
+  rather than `_USER_DEFAULTS`-backed because the palette
+  affects in-process drawing immediately and persistence
+  is handled separately by `plot_settings_dialog`'s
+  `_USER_DEFAULTS["accessibility"]["palette"]` slot
+  (which calls `set_active_palette` on load).
+
+* **`active_palette() -> tuple[str, ...]`** — returns
+  `WONG_2011_PALETTE` if `_active_palette_name == "wong_2011"`,
+  otherwise the existing `SPECTRUM_PALETTE`. The single
+  read-point through which `pick_default_color` consults
+  the palette state.
+
+* **`set_active_palette(name: str) -> None`** — sets
+  `_active_palette_name` after validating membership in
+  `SPECTRUM_PALETTE_NAMES`. Invalid names raise `ValueError`.
+
+### CS-21 D3 additive relaxation
+
+`pick_default_color(graph)` (CS-21 D3 three-caller list)
+internals rewritten to read from `active_palette()` instead
+of the literal `SPECTRUM_PALETTE`. **External contract
+preserved** — same signature, same colour-string return
+type, same fallback behaviour. The three call-sites
+(`uvvis_tab.py`, `node_styles_dialog.py`, `style_dialog.py`)
+become palette-aware automatically.
+
+`SPECTRUM_PALETTE` itself is retained for backwards
+compatibility (additive relaxation). Direct readers of
+the constant continue to work but read the "default"
+palette regardless of the active palette state — they
+SHOULD migrate to `active_palette()` if they want
+palette-aware behaviour. The migration is best-effort:
+no existing direct reader is load-bearing for the
+palette-flip story.
+
+### `PlotConfigDialog` — new "Accessibility" tab
+
+`_TAB_KEYS` extended to insert `"accessibility"` as the
+second tab key (after `"global"`, before the axis tabs).
+The tab title is the literal `"Accessibility"`. First
+surface of the CS-75 D1 lock.
+
+The tab body (built by `_build_accessibility_tab(parent)`)
+contains:
+
+* Header row matching the axis-tab style (`"Accessibility"`
+  + italic context label `"(applies to every tab + persists
+  with project)"`).
+
+* `tk.LabelFrame` titled `"Spectrum colour palette"`
+  containing:
+
+  - A bolded `"Palette:"` label.
+
+  - A readonly `ttk.Combobox` (textvariable = the dialog's
+    `_palette_var: tk.StringVar`) listing the
+    human-friendly labels for every palette in
+    `node_styles.SPECTRUM_PALETTE_NAMES`. The label
+    mapping lives in module-level `_PALETTE_LABEL_BY_NAME`
+    + `_PALETTE_LABELS` constants. Width 32 chars,
+    `font=("", 9)`.
+
+  - An italic helper line below: `"Affects future node
+    colours only — existing nodes keep their current
+    colour."` (CS-75 "respect explicit user colours"
+    semantic.)
+
+### Commit-on-click writer (CS-75 D2 / CS-68 live-preview)
+
+Trace on `_palette_var` calls `_on_palette_var_write(label)`
+which:
+
+1. Translates label → raw palette name via
+   `_PALETTE_NAME_BY_LABEL`.
+2. Writes through `_working["accessibility"]["palette"]`.
+3. Calls `node_styles.set_active_palette(name)`.
+4. Marks the Accessibility tab dirty via the CS-60
+   `_modified_tabs` registry + `_apply_tab_title_marker`.
+5. Fires `_apply_changes_live()` so the renderer paints
+   any subsequent node-creation in the new palette.
+
+The `_suspend_writes` re-entrancy guard skips during
+widget-refresh passes (Reset Defaults / Factory Reset) so
+the writer doesn't loop back through Tk variable updates.
+
+### Schema-additive `_FACTORY_DEFAULTS` / `_USER_DEFAULTS`
+
+`_FACTORY_DEFAULTS` (and `_UNIVERSAL_DEFAULTS` which is a
+deepcopy of it) gain:
+
+    "accessibility": {
+        "palette": "default",
+    },
+
+`migrate_plot_config(plot)` fills the slot when loading
+legacy projects that lack it. Round-trips through
+`binah.py`'s `_USER_DEFAULTS` save/load + the CS-46
+`manifest["plot_defaults"]` slot — additive,
+**PTMG_FORMAT_VERSION unchanged**.
+
+### Defensive `Combobox` re-seed
+
+The palette Combobox's textvariable-supplied initial
+value occasionally cleared to `""` under the full
+`run_tests.py` run (but always passed when
+`test_plot_settings_dialog` ran in isolation). Defensive
+`cb.set(current_label)` immediately after
+`ttk.Combobox(…, textvariable=var, …)` construction (and
+BEFORE `trace_add` registers the writer) fixed it. Pattern
+to adopt going forward for any new readonly ttk.Combobox
+with a textvariable-supplied initial value — see Phase 4ay
+friction #5 in BACKLOG.md.
+
+### Test fixtures (`test_plot_settings_dialog`,
+`test_persistence_phase_a`, `test_accessibility`,
+`test_node_styles`)
+
+Pin the contract:
+
+* `TestPlotConfigDialogAccessibilityTabPhase4ay` (16 tests)
+  — schema additive on `_FACTORY_DEFAULTS` /
+  `_UNIVERSAL_DEFAULTS`; tab presence + ordering (second
+  in the Notebook); Combobox shape (readonly, values match
+  `_PALETTE_LABELS`); commit-on-click writes through to
+  `_working["accessibility"]["palette"]`; active palette
+  flip; CS-60 dirty marker; `_apply_changes_live` fires.
+
+* `test_persistence_phase_a` (4 tests) — round-trip the
+  new `plot_defaults["accessibility"]["palette"]` slot
+  through save/load; preserves existing palette choice
+  across reload; legacy projects without the slot migrate
+  cleanly.
+
+* `test_accessibility.TestPalettePhase4ayInventory` —
+  source-level sentinels pinning the import + getter
+  wiring.
+
+* `test_node_styles` — `active_palette()` / `set_active_palette`
+  behaviour; `pick_default_color` palette-aware path
+  pins; `SPECTRUM_PALETTE_NAMES` shape.
+
+36 net new tests total. 1620 tests, all green.
+
+### What's next in the umbrella
+
+Sub-axes B is ✅ landed (this section). The Phase 4aw ladder
+continues:
+
+* **Phase 4az** — sub-axis C (keyboard shortcuts first batch
+  + `KEYBINDINGS.md` sister doc). Reasoning level: medium.
+
+* **Phase 4ba** — sub-axis D (font-scale multiplier bulk
+  pass + slider in the Accessibility tab). Reasoning
+  level: high.
+
+The Accessibility tab is now a real surface in
+`PlotConfigDialog`. Sub-axes C / D add additional
+LabelFrames below the palette one (canonical order:
+palette → shortcuts table → font scale slider).
+
 ---
 
-*Document version: 1.50 — May 2026*
+*Document version: 1.51 — May 2026*
 *1.1: CS-13 implementation notes added in Phase 4a.*
 *1.2: CS-14 Plot Settings Dialog added in Phase 4b.*
 *1.3: CS-15 UV/Vis Baseline Correction + CS-04 implementation
@@ -13275,5 +13467,42 @@ the existing TestNodeStylesDialogKeyboardNavPhase4av).
 1584 tests, all green (1567 baseline + 17 new). Four code
 commits + bookkeeping. PTMG_FORMAT_VERSION unchanged — no
 schema keys added.*
+*1.51: CS-77 added in Phase 4ay. Second sub-batch of the CS-75
+Accessibility umbrella (sub-axis B). New `node_styles`
+palette registry: `SPECTRUM_PALETTE_NAMES` tuple +
+`WONG_2011_PALETTE` (8-colour deuteranopia-safe) +
+module-level `_active_palette_name` + `active_palette() ->
+tuple[str, ...]` + `set_active_palette(name)`.
+`pick_default_color` rewritten to consult `active_palette()`
+internally — CS-21 D3 three-caller list palette-aware "for
+free" while preserving the external contract;
+`SPECTRUM_PALETTE` constant retained (additive relaxation).
+New "Accessibility" Notebook tab inserted second in
+`PlotConfigDialog` — FIRST USER-FACING SURFACE of the
+CS-75 D1 lock; palette `ttk.Combobox` (readonly) with
+commit-on-click semantics (CS-75 D2 / CS-68 live-preview)
+writing through `_working["accessibility"]["palette"]` →
+`node_styles.set_active_palette` → CS-60 dirty marker →
+`_apply_changes_live`. `_FACTORY_DEFAULTS` /
+`_UNIVERSAL_DEFAULTS` schema-additive with
+`accessibility: {"palette": "default"}`; `binah.py`
+_USER_DEFAULTS round-trip via CS-46's
+`manifest["plot_defaults"]` slot. PTMG_FORMAT_VERSION
+unchanged. **Claude-surfaced fix:** intermittent
+`ttk.Combobox` readonly initial-value clear under
+full-suite Tk state — defensive `cb.set(current_label)`
+immediately after construction (pattern to adopt for any
+new readonly ttk.Combobox with textvariable-supplied
+initial value). **USER-FLAGGED at step 5:** two new
+carry-forward items — (a) `[engine engine_version]`
+provenance bracket display when uniform across rows; (b)
+per-axis font customization with twin-axis defaulting
+(broader than CS-75 D4 global font scale). 36 net new
+tests (16 in TestPlotConfigDialogAccessibilityTabPhase4ay +
+4 round-trip in test_persistence_phase_a + module-surface
+tests in test_node_styles + source-level inventory
+sentinels in test_accessibility.TestPalettePhase4ayInventory).
+1620 tests, all green (1584 baseline + 36 new). Two code
+commits + bookkeeping.*
 *To be updated as Open Questions are resolved and new components
 are specified.*
