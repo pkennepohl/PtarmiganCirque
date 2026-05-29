@@ -11979,24 +11979,243 @@ Pin the contract:
 
 ### What's next in the umbrella
 
-Sub-axes B is ✅ landed (this section). The Phase 4aw ladder
-continues:
-
-* **Phase 4az** — sub-axis C (keyboard shortcuts first batch
-  + `KEYBINDINGS.md` sister doc). Reasoning level: medium.
+Sub-axes A + B are ✅ landed. Phase 4az landed sub-axis C
+(see CS-78 below). The Phase 4aw ladder continues:
 
 * **Phase 4ba** — sub-axis D (font-scale multiplier bulk
   pass + slider in the Accessibility tab). Reasoning
   level: high.
 
 The Accessibility tab is now a real surface in
-`PlotConfigDialog`. Sub-axes C / D add additional
-LabelFrames below the palette one (canonical order:
-palette → shortcuts table → font scale slider).
+`PlotConfigDialog` with two LabelFrames (palette +
+keyboard shortcuts). Sub-axis D adds the third
+(font scale slider) in canonical order.
 
 ---
 
-*Document version: 1.51 — May 2026*
+## CS-78 — Accessibility keyboard-shortcut registry + first scan_tree batch + KEYBINDINGS.md (Phase 4az)
+
+Third sub-batch of the CS-75 Accessibility umbrella
+(sub-axis C). Lands the recipe-canonical
+**keyboard-shortcut registry + bind helper** in
+`accessibility.py`, four scan-tree shortcuts wired
+through it (F2 / Delete / Ctrl+G / Ctrl+Shift+G), the
+second `PlotConfigDialog` Accessibility-tab LabelFrame
+("Keyboard shortcuts" — sourced from the registry), and
+the new `KEYBINDINGS.md` sister doc. No schema changes;
+PTMG_FORMAT_VERSION unchanged.
+
+### `accessibility.py` registry + bind helper
+
+Three new public surfaces alongside the Phase 4ax
+`bind_escape_to_close` / `attach_shortcut_tooltip`
+recipes:
+
+* **`ShortcutEntry`** — frozen dataclass capturing one
+  registered gesture: `category: str` (e.g. `"scan_tree"`
+  / `"plot_dialog"`), `key: str` (the Tk binding string —
+  `"<F2>"` / `"<Control-g>"` / `"<Control-Shift-G>"`),
+  `action: str` (short user-facing description).
+
+* **`SHORTCUT_REGISTRY: dict[str, list[ShortcutEntry]]`** —
+  module-level mapping keyed by category. Source of truth
+  for the PlotConfigDialog Accessibility-tab "Keyboard
+  shortcuts" LabelFrame AND for the `KEYBINDINGS.md`
+  source-level parity sentinel. Idempotent on
+  `(category, key)` — re-registering replaces the existing
+  entry rather than appending — so multiple instances of
+  the same widget (e.g. across the test suite) do not
+  bloat the list.
+
+* **`register_shortcut(category, key, action) -> ShortcutEntry`**
+  — append-or-replace into the registry. Returns the
+  stored entry.
+
+* **`bind_shortcut(widget, key, handler, *, category, action) -> ShortcutEntry`**
+  — recipe-canonical entry point. Calls
+  `widget.bind(key, handler, add="+")` AND
+  `register_shortcut` in one call so the binding and the
+  discoverability registry cannot drift. `add="+"`
+  preserves Tk class-level bindings (relevant for
+  `<Delete>` / arrow keys on text widgets). Returns the
+  `ShortcutEntry`.
+
+* **`_reset_shortcut_registry()`** — test-only helper.
+  Production code never calls this; tests that need a
+  clean baseline (or that snapshot + restore around a
+  case) call it.
+
+`bind_shortcut` does NOT call `attach_shortcut_tooltip`.
+The Phase 4az first batch binds on tree-level container
+widgets (`ScanTreeWidget`) without a natural hover
+surface; the canonical discoverability surface there IS
+the Accessibility-tab table fed by `SHORTCUT_REGISTRY`.
+Future shortcut-bearing widgets WITH a hover surface
+(buttons, comboboxes — the Phase 4ax `NodeStylesDialog`
+Combobox precedent) still wire `attach_shortcut_tooltip`
+alongside `bind_shortcut` so CS-75 D6 stays intact. This
+is an additive sub-clause to D6, not a relaxation:
+Tooltip-only discoverability remains locked for widgets
+that have a hover surface.
+
+### `ScanTreeWidget` keyboard shortcuts (CS-78 first batch)
+
+Four gestures bound on `self` (the `ScanTreeWidget`
+Frame) via `bind_shortcut`:
+
+| Tk binding              | Action                              | Routes through               |
+| ----------------------- | ----------------------------------- | ---------------------------- |
+| `<F2>`                  | Rename selected node                | `_rename_selected` → `_begin_rename_via_menu` → CS-33 `_begin_label_edit` (B-004 routing) |
+| `<Delete>`              | Discard selected provisional nodes  | `_discard_selected` → `graph.discard_node` per provisional id (committed nodes + NODE_GROUP rows skipped per menu predicate) |
+| `<Control-g>`           | Group selected nodes                | existing `_group_selected` (footer-button handler, CS-57) |
+| `<Control-Shift-G>`     | Ungroup selected group              | `_ungroup_selected` → `graph.dissolve_group` (CS-58 — single selected NODE_GROUP only) |
+
+All four handlers are selection-shape strict:
+
+* **F2 / Ctrl+Shift+G** fire only when the selection is
+  exactly one id (and, for Ctrl+Shift+G, that id is a
+  `NODE_GROUP`).
+* **Delete** iterates the selection and discards every
+  PROVISIONAL DataNode (committed nodes skipped).
+* **Ctrl+G** is the existing `_group_selected` —
+  selection-classification driven (group vs extend);
+  no-op on insufficient selection.
+
+Selection clears on completion (matches the existing
+`_group_selected` post-success convention).
+
+### Focus model — `takefocus=1` + post-toggle `focus_set()`
+
+`ScanTreeWidget` Frame gains `self.configure(takefocus=1)`
+in `__init__` AND `_toggle_row_selection` calls
+`self.focus_set()` at the end so the four bindings are
+reachable from the keyboard after a click selects a row.
+Frames do not accept focus by default; without this the
+bindings would be effectively unreachable for end-users.
+
+Flagged as a band-aid in Phase 4az friction #2 — a future
+Tab-cycling story (CS-75 D3 extension) may want a more
+disciplined focus model. The retrofit works for now.
+
+### `PlotConfigDialog` Accessibility-tab "Keyboard shortcuts" LabelFrame
+
+`_build_accessibility_tab` extended with a second
+LabelFrame BELOW the palette LabelFrame in canonical
+order (palette → shortcuts → future Phase 4ba font
+scale). Read-only Key / Action grid sourced from
+`accessibility.SHORTCUT_REGISTRY` — every `bind_shortcut`
+call automatically appears here without a second wiring
+point.
+
+New module-level helpers in `plot_settings_dialog.py`:
+
+* **`_SHORTCUT_CATEGORY_LABELS: dict[str, str]`** —
+  user-facing section headers per category (`"scan_tree"`
+  → `"Scan tree"`). Unknown categories fall back to the
+  raw key.
+
+* **`_format_shortcut_key(key) -> str`** — translate Tk
+  binding strings to user-friendly labels: `"<F2>"` →
+  `"F2"`; `"<Control-g>"` → `"Ctrl+G"`;
+  `"<Control-Shift-G>"` → `"Ctrl+Shift+G"`;
+  single-letter modifier targets uppercase. Unfamiliar
+  shapes pass through verbatim.
+
+* **`_build_shortcuts_labelframe(parent)`** — extracted
+  rendering method so the logic is testable in isolation
+  and the tab body stays at one screen width. Empty
+  registry renders a placeholder line (does NOT hide the
+  LabelFrame) so the discoverability convention stays
+  visible.
+
+### `KEYBINDINGS.md` sister doc
+
+New repo-root markdown file. The canonical
+registered-shortcut table mirroring `SHORTCUT_REGISTRY`.
+Updated in the bookkeeping commit of every Phase 4
+sub-batch that adds gestures.
+
+Document structure:
+
+* Header — discoverability path (in-app table +
+  per-widget Tooltip for hover-capable widgets).
+* One section per category (Phase 4az seeds "Scan tree"
+  with the four CS-78 rows).
+* Selection-model note — `_selected_node_ids` is read by
+  every gesture; `focus_set` on toggle makes the bindings
+  reachable from the keyboard.
+* Document-version footer matching COMPONENTS.md style.
+
+Source-level parity sentinel in
+`test_plot_settings_dialog.TestKeybindingsMdParityPhase4az`
+asserts `bind_shortcut` call count in
+`scan_tree_widget.py` equals the row count in
+KEYBINDINGS.md's table section.
+
+### Test fixtures (`test_accessibility`,
+`test_scan_tree_widget`, `test_plot_settings_dialog`)
+
+* **`TestShortcutRegistryPhase4az`** (10 tests in
+  `test_accessibility`) — `ShortcutEntry` frozen-ness;
+  `register_shortcut` append-vs-replace; category
+  isolation; insertion-order preservation;
+  `bind_shortcut` binding installation; `add="+"`
+  stacking via bind-script length growth;
+  `_reset_shortcut_registry` clear.
+
+* **`TestKeyboardShortcutsPhase4az`** (16 tests in
+  `test_scan_tree_widget`) — all four shortcut bindings
+  present on widget; `takefocus=1`; focus_set wiring
+  after `_toggle_row_selection`; per-handler selection-shape
+  guards (empty / multi / wrong-type no-op paths); each
+  handler's end-to-end graph effect; selection-clear
+  semantics.
+
+* **`TestKeyboardShortcutsRegistryParityPhase4az`** (1
+  test in `test_scan_tree_widget`) — `SHORTCUT_REGISTRY
+  ["scan_tree"]` contains exactly the four registered
+  keys after widget construction.
+
+* **`TestPlotConfigDialogShortcutsLabelFramePhase4az`**
+  (6 tests in `test_plot_settings_dialog`) — LabelFrame
+  presence (populated + empty paths); category header
+  rendering; pretty-key label rendering; full-population
+  coverage; multi-category grouping.
+
+* **`TestFormatShortcutKeyPhase4az`** (7 tests in
+  `test_plot_settings_dialog`) — every translation shape
+  including the fall-through path for unfamiliar
+  bindings.
+
+* **`TestKeybindingsMdParityPhase4az`** (2 tests in
+  `test_plot_settings_dialog`) — `KEYBINDINGS.md`
+  contains every CS-78 scan_tree key string; row count
+  parity with `scan_tree_widget.py` `bind_shortcut` call
+  count.
+
+42 net new tests total. 1662 tests, all green.
+
+### What's next in the umbrella
+
+Sub-axes A + B + C are ✅ landed. The Phase 4aw ladder
+closes with:
+
+* **Phase 4ba** — sub-axis D (font-scale multiplier bulk
+  pass + slider in the Accessibility tab). Reasoning
+  level: high.
+
+The Accessibility tab now carries two LabelFrames
+(palette + keyboard shortcuts). Sub-axis D adds the
+third (font scale slider) in canonical order.
+
+Sub-batches beyond Phase 4ba (E / F / G) remain
+deferred per the original Phase 4aw scope-lock — they
+fold into the existing infrastructure rather than
+adding new umbrellas.
+
+---
+
+*Document version: 1.52 — May 2026*
 *1.1: CS-13 implementation notes added in Phase 4a.*
 *1.2: CS-14 Plot Settings Dialog added in Phase 4b.*
 *1.3: CS-15 UV/Vis Baseline Correction + CS-04 implementation
