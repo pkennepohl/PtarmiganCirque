@@ -92,6 +92,7 @@ import tkinter as tk
 from tkinter import colorchooser, font as tkfont
 from typing import Any, Callable, Iterable, Sequence, Union
 
+from accessibility import bind_shortcut
 from graph import GraphEvent, GraphEventType, ProjectGraph
 from nodes import DataNode, NodeState, NodeType, OperationNode
 from tooltip import Tooltip
@@ -454,6 +455,39 @@ class ScanTreeWidget(tk.Frame):
 
         self._graph.subscribe(self._on_graph_event)
         self.bind("<Destroy>", self._on_destroy, add="+")
+
+        # CS-78 (Phase 4az, sub-axis C): keyboard-shortcut first
+        # batch. ScanTreeWidget is a tk.Frame; Frames do not accept
+        # focus by default, so set takefocus=1 here AND focus_set
+        # at the end of _toggle_row_selection so focus follows the
+        # selection model. All four bindings route through
+        # accessibility.bind_shortcut so SHORTCUT_REGISTRY stays in
+        # sync with KEYBINDINGS.md. Each handler is a thin wrapper
+        # over the existing menu-entry implementation so the
+        # keyboard and right-click gestures share their effect (the
+        # CS-58 "Group selected" / "Ungroup" / "Discard" / "Rename"
+        # convention).
+        self.configure(takefocus=1)
+        bind_shortcut(
+            self, "<F2>",
+            lambda _e: self._rename_selected(),
+            category="scan_tree", action="Rename selected node",
+        )
+        bind_shortcut(
+            self, "<Delete>",
+            lambda _e: self._discard_selected(),
+            category="scan_tree", action="Discard selected provisional nodes",
+        )
+        bind_shortcut(
+            self, "<Control-g>",
+            lambda _e: self._group_selected(),
+            category="scan_tree", action="Group selected nodes",
+        )
+        bind_shortcut(
+            self, "<Control-Shift-G>",
+            lambda _e: self._ungroup_selected(),
+            category="scan_tree", action="Ungroup selected group",
+        )
 
         self._rebuild()
 
@@ -1170,6 +1204,13 @@ class ScanTreeWidget(tk.Frame):
             self._selected_node_ids.add(node_id)
         self._apply_row_selection_visual(node_id)
         self._refresh_group_button_state()
+        # CS-78 (Phase 4az): route keyboard focus to the
+        # ScanTreeWidget Frame so the shortcut bindings registered
+        # in __init__ (F2 / Delete / Ctrl+G / Ctrl+Shift+G) fire on
+        # the next keystroke. Without this, focus stays on the
+        # clicked row label and the shortcuts are unreachable from
+        # the keyboard.
+        self.focus_set()
 
     def _apply_row_selection_visual(self, node_id: str) -> None:
         """Paint or clear the selection highlight on a row's label.
@@ -1432,6 +1473,79 @@ class ScanTreeWidget(tk.Frame):
         # The graph event from create_group/extend_group will trigger
         # a rebuild via _on_graph_event, which also refreshes the
         # button state and re-paints the selection visual.
+
+    def _ungroup_selected(self) -> None:
+        """Keyboard Ctrl+Shift+G — dissolve the selected NODE_GROUP.
+
+        Fires only when the current selection contains exactly one
+        NODE_GROUP. Routes through ``ProjectGraph.dissolve_group``
+        so the keyboard gesture and the right-click "Ungroup" menu
+        entry share an implementation (CS-58). Silently no-ops on
+        any other selection shape (zero, multiple, or a non-group
+        node) so a stray keystroke does not destabilise state.
+        Clears the selection on success — same convention as
+        :meth:`_group_selected`.
+
+        Phase 4az CS-78.
+        """
+        if len(self._selected_node_ids) != 1:
+            return
+        only_id = next(iter(self._selected_node_ids))
+        try:
+            node = self._graph.get_node(only_id)
+        except KeyError:
+            return
+        if not isinstance(node, DataNode) or node.type != NodeType.NODE_GROUP:
+            return
+        self._safely(self._graph.dissolve_group, only_id)
+        self._selected_node_ids.clear()
+
+    def _discard_selected(self) -> None:
+        """Keyboard Delete — discard every selected provisional node.
+
+        Mirrors the per-row context-menu "Discard" entry's predicate
+        (only PROVISIONAL DataNodes are discardable — committed
+        nodes enforce commit-or-discard discipline by staying intact
+        under this gesture). NODE_GROUP rows are also skipped — the
+        right-click "Discard" entry is unavailable on groups, so the
+        keyboard gesture matches. No-ops on empty selection. Clears
+        the selection on completion so the user's next gesture
+        starts from a clean slate.
+
+        Phase 4az CS-78.
+        """
+        if not self._selected_node_ids:
+            return
+        for sid in list(self._selected_node_ids):
+            try:
+                node = self._graph.get_node(sid)
+            except KeyError:
+                continue
+            if not isinstance(node, DataNode):
+                continue
+            if node.type == NodeType.NODE_GROUP:
+                continue
+            if node.state != NodeState.PROVISIONAL:
+                continue
+            self._safely(self._graph.discard_node, sid)
+        self._selected_node_ids.clear()
+
+    def _rename_selected(self) -> None:
+        """Keyboard F2 — start in-place rename for the single selected node.
+
+        Fires only when the current selection contains exactly one
+        node id. Routes through :meth:`_begin_rename_via_menu` so
+        the keyboard gesture, the right-click "Rename" menu entry
+        (B-004 routing), and the label's double-click binding all
+        end up at :meth:`_begin_label_edit`. Silently no-ops on any
+        other selection shape.
+
+        Phase 4az CS-78.
+        """
+        if len(self._selected_node_ids) != 1:
+            return
+        only_id = next(iter(self._selected_node_ids))
+        self._begin_rename_via_menu(only_id)
 
     def _extend_into_group(self, group_id: str) -> None:
         """Context-menu action — add selection's ungrouped members to ``group_id``.

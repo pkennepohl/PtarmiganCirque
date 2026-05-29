@@ -5442,5 +5442,254 @@ class TestPlotConfigDialogAccessibilityTabPhase4ay(unittest.TestCase):
         self.assertEqual(config["accessibility"], snapshot)
 
 
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestPlotConfigDialogShortcutsLabelFramePhase4az(unittest.TestCase):
+    """Phase 4az CS-78 + CS-75 D6: second LabelFrame in the
+    Accessibility tab renders the SHORTCUT_REGISTRY contents.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import plot_settings_dialog
+        import node_styles as ns
+        from accessibility import (
+            register_shortcut,
+            _reset_shortcut_registry,
+            SHORTCUT_REGISTRY,
+        )
+        cls.psd = plot_settings_dialog
+        cls.node_styles = ns
+        cls.PlotConfigDialog = plot_settings_dialog.PlotConfigDialog
+        cls.register_shortcut = staticmethod(register_shortcut)
+        cls._reset_shortcut_registry = staticmethod(_reset_shortcut_registry)
+        cls.SHORTCUT_REGISTRY = SHORTCUT_REGISTRY
+
+    def setUp(self):
+        self.psd._open_dialogs.clear()
+        self.psd._USER_DEFAULTS.clear()
+        self.node_styles.set_active_palette("default")
+        # Snapshot + reset the registry so each test sees a known
+        # state. Restore on tearDown so we don't break siblings.
+        self._snapshot = {
+            cat: list(entries)
+            for cat, entries in self.SHORTCUT_REGISTRY.items()
+        }
+        self._reset_shortcut_registry()
+        self.host = tk.Frame(_root)
+
+    def tearDown(self):
+        try:
+            self.dlg.destroy()
+        except Exception:
+            pass
+        self.psd._open_dialogs.clear()
+        self.psd._USER_DEFAULTS.clear()
+        self.node_styles.set_active_palette("default")
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+        self.SHORTCUT_REGISTRY.clear()
+        self.SHORTCUT_REGISTRY.update(
+            {cat: list(entries) for cat, entries in self._snapshot.items()}
+        )
+
+    def _build(self):
+        self.dlg = self.PlotConfigDialog(self.host, {})
+        self.dlg.update_idletasks()
+        return self.dlg
+
+    def _shortcuts_labelframe(self) -> tk.LabelFrame:
+        # The Accessibility tab body holds the LabelFrames; walk its
+        # descendants for the one titled "Keyboard shortcuts".
+        tab_body = self.dlg._tab_frames["accessibility"]
+        for frame in tab_body.winfo_children():
+            for child in frame.winfo_children():
+                if (isinstance(child, tk.LabelFrame)
+                        and child.cget("text") == "Keyboard shortcuts"):
+                    return child
+            if (isinstance(frame, tk.LabelFrame)
+                    and frame.cget("text") == "Keyboard shortcuts"):
+                return frame
+        raise AssertionError("Keyboard shortcuts LabelFrame not found")
+
+    # ----- LabelFrame presence + position -----------------------------
+
+    def test_shortcuts_labelframe_present_when_registry_populated(self):
+        self.register_shortcut("scan_tree", "<F2>", "Rename selected node")
+        self._build()
+        lf = self._shortcuts_labelframe()
+        self.assertEqual(lf.cget("text"), "Keyboard shortcuts")
+
+    def test_shortcuts_labelframe_present_even_when_registry_empty(self):
+        # Empty registry: LabelFrame still renders with a placeholder
+        # so the user discovers the convention.
+        self._build()
+        lf = self._shortcuts_labelframe()
+        labels = [
+            c for c in lf.winfo_children() if isinstance(c, tk.Label)
+        ]
+        self.assertEqual(len(labels), 1)
+        self.assertIn("No shortcuts registered", labels[0].cget("text"))
+
+    def test_shortcuts_labelframe_renders_category_header(self):
+        self.register_shortcut("scan_tree", "<F2>", "Rename selected node")
+        self._build()
+        lf = self._shortcuts_labelframe()
+        texts = [
+            c.cget("text") for c in lf.winfo_children()
+            if isinstance(c, tk.Label)
+        ]
+        self.assertIn("Scan tree", texts)
+
+    def test_shortcuts_labelframe_renders_pretty_key_label(self):
+        self.register_shortcut(
+            "scan_tree", "<Control-Shift-G>", "Ungroup selected group",
+        )
+        self._build()
+        lf = self._shortcuts_labelframe()
+        texts = [
+            c.cget("text") for c in lf.winfo_children()
+            if isinstance(c, tk.Label)
+        ]
+        self.assertIn("Ctrl+Shift+G", texts)
+        self.assertIn("Ungroup selected group", texts)
+
+    def test_shortcuts_labelframe_lists_every_registered_entry(self):
+        self.register_shortcut("scan_tree", "<F2>", "Rename selected node")
+        self.register_shortcut(
+            "scan_tree", "<Delete>",
+            "Discard selected provisional nodes",
+        )
+        self.register_shortcut(
+            "scan_tree", "<Control-g>", "Group selected nodes",
+        )
+        self.register_shortcut(
+            "scan_tree", "<Control-Shift-G>", "Ungroup selected group",
+        )
+        self._build()
+        lf = self._shortcuts_labelframe()
+        texts = [
+            c.cget("text") for c in lf.winfo_children()
+            if isinstance(c, tk.Label)
+        ]
+        # Every action description appears, and each pretty key
+        # label appears.
+        for action in (
+            "Rename selected node",
+            "Discard selected provisional nodes",
+            "Group selected nodes",
+            "Ungroup selected group",
+        ):
+            self.assertIn(action, texts)
+        for key in ("F2", "Delete", "Ctrl+G", "Ctrl+Shift+G"):
+            self.assertIn(key, texts)
+
+    def test_shortcuts_labelframe_groups_by_category(self):
+        # Two categories → two header rows.
+        self.register_shortcut("scan_tree", "<F2>", "Rename selected node")
+        self.register_shortcut(
+            "plot_dialog", "<Escape>", "Close dialog",
+        )
+        self._build()
+        lf = self._shortcuts_labelframe()
+        bold_headers = [
+            c.cget("text") for c in lf.winfo_children()
+            if isinstance(c, tk.Label)
+            and "bold" in str(c.cget("font"))
+        ]
+        # Both categories get a header; unknown category falls back
+        # to the raw key string per _SHORTCUT_CATEGORY_LABELS.get
+        # behaviour.
+        self.assertIn("Scan tree", bold_headers)
+        self.assertIn("plot_dialog", bold_headers)
+
+
+class TestFormatShortcutKeyPhase4az(unittest.TestCase):
+    """Phase 4az CS-78 — Tk binding string → user-facing label."""
+
+    @classmethod
+    def setUpClass(cls):
+        from plot_settings_dialog import _format_shortcut_key
+        cls.fmt = staticmethod(_format_shortcut_key)
+
+    def test_single_key(self):
+        self.assertEqual(self.fmt("<F2>"), "F2")
+
+    def test_delete_key(self):
+        self.assertEqual(self.fmt("<Delete>"), "Delete")
+
+    def test_control_letter_uppercases(self):
+        self.assertEqual(self.fmt("<Control-g>"), "Ctrl+G")
+
+    def test_control_shift_letter(self):
+        self.assertEqual(self.fmt("<Control-Shift-G>"), "Ctrl+Shift+G")
+
+    def test_alt_letter(self):
+        self.assertEqual(self.fmt("<Alt-x>"), "Alt+X")
+
+    def test_unfamiliar_shape_falls_back_to_raw(self):
+        # Not wrapped in <>: passed through verbatim so a weird
+        # custom binding stays visible rather than swallowed.
+        self.assertEqual(self.fmt("Ctrl-Alt-Del"), "Ctrl-Alt-Del")
+
+    def test_keypress_with_letter_preserves_modifier_token(self):
+        # ``<KeyPress-x>`` is an unusual but legal Tk sequence. The
+        # formatter renders the modifier token verbatim (no special
+        # casing) — and the trailing letter still uppercases.
+        self.assertEqual(self.fmt("<KeyPress-x>"), "KeyPress+X")
+
+
+class TestKeybindingsMdParityPhase4az(unittest.TestCase):
+    """Phase 4az CS-78 — KEYBINDINGS.md parity with scan_tree wirings.
+
+    Source-level sentinel: every Phase 4az scan_tree shortcut that
+    accessibility.bind_shortcut wires in scan_tree_widget.py is also
+    listed in KEYBINDINGS.md (and vice-versa). The full test suite
+    populates SHORTCUT_REGISTRY by constructing a ScanTreeWidget; we
+    inspect the source text of both files rather than the live
+    registry so this sentinel survives even if the test ordering
+    leaves the registry empty.
+    """
+
+    @staticmethod
+    def _read(filename: str) -> str:
+        from pathlib import Path
+        return (
+            Path(__file__).resolve().parent / filename
+        ).read_text(encoding="utf-8")
+
+    def test_keybindings_md_lists_every_scan_tree_shortcut(self):
+        md = self._read("KEYBINDINGS.md")
+        # The four CS-78 scan-tree gestures must each have a row.
+        for pretty_key in (
+            "F2", "Delete", "Ctrl+G", "Ctrl+Shift+G",
+        ):
+            self.assertIn(pretty_key, md,
+                          f"KEYBINDINGS.md missing {pretty_key}")
+
+    def test_keybindings_md_row_count_matches_scan_tree_wirings(self):
+        # The wiring count in scan_tree_widget.py and the row count
+        # in KEYBINDINGS.md's "Scan tree" section must agree. Drift
+        # in either direction fails this sentinel so the next
+        # sub-batch cannot land without updating the doc.
+        src = self._read("scan_tree_widget.py")
+        bind_calls = src.count('bind_shortcut(')
+        md = self._read("KEYBINDINGS.md")
+        # Count pipe-leading lines in the "Scan tree" section that
+        # are not header / separator rows. Cheap heuristic: count
+        # lines starting with "| F2", "| Delete", "| Ctrl+G", etc.
+        row_count = sum(
+            1 for line in md.splitlines()
+            if line.startswith("| ")
+            and not line.startswith("| Key")
+            and not line.startswith("| ---")
+        )
+        self.assertEqual(bind_calls, row_count,
+                         "scan_tree_widget.py bind_shortcut count "
+                         "must match KEYBINDINGS.md row count "
+                         "(Phase 4az CS-78 parity sentinel)")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

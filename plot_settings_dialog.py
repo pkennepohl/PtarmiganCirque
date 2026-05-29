@@ -101,7 +101,7 @@ import tkinter as tk
 from tkinter import colorchooser, messagebox, ttk
 from typing import Any, Callable, Optional
 
-from accessibility import bind_escape_to_close
+from accessibility import bind_escape_to_close, SHORTCUT_REGISTRY
 import node_styles
 
 _log = logging.getLogger(__name__)
@@ -344,6 +344,49 @@ _PALETTE_NAME_BY_LABEL: dict[str, str] = {
 _PALETTE_LABELS: tuple[str, ...] = tuple(
     _PALETTE_LABEL_BY_NAME[name] for name in node_styles.SPECTRUM_PALETTE_NAMES
 )
+
+
+# Phase 4az / CS-78 — display labels for SHORTCUT_REGISTRY categories.
+# Keys mirror the strings passed as ``category=`` to bind_shortcut;
+# values are the user-facing section headers in the Accessibility-tab
+# "Keyboard shortcuts" LabelFrame. Unknown categories fall back to
+# the raw key (the dict ``.get(category, category)`` path).
+_SHORTCUT_CATEGORY_LABELS: dict[str, str] = {
+    "scan_tree": "Scan tree",
+}
+
+
+def _format_shortcut_key(key: str) -> str:
+    """Translate a Tk binding string into a user-friendly label.
+
+    ``"<F2>"`` → ``"F2"``; ``"<Control-g>"`` → ``"Ctrl+G"``;
+    ``"<Control-Shift-G>"`` → ``"Ctrl+Shift+G"``; ``"<Delete>"`` →
+    ``"Delete"``. Falls back to the raw binding string if the shape
+    is unfamiliar so a future Tk sequence (e.g. ``"<KeyPress-x>"``)
+    is still visible — better to render the raw string than to
+    swallow the entry.
+
+    Phase 4az CS-78.
+    """
+    if not (key.startswith("<") and key.endswith(">")):
+        return key
+    inner = key[1:-1]
+    parts = inner.split("-")
+    pretty: list[str] = []
+    for part in parts:
+        if part == "Control":
+            pretty.append("Ctrl")
+        elif part == "Shift":
+            pretty.append("Shift")
+        elif part == "Alt":
+            pretty.append("Alt")
+        elif len(part) == 1:
+            # Single-letter modifier target — render uppercase
+            # ("Ctrl+G" reads better than "Ctrl+g").
+            pretty.append(part.upper())
+        else:
+            pretty.append(part)
+    return "+".join(pretty)
 
 
 # CS-75 D1 / Phase 4ay (sub-axis B): the subset of :data:`_TAB_KEYS`
@@ -1059,6 +1102,81 @@ class PlotConfigDialog(tk.Toplevel):
             font=("", 8, "italic"), fg="#666666",
             wraplength=420, justify=tk.LEFT,
         ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(2, 0))
+
+        # ----------------------------------------------------------
+        # Keyboard shortcuts LabelFrame (Phase 4az, CS-78, CS-75 D6).
+        # ----------------------------------------------------------
+        # Canonical order palette → shortcuts → (future Phase 4ba
+        # font scale). Read-only table sourced from
+        # accessibility.SHORTCUT_REGISTRY so the discoverability
+        # surface stays in lockstep with the actual bindings: every
+        # bind_shortcut call automatically appears here without a
+        # second wiring point. Categories appear in the order they
+        # were first registered (dict insertion order).
+        self._build_shortcuts_labelframe(parent)
+
+    def _build_shortcuts_labelframe(self, parent: tk.Widget) -> None:
+        """Render the "Keyboard shortcuts" LabelFrame for the Accessibility tab.
+
+        Reads :data:`accessibility.SHORTCUT_REGISTRY` and renders a
+        Key / Action grid for each category. The grid uses plain
+        ``tk.Label`` widgets (no ttk.Treeview) — the row counts per
+        category are small (first batch is 4 scan_tree entries) and
+        Labels avoid the style baggage of a heavyweight Treeview for
+        what is purely a read-only listing.
+
+        The LabelFrame stays visible (empty body apart from a
+        placeholder line) even if the registry is empty — for
+        example if a future refactor lazy-imports ScanTreeWidget and
+        the dialog opens before any registration runs. The empty-state
+        message points the user to the convention.
+
+        Phase 4az CS-78 + CS-75 D6.
+        """
+        shortcuts_frame = tk.LabelFrame(
+            parent, text="Keyboard shortcuts", padx=8, pady=6,
+        )
+        shortcuts_frame.pack(fill=tk.X, pady=(8, 0))
+        shortcuts_frame.columnconfigure(1, weight=1)
+
+        if not SHORTCUT_REGISTRY:
+            tk.Label(
+                shortcuts_frame,
+                text=(
+                    "No shortcuts registered. Open a project tab to "
+                    "populate this table."
+                ),
+                font=("", 8, "italic"), fg="#666666",
+                wraplength=420, justify=tk.LEFT,
+            ).grid(row=0, column=0, columnspan=2, sticky="w", pady=2)
+            return
+
+        row_cursor = 0
+        for category, entries in SHORTCUT_REGISTRY.items():
+            # Category header — bold, full-width.
+            tk.Label(
+                shortcuts_frame,
+                text=_SHORTCUT_CATEGORY_LABELS.get(category, category),
+                font=("", 9, "bold"),
+            ).grid(
+                row=row_cursor, column=0, columnspan=2,
+                sticky="w", pady=(4, 2),
+            )
+            row_cursor += 1
+            for entry in entries:
+                tk.Label(
+                    shortcuts_frame,
+                    text=_format_shortcut_key(entry.key),
+                    font=("Consolas", 9), fg="#444444",
+                    width=18, anchor="w",
+                ).grid(row=row_cursor, column=0, sticky="w", padx=(8, 4))
+                tk.Label(
+                    shortcuts_frame,
+                    text=entry.action,
+                    font=("", 9), anchor="w",
+                    wraplength=320, justify=tk.LEFT,
+                ).grid(row=row_cursor, column=1, sticky="w")
+                row_cursor += 1
 
     def _on_palette_var_write(self, label: str) -> None:
         """Commit a palette Combobox flip to the working copy + active state.

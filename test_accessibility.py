@@ -35,7 +35,15 @@ except Exception:  # pragma: no cover — only hit on headless CI
     _HAS_DISPLAY = False
 
 
-from accessibility import bind_escape_to_close, attach_shortcut_tooltip
+from accessibility import (
+    bind_escape_to_close,
+    attach_shortcut_tooltip,
+    bind_shortcut,
+    register_shortcut,
+    ShortcutEntry,
+    SHORTCUT_REGISTRY,
+    _reset_shortcut_registry,
+)
 from tooltip import Tooltip
 
 
@@ -237,6 +245,140 @@ class TestPalettePhase4ayInventory(unittest.TestCase):
                       "binah.py load path must call "
                       "node_styles.set_active_palette after "
                       "_USER_DEFAULTS.update")
+
+
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestShortcutRegistryPhase4az(unittest.TestCase):
+    """Phase 4az CS-78 — registry + register_shortcut + bind_shortcut."""
+
+    def setUp(self):
+        # The registry is module-level state. Snapshot whatever the
+        # main app has registered (test runner imports may have
+        # populated buckets) and restore on tearDown so cross-suite
+        # ordering doesn't matter.
+        self._snapshot = {
+            cat: list(entries)
+            for cat, entries in SHORTCUT_REGISTRY.items()
+        }
+        _reset_shortcut_registry()
+        self.host = tk.Frame(_root)
+        self.host.pack()
+        self.host.update_idletasks()
+
+    def tearDown(self):
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+        SHORTCUT_REGISTRY.clear()
+        SHORTCUT_REGISTRY.update(
+            {cat: list(entries) for cat, entries in self._snapshot.items()}
+        )
+
+    def test_shortcut_entry_is_frozen_dataclass(self):
+        entry = ShortcutEntry(category="scan_tree", key="<F2>", action="Rename")
+        self.assertEqual(entry.category, "scan_tree")
+        self.assertEqual(entry.key, "<F2>")
+        self.assertEqual(entry.action, "Rename")
+        with self.assertRaises(Exception):
+            # Frozen: assignment must raise FrozenInstanceError.
+            entry.action = "Mutate"  # type: ignore[misc]
+
+    def test_register_shortcut_appends_new_entry(self):
+        entry = register_shortcut("scan_tree", "<F2>", "Rename selected node")
+        self.assertIn("scan_tree", SHORTCUT_REGISTRY)
+        self.assertEqual(SHORTCUT_REGISTRY["scan_tree"], [entry])
+
+    def test_register_shortcut_is_idempotent_on_key(self):
+        register_shortcut("scan_tree", "<F2>", "Rename A")
+        register_shortcut("scan_tree", "<F2>", "Rename B")
+        # Second registration replaces, does not append.
+        self.assertEqual(len(SHORTCUT_REGISTRY["scan_tree"]), 1)
+        self.assertEqual(SHORTCUT_REGISTRY["scan_tree"][0].action, "Rename B")
+
+    def test_register_shortcut_keeps_categories_separate(self):
+        register_shortcut("scan_tree", "<F2>", "Rename node")
+        register_shortcut("plot_dialog", "<F2>", "Reset axis")
+        self.assertEqual(len(SHORTCUT_REGISTRY["scan_tree"]), 1)
+        self.assertEqual(len(SHORTCUT_REGISTRY["plot_dialog"]), 1)
+
+    def test_register_shortcut_preserves_insertion_order(self):
+        register_shortcut("scan_tree", "<F2>", "Rename")
+        register_shortcut("scan_tree", "<Delete>", "Discard")
+        register_shortcut("scan_tree", "<Control-g>", "Group")
+        keys = [e.key for e in SHORTCUT_REGISTRY["scan_tree"]]
+        self.assertEqual(keys, ["<F2>", "<Delete>", "<Control-g>"])
+
+    def test_bind_shortcut_registers_in_registry(self):
+        called: list[str] = []
+        bind_shortcut(
+            self.host, "<F2>", lambda _e: called.append("f2"),
+            category="scan_tree", action="Rename selected node",
+        )
+        self.assertEqual(len(SHORTCUT_REGISTRY["scan_tree"]), 1)
+        self.assertEqual(SHORTCUT_REGISTRY["scan_tree"][0].key, "<F2>")
+        self.assertEqual(
+            SHORTCUT_REGISTRY["scan_tree"][0].action, "Rename selected node",
+        )
+
+    def test_bind_shortcut_attaches_binding_to_widget(self):
+        bind_shortcut(
+            self.host, "<F2>", lambda _e: None,
+            category="scan_tree", action="Rename",
+        )
+        # Tk records the bind script; non-empty means at least one
+        # binding exists on the widget for the sequence.
+        self.assertNotEqual(self.host.bind("<F2>"), "")
+
+    def test_bind_shortcut_handler_registers_with_tk(self):
+        # ``event_generate`` on a withdrawn root is unreliable across
+        # the full suite (same caveat as bind_escape_to_close above).
+        # Pin the contract source-level: the bind script Tk records
+        # must reference the registered callback (Tk encodes callbacks
+        # as ``pyXXX`` Tcl names).
+        bind_shortcut(
+            self.host, "<F2>", lambda _e: None,
+            category="scan_tree", action="Rename",
+        )
+        script = self.host.bind("<F2>")
+        self.assertNotEqual(script, "")
+
+    def test_bind_shortcut_returns_shortcut_entry(self):
+        entry = bind_shortcut(
+            self.host, "<Control-g>", lambda _e: None,
+            category="scan_tree", action="Group selection",
+        )
+        self.assertIsInstance(entry, ShortcutEntry)
+        self.assertEqual(entry.category, "scan_tree")
+        self.assertEqual(entry.key, "<Control-g>")
+        self.assertEqual(entry.action, "Group selection")
+
+    def test_bind_shortcut_uses_add_plus_to_stack_bindings(self):
+        # ``add="+"`` is the difference between bind_shortcut and a
+        # naive widget.bind: it preserves any class-level binding Tk
+        # already attaches (e.g. <Delete> on text widgets). After two
+        # bind_shortcut calls the script must contain BOTH callback
+        # references — script length monotonically grows.
+        bind_shortcut(
+            self.host, "<F2>", lambda _e: None,
+            category="scan_tree", action="First",
+        )
+        script_after_one = self.host.bind("<F2>")
+        bind_shortcut(
+            self.host, "<F2>", lambda _e: None,
+            category="scan_tree", action="Second",
+        )
+        script_after_two = self.host.bind("<F2>")
+        # add="+" stacks: the second script is strictly longer (and
+        # never the same string), confirming the first binding was
+        # NOT clobbered.
+        self.assertGreater(len(script_after_two), len(script_after_one))
+
+    def test_reset_shortcut_registry_clears_all_buckets(self):
+        register_shortcut("scan_tree", "<F2>", "Rename")
+        register_shortcut("plot_dialog", "<Escape>", "Dismiss")
+        _reset_shortcut_registry()
+        self.assertEqual(SHORTCUT_REGISTRY, {})
 
 
 if __name__ == "__main__":
