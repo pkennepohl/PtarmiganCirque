@@ -4197,5 +4197,241 @@ class TestScanTreeWidgetHistoryCollapsePhase4at(unittest.TestCase):
         self.assertEqual(rendered, expected)
 
 
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestKeyboardShortcutsPhase4az(unittest.TestCase):
+    """Phase 4az CS-78 — F2 / Delete / Ctrl+G / Ctrl+Shift+G.
+
+    The four handlers are invoked directly rather than via
+    ``event_generate`` because synthetic key events on a Frame
+    inside a withdrawn root are unreliable across the full suite
+    (same caveat as ``test_accessibility``). The binding wire-up
+    itself is pinned via the widget's ``bind(...)`` script being
+    non-empty.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from scan_tree_widget import ScanTreeWidget
+        cls.ScanTreeWidget = ScanTreeWidget
+
+    def setUp(self):
+        self.host = tk.Frame(_root)
+
+    def tearDown(self):
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    def _widget(self, graph: ProjectGraph):
+        _, cb = _redraw_calls()
+        widget = self.ScanTreeWidget(
+            self.host, graph, [NodeType.UVVIS], cb,
+        )
+        widget.update_idletasks()
+        return widget
+
+    # ----------- binding wire-up -----------
+
+    def test_all_four_shortcut_bindings_present_on_widget(self):
+        widget = self._widget(ProjectGraph())
+        for key in ("<F2>", "<Delete>", "<Control-g>", "<Control-Shift-G>"):
+            with self.subTest(key=key):
+                self.assertNotEqual(
+                    widget.bind(key), "",
+                    f"expected bind_shortcut to register {key} on "
+                    f"ScanTreeWidget",
+                )
+
+    def test_widget_accepts_keyboard_focus(self):
+        widget = self._widget(ProjectGraph())
+        # takefocus=1 is required for the Frame to receive focus
+        # via Tab cycling and for focus_set() to be meaningful.
+        self.assertEqual(str(widget.cget("takefocus")), "1")
+
+    def test_toggle_row_selection_routes_focus_to_widget(self):
+        # ``focus_displayof()`` returns None on a withdrawn root
+        # (no actual display focus available), so pin the wiring
+        # source-level: ``_toggle_row_selection`` calls
+        # ``self.focus_set()`` at the end so subsequent keystrokes
+        # reach the four CS-78 bindings.
+        graph = ProjectGraph()
+        graph.add_node(_data("a", NodeType.UVVIS))
+        widget = self._widget(graph)
+        with unittest.mock.patch.object(
+            widget, "focus_set", wraps=widget.focus_set,
+        ) as patched:
+            widget._toggle_row_selection("a")
+            patched.assert_called_once()
+
+    # ----------- F2 (Rename) -----------
+
+    def test_f2_noops_on_empty_selection(self):
+        graph = ProjectGraph()
+        graph.add_node(_data("a", NodeType.UVVIS))
+        widget = self._widget(graph)
+        # No selection: must not crash, must not start an edit.
+        widget._rename_selected()
+        # No exception → pass.
+
+    def test_f2_noops_on_multi_selection(self):
+        graph = ProjectGraph()
+        graph.add_node(_data("a", NodeType.UVVIS))
+        graph.add_node(_data("b", NodeType.UVVIS))
+        widget = self._widget(graph)
+        widget._selected_node_ids = {"a", "b"}
+        # Multi-select: rename has no single target, must no-op.
+        widget._rename_selected()
+
+    def test_f2_routes_through_begin_rename_via_menu(self):
+        graph = ProjectGraph()
+        graph.add_node(_data("a", NodeType.UVVIS, label="orig"))
+        widget = self._widget(graph)
+        widget._selected_node_ids = {"a"}
+        with unittest.mock.patch.object(
+            widget, "_begin_rename_via_menu",
+        ) as patched:
+            widget._rename_selected()
+            patched.assert_called_once_with("a")
+
+    # ----------- Delete (Discard) -----------
+
+    def test_delete_noops_on_empty_selection(self):
+        graph = ProjectGraph()
+        graph.add_node(
+            _data("a", NodeType.UVVIS, state=NodeState.PROVISIONAL),
+        )
+        widget = self._widget(graph)
+        # No selection: node must survive.
+        widget._discard_selected()
+        self.assertEqual(graph.get_node("a").state, NodeState.PROVISIONAL)
+
+    def test_delete_discards_provisional_node(self):
+        graph = ProjectGraph()
+        graph.add_node(
+            _data("a", NodeType.UVVIS, state=NodeState.PROVISIONAL),
+        )
+        widget = self._widget(graph)
+        widget._selected_node_ids = {"a"}
+        widget._discard_selected()
+        widget.update_idletasks()
+        self.assertEqual(graph.get_node("a").state, NodeState.DISCARDED)
+        # Selection clears on completion (matches _group_selected
+        # convention so the next gesture starts clean).
+        self.assertEqual(widget._selected_node_ids, set())
+
+    def test_delete_skips_committed_node(self):
+        # Commit-or-discard discipline: keyboard Delete refuses
+        # committed nodes the same way the menu entry does (the
+        # "Discard" menu item is disabled for is_committed). The
+        # selection-clear at the end still fires.
+        graph = ProjectGraph()
+        graph.add_node(
+            _data("a", NodeType.UVVIS, state=NodeState.COMMITTED),
+        )
+        widget = self._widget(graph)
+        widget._selected_node_ids = {"a"}
+        widget._discard_selected()
+        self.assertEqual(graph.get_node("a").state, NodeState.COMMITTED)
+
+    def test_delete_discards_only_provisional_in_mixed_selection(self):
+        graph = ProjectGraph()
+        graph.add_node(
+            _data("c", NodeType.UVVIS, state=NodeState.COMMITTED),
+        )
+        graph.add_node(
+            _data("p", NodeType.UVVIS, state=NodeState.PROVISIONAL),
+        )
+        widget = self._widget(graph)
+        widget._selected_node_ids = {"c", "p"}
+        widget._discard_selected()
+        self.assertEqual(graph.get_node("c").state, NodeState.COMMITTED)
+        self.assertEqual(graph.get_node("p").state, NodeState.DISCARDED)
+
+    # ----------- Ctrl+G (Group) -----------
+
+    def test_ctrl_g_groups_selected_nodes_via_group_selected(self):
+        # Ctrl+G is bound to ``lambda _e: self._group_selected()``
+        # (the same method the footer button uses). With two
+        # ungrouped nodes selected, invoking _group_selected directly
+        # must call graph.create_group and clear the selection — the
+        # gesture's end-to-end effect when triggered by the keypress.
+        graph = ProjectGraph()
+        graph.add_node(_data("a", NodeType.UVVIS))
+        graph.add_node(_data("b", NodeType.UVVIS))
+        widget = self._widget(graph)
+        widget._selected_node_ids = {"a", "b"}
+        with unittest.mock.patch.object(
+            graph, "create_group", wraps=graph.create_group,
+        ) as patched:
+            widget._group_selected()
+            patched.assert_called_once()
+        self.assertEqual(widget._selected_node_ids, set())
+
+    # ----------- Ctrl+Shift+G (Ungroup) -----------
+
+    def test_ctrl_shift_g_noops_on_empty_selection(self):
+        widget = self._widget(ProjectGraph())
+        widget._ungroup_selected()  # must not crash
+
+    def test_ctrl_shift_g_noops_on_multi_selection(self):
+        graph = ProjectGraph()
+        graph.add_node(_data("a", NodeType.UVVIS))
+        graph.add_node(_data("b", NodeType.UVVIS))
+        widget = self._widget(graph)
+        widget._selected_node_ids = {"a", "b"}
+        widget._ungroup_selected()  # not exactly-one-group, no-op
+
+    def test_ctrl_shift_g_noops_on_non_group_single_selection(self):
+        graph = ProjectGraph()
+        graph.add_node(_data("a", NodeType.UVVIS))
+        widget = self._widget(graph)
+        widget._selected_node_ids = {"a"}
+        # Single selection but not a NODE_GROUP — no-op.
+        widget._ungroup_selected()
+        # Node still present.
+        self.assertEqual(graph.get_node("a").id, "a")
+
+    def test_ctrl_shift_g_dissolves_selected_group(self):
+        graph = ProjectGraph()
+        graph.add_node(_data("a", NodeType.UVVIS))
+        graph.add_node(_data("b", NodeType.UVVIS))
+        gid = graph.create_group(["a", "b"])
+        widget = self._widget(graph)
+        widget._selected_node_ids = {gid}
+        with unittest.mock.patch.object(
+            graph, "dissolve_group", wraps=graph.dissolve_group,
+        ) as patched:
+            widget._ungroup_selected()
+            patched.assert_called_once_with(gid)
+        self.assertEqual(widget._selected_node_ids, set())
+
+
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestKeyboardShortcutsRegistryParityPhase4az(unittest.TestCase):
+    """Phase 4az CS-78 — SHORTCUT_REGISTRY populated by widget init."""
+
+    @classmethod
+    def setUpClass(cls):
+        from scan_tree_widget import ScanTreeWidget
+        cls.ScanTreeWidget = ScanTreeWidget
+
+    def test_widget_init_registers_four_scan_tree_shortcuts(self):
+        from accessibility import SHORTCUT_REGISTRY
+        graph = ProjectGraph()
+        host = tk.Frame(_root)
+        try:
+            _, cb = _redraw_calls()
+            self.ScanTreeWidget(host, graph, [NodeType.UVVIS], cb)
+            entries = SHORTCUT_REGISTRY.get("scan_tree", [])
+            keys = {e.key for e in entries}
+            self.assertEqual(
+                keys,
+                {"<F2>", "<Delete>", "<Control-g>", "<Control-Shift-G>"},
+            )
+        finally:
+            host.destroy()
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
