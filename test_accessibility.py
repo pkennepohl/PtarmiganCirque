@@ -43,7 +43,14 @@ from accessibility import (
     ShortcutEntry,
     SHORTCUT_REGISTRY,
     _reset_shortcut_registry,
+    scale_font_size,
+    active_font_scale,
+    set_active_font_scale,
+    _coerce_font_scale,
+    _reset_font_scale,
+    _NAMED_FONT_BASE_SIZES,
 )
+import accessibility as _accessibility_mod
 from tooltip import Tooltip
 
 
@@ -379,6 +386,96 @@ class TestShortcutRegistryPhase4az(unittest.TestCase):
         register_shortcut("plot_dialog", "<Escape>", "Dismiss")
         _reset_shortcut_registry()
         self.assertEqual(SHORTCUT_REGISTRY, {})
+
+
+class TestFontScalePhase4ba(unittest.TestCase):
+    """Phase 4ba CS-79 — font-scale multiplier helper.
+
+    The active scale is module-level global state. Every test that
+    mutates it calls :func:`_reset_font_scale` on tearDown so a
+    non-1.0 scale (and the named-font base-size cache) never bleeds
+    into sibling tests — most importantly the ScanTreeWidget width
+    tests that measure ``TkDefaultFont`` metrics.
+    """
+
+    def tearDown(self):
+        _reset_font_scale()
+
+    def test_default_scale_is_unity(self):
+        self.assertEqual(active_font_scale(), 1.0)
+
+    def test_scale_font_size_identity_at_unity(self):
+        for pt in (8, 9, 10, 11, 12):
+            self.assertEqual(scale_font_size(pt), pt)
+
+    def test_scale_font_size_scales_up(self):
+        set_active_font_scale(2.0)
+        self.assertEqual(scale_font_size(9), 18)
+        self.assertEqual(scale_font_size(11), 22)
+
+    def test_scale_font_size_half_up_rounding(self):
+        set_active_font_scale(1.5)
+        # 9 * 1.5 = 13.5 -> 14 (half-up, deterministic).
+        self.assertEqual(scale_font_size(9), 14)
+        self.assertEqual(scale_font_size(8), 12)
+
+    def test_scale_font_size_scales_down(self):
+        set_active_font_scale(0.75)
+        self.assertEqual(scale_font_size(12), 9)
+        self.assertEqual(scale_font_size(8), 6)
+
+    def test_scale_font_size_floors_at_one(self):
+        set_active_font_scale(0.5)
+        # 1 * 0.5 = 0.5 -> would round to 0/1; floor guarantees a
+        # legal positive Tk point size.
+        self.assertGreaterEqual(scale_font_size(1), 1)
+
+    def test_set_get_round_trip(self):
+        set_active_font_scale(1.25)
+        self.assertEqual(active_font_scale(), 1.25)
+
+    def test_coerce_clamps_out_of_range(self):
+        self.assertEqual(_coerce_font_scale(99.0), 3.0)
+        self.assertEqual(_coerce_font_scale(0.0), 0.5)
+
+    def test_coerce_non_numeric_falls_back_to_unity(self):
+        self.assertEqual(_coerce_font_scale("nonsense"), 1.0)
+        self.assertEqual(_coerce_font_scale(None), 1.0)
+
+    def test_set_active_font_scale_clamps_via_coerce(self):
+        set_active_font_scale(10.0)
+        self.assertEqual(active_font_scale(), 3.0)
+        set_active_font_scale("garbage")
+        self.assertEqual(active_font_scale(), 1.0)
+
+    @unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+    def test_named_fonts_reconfigured_live(self):
+        import tkinter.font as tkfont
+        base = int(tkfont.nametofont("TkDefaultFont").cget("size"))
+        set_active_font_scale(2.0)
+        scaled = int(tkfont.nametofont("TkDefaultFont").cget("size"))
+        # Positive (point) base doubles; negative (pixel) base doubles
+        # in magnitude with sign preserved.
+        if base >= 0:
+            self.assertEqual(scaled, _accessibility_mod._scaled_named_size(base))
+            self.assertGreater(scaled, base)
+        else:
+            self.assertLess(scaled, base)
+
+    @unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+    def test_reset_font_scale_restores_named_fonts(self):
+        import tkinter.font as tkfont
+        base = int(tkfont.nametofont("TkDefaultFont").cget("size"))
+        set_active_font_scale(2.0)
+        self.assertNotEqual(
+            int(tkfont.nametofont("TkDefaultFont").cget("size")), base,
+        )
+        _reset_font_scale()
+        self.assertEqual(
+            int(tkfont.nametofont("TkDefaultFont").cget("size")), base,
+        )
+        # Cache cleared so a fresh root re-captures its own defaults.
+        self.assertEqual(_NAMED_FONT_BASE_SIZES, {})
 
 
 if __name__ == "__main__":
