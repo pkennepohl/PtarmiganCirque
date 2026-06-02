@@ -11516,11 +11516,13 @@ locks Phase 4aw needs to take:
   no API surface to instrument.
 
 * **D4 — Font-scale persistence (Phase 4al question iv).**
-  YES, via `_USER_DEFAULTS`. Round-trips through CS-46's
-  manifest schema under `plot_defaults["accessibility"]
-  ["font_scale"]`. Default 1.0. Persistent app-level
-  preference (a single user adjusts it once and every project
-  thereafter inherits).
+  ✅ **Realised Phase 4ba (CS-79).** YES, via `_USER_DEFAULTS`.
+  Round-trips through CS-46's manifest schema under
+  `plot_defaults["accessibility"]["font_scale"]`. Default 1.0.
+  Persistent app-level preference (a single user adjusts it
+  once and every project thereafter inherits). Phase 4ba is the
+  canonical D4 relaxation moment — see CS-79 for the realised
+  surface + the additive named-font live-rescale mechanism.
 
 * **D5 — Platform / screen-reader matrix (Phase 4al question
   v).** Windows-only v1. The codebase is Windows-only today
@@ -12197,16 +12199,11 @@ KEYBINDINGS.md's table section.
 
 ### What's next in the umbrella
 
-Sub-axes A + B + C are ✅ landed. The Phase 4aw ladder
-closes with:
-
-* **Phase 4ba** — sub-axis D (font-scale multiplier bulk
-  pass + slider in the Accessibility tab). Reasoning
-  level: high.
-
-The Accessibility tab now carries two LabelFrames
-(palette + keyboard shortcuts). Sub-axis D adds the
-third (font scale slider) in canonical order.
+Sub-axes A + B + C + D are ✅ landed — the Phase 4aw
+ladder is COMPLETE (sub-axis D landed Phase 4ba, CS-79).
+The Accessibility tab now carries three LabelFrames
+(palette → keyboard shortcuts → font scale) in the
+locked canonical order.
 
 Sub-batches beyond Phase 4ba (E / F / G) remain
 deferred per the original Phase 4aw scope-lock — they
@@ -12215,7 +12212,121 @@ adding new umbrellas.
 
 ---
 
-*Document version: 1.52 — May 2026*
+## CS-79 — Accessibility font-scale multiplier (named-font + literal routing) (Phase 4ba)
+
+The FOURTH and final sub-batch of the CS-75 Accessibility
+umbrella (sub-axis D, CS-75 D4). Adds a single
+Accessibility-tab control that scales the application font,
+closing the four-rung ladder (A Escape-dismiss · B palette
+opt-in · C keyboard shortcuts · D font scale).
+
+### `accessibility.py` surface (additive over CS-76 / CS-78)
+
+* `scale_font_size(base_pt: int) -> int` — the
+  recipe-canonical entry point every explicit
+  `font=("", N, ...)` literal routes its size through.
+  Half-up rounding (`int(base * scale + 0.5)`), floored at 1
+  so a small base at a small multiplier never collapses to an
+  illegal non-positive Tk point size. Identity at the 1.0
+  factory default — which is why the literal-routing bulk pass
+  is a visual no-op until the user opts in.
+* `active_font_scale() -> float` / `set_active_font_scale(value)`
+  — getter/setter over the module-level `_active_font_scale`
+  (mirrors `node_styles._active_palette_name` from CS-77).
+  `set_active_font_scale` coerces via `_coerce_font_scale`
+  (clamp to `[0.5, 3.0]`, silent `1.0` fallback on non-numeric
+  — the same defensive posture as `set_active_palette`, since
+  the load path may surface a future-version value) and THEN
+  live-reconfigures the standard Tk named fonts.
+* `_NAMED_FONTS` (the nine standard `Tk*Font` names) +
+  `_NAMED_FONT_BASE_SIZES` (lazily-captured scale-1.0 base
+  sizes) + `_apply_scale_to_named_fonts` + `_scaled_named_size`
+  (sign-preserving — Tk sizes are points when positive, pixels
+  when negative). `_apply_scale_to_named_fonts` silently
+  no-ops when no Tk root exists yet (import time / headless).
+* `_reset_font_scale()` — test-only: resets to 1.0, restores
+  named fonts to base, clears the base cache (which is tied to
+  a specific Tk root).
+
+### The two-mechanism design (step-2 lock, user-confirmed)
+
+One control rescales the whole UI via two complementary paths:
+
+1. **Literal routing** — all 126 explicit `font=("", N, ...)`
+   literals across `plot_settings_dialog` / `node_styles_dialog`
+   / `style_dialog` / `binah` route their size through
+   `scale_font_size`. These widgets pick up a new scale on
+   their NEXT construction (a Tk font tuple is evaluated once at
+   widget-creation time), i.e. when a dialog is reopened.
+2. **Named-font reconfiguration** — `set_active_font_scale`
+   reconfigures the Tk named fonts (`TkDefaultFont` et al), so
+   widgets that render with the platform default font and carry
+   NO explicit font literal — notably `ScanTreeWidget` sidebar
+   rows, which read `TkDefaultFont` via `tkfont.nametofont` —
+   rescale INSTANTLY.
+
+The split is deliberate: a full live re-render of already-built
+explicit-font widgets would require tearing down and rebuilding
+every open dialog, which is out of scope (carry-forward, Phase
+4ba friction #2). The user chose this hybrid over literal-only
+(which would leave scan-tree rows and the open dialog unscaled
+within a session) at the step-2 decision lock.
+
+### Persistence + UI
+
+* `_FACTORY_DEFAULTS["accessibility"]["font_scale"] = 1.0` —
+  the second key in the Phase-4ay `accessibility` sub-dict.
+  Schema-additive: `migrate_plot_config` auto-fills it (it
+  already loops the factory `accessibility` keys);
+  **PTMG_FORMAT_VERSION unchanged** (CS-46 additive contract).
+  Round-trips through `manifest["plot_defaults"]` via
+  `_USER_DEFAULTS`; binah.py restores it on project load with
+  `set_active_font_scale` alongside the palette re-flip.
+* Module-level `_FONT_SCALE_VALUES = (0.75, 1.0, 1.25, 1.5,
+  1.75, 2.0)` + `%`-label maps + `_font_scale_label_for(value)`
+  (snaps an off-step stored float to the nearest label).
+* `_build_font_scale_labelframe(parent)` — the THIRD
+  Accessibility-tab LabelFrame ("Display font scale") below
+  palette + keyboard shortcuts (canonical order palette →
+  shortcuts → font scale). Readonly `ttk.Spinbox` of percentage
+  labels; trace-based commit-on-change via
+  `_on_font_scale_var_write` (writes
+  `_working["accessibility"]["font_scale"]`, flips
+  `set_active_font_scale`, marks the tab dirty, fires
+  `_apply_changes_live`). Mirrors the CS-77 palette Combobox
+  rather than the CS-68 `<ButtonRelease>` slider path — keeps
+  the commit deterministic for tests and the values discrete.
+
+### Lock decisions (CS-79)
+
+* The `accessibility.py` font-scale surface above is locked.
+  `scale_font_size`'s signature + identity-at-1.0 + floor-at-1
+  semantics are locked; `set_active_font_scale`'s coerce +
+  named-font side-effect is mandatory.
+* The Accessibility-tab canonical order is now fully realised:
+  **palette → shortcuts → font scale**. A future LabelFrame
+  must not displace the third slot's meaning.
+* `_FONT_SCALE_VALUES` MAY grow/shrink additively; the stored
+  value is a raw float (binary-exact steps).
+* CS-75 **D4 relaxation**: Phase 4ba is the canonical D4
+  relaxation moment — D4 anticipated exactly this font-scale
+  slider. The hybrid named-font mechanism is an additive
+  extension of D4 (D4 named no specific mechanism), recorded
+  here per the step-5 / Claude-surfaced relaxation convention.
+* **Source-level routing sentinel** (CS-79 parity): no raw
+  `font=("...", <digit>)` literal may remain in the four routed
+  modules — `TestFontLiteralRoutingSentinelPhase4ba` fails if a
+  future edit reintroduces an unscaled literal, and asserts
+  `scan_tree_widget` carries none (it is named-font only).
+
+31 net new tests (12 unit in `test_accessibility.TestFontScalePhase4ba`
++ 16 in `TestPlotConfigDialogFontScaleLabelFramePhase4ba` + 3 in
+`TestFontLiteralRoutingSentinelPhase4ba`). 1693 tests green
+(1662 baseline + 31 new).
+
+---
+
+*Document version: 1.53 — May 2026*
 *1.1: CS-13 implementation notes added in Phase 4a.*
 *1.2: CS-14 Plot Settings Dialog added in Phase 4b.*
 *1.3: CS-15 UV/Vis Baseline Correction + CS-04 implementation
