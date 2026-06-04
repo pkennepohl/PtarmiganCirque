@@ -68,7 +68,7 @@ from typing import Any, Callable
 
 from graph import GraphEvent, GraphEventType, ProjectGraph
 from nodes import DataNode, NodeState, NodeType, OperationNode
-from accessibility import bind_escape_to_close
+from accessibility import bind_escape_to_close, scale_font_size
 
 _log = logging.getLogger(__name__)
 
@@ -678,7 +678,7 @@ class StyleDialog(tk.Toplevel):
         ls_var = tk.StringVar(value=self._style_get("linestyle"))
         self._control_vars["linestyle"] = ls_var
 
-        tk.Label(sec, text="Line style:", font=("", 9, "bold")).grid(
+        tk.Label(sec, text="Line style:", font=("", scale_font_size(9), "bold")).grid(
             row=row, column=0, sticky="w", pady=(0, 4),
         )
         ls_frame = tk.Frame(sec)
@@ -726,7 +726,7 @@ class StyleDialog(tk.Toplevel):
         # ── Fill area (checkbutton) ───────────────────────────────
         fill_var = tk.BooleanVar(value=bool(self._style_get("fill")))
         self._control_vars["fill"] = fill_var
-        tk.Label(sec, text="Fill area:", font=("", 9, "bold")).grid(
+        tk.Label(sec, text="Fill area:", font=("", scale_font_size(9), "bold")).grid(
             row=row, column=0, sticky="w", pady=3,
         )
         tk.Checkbutton(
@@ -839,7 +839,7 @@ class StyleDialog(tk.Toplevel):
         var = tk.StringVar(master=self, value=current)
         self._control_vars["label"] = var
 
-        tk.Label(parent, text="Label:", font=("", 9, "bold")).grid(
+        tk.Label(parent, text="Label:", font=("", scale_font_size(9), "bold")).grid(
             row=row, column=0, sticky="w", pady=(0, 4),
         )
         entry = tk.Entry(parent, textvariable=var)
@@ -874,7 +874,7 @@ class StyleDialog(tk.Toplevel):
         var = tk.StringVar(value=_y_axis_value_to_display(current))
         self._control_vars["y_axis"] = var
 
-        tk.Label(parent, text="Y axis:", font=("", 9, "bold")).grid(
+        tk.Label(parent, text="Y axis:", font=("", scale_font_size(9), "bold")).grid(
             row=row, column=0, sticky="w", pady=3,
         )
         cb = ttk.Combobox(
@@ -919,7 +919,7 @@ class StyleDialog(tk.Toplevel):
         """
         var = tk.BooleanVar(value=bool(self._style_get(key)))
         self._control_vars[key] = var
-        tk.Label(parent, text=label, font=("", 9, "bold")).grid(
+        tk.Label(parent, text=label, font=("", scale_font_size(9), "bold")).grid(
             row=row, column=0, sticky="w", pady=3,
         )
         tk.Checkbutton(
@@ -963,10 +963,10 @@ class StyleDialog(tk.Toplevel):
         robust: ``command`` is not fired by all sources of change in
         every Tk version, but a ``write`` trace is.
         """
-        tk.Label(parent, text=label, font=("", 9, "bold")).grid(
+        tk.Label(parent, text=label, font=("", scale_font_size(9), "bold")).grid(
             row=row, column=0, sticky="w", pady=3,
         )
-        val_lbl = tk.Label(parent, font=("Courier", 8), width=8)
+        val_lbl = tk.Label(parent, font=("Courier", scale_font_size(8)), width=8)
 
         def _fmt(*_):
             try:
@@ -1003,7 +1003,7 @@ class StyleDialog(tk.Toplevel):
     def _build_colour_row(
         self, parent: tk.Widget, row: int, col_var: tk.StringVar,
     ) -> None:
-        tk.Label(parent, text="Colour:", font=("", 9, "bold")).grid(
+        tk.Label(parent, text="Colour:", font=("", scale_font_size(9), "bold")).grid(
             row=row, column=0, sticky="w", pady=4,
         )
 
@@ -1049,7 +1049,7 @@ class StyleDialog(tk.Toplevel):
         reset_row = tk.Frame(parent)
         reset_row.grid(row=row, column=2, sticky="w", padx=4)
         tk.Button(
-            reset_row, text="Reset", font=("", 8), command=_reset,
+            reset_row, text="Reset", font=("", scale_font_size(8)), command=_reset,
         ).pack(side=tk.LEFT)
 
         self._add_apply_one_button(
@@ -1085,7 +1085,7 @@ class StyleDialog(tk.Toplevel):
         but can't trigger a no-op.
         """
         b = tk.Button(
-            parent, text="∀", font=("", 8), relief=tk.FLAT,
+            parent, text="∀", font=("", scale_font_size(8)), relief=tk.FLAT,
             cursor="hand2", fg="#004400",
             activeforeground="#006600",
             command=lambda k=key, g=get_fn: self._delegate_apply_one(k, g()),
@@ -1485,7 +1485,7 @@ class StyleDialog(tk.Toplevel):
             header = tk.Frame(block)
             header.pack(fill=tk.X, anchor="w")
             tk.Label(
-                header, text=summary["label"], font=("", 10, "bold"),
+                header, text=summary["label"], font=("", scale_font_size(10), "bold"),
                 fg=summary["state_colour"],
             ).pack(side=tk.LEFT)
             # For data nodes, show the NodeType after the label since
@@ -1495,12 +1495,12 @@ class StyleDialog(tk.Toplevel):
             if summary["kind"] == "data" and summary["type_text"]:
                 tk.Label(
                     header, text=f"  [{summary['type_text']}]",
-                    font=("", 9), fg="#666666",
+                    font=("", scale_font_size(9)), fg="#666666",
                 ).pack(side=tk.LEFT)
             if summary["state_text"]:
                 tk.Label(
                     header, text=f"  · {summary['state_text']}",
-                    font=("", 9), fg=summary["state_colour"],
+                    font=("", scale_font_size(9)), fg=summary["state_colour"],
                 ).pack(side=tk.LEFT)
 
             # ── Body: params + engine + hash (OperationNodes only) ─
@@ -1518,7 +1518,7 @@ class StyleDialog(tk.Toplevel):
                     )
                 tk.Label(
                     block, text="\n".join(body_lines),
-                    justify=tk.LEFT, font=("Courier", 8),
+                    justify=tk.LEFT, font=("Courier", scale_font_size(8)),
                     fg=summary["state_colour"], anchor="w",
                 ).pack(fill=tk.X, padx=(16, 0), anchor="w")
 
@@ -1599,7 +1599,7 @@ class StyleDialog(tk.Toplevel):
     ) -> None:
         row = 0
         # Marker shape (radio).
-        tk.Label(parent, text="Marker shape:", font=("", 9, "bold")).grid(
+        tk.Label(parent, text="Marker shape:", font=("", scale_font_size(9), "bold")).grid(
             row=row, column=0, sticky="w", pady=2,
         )
         shape_var = tk.StringVar(value=str(self._style_get("marker_shape")))
@@ -1639,7 +1639,7 @@ class StyleDialog(tk.Toplevel):
     ) -> None:
         row = 0
         # Function (radio).
-        tk.Label(parent, text="Function:", font=("", 9, "bold")).grid(
+        tk.Label(parent, text="Function:", font=("", scale_font_size(9), "bold")).grid(
             row=row, column=0, sticky="w", pady=2,
         )
         fn_var = tk.StringVar(
@@ -1717,7 +1717,7 @@ class StyleDialog(tk.Toplevel):
             value=bool(self._style_get("envelope_fill")),
         )
         self._control_vars["envelope_fill"] = fill_var
-        tk.Label(parent, text="Fill area:", font=("", 9, "bold")).grid(
+        tk.Label(parent, text="Fill area:", font=("", scale_font_size(9), "bold")).grid(
             row=row, column=0, sticky="w", pady=2,
         )
         tk.Checkbutton(
@@ -1773,7 +1773,7 @@ class StyleDialog(tk.Toplevel):
             value=bool(self._style_get("stick_tip_markers")),
         )
         self._control_vars["stick_tip_markers"] = tip_var
-        tk.Label(parent, text="Tip markers:", font=("", 9, "bold")).grid(
+        tk.Label(parent, text="Tip markers:", font=("", scale_font_size(9), "bold")).grid(
             row=row, column=0, sticky="w", pady=2,
         )
         tk.Checkbutton(
@@ -1880,7 +1880,7 @@ class StyleDialog(tk.Toplevel):
         unit: str = "",
     ) -> None:
         """Labelled Spinbox row that writes via ``trace_add('write')``."""
-        tk.Label(parent, text=label, font=("", 9, "bold")).grid(
+        tk.Label(parent, text=label, font=("", scale_font_size(9), "bold")).grid(
             row=row, column=0, sticky="w", pady=2,
         )
         spin = tk.Spinbox(
@@ -1889,7 +1889,7 @@ class StyleDialog(tk.Toplevel):
         )
         spin.grid(row=row, column=1, sticky="w", padx=4)
         if unit:
-            tk.Label(parent, text=unit, font=("Courier", 8)).grid(
+            tk.Label(parent, text=unit, font=("Courier", scale_font_size(8))).grid(
                 row=row, column=2, sticky="w",
             )
 
@@ -1925,13 +1925,13 @@ class StyleDialog(tk.Toplevel):
         unit: str = "",
     ) -> None:
         """Labelled Entry + unit + Scale row, all bound to ``var``."""
-        tk.Label(parent, text=label, font=("", 9, "bold")).grid(
+        tk.Label(parent, text=label, font=("", scale_font_size(9), "bold")).grid(
             row=row, column=0, sticky="w", pady=2,
         )
         entry = tk.Entry(parent, textvariable=var, width=8)
         entry.grid(row=row, column=1, sticky="w", padx=(4, 2))
         if unit:
-            tk.Label(parent, text=unit, font=("Courier", 8)).grid(
+            tk.Label(parent, text=unit, font=("Courier", scale_font_size(8))).grid(
                 row=row, column=2, sticky="w",
             )
         sc = tk.Scale(

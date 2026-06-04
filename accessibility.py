@@ -224,3 +224,178 @@ def _reset_shortcut_registry() -> None:
     Phase 4az CS-78 recipe.
     """
     SHORTCUT_REGISTRY.clear()
+
+
+# ---------------------------------------------------------------------
+# Phase 4ba (sub-axis D, CS-79) — font-scale multiplier.
+# ---------------------------------------------------------------------
+#
+# Two complementary mechanisms make one Accessibility-tab control
+# rescale the whole UI:
+#
+# 1. :func:`scale_font_size` — every explicit ``font=("", N, ...)``
+#    literal across the dialog modules routes its size ``N`` through
+#    this helper. Those widgets pick up the new scale on their NEXT
+#    construction (e.g. when a dialog is reopened), because a Tk font
+#    tuple is evaluated once at widget-creation time.
+# 2. :func:`set_active_font_scale` ALSO reconfigures the standard Tk
+#    named fonts (``TkDefaultFont`` et al). Widgets that render with
+#    the platform default font — i.e. those WITHOUT an explicit
+#    ``font=`` literal, notably the :class:`scan_tree_widget.ScanTreeWidget`
+#    sidebar rows, which read ``TkDefaultFont`` via
+#    ``tkfont.nametofont`` — rescale INSTANTLY when the control moves.
+#
+# The split is deliberate: a full live re-render of already-built
+# explicit-font widgets would require tearing down and rebuilding
+# every open dialog, which is out of scope here. 1.0 is the factory
+# default and a visual no-op, so the literal-routing bulk pass is safe.
+
+# Standard Tk named fonts reconfigured live by
+# :func:`set_active_font_scale`.
+_NAMED_FONTS: tuple[str, ...] = (
+    "TkDefaultFont", "TkTextFont", "TkFixedFont", "TkMenuFont",
+    "TkHeadingFont", "TkCaptionFont", "TkSmallCaptionFont",
+    "TkIconFont", "TkTooltipFont",
+)
+
+# Base (scale-1.0) sizes captured lazily the first time a named font is
+# reconfigured. Keyed by font name. Cleared by :func:`_reset_font_scale`
+# (test-only) so a fresh Tk root re-captures its own defaults rather
+# than inheriting a stale base from a destroyed root.
+_NAMED_FONT_BASE_SIZES: dict[str, int] = {}
+
+# Active font-scale multiplier. Process-lifetime mutable; updated by
+# :func:`set_active_font_scale` from the dialog's commit-on-change path
+# and from binah.py's project-load path. 1.0 is the factory default and
+# a visual no-op.
+_active_font_scale: float = 1.0
+
+# Defensive bounds. The Accessibility-tab control offers 0.75–2.0; the
+# wider clamp tolerates a value written by a future app version without
+# letting a pathological multiplier wreck the UI.
+_FONT_SCALE_MIN: float = 0.5
+_FONT_SCALE_MAX: float = 3.0
+
+
+def _coerce_font_scale(value: object) -> float:
+    """Clamp ``value`` into the valid font-scale band; fall back to 1.0.
+
+    Non-numeric input falls back to ``1.0`` silently — mirrors
+    :func:`node_styles.set_active_palette`'s defensive fallback, since
+    the load path may surface a value written by a future app version
+    and the UI should keep rendering rather than crash.
+
+    Phase 4ba CS-79 recipe.
+    """
+    try:
+        scale = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 1.0
+    if scale < _FONT_SCALE_MIN:
+        return _FONT_SCALE_MIN
+    if scale > _FONT_SCALE_MAX:
+        return _FONT_SCALE_MAX
+    return scale
+
+
+def active_font_scale() -> float:
+    """Return the active font-scale multiplier (default ``1.0``).
+
+    Phase 4ba CS-79 recipe.
+    """
+    return _active_font_scale
+
+
+def scale_font_size(base_pt: int) -> int:
+    """Scale a point size by the active multiplier (Phase 4ba CS-79).
+
+    The recipe-canonical entry point every explicit ``font=("", N, ...)``
+    literal routes its size ``N`` through, so one Accessibility-tab
+    control rescales the dialog chrome. Identity when the scale is
+    ``1.0`` (the factory default), which is why the bulk routing pass
+    is a visual no-op until the user opts in. Half-up rounding keeps
+    the result deterministic; the floor of ``1`` guarantees a legal
+    (positive) Tk point size even for a small base at a small
+    multiplier.
+    """
+    scaled = int(base_pt * _active_font_scale + 0.5)
+    return scaled if scaled >= 1 else 1
+
+
+def _scaled_named_size(base: int) -> int:
+    """Scale a *named-font* base size, preserving Tk's sign convention.
+
+    Tk font sizes are points when positive and pixels when negative.
+    The multiplier preserves the sign so a pixel-specified named font
+    stays pixel-specified; magnitude is floored at 1.
+    """
+    if base < 0:
+        scaled = -int(-base * _active_font_scale + 0.5)
+        return scaled if scaled <= -1 else -1
+    scaled = int(base * _active_font_scale + 0.5)
+    return scaled if scaled >= 1 else 1
+
+
+def _apply_scale_to_named_fonts() -> None:
+    """Reconfigure the standard Tk named fonts to the active scale.
+
+    Captures each font's scale-1.0 base size on first contact. Silently
+    no-ops when no Tk root exists yet (e.g. called at import time or in
+    a headless context); the next call after a root is created applies
+    the scale.
+    """
+    try:
+        import tkinter.font as tkfont
+    except Exception:
+        return
+    for name in _NAMED_FONTS:
+        try:
+            font = tkfont.nametofont(name)
+        except Exception:
+            # No Tk root yet, or this platform lacks the named font.
+            continue
+        base = _NAMED_FONT_BASE_SIZES.get(name)
+        if base is None:
+            try:
+                base = int(font.cget("size"))
+            except Exception:
+                continue
+            _NAMED_FONT_BASE_SIZES[name] = base
+        try:
+            font.configure(size=_scaled_named_size(base))
+        except Exception:
+            continue
+
+
+def set_active_font_scale(value: object) -> None:
+    """Set the active font-scale multiplier and live-reconfigure named fonts.
+
+    ``value`` is coerced/clamped by :func:`_coerce_font_scale`. After
+    storing it, the standard Tk named fonts are reconfigured so every
+    widget using the platform default font (no explicit ``font=``
+    literal — notably ScanTreeWidget sidebar rows) rescales instantly.
+    Widgets built with explicit ``font=("", N, ...)`` literals rescale
+    on their next construction via :func:`scale_font_size`.
+
+    Phase 4ba CS-79 recipe.
+    """
+    global _active_font_scale
+    _active_font_scale = _coerce_font_scale(value)
+    _apply_scale_to_named_fonts()
+
+
+def _reset_font_scale() -> None:
+    """Reset scale to 1.0, restore named fonts, drop the base cache — test-only.
+
+    Production code never calls this. Tests that exercise a non-1.0
+    scale call it in tearDown so global Tk named-font state (and the
+    base-size cache, which is tied to a specific Tk root) does not
+    bleed into sibling tests — particularly the ScanTreeWidget width
+    tests that measure ``TkDefaultFont`` metrics.
+
+    Phase 4ba CS-79 recipe.
+    """
+    global _active_font_scale
+    _active_font_scale = 1.0
+    _apply_scale_to_named_fonts()  # restores fonts to captured base sizes
+    _NAMED_FONT_BASE_SIZES.clear()

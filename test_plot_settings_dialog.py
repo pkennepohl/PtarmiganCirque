@@ -5268,9 +5268,11 @@ class TestPlotConfigDialogAccessibilityTabPhase4ay(unittest.TestCase):
         # ``_FACTORY_DEFAULTS`` alongside the existing ``axes``
         # sub-dict. PTMG_FORMAT_VERSION is NOT bumped.
         self.assertIn("accessibility", self.psd._FACTORY_DEFAULTS)
+        # CS-79 / Phase 4ba (sub-axis D) grew the sub-dict additively
+        # with ``font_scale``. PTMG_FORMAT_VERSION still NOT bumped.
         self.assertEqual(
             self.psd._FACTORY_DEFAULTS["accessibility"],
-            {"palette": "default"},
+            {"palette": "default", "font_scale": 1.0},
         )
 
     def test_universal_defaults_carries_accessibility_subdict(self):
@@ -5689,6 +5691,234 @@ class TestKeybindingsMdParityPhase4az(unittest.TestCase):
                          "scan_tree_widget.py bind_shortcut count "
                          "must match KEYBINDINGS.md row count "
                          "(Phase 4az CS-78 parity sentinel)")
+
+
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestPlotConfigDialogFontScaleLabelFramePhase4ba(unittest.TestCase):
+    """CS-79 / CS-75 D4 / Phase 4ba (sub-axis D): third Accessibility-tab
+    LabelFrame — the font-scale Spinbox + commit-on-change semantics.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import plot_settings_dialog
+        import node_styles as ns
+        from accessibility import (
+            active_font_scale,
+            set_active_font_scale,
+            _reset_font_scale,
+        )
+        cls.psd = plot_settings_dialog
+        cls.node_styles = ns
+        cls.PlotConfigDialog = plot_settings_dialog.PlotConfigDialog
+        cls.active_font_scale = staticmethod(active_font_scale)
+        cls.set_active_font_scale = staticmethod(set_active_font_scale)
+        cls._reset_font_scale = staticmethod(_reset_font_scale)
+
+    def setUp(self):
+        self.psd._open_dialogs.clear()
+        self.psd._USER_DEFAULTS.clear()
+        self.node_styles.set_active_palette("default")
+        self._reset_font_scale()
+        self.host = tk.Frame(_root)
+        self.config: dict = {}
+        self.dlg = self.PlotConfigDialog(self.host, self.config)
+        self.dlg.update_idletasks()
+
+    def tearDown(self):
+        try:
+            self.dlg.destroy()
+        except Exception:
+            pass
+        self.psd._open_dialogs.clear()
+        self.psd._USER_DEFAULTS.clear()
+        self.node_styles.set_active_palette("default")
+        # CRITICAL: reset global font scale + named-font state so a
+        # non-1.0 scale never bleeds into the ScanTreeWidget width tests.
+        self._reset_font_scale()
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    def _accessibility_labelframes(self) -> list[tk.LabelFrame]:
+        tab_body = self.dlg._tab_frames["accessibility"]
+        return [
+            c for c in tab_body.winfo_children()
+            if isinstance(c, tk.LabelFrame)
+        ]
+
+    # ----- factory default + schema ------------------------------------
+
+    def test_factory_default_font_scale_is_unity(self):
+        self.assertEqual(
+            self.psd._FACTORY_DEFAULTS["accessibility"]["font_scale"], 1.0,
+        )
+
+    def test_working_copy_seeded_with_font_scale_default(self):
+        self.assertEqual(
+            self.dlg._working["accessibility"]["font_scale"], 1.0,
+        )
+
+    # ----- LabelFrame presence + canonical position --------------------
+
+    def test_font_scale_labelframe_present(self):
+        titles = [lf.cget("text") for lf in self._accessibility_labelframes()]
+        self.assertIn("Display font scale", titles)
+
+    def test_font_scale_labelframe_is_third_in_canonical_order(self):
+        # Canonical order locked in Phase 4ay/4az/4ba:
+        # palette -> shortcuts -> font scale.
+        titles = [lf.cget("text") for lf in self._accessibility_labelframes()]
+        self.assertEqual(
+            titles,
+            ["Spectrum colour palette", "Keyboard shortcuts",
+             "Display font scale"],
+        )
+
+    # ----- Spinbox shape -----------------------------------------------
+
+    def test_font_scale_spinbox_exists(self):
+        self.assertTrue(hasattr(self.dlg, "_font_scale_spinbox"))
+        self.assertIsInstance(self.dlg._font_scale_spinbox, ttk.Spinbox)
+
+    def test_font_scale_spinbox_is_readonly(self):
+        self.assertEqual(
+            str(self.dlg._font_scale_spinbox.cget("state")), "readonly",
+        )
+
+    def test_font_scale_spinbox_values_match_labels(self):
+        values = tuple(
+            str(v) for v in self.dlg._font_scale_spinbox.cget("values")
+        )
+        self.assertEqual(values, self.psd._FONT_SCALE_LABELS)
+
+    def test_font_scale_spinbox_initial_value_is_hundred_percent(self):
+        self.assertEqual(str(self.dlg._font_scale_spinbox.get()), "100%")
+
+    # ----- commit-on-change --------------------------------------------
+
+    def test_font_scale_change_writes_through_to_working_copy(self):
+        self.dlg._suspend_writes = False
+        self.dlg._font_scale_var.set("150%")
+        self.assertEqual(
+            self.dlg._working["accessibility"]["font_scale"], 1.5,
+        )
+
+    def test_font_scale_change_updates_active_scale(self):
+        self.dlg._suspend_writes = False
+        self.dlg._font_scale_var.set("200%")
+        self.assertEqual(self.active_font_scale(), 2.0)
+
+    def test_font_scale_change_marks_accessibility_tab_dirty(self):
+        self.dlg._suspend_writes = False
+        self.dlg._font_scale_var.set("125%")
+        frame = self.dlg._tab_frames["accessibility"]
+        title = self.dlg._notebook.tab(frame, "text")
+        self.assertTrue(
+            title.endswith(self.psd._MODIFIED_TAB_SUFFIX),
+            f"expected dirty marker on {title!r}",
+        )
+
+    def test_font_scale_change_fires_on_apply_callback(self):
+        calls: list[None] = []
+        host2 = tk.Frame(_root)
+        try:
+            self.psd._open_dialogs.clear()
+            dlg2 = self.PlotConfigDialog(
+                host2, {}, on_apply=lambda: calls.append(None),
+            )
+            dlg2.update_idletasks()
+            dlg2._suspend_writes = False
+            dlg2._font_scale_var.set("175%")
+            self.assertGreaterEqual(len(calls), 1)
+            dlg2.destroy()
+        finally:
+            try:
+                host2.destroy()
+            except Exception:
+                pass
+
+    # ----- migrate additive fill ---------------------------------------
+
+    def test_migrate_fills_missing_font_scale(self):
+        config: dict = {}
+        self.psd.migrate_plot_config(config)
+        self.assertEqual(config["accessibility"]["font_scale"], 1.0)
+
+    def test_migrate_preserves_existing_font_scale(self):
+        config: dict = {"accessibility": {"font_scale": 1.75}}
+        self.psd.migrate_plot_config(config)
+        self.assertEqual(config["accessibility"]["font_scale"], 1.75)
+
+    # ----- Reset/Factory refresh + load re-flip ------------------------
+
+    def test_load_into_working_refreshes_spinbox_and_reflips_scale(self):
+        source = copy.deepcopy(self.psd._FACTORY_DEFAULTS)
+        source["accessibility"]["font_scale"] = 2.0
+        self.dlg._load_into_working(source)
+        self.assertEqual(str(self.dlg._font_scale_var.get()), "200%")
+        self.assertEqual(self.active_font_scale(), 2.0)
+
+    def test_refresh_closure_snaps_off_step_value_to_nearest_label(self):
+        # A value written by a future app version (off the offered
+        # steps) snaps to the nearest label rather than blanking.
+        self.dlg._accessibility_control_refresh["font_scale"](1.6)
+        self.assertEqual(str(self.dlg._font_scale_var.get()), "150%")
+
+
+class TestFontLiteralRoutingSentinelPhase4ba(unittest.TestCase):
+    """CS-79 / Phase 4ba — source-level parity sentinel for the bulk pass.
+
+    Every explicit ``font=("", N, ...)`` literal across the dialog
+    modules must route its size through ``scale_font_size`` so the
+    font-scale control rescales the whole dialog chrome. A raw integer
+    size after the family means a literal slipped the routing — fail so
+    the next edit cannot reintroduce an unscaled font.
+    """
+
+    import re as _re
+    _RAW_FONT = _re.compile(r'font=\("[^"]*",\s*\d')
+    ROUTED_MODULES = (
+        "plot_settings_dialog.py",
+        "node_styles_dialog.py",
+        "style_dialog.py",
+        "binah.py",
+    )
+
+    @staticmethod
+    def _read(filename: str) -> str:
+        from pathlib import Path
+        return (
+            Path(__file__).resolve().parent / filename
+        ).read_text(encoding="utf-8")
+
+    def test_no_unrouted_font_literals_in_dialog_modules(self):
+        for filename in self.ROUTED_MODULES:
+            src = self._read(filename)
+            hits = self._RAW_FONT.findall(src)
+            self.assertEqual(
+                hits, [],
+                f"{filename}: {len(hits)} unrouted font literal(s) — "
+                f"route the size through scale_font_size(...): {hits[:5]}",
+            )
+
+    def test_scan_tree_widget_carries_no_explicit_font_literal(self):
+        # scan_tree_widget renders row labels via the named font
+        # TkDefaultFont (set_active_font_scale rescales it live), so it
+        # carries zero explicit font literals. A future explicit literal
+        # here MUST route through scale_font_size too.
+        src = self._read("scan_tree_widget.py")
+        self.assertEqual(self._RAW_FONT.findall(src), [])
+
+    def test_routed_modules_import_scale_font_size(self):
+        for filename in self.ROUTED_MODULES:
+            src = self._read(filename)
+            self.assertIn(
+                "scale_font_size", src,
+                f"{filename} routes font literals but does not import "
+                f"scale_font_size",
+            )
 
 
 if __name__ == "__main__":

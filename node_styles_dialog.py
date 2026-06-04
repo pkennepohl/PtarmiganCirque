@@ -46,7 +46,7 @@ CS-74 lock decisions (Phase 4au):
   they stay in sync. CS-05 has no retirement.
 * **D5 — Per-row ∀ broadcast.** Each universal-section row carries a
   ``∀`` button matching the CS-05 visual ( ``text="∀"``,
-  ``font=("", 8)``, ``relief=tk.FLAT``). The button delegates via
+  ``font=("", scale_font_size(8))``, ``relief=tk.FLAT``). The button delegates via
   ``on_apply_to_all(param_name, value)`` — the host wires
   :meth:`UVVisTab._on_uvvis_apply_to_all` which already carries the
   CS-50 key-conditional widening for ``y_axis`` (fans across
@@ -110,7 +110,11 @@ from typing import Any, Callable, Iterable, Optional
 from nodes import DataNode, NodeState, NodeType
 from graph import GraphEvent, GraphEventType, ProjectGraph
 from node_styles import pick_default_color
-from accessibility import bind_escape_to_close, attach_shortcut_tooltip
+from accessibility import (
+    bind_escape_to_close,
+    attach_shortcut_tooltip,
+    scale_font_size,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -381,7 +385,7 @@ class NodeStylesDialog(tk.Toplevel):
         header.pack(fill=tk.X, pady=(0, 4))
 
         tk.Label(
-            header, text="Node:", font=("", 9, "bold"),
+            header, text="Node:", font=("", scale_font_size(9), "bold"),
         ).pack(side=tk.LEFT, padx=(0, 4))
 
         self._combobox_var = tk.StringVar(master=self, value="")
@@ -511,7 +515,7 @@ class NodeStylesDialog(tk.Toplevel):
         self._control_vars["label"] = var
 
         tk.Label(
-            parent, text="Label:", font=("", 9, "bold"),
+            parent, text="Label:", font=("", scale_font_size(9), "bold"),
         ).grid(row=row, column=0, sticky="w", pady=(0, 4))
 
         entry = tk.Entry(parent, textvariable=var)
@@ -535,7 +539,7 @@ class NodeStylesDialog(tk.Toplevel):
         self._control_vars["linestyle"] = ls_var
 
         tk.Label(
-            parent, text="Line style:", font=("", 9, "bold"),
+            parent, text="Line style:", font=("", scale_font_size(9), "bold"),
         ).grid(row=row, column=0, sticky="w", pady=(0, 4))
 
         ls_frame = tk.Frame(parent)
@@ -575,7 +579,7 @@ class NodeStylesDialog(tk.Toplevel):
         self._control_vars[key] = var
 
         tk.Label(
-            parent, text=label, font=("", 9, "bold"),
+            parent, text=label, font=("", scale_font_size(9), "bold"),
         ).grid(row=row, column=0, sticky="w", pady=3)
 
         scale = tk.Scale(
@@ -588,7 +592,7 @@ class NodeStylesDialog(tk.Toplevel):
         value_lbl = tk.Label(
             parent,
             text=self._format_slider_value(var.get(), unit),
-            font=("Courier", 9), width=8, anchor="w",
+            font=("Courier", scale_font_size(9)), width=8, anchor="w",
         )
         value_lbl.grid(row=row, column=2, sticky="w")
 
@@ -622,7 +626,7 @@ class NodeStylesDialog(tk.Toplevel):
         self._control_vars["color"] = col_var
 
         tk.Label(
-            parent, text="Colour:", font=("", 9, "bold"),
+            parent, text="Colour:", font=("", scale_font_size(9), "bold"),
         ).grid(row=row, column=0, sticky="w", pady=3)
 
         swatch_frame = tk.Frame(parent)
@@ -639,7 +643,7 @@ class NodeStylesDialog(tk.Toplevel):
         self._color_swatch = swatch
 
         reset_btn = tk.Button(
-            swatch_frame, text="Reset", font=("", 8),
+            swatch_frame, text="Reset", font=("", scale_font_size(8)),
             command=self._on_colour_reset,
         )
         reset_btn.pack(side=tk.LEFT, padx=(4, 0))
@@ -682,7 +686,7 @@ class NodeStylesDialog(tk.Toplevel):
         self._control_vars[key] = var
 
         tk.Label(
-            parent, text=label, font=("", 9, "bold"),
+            parent, text=label, font=("", scale_font_size(9), "bold"),
         ).grid(row=row, column=0, sticky="w", pady=3)
 
         tk.Checkbutton(
@@ -720,7 +724,7 @@ class NodeStylesDialog(tk.Toplevel):
         self._control_vars["y_axis"] = var
 
         tk.Label(
-            parent, text="Y axis:", font=("", 9, "bold"),
+            parent, text="Y axis:", font=("", scale_font_size(9), "bold"),
         ).grid(row=row, column=0, sticky="w", pady=3)
 
         cb = ttk.Combobox(
@@ -768,7 +772,7 @@ class NodeStylesDialog(tk.Toplevel):
         8-pt font) so the cross-surface ∀ language stays unified.
         """
         b = tk.Button(
-            parent, text="∀", font=("", 8), relief=tk.FLAT,
+            parent, text="∀", font=("", scale_font_size(8)), relief=tk.FLAT,
             cursor="hand2", fg="#004400",
             activeforeground="#006600",
             command=lambda k=key, g=get_fn:

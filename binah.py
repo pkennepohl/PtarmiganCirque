@@ -42,7 +42,11 @@ import feff_manager
 from xas_analysis_tab import XASAnalysisTab
 from uvvis_tab import UVVisTab
 import project_manager as pm
-from accessibility import bind_escape_to_close
+from accessibility import (
+    bind_escape_to_close,
+    scale_font_size,
+    set_active_font_scale,
+)
 import node_styles
 
 
@@ -171,7 +175,7 @@ class OrcaTDDFTApp(tk.Tk):
         bar.pack(side=tk.TOP, fill=tk.X)
 
         self._sidebar_btn = tk.Button(
-            bar, text="«", width=2, font=("", 9, "bold"),
+            bar, text="«", width=2, font=("", scale_font_size(9), "bold"),
             relief=tk.RAISED, command=self._toggle_sidebar,
         )
         self._sidebar_btn.pack(side=tk.LEFT, padx=(0, 6))
@@ -237,7 +241,7 @@ class OrcaTDDFTApp(tk.Tk):
 
         ttk.Separator(sidebar, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=2)
 
-        tk.Label(sidebar, text="Loaded Files", font=("", 9, "bold")).pack(anchor="w", padx=4, pady=2)
+        tk.Label(sidebar, text="Loaded Files", font=("", scale_font_size(9), "bold")).pack(anchor="w", padx=4, pady=2)
 
         self._file_listbox = tk.Listbox(sidebar, height=8, selectmode=tk.SINGLE,
                                          exportselection=False)
@@ -252,20 +256,20 @@ class OrcaTDDFTApp(tk.Tk):
 
         tk.Button(
             sidebar, text="+ Add to Overlay", bg="#003d7a", fg="white",
-            activebackground="#0055aa", font=("", 9, "bold"),
+            activebackground="#0055aa", font=("", scale_font_size(9), "bold"),
             command=self._add_current_to_overlay
         ).pack(fill=tk.X, padx=4, pady=(0, 2))
 
         tk.Button(
             sidebar, text="Load Exp. Data\u2026", bg="#6B0000", fg="white",
-            activebackground="#8B0000", font=("", 9, "bold"),
+            activebackground="#8B0000", font=("", scale_font_size(9), "bold"),
             command=self._load_experimental
         ).pack(fill=tk.X, padx=4, pady=(0, 2))
 
         ttk.Separator(sidebar, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=2)
-        tk.Label(sidebar, text="Spectrum Info", font=("", 9, "bold")).pack(anchor="w", padx=4)
+        tk.Label(sidebar, text="Spectrum Info", font=("", scale_font_size(9), "bold")).pack(anchor="w", padx=4)
         self._info_text = tk.Text(sidebar, height=14, width=28, state=tk.DISABLED,
-                                  font=("Courier", 8), wrap=tk.WORD, bd=0,
+                                  font=("Courier", scale_font_size(8)), wrap=tk.WORD, bd=0,
                                   bg=self.cget("bg"))
         self._info_text.pack(fill=tk.BOTH, expand=True, padx=4, pady=2)
 
@@ -328,7 +332,7 @@ class OrcaTDDFTApp(tk.Tk):
     def _build_status_bar(self):
         self._status = tk.StringVar(value="Ready. Open an ORCA .out file to begin.")
         bar = tk.Label(self, textvariable=self._status, bd=1, relief=tk.SUNKEN,
-                       anchor="w", padx=6, font=("", 8))
+                       anchor="w", padx=6, font=("", scale_font_size(8)))
         bar.pack(side=tk.BOTTOM, fill=tk.X)
 
     def _apply_managed_feff_defaults(self):
@@ -380,7 +384,7 @@ class OrcaTDDFTApp(tk.Tk):
             text="Managed FEFF Setup",
             bg="#003366",
             fg="white",
-            font=("", 11, "bold"),
+            font=("", scale_font_size(11), "bold"),
         ).pack(anchor="w")
         tk.Label(
             hdr,
@@ -392,13 +396,13 @@ class OrcaTDDFTApp(tk.Tk):
             fg="#d7e7ff",
             wraplength=700,
             justify="left",
-            font=("", 9),
+            font=("", scale_font_size(9)),
         ).pack(anchor="w", pady=(4, 0))
 
         body = tk.Frame(win, padx=10, pady=8)
         body.pack(fill=tk.BOTH, expand=True)
 
-        self._feff_setup_log = tk.Text(body, font=("Courier", 8), wrap=tk.WORD)
+        self._feff_setup_log = tk.Text(body, font=("Courier", scale_font_size(8)), wrap=tk.WORD)
         self._feff_setup_log.pack(fill=tk.BOTH, expand=True)
         self._feff_setup_log.insert(
             tk.END,
@@ -411,7 +415,7 @@ class OrcaTDDFTApp(tk.Tk):
         footer.pack(fill=tk.X)
         self._feff_setup_status = tk.StringVar(value="Running FEFF setup...")
         tk.Label(footer, textvariable=self._feff_setup_status, anchor="w",
-                 fg="#003366", font=("", 8)).pack(side=tk.LEFT, fill=tk.X, expand=True)
+                 fg="#003366", font=("", scale_font_size(8))).pack(side=tk.LEFT, fill=tk.X, expand=True)
         self._feff_setup_close_btn = tk.Button(
             footer,
             text="Close",
@@ -636,15 +640,15 @@ class OrcaTDDFTApp(tk.Tk):
         hdr = tk.Frame(win, bg="#003366", pady=8)
         hdr.pack(fill=tk.X)
         tk.Label(hdr, text="TDDFT spectra already loaded",
-                 font=("", 11, "bold"), bg="#003366", fg="white").pack(padx=14)
+                 font=("", scale_font_size(11), "bold"), bg="#003366", fg="white").pack(padx=14)
         tk.Label(hdr, text=os.path.basename(path),
-                 font=("", 8), bg="#003366", fg="#AACCFF").pack(padx=14)
+                 font=("", scale_font_size(8)), bg="#003366", fg="#AACCFF").pack(padx=14)
 
         body = tk.Frame(win, padx=16, pady=12)
         body.pack(fill=tk.BOTH)
         tk.Label(body,
                  text="There are already TDDFT spectra on the plot.\nWhat would you like to do?",
-                 font=("", 9), justify=tk.LEFT).pack(anchor="w", pady=(0, 10))
+                 font=("", scale_font_size(9)), justify=tk.LEFT).pack(anchor="w", pady=(0, 10))
 
         btn_frame = tk.Frame(win, pady=8)
         btn_frame.pack()
@@ -746,15 +750,15 @@ class OrcaTDDFTApp(tk.Tk):
         hdr = tk.Frame(win, bg="#003366", pady=6)
         hdr.pack(fill=tk.X)
         tk.Label(hdr, text="CLS SXRMB Beamline Import",
-                 font=("", 11, "bold"), bg="#003366", fg="white").pack(padx=12)
+                 font=("", scale_font_size(11), "bold"), bg="#003366", fg="white").pack(padx=12)
         tk.Label(hdr, text=os.path.basename(path),
-                 font=("", 8), bg="#003366", fg="#AACCFF").pack(padx=12)
+                 font=("", scale_font_size(8)), bg="#003366", fg="#AACCFF").pack(padx=12)
 
         body = tk.Frame(win, padx=16, pady=10)
         body.pack(fill=tk.BOTH)
 
         tk.Label(body, text="Which signal(s) to load?",
-                 font=("", 9, "bold")).pack(anchor="w", pady=(0, 6))
+                 font=("", scale_font_size(9), "bold")).pack(anchor="w", pady=(0, 6))
 
         _signal_var = tk.StringVar(value="both")
         for _val, _txt, _desc in [
@@ -768,8 +772,8 @@ class OrcaTDDFTApp(tk.Tk):
             f = tk.Frame(body)
             f.pack(anchor="w", pady=2)
             tk.Radiobutton(f, text=_txt, variable=_signal_var, value=_val,
-                           font=("", 9)).pack(side=tk.LEFT)
-            tk.Label(f, text=f"  — {_desc}", font=("", 8),
+                           font=("", scale_font_size(9))).pack(side=tk.LEFT)
+            tk.Label(f, text=f"  — {_desc}", font=("", scale_font_size(8)),
                      fg="gray").pack(side=tk.LEFT)
 
         btn_row = tk.Frame(win, pady=8)
@@ -806,16 +810,16 @@ class OrcaTDDFTApp(tk.Tk):
         hdr = tk.Frame(win, bg="#6B0000", padx=12, pady=8)
         hdr.pack(fill=tk.X)
         tk.Label(hdr, text="BioXAS XDI Import Options",
-                 bg="#6B0000", fg="white", font=("", 11, "bold")).pack(anchor="w")
+                 bg="#6B0000", fg="white", font=("", scale_font_size(11), "bold")).pack(anchor="w")
         tk.Label(hdr, text=os.path.basename(path),
-                 bg="#6B0000", fg="#ffaaaa", font=("", 9)).pack(anchor="w")
+                 bg="#6B0000", fg="#ffaaaa", font=("", scale_font_size(9))).pack(anchor="w")
 
         body = tk.Frame(win, padx=16, pady=12)
         body.pack(fill=tk.BOTH)
 
         # Mode
         mode_var = tk.StringVar(value="fluorescence")
-        tk.Label(body, text="Measurement mode:", font=("", 9, "bold")).pack(anchor="w", pady=(0, 4))
+        tk.Label(body, text="Measurement mode:", font=("", scale_font_size(9), "bold")).pack(anchor="w", pady=(0, 4))
         tk.Radiobutton(body, text="Fluorescence  (NiKa1_InB + NiKa1_OutB) / I0",
                        variable=mode_var, value="fluorescence").pack(anchor="w")
         tk.Radiobutton(body, text="Transmission  ln(I0 / I1)",
@@ -831,7 +835,7 @@ class OrcaTDDFTApp(tk.Tk):
 
         ttk.Separator(body, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=8)
 
-        status_lbl = tk.Label(body, text="", fg="red", font=("", 9))
+        status_lbl = tk.Label(body, text="", fg="red", font=("", scale_font_size(9)))
         status_lbl.pack(anchor="w")
 
         def do_load():
@@ -894,21 +898,21 @@ class OrcaTDDFTApp(tk.Tk):
         hdr = tk.Frame(win, bg="#6B0000", padx=12, pady=8)
         hdr.pack(fill=tk.X)
         tk.Label(hdr, text="Athena Project — Select Scans to Load",
-                 bg="#6B0000", fg="white", font=("", 11, "bold")).pack(anchor="w")
+                 bg="#6B0000", fg="white", font=("", scale_font_size(11), "bold")).pack(anchor="w")
         tk.Label(hdr, text=f"{len(scans)} scan groups found  |  {os.path.basename(path)}",
-                 bg="#6B0000", fg="#ffaaaa", font=("", 9)).pack(anchor="w")
+                 bg="#6B0000", fg="#ffaaaa", font=("", scale_font_size(9))).pack(anchor="w")
 
         body = tk.Frame(win, padx=10, pady=8)
         body.pack(fill=tk.BOTH, expand=True)
 
         tk.Label(body, text="Select which scans to load (Ctrl+click for multiple):",
-                 font=("", 9)).pack(anchor="w", pady=(0, 4))
+                 font=("", scale_font_size(9))).pack(anchor="w", pady=(0, 4))
 
         list_frame = tk.Frame(body)
         list_frame.pack(fill=tk.BOTH, expand=True)
 
         lb = tk.Listbox(list_frame, selectmode=tk.EXTENDED, height=min(len(scans), 14),
-                        font=("Courier", 9), exportselection=False)
+                        font=("Courier", scale_font_size(9)), exportselection=False)
         lb_scroll = ttk.Scrollbar(list_frame, orient=tk.VERTICAL, command=lb.yview)
         lb.config(yscrollcommand=lb_scroll.set)
         lb.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
@@ -999,26 +1003,26 @@ class OrcaTDDFTApp(tk.Tk):
         hdr.pack(fill=tk.X)
         tk.Label(
             hdr, text="No TDDFT Spectrum Data Found",
-            bg="#8B0000", fg="white", font=("", 11, "bold")
+            bg="#8B0000", fg="white", font=("", scale_font_size(11), "bold")
         ).pack(anchor="w")
         tk.Label(
             hdr, text=os.path.basename(path),
-            bg="#8B0000", fg="#ffaaaa", font=("", 9)
+            bg="#8B0000", fg="#ffaaaa", font=("", scale_font_size(9))
         ).pack(anchor="w")
 
         body = tk.Frame(win, padx=14, pady=10)
         body.pack(fill=tk.BOTH)
 
         txt = tk.Text(body, width=64, height=14, wrap=tk.WORD,
-                      font=("Courier", 9), relief=tk.FLAT, bg="#f8f8f8")
+                      font=("Courier", scale_font_size(9)), relief=tk.FLAT, bg="#f8f8f8")
         txt.pack(fill=tk.BOTH)
 
         def ins(text, tag=None):
             txt.insert(tk.END, text, tag or ())
 
-        txt.tag_config("warn",   foreground="#8B0000", font=("Courier", 9, "bold"))
-        txt.tag_config("ok",     foreground="#006400", font=("Courier", 9, "bold"))
-        txt.tag_config("head",   font=("Courier", 9, "bold"))
+        txt.tag_config("warn",   foreground="#8B0000", font=("Courier", scale_font_size(9), "bold"))
+        txt.tag_config("ok",     foreground="#006400", font=("Courier", scale_font_size(9), "bold"))
+        txt.tag_config("head",   font=("Courier", scale_font_size(9), "bold"))
         txt.tag_config("indent", lmargin1=20, lmargin2=20)
 
         if diag.is_complete:
@@ -1513,6 +1517,18 @@ class OrcaTDDFTApp(tk.Tk):
             "accessibility", {}
         ).get("palette", "default")
         node_styles.set_active_palette(restored_palette)
+
+        # CS-79 / Phase 4ba (sub-axis D): re-flip the active font scale
+        # from the restored defaults so the just-opened project paints
+        # at the user's saved scale (named fonts rescale live; explicit
+        # font literals rescale on next dialog construction). Pre-4ba
+        # saves carry no font_scale key and default to 1.0 — the
+        # accessibility helper's coerce fallback covers both that case
+        # and any future-version value we don't recognise.
+        restored_font_scale = psd._USER_DEFAULTS.get(
+            "accessibility", {}
+        ).get("font_scale", 1.0)
+        set_active_font_scale(restored_font_scale)
 
         # Restore each tab's state. Tab modules opt in to round-trip via
         # a _restore_workflow_payload(payload) method; tabs that don't

@@ -1688,7 +1688,7 @@ subsequent Phase 4 session.**
 | ✅ | 🟡 | **A — Accessibility / Escape-dismiss audit (Phase 4ax candidate)** ✅ Resolved Phase 4ax (CS-76). | Resolved Phase 4ax (CS-76) — commits `b586982` (accessibility.py module shell + 9 unit tests) + `f7c41f1` (Escape audit integration on three primary dialogs + 6 integration tests + 1 unit sentinel for the return value) + `9c7b177` (Phase 4av friction #1 Tooltip retrofit on NodeStylesDialog Combobox + 1 sentinel) + `2e8f97a` (user-elicited expansion: 7 binah.py app dialogs + 1 source-level inventory sentinel). New `accessibility.py` module hosts `bind_escape_to_close(toplevel, handler)` (returns the bound callback for testability — `event_generate` on transient/withdrawn Toplevels is unreliable across the full suite; production callers ignore the return) + `attach_shortcut_tooltip(widget, text)` (thin delegate over CS-42 `Tooltip`). **Wired Toplevels:** ten total — three primary dialogs (NodeStyles / PlotConfig / Style — all routing through `_on_close_requested`) plus seven binah.py app dialogs (FEFF Setup / Load Spectrum / SXRMB / BioXAS / Athena / No-Data / Impl Drift — all binding to `win.destroy`). **CS-75 D3 lock relaxation:** the binah.py expansion grew the audit scope beyond the Phase 4aw-locked three-primary-dialogs enumeration to also cover the seven app dialogs; user-elicited at Phase 4ax step 5. Phase 4av friction #1 (Ctrl+↑/↓ discoverability) closed via retroactive `attach_shortcut_tooltip` on the NodeStylesDialog Combobox with text `"Ctrl+↑/↓ to step through nodes"`. **Out-of-scope inventory (carry-forward):** plot_widget.py 7 sites, xas_analysis_tab.py 2 sites, ledge_normalizer.py 1 site, nbo_viewer_app.py 13 sites (sibling app); tooltip.py:78 + plot_widget.py:123 are Tooltip-internal infra. 17 net new tests pin the contract (10 unit in test_accessibility including the binah.py source-level inventory sentinel; 7 integration across test_node_styles_dialog (3) / test_style_dialog (2) / test_plot_settings_dialog (2)). 1584 tests green (1567 baseline + 17 new). PTMG_FORMAT_VERSION unchanged — no schema keys added. |
 | ✅ | 🟡 | **B — Colour-blind palette opt-in (Phase 4ay candidate)** ✅ Resolved Phase 4ay (CS-77). | Resolved Phase 4ay (CS-77) — two phase commits (`0f29320` node_styles palette opt-in shell + `7bd2b2c` Accessibility tab + persistence integration) on `redesign/phase-4ay-palette-opt-in`. New `node_styles.SPECTRUM_PALETTE_NAME` tuple of available palette keys + new module-level `_active_palette_name` + `node_styles.active_palette() -> tuple[str, ...]` getter + `node_styles.set_active_palette(name)` setter. New `WONG_2011_PALETTE` constant — Wong 2011 deuteranopia-safe 8-colour palette. `pick_default_color` rewritten to consult `active_palette()` internally — the three CS-21 D3 call-sites become palette-aware for free; `SPECTRUM_PALETTE` constant retained for backwards compatibility (additive relaxation). UI surface: new "Accessibility" tab inserted as second entry in `_TAB_KEYS` (after "Global", before the axis tabs) — first surface of the CS-75 D1 lock; palette `ttk.Combobox` (state="readonly") with commit-on-click semantics (CS-75 D2 / CS-68 live-preview); on-flip writes through `_working["accessibility"]["palette"]`, calls `node_styles.set_active_palette`, marks the Accessibility tab dirty (CS-60), and fires `_apply_changes_live`. `_FACTORY_DEFAULTS` / `_UNIVERSAL_DEFAULTS` gain the schema-additive `accessibility: {"palette": "default"}` sub-dict; `migrate_plot_config` fills the slot when loading legacy projects. `binah.py` _USER_DEFAULTS save/load extends with the accessibility sub-dict so the palette choice round-trips through CS-46's `manifest["plot_defaults"]` slot — PTMG_FORMAT_VERSION unchanged (additive). **Claude-surfaced fix:** intermittent `ttk.Combobox` readonly initial-value clear under full-suite Tk state (passes in isolation, fails in full `run_tests.py`); fixed with defensive `cb.set(current_label)` immediately after Combobox construction, before `trace_add` registers the writer. 36 net new tests pin the contract (16 in `TestPlotConfigDialogAccessibilityTabPhase4ay` covering schema additivity / tab presence + ordering / Combobox shape / commit-on-click / dirty marker / on_apply fires + 4 round-trip tests in `test_persistence_phase_a.py` covering the new `plot_defaults["accessibility"]["palette"]` slot + module-surface tests in `test_node_styles` + source-level inventory sentinels in `test_accessibility.TestPalettePhase4ayInventory`). 1620 tests green (1584 baseline + 36 new). |
 | ✅ | 🟡 | **C — Keyboard shortcuts first batch + KEYBINDINGS.md (Phase 4az candidate)** ✅ Resolved Phase 4az (CS-78). | Resolved Phase 4az (CS-78) — three phase commits (`6a6ba25` accessibility.py shortcut registry + `bind_shortcut` helper + 25 unit tests + `05f523b` four scan_tree wirings F2/Delete/Ctrl+G/Ctrl+Shift+G + 17 integration tests + `d42c36e` PlotConfigDialog Accessibility-tab shortcuts LabelFrame + new KEYBINDINGS.md sister doc + 15 integration tests) on `redesign/phase-4az-keyboard-shortcuts`. New `accessibility.SHORTCUT_REGISTRY: dict[category, list[ShortcutEntry]]` module-level dict idempotent on `(category, key)` + new frozen `ShortcutEntry` dataclass + new `register_shortcut(category, key, action)` + new `bind_shortcut(widget, key, handler, *, category, action)` recipe-canonical entry point (`widget.bind(key, handler, add="+")` + `register_shortcut` in one call so the binding and the discoverability table cannot drift). `add="+"` preserves Tk class-level bindings (relevant for `<Delete>` / arrow keys on text widgets). New `_reset_shortcut_registry()` test-only helper. **Four scan_tree shortcuts wired:** F2 → `_rename_selected` → `_begin_rename_via_menu` → CS-33 `_begin_label_edit` (B-004 routing); `<Delete>` → `_discard_selected` → `graph.discard_node` (commit-or-discard discipline — committed nodes + NODE_GROUP rows skipped, mirrors the menu entry predicate); `<Control-g>` → existing `_group_selected` (footer-button handler, CS-57); `<Control-Shift-G>` → `_ungroup_selected` → `graph.dissolve_group` (CS-58 — single selected NODE_GROUP only). All four selection-shape strict: F2 / Ctrl+Shift+G require exactly one selected id; Delete operates on every provisional DataNode in the selection. Selection clears on completion (matches `_group_selected` convention). ScanTreeWidget Frame gains `takefocus=1` + `_toggle_row_selection` calls `self.focus_set()` at the end so the four bindings are reachable from the keyboard after a click selects a row (Frames do not accept focus by default). **Accessibility-tab discoverability surface:** new "Keyboard shortcuts" LabelFrame appended in `_build_accessibility_tab` (canonical order palette → shortcuts → future Phase 4ba font scale). Read-only Key / Action grid sourced from `accessibility.SHORTCUT_REGISTRY`. New module-level `_SHORTCUT_CATEGORY_LABELS` dict + `_format_shortcut_key(key)` helper (`"<F2>"` → `"F2"`; `"<Control-Shift-G>"` → `"Ctrl+Shift+G"`; single-letter modifier targets uppercase). New `_build_shortcuts_labelframe(parent)` extracted method renders the table; empty registry renders a placeholder line (does NOT hide the LabelFrame). **New `KEYBINDINGS.md` sister doc** carries the registered shortcut table with cross-references to CS-78 + each routed-through component lock; updated in the bookkeeping commit of every Phase 4 sub-batch that adds gestures. Source-level parity sentinel pins `bind_shortcut` count in scan_tree_widget.py vs row count in KEYBINDINGS.md "Scan tree" section. **CS-75 D6 additive sub-clause (NOT relaxation):** for container widgets without a natural hover surface (the four tree-level scan_tree gestures), the canonical discoverability surface IS the Accessibility-tab table. CS-75 D6 still locks Tooltip-only discoverability for widgets that DO have a hover surface — `bind_shortcut` does NOT call `attach_shortcut_tooltip`; future shortcut-bearing widgets (buttons, comboboxes — Phase 4ax `NodeStylesDialog` precedent) still wire both helpers side-by-side. 42 net new tests pin the contract (10 in `test_accessibility.TestShortcutRegistryPhase4az` covering registry append-vs-replace / category isolation / insertion-order / binding installation / `add="+"` stacking via bind-script length growth / `_reset_shortcut_registry` clear; 16 in `test_scan_tree_widget.TestKeyboardShortcutsPhase4az` covering binding presence on the widget + takefocus configuration + focus_set wiring after selection + every handler's selection-shape guards + each handler's end-to-end graph effect + selection-clear semantics; 1 in `TestKeyboardShortcutsRegistryParityPhase4az` covering registry parity after widget construction; 6 in `TestPlotConfigDialogShortcutsLabelFramePhase4az` covering LabelFrame presence + multi-category rendering + pretty-key labels; 7 in `TestFormatShortcutKeyPhase4az` covering every translation shape + the fall-through path; 2 in `TestKeybindingsMdParityPhase4az` covering KEYBINDINGS.md row-count vs scan_tree_widget bind_shortcut count parity + every CS-78 scan_tree key string present in the doc). 1662 tests green (1620 baseline + 42 new). PTMG_FORMAT_VERSION unchanged — no schema keys added (Phase 4az first batch has zero user-overridable shortcuts; future overrides would extend the existing `accessibility` sub-dict additively). |
-| ⏳ | 🟡 | **D — Font-scale multiplier (Phase 4ba candidate)** | Sub-axis D of the Accessibility umbrella above (CS-75 D4). Scope locked Phase 4aw: new `accessibility.scale_font_size(base_pt: int) -> int` helper. New `accessibility.font_scale: float` in `_USER_DEFAULTS` (default 1.0, range 0.75–2.0). Persists via CS-46's `plot_defaults["accessibility"]["font_scale"]` slot — schema additive. Every dialog font literal (`font=("", N, ...)`) routes through the helper in Phase 4ba's bulk pass. UI surface: slider in the "Accessibility" tab introduced in Phase 4ay. Reasoning level: **high** (touches every dialog module). Affected: every dialog module (additive routing only — default 1.0 is a visual no-op), CS-46 schema additive. Pairs with sub-axis G (deferred dyslexia-friendly font — the same infrastructure could host a `font_family` key once that lands). |
+| ✅ | 🟡 | **D — Font-scale multiplier (Phase 4ba candidate)** ✅ Resolved Phase 4ba (CS-79). | Resolved Phase 4ba (CS-79) — four phase commits (`b4c0115` accessibility.py `scale_font_size` helper + `set_active_font_scale` live named-font reconfigure + 12 unit tests + `b4ea980` test file + `d9ac5a6` integration: factory default + Accessibility-tab "Display font scale" LabelFrame + Spinbox commit handler + binah load-restore + 126-literal bulk pass + `7ca3aa8` 19 integration tests + source-routing sentinel) on `redesign/phase-4ba-font-scale`. **Closes the four-rung Accessibility ladder (A/B/C/D).** New `accessibility.scale_font_size(base_pt: int) -> int` (half-up rounding, floored at 1; identity at the 1.0 default) is the recipe-canonical entry point every explicit `font=("", N, ...)` literal routes its size through — 126 literals across `plot_settings_dialog` / `node_styles_dialog` / `style_dialog` / `binah` rewritten in the bulk pass (default 1.0 is a visual no-op, so the pass is safe). New module-level `_active_font_scale: float` + `active_font_scale()` getter + `set_active_font_scale(value)` setter (mirrors `node_styles._active_palette_name`); `_coerce_font_scale` clamps to [0.5, 3.0] with a silent 1.0 fallback on non-numeric. **Mechanism decision (step-2 lock, user-confirmed):** named-font + literal routing — `set_active_font_scale` ALSO reconfigures the nine standard Tk named fonts (`TkDefaultFont` et al) from lazily-captured base sizes, so default-font widgets (notably `ScanTreeWidget` rows, which read `TkDefaultFont` and carry zero explicit font literals) rescale LIVE; explicit-literal widgets rescale on next construction. `_reset_font_scale()` test-only helper restores named fonts + clears the base cache so a non-1.0 scale never bleeds into the scan-tree width tests. **UI:** `_FACTORY_DEFAULTS["accessibility"]["font_scale"] = 1.0` (schema-additive — `migrate_plot_config` auto-fills it; PTMG_FORMAT_VERSION unchanged); readonly `ttk.Spinbox` (75 %–200 % in 25 % steps) as the THIRD Accessibility-tab LabelFrame ("Display font scale") below palette + keyboard shortcuts (canonical order palette → shortcuts → font scale, CS-75 D4 — Phase 4ba IS the D4 relaxation moment); trace-based commit-on-change mirrors the palette Combobox (writes `_working["accessibility"]["font_scale"]`, flips `set_active_font_scale`, marks the tab dirty, fires `_apply_changes_live`); binah.py restores the scale on project load alongside the palette re-flip. 31 net new tests pin the contract (12 in `test_accessibility.TestFontScalePhase4ba` + 16 in `TestPlotConfigDialogFontScaleLabelFramePhase4ba` + 3 in `TestFontLiteralRoutingSentinelPhase4ba`). 1693 tests green (1662 baseline + 31 new). Pairs with sub-axis G (deferred dyslexia-friendly font — the same `accessibility.*` infrastructure could host a `font_family` key once that lands). |
 | ⚪ | 🟡 | **E — Screen-reader hints (DEFERRED — Accessibility umbrella sub-axis)** | Sub-axis E of the Accessibility umbrella above (CS-75 D5). **Deferred until non-Windows demand surfaces.** Tk's a11y story is per-platform (Windows UIA, macOS AX, Linux AT-SPI); codebase is Windows-only today. Lock only: when accessibility work cross-cuts a widget the implementer SHOULD add `accessibility.title="..."` strings opportunistically, but no per-platform screen-reader matrix is in any Phase 4 sub-batch. No phase ladder slot reserved. |
 | ⚪ | 🟡 | **F — High-contrast / dark mode (DEFERRED — Accessibility umbrella sub-axis)** | Sub-axis F of the Accessibility umbrella above (CS-75). **Deferred** until sub-axes A–D have landed and the user (or a contributor) flags a contrast / dark-mode need. Background colour is hardcoded `#ffffff` in `_FACTORY_DEFAULTS["background_color"]`; full implementation would also swap spine / grid / tick colours. No phase ladder slot reserved. |
 | ⚪ | 🟡 | **G — Dyslexia-friendly font (DEFERRED — Accessibility umbrella sub-axis)** | Sub-axis G of the Accessibility umbrella above (CS-75). **Deferred.** Folds into sub-axis D's `accessibility.*` infrastructure once that lands — a `font_family` key would join `font_scale` in the same `_USER_DEFAULTS` slot. No phase ladder slot reserved. |
@@ -5067,7 +5067,7 @@ Ctrl+↑/↓ Tooltip) → 4ay (palette) → 4az (keyboard) → 4ba
    sub-axis C row in the Phase 4q register table (now ✅) for
    the full deliverable summary.
 
-4. 🟡 **USER-FLAGGED Accessibility sub-axis D — Font-scale
+4. 🟡 ~~**USER-FLAGGED Accessibility sub-axis D — Font-scale
    multiplier (Phase 4ba candidate).** Scope locked in Phase
    4aw (CS-75 D4); see canonical sub-axis D row in the Phase 4q
    register table. First-deliverable Phase 4ba: new
@@ -5075,7 +5075,9 @@ Ctrl+↑/↓ Tooltip) → 4ay (palette) → 4az (keyboard) → 4ba
    `accessibility.font_scale: float` _USER_DEFAULTS key + bulk
    migration of every dialog `font=("", N, ...)` literal +
    slider in the Accessibility tab. Reasoning level: **high**
-   (touches every dialog module).
+   (touches every dialog module).~~ ✅ **Resolved Phase 4ba
+   (CS-79).** Cross-ref canonical sub-axis D row in the Phase 4q
+   register table (now ✅) for the full deliverable summary.
 
 5. 🟢 **Phase 4av carry-forward items #2 / #3 / #4 still open.**
    Phase 4aw deliberately did NOT fold the three
@@ -5222,12 +5224,16 @@ session.**
    in the Phase 4q register table (now ✅) for the full
    deliverable summary.
 
-3. 🟡 **USER-FLAGGED Accessibility sub-axis D — Font-scale
+3. 🟡 ~~**USER-FLAGGED Accessibility sub-axis D — Font-scale
    multiplier (Phase 4ba candidate).** Scope locked Phase 4aw
    (CS-75 D4); see canonical sub-axis D row in the Phase 4q
    register table. Adds `accessibility.scale_font_size` helper
    to the Phase 4ax module shell. Reasoning level: **high**
-   (touches every dialog module).
+   (touches every dialog module).~~ ✅ **Resolved Phase 4ba
+   (CS-79).** The helper now lives in the Phase 4ax module shell
+   alongside `bind_escape_to_close` / `attach_shortcut_tooltip`
+   (CS-76) and the CS-78 shortcut registry; cross-ref the
+   canonical sub-axis D register row (now ✅).
 
 4. 🟢 **Out-of-scope Toplevel inventory carry-forward
    (Claude-surfaced, Phase 4ax artifact).** Phase 4ax wired
@@ -5361,7 +5367,7 @@ until the relevant subsequent Phase 4 session.**
    the Phase 4q register table (now ✅) for the full
    deliverable summary.
 
-2. 🟡 **USER-FLAGGED Accessibility sub-axis D — Font-scale
+2. 🟡 ~~**USER-FLAGGED Accessibility sub-axis D — Font-scale
    multiplier (Phase 4ba candidate).** Scope locked Phase 4aw
    (CS-75 D4); see canonical sub-axis D row in the Phase 4q
    register table. Adds `accessibility.scale_font_size`
@@ -5372,7 +5378,11 @@ until the relevant subsequent Phase 4 session.**
    place. UI surface: slider in the "Accessibility" tab
    introduced by Phase 4ay (CS-75 D1). Reasoning level:
    **high** (touches every dialog `font=("", N, ...)`
-   literal).
+   literal).~~ ✅ **Resolved Phase 4ba (CS-79).** `font_scale`
+   landed as the second key in the Phase-4ay `accessibility`
+   sub-dict; the slider is the third Accessibility-tab
+   LabelFrame. Cross-ref the canonical sub-axis D register row
+   (now ✅).
 
 3. 🟡 **USER-FLAGGED — `[engine engine_version]` provenance
    bracket display when uniform across rows (Phase 4ay
@@ -5539,7 +5549,7 @@ net new). PTMG_FORMAT_VERSION unchanged — Phase 4az first batch
 has zero user-overridable shortcuts. **Do not fix until the
 relevant subsequent Phase 4 session.**
 
-1. 🟡 **USER-FLAGGED Accessibility sub-axis D — Font-scale
+1. 🟡 ~~**USER-FLAGGED Accessibility sub-axis D — Font-scale
    multiplier (Phase 4ba candidate, NEXT-UP).** Scope locked
    Phase 4aw (CS-75 D4); see canonical sub-axis D row in the
    Phase 4q register table. Adds `accessibility.scale_font_size`
@@ -5551,7 +5561,15 @@ relevant subsequent Phase 4 session.**
    introduced by Phase 4ay (CS-75 D1) — third LabelFrame
    below palette + keyboard shortcuts in the canonical order.
    Reasoning level: **high** (touches every dialog
-   `font=("", N, ...)` literal).
+   `font=("", N, ...)` literal).~~ ✅ **Resolved Phase 4ba
+   (CS-79).** Landed exactly as scoped — `scale_font_size` +
+   `font_scale` key + 126-literal bulk pass + the third
+   Accessibility-tab LabelFrame. One enhancement over the
+   scoped plan, user-confirmed at step 2: `set_active_font_scale`
+   ALSO live-reconfigures the Tk named fonts so default-font
+   widgets (scan-tree rows) rescale immediately rather than only
+   on next construction. Cross-ref the canonical sub-axis D
+   register row (now ✅) for the full summary.
 
 2. 🟢 **`_toggle_row_selection` focus_set retrofit is a
    band-aid (Claude-surfaced, Phase 4az artifact).** Phase
@@ -5694,6 +5712,123 @@ relevant subsequent Phase 4 session.**
     `redesign/main`. Flagged here so the next session's
     verification block expects 1.50 and the canonical
     version progression resumes.
+
+### Friction points carried forward from Phase 4ba
+
+These are concrete obstacles the next Phase 4 session will hit.
+Phase 4ba landed the FOURTH and FINAL sub-batch of the CS-75
+Accessibility umbrella — sub-axis D (font-scale multiplier), closing
+the four-rung ladder (A Escape-dismiss · B palette opt-in · C keyboard
+shortcuts · D font scale). Four phase commits + this bookkeeping
+commit. 1693 tests, all green (1662 baseline + 31 net new).
+PTMG_FORMAT_VERSION unchanged — `font_scale` is schema-additive under
+the existing Phase-4ay `accessibility` sub-dict. **Do not fix until
+the relevant subsequent Phase 4 session.**
+
+1. 🟢 **Accessibility umbrella sub-axes A–D are COMPLETE; only the
+   three deferred sub-axes (E/F/G) remain.** The Phase-4aw-locked
+   ladder is fully landed. Remaining umbrella work is all deferred
+   with no phase-ladder slot (CS-75): **E** screen-reader hints
+   (deferred until non-Windows demand), **F** high-contrast / dark
+   mode (deferred until a contrast need is flagged), **G**
+   dyslexia-friendly font (folds into sub-axis D's `accessibility.*`
+   infra — a `font_family` key beside `font_scale` in the same
+   `_USER_DEFAULTS` slot once it lands). With the umbrella's
+   implementable axes done, the next session's natural intent is a
+   USER-FLAGGED carry-forward (items 5–10 below) rather than more
+   accessibility work. No register action.
+
+2. 🟡 **Open-dialog explicit-font widgets do not live-rescale
+   (Claude-surfaced, Phase 4ba artifact + design lock).** The chosen
+   mechanism (named-font + literal routing, user-confirmed at step 2)
+   rescales default-font widgets (scan-tree rows, menus) instantly via
+   the Tk named fonts, but widgets built with an explicit
+   `font=("", N, ...)` literal — most styled dialog labels/headers —
+   only pick up a new scale on their NEXT construction (dialog reopen).
+   The Plot Settings dialog the user is *adjusting the slider in* does
+   not itself grow until reopened; the binah.py main window's explicit
+   labels need an app restart. A future phase could rebuild every open
+   dialog on commit (tear-down + reconstruct the `_open_dialogs`
+   registry) for a fully-live rescale — but that is a much larger
+   change than the bulk pass and was deliberately out of scope.
+   Reasoning level: **medium** if pursued. No register entry yet —
+   surface at a future step-5 if the partial-live behaviour bothers
+   the user.
+
+3. 🟢 **Module-level accessibility state now has a THIRD instance
+   (Claude-surfaced, continued from Phase 4az friction #5).** Phase 4ba
+   added `accessibility._active_font_scale` (+ the
+   `_NAMED_FONT_BASE_SIZES` cache) alongside
+   `node_styles._active_palette_name` (4ay) and
+   `accessibility.SHORTCUT_REGISTRY` (4az). The same snapshot/reset
+   discipline applies: `_reset_font_scale()` is the test-only reset,
+   and every test that flips the scale MUST call it on tearDown so a
+   non-1.0 named-font size does not bleed into the `ScanTreeWidget`
+   width tests (which measure `TkDefaultFont` metrics). No bookkeeping
+   action needed; the pattern is now well-established across three
+   modules.
+
+4. 🟢 **scan-tree row geometry vs live font scale (Claude-surfaced,
+   Phase 4ba artifact).** `ScanTreeWidget._label_font()` reads the live
+   `TkDefaultFont`, so its width measurements pick up a scale change on
+   the NEXT measure pass — but already-rendered rows are not force-
+   re-laid-out at the moment the slider commits (no redraw is wired
+   from `set_active_font_scale` into open ScanTreeWidgets). In practice
+   the rows render larger immediately (the named font is shared) and
+   re-measure on the next natural refresh; a belt-and-suspenders
+   improvement would broadcast a relayout. Low priority; flag for a
+   future keyboard-nav / layout sub-batch. No register entry.
+
+5. 🟡 **USER-FLAGGED — `[engine engine_version]` provenance bracket
+   display when uniform across rows (continued from Phase 4az friction
+   #6 / Phase 4ay #3).** No work in Phase 4ba; still open. Two
+   improvements: (a) suppress the bracket when uniform across visible
+   rows; (b) adopt a meaningful version-bump policy. Touches
+   `scan_tree_widget.py` at the two render sites (~lines 2081 + 2099) +
+   a uniform-detection helper. Reasoning level: **low-medium**. Strong
+   4bb candidate. No register entry yet — surface at the next intent
+   pick.
+
+6. 🟡 **USER-FLAGGED — Per-axis font customization with twin-axis
+   defaulting (continued from Phase 4az friction #7 / Phase 4ay #4).**
+   No work in Phase 4ba; still open — but now CLEANLY COMPOSABLE with
+   the shipped sub-axis D: a per-axis font size in points × the global
+   `font_scale` multiplier. Cross-cuts `_FACTORY_DEFAULTS["axes"]`
+   schema + per-axis tab Font LabelFrame + renderer at `set_xlabel` /
+   `set_ylabel` / `tick_params`. Reasoning level: **high**. Good 4bb+
+   slot now that the global scale exists.
+
+7. 🟡 **USER-FLAGGED — Escape-dismiss expansion follow-on (continued
+   from Phase 4az friction #8 / Phase 4ay #6).** No work in Phase 4ba.
+   Remaining sites for CS-76 Escape-recipe expansion: `plot_widget.py`
+   7 sites, `xas_analysis_tab.py` 2 sites, `ledge_normalizer.py` 1 site
+   (`nbo_viewer_app.py` 13 sites are a sibling app, out of scope).
+   ~10 wirings + 1 source-inventory sentinel. Reasoning level:
+   **low-medium**.
+
+8. 🟢 **Phase 4av carry-forward items #2 / #3 / #4 still open
+   (continued from Phase 4az friction #10).** (#2) "Reset" button label
+   semantics; (#3) `_set_universal_disabled` root readonly-Combobox
+   latent bug; (#4) DISCARDED glyph distinguishability. Each remains a
+   low-reasoning follow-up — candidates for a "Phase 4av polish
+   follow-through" mini-phase that closes the open carry-forward queue.
+
+9. 🟢 **`_toggle_row_selection` focus_set retrofit + `event_generate`
+   test caveat (continued from Phase 4az friction #2 / #3).** Both still
+   open and unchanged. The focus_set retrofit (CS-78 locked focus model)
+   would benefit from a per-tab focus manager IF a Tab-cycling sub-batch
+   lands; the `event_generate` flake means all Escape + shortcut tests
+   assert via direct handler invocation rather than synthetic key
+   events. The Phase 4ba font-scale tests likewise avoid
+   `<ButtonRelease>` on the Spinbox (trace-based commit) for the same
+   determinism reason. No bookkeeping action.
+
+10. 🟡 **USER-FLAGGED long-running items continue.** Axis nomenclature
+    rename (cross-ref Phase 4ak; **extra-high**); Rich-text axis labels
+    / mathtext (cross-ref Phase 4ak; **medium**); External-output plot
+    style presets (cross-ref Phase 4aj; **high** — user has reference
+    Jupyter notebook code, paths TBD at session start). All three are
+    register-table entries; none touched in Phase 4ba.
 
 ---
 
@@ -5910,7 +6045,7 @@ the resolving phase + commit SHA appended to the row.
 
 ---
 
-*Document version: 1.50 — May 2026*
+*Document version: 1.51 — May 2026*
 *1.1: Known Bugs register added 2026-04-27 after Phase 4b manual testing.*
 *1.2: Phase 4c — baseline correction lands; B-001 / B-003 / B-004
 resolved; Phase 4c friction points logged.*

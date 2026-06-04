@@ -101,7 +101,13 @@ import tkinter as tk
 from tkinter import colorchooser, messagebox, ttk
 from typing import Any, Callable, Optional
 
-from accessibility import bind_escape_to_close, SHORTCUT_REGISTRY
+from accessibility import (
+    bind_escape_to_close,
+    SHORTCUT_REGISTRY,
+    scale_font_size,
+    set_active_font_scale,
+    active_font_scale,
+)
 import node_styles
 
 _log = logging.getLogger(__name__)
@@ -262,6 +268,10 @@ _FACTORY_DEFAULTS: dict[str, Any] = {
     # — PTMG_FORMAT_VERSION unchanged.
     "accessibility": {
         "palette": "default",
+        # CS-79 / Phase 4ba (sub-axis D): font-scale multiplier. 1.0 is a
+        # visual no-op (the literal-routing bulk pass is identity at 1.0).
+        # Schema-additive — PTMG_FORMAT_VERSION unchanged.
+        "font_scale": 1.0,
     },
 }
 
@@ -344,6 +354,38 @@ _PALETTE_NAME_BY_LABEL: dict[str, str] = {
 _PALETTE_LABELS: tuple[str, ...] = tuple(
     _PALETTE_LABEL_BY_NAME[name] for name in node_styles.SPECTRUM_PALETTE_NAMES
 )
+
+
+# CS-79 / Phase 4ba (sub-axis D): font-scale multiplier values offered by
+# the Accessibility-tab Spinbox + their percentage labels. The raw float
+# is what lands in :attr:`_working["accessibility"]["font_scale"]` and
+# round-trips through the manifest; the "NNN%" labels are what the
+# Spinbox shows. All values are binary-exact so the float→label dict
+# lookup is reliable. Mirrors the palette label↔value pattern above.
+_FONT_SCALE_VALUES: tuple[float, ...] = (0.75, 1.0, 1.25, 1.5, 1.75, 2.0)
+_FONT_SCALE_LABEL_BY_VALUE: dict[float, str] = {
+    value: f"{int(round(value * 100))}%" for value in _FONT_SCALE_VALUES
+}
+_FONT_SCALE_VALUE_BY_LABEL: dict[str, float] = {
+    label: value for value, label in _FONT_SCALE_LABEL_BY_VALUE.items()
+}
+_FONT_SCALE_LABELS: tuple[str, ...] = tuple(
+    _FONT_SCALE_LABEL_BY_VALUE[value] for value in _FONT_SCALE_VALUES
+)
+
+
+def _font_scale_label_for(value: float) -> str:
+    """Return the Spinbox label for a stored font-scale ``value``.
+
+    Snaps an arbitrary stored float (e.g. a value written by a future
+    app version, or clamped by :func:`accessibility._coerce_font_scale`)
+    to the nearest offered step so the Spinbox always shows a valid
+    label rather than a blank. Phase 4ba CS-79.
+    """
+    if value in _FONT_SCALE_LABEL_BY_VALUE:
+        return _FONT_SCALE_LABEL_BY_VALUE[value]
+    nearest = min(_FONT_SCALE_VALUES, key=lambda v: abs(v - value))
+    return _FONT_SCALE_LABEL_BY_VALUE[nearest]
 
 
 # Phase 4az / CS-78 — display labels for SHORTCUT_REGISTRY categories.
@@ -1020,12 +1062,12 @@ class PlotConfigDialog(tk.Toplevel):
         header.pack(fill=tk.X)
         tk.Label(
             header, text="Accessibility",
-            font=("", 10, "bold"),
+            font=("", scale_font_size(10), "bold"),
         ).pack(side=tk.LEFT)
         tk.Label(
             header,
             text="(applies to every tab + persists with project)",
-            font=("", 9, "italic"), fg="#666666",
+            font=("", scale_font_size(9), "italic"), fg="#666666",
         ).pack(side=tk.RIGHT)
 
         ttk.Separator(parent, orient=tk.HORIZONTAL).pack(
@@ -1040,7 +1082,7 @@ class PlotConfigDialog(tk.Toplevel):
         palette_frame.columnconfigure(1, weight=1)
 
         tk.Label(
-            palette_frame, text="Palette:", font=("", 9, "bold"),
+            palette_frame, text="Palette:", font=("", scale_font_size(9), "bold"),
         ).grid(row=0, column=0, sticky="w", pady=2)
 
         # Seed the StringVar from the working copy, translated raw key
@@ -1060,7 +1102,7 @@ class PlotConfigDialog(tk.Toplevel):
             values=list(_PALETTE_LABELS),
             state="readonly",
             width=32,
-            font=("", 9),
+            font=("", scale_font_size(9)),
         )
         cb.grid(row=0, column=1, sticky="w", padx=4)
         self._palette_combobox = cb
@@ -1099,21 +1141,27 @@ class PlotConfigDialog(tk.Toplevel):
                 "Affects future node colours only — existing nodes "
                 "keep their current colour."
             ),
-            font=("", 8, "italic"), fg="#666666",
+            font=("", scale_font_size(8), "italic"), fg="#666666",
             wraplength=420, justify=tk.LEFT,
         ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(2, 0))
 
         # ----------------------------------------------------------
         # Keyboard shortcuts LabelFrame (Phase 4az, CS-78, CS-75 D6).
         # ----------------------------------------------------------
-        # Canonical order palette → shortcuts → (future Phase 4ba
-        # font scale). Read-only table sourced from
-        # accessibility.SHORTCUT_REGISTRY so the discoverability
-        # surface stays in lockstep with the actual bindings: every
-        # bind_shortcut call automatically appears here without a
-        # second wiring point. Categories appear in the order they
-        # were first registered (dict insertion order).
+        # Canonical order palette → shortcuts → font scale. Read-only
+        # table sourced from accessibility.SHORTCUT_REGISTRY so the
+        # discoverability surface stays in lockstep with the actual
+        # bindings: every bind_shortcut call automatically appears here
+        # without a second wiring point. Categories appear in the order
+        # they were first registered (dict insertion order).
         self._build_shortcuts_labelframe(parent)
+
+        # ----------------------------------------------------------
+        # Display font scale LabelFrame (Phase 4ba, CS-79, CS-75 D4).
+        # ----------------------------------------------------------
+        # Third and final LabelFrame in the canonical Accessibility-tab
+        # order. CS-75 D4 anticipated this slot; Phase 4ba fills it.
+        self._build_font_scale_labelframe(parent)
 
     def _build_shortcuts_labelframe(self, parent: tk.Widget) -> None:
         """Render the "Keyboard shortcuts" LabelFrame for the Accessibility tab.
@@ -1146,7 +1194,7 @@ class PlotConfigDialog(tk.Toplevel):
                     "No shortcuts registered. Open a project tab to "
                     "populate this table."
                 ),
-                font=("", 8, "italic"), fg="#666666",
+                font=("", scale_font_size(8), "italic"), fg="#666666",
                 wraplength=420, justify=tk.LEFT,
             ).grid(row=0, column=0, columnspan=2, sticky="w", pady=2)
             return
@@ -1157,7 +1205,7 @@ class PlotConfigDialog(tk.Toplevel):
             tk.Label(
                 shortcuts_frame,
                 text=_SHORTCUT_CATEGORY_LABELS.get(category, category),
-                font=("", 9, "bold"),
+                font=("", scale_font_size(9), "bold"),
             ).grid(
                 row=row_cursor, column=0, columnspan=2,
                 sticky="w", pady=(4, 2),
@@ -1167,13 +1215,13 @@ class PlotConfigDialog(tk.Toplevel):
                 tk.Label(
                     shortcuts_frame,
                     text=_format_shortcut_key(entry.key),
-                    font=("Consolas", 9), fg="#444444",
+                    font=("Consolas", scale_font_size(9)), fg="#444444",
                     width=18, anchor="w",
                 ).grid(row=row_cursor, column=0, sticky="w", padx=(8, 4))
                 tk.Label(
                     shortcuts_frame,
                     text=entry.action,
-                    font=("", 9), anchor="w",
+                    font=("", scale_font_size(9)), anchor="w",
                     wraplength=320, justify=tk.LEFT,
                 ).grid(row=row_cursor, column=1, sticky="w")
                 row_cursor += 1
@@ -1197,6 +1245,98 @@ class PlotConfigDialog(tk.Toplevel):
         accessibility = self._working.setdefault("accessibility", {})
         accessibility["palette"] = name
         node_styles.set_active_palette(name)
+        self._mark_tab_modified("accessibility")
+        self._apply_changes_live()
+
+    def _build_font_scale_labelframe(self, parent: tk.Widget) -> None:
+        """Render the "Display font scale" LabelFrame (Phase 4ba, CS-79).
+
+        Third LabelFrame in the Accessibility tab's canonical order
+        (palette → shortcuts → font scale). A readonly ``ttk.Spinbox``
+        steps through :data:`_FONT_SCALE_VALUES` as percentage labels.
+        Commits on every change via a ``trace_add`` writer — mirroring
+        the palette Combobox rather than the CS-68 ``<ButtonRelease>``
+        slider path, which keeps the commit deterministic for tests and
+        keeps the discrete-value semantic clean.
+
+        The control commits through
+        :meth:`_on_font_scale_var_write`, which flips
+        :func:`accessibility.set_active_font_scale` so named-font
+        widgets rescale live; explicit-``font=`` dialog widgets rescale
+        on their next construction.
+        """
+        scale_frame = tk.LabelFrame(
+            parent, text="Display font scale", padx=8, pady=6,
+        )
+        scale_frame.pack(fill=tk.X, pady=(8, 0))
+        scale_frame.columnconfigure(1, weight=1)
+
+        tk.Label(
+            scale_frame, text="Scale:",
+            font=("", scale_font_size(9), "bold"),
+        ).grid(row=0, column=0, sticky="w", pady=2)
+
+        current_value = self._working["accessibility"].get("font_scale", 1.0)
+        current_label = _font_scale_label_for(current_value)
+        var = tk.StringVar(value=current_label)
+        self._font_scale_var = var
+
+        spin = ttk.Spinbox(
+            scale_frame,
+            textvariable=var,
+            values=list(_FONT_SCALE_LABELS),
+            state="readonly",
+            width=8,
+            font=("", scale_font_size(9)),
+            wrap=False,
+        )
+        spin.grid(row=0, column=1, sticky="w", padx=4)
+        self._font_scale_spinbox = spin
+        # Defensive re-seed under heavy full-suite Tk state (same caveat
+        # as the palette Combobox above — the textvariable initial value
+        # is occasionally dropped before any user gesture, and trace_add
+        # has not been registered yet so this set cannot loop back).
+        spin.set(current_label)
+
+        var.trace_add(
+            "write",
+            lambda *_, v=var: self._on_font_scale_var_write(v.get()),
+        )
+
+        def _refresh_font_scale(value, _v=var):
+            _v.set(_font_scale_label_for(value))
+        self._accessibility_control_refresh["font_scale"] = _refresh_font_scale
+
+        tk.Label(
+            scale_frame,
+            text=(
+                "Scales the application font. Open dialogs update on "
+                "reopen; the scan tree and menus update immediately."
+            ),
+            font=("", scale_font_size(8), "italic"), fg="#666666",
+            wraplength=420, justify=tk.LEFT,
+        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(2, 0))
+
+    def _on_font_scale_var_write(self, label: str) -> None:
+        """Commit a font-scale Spinbox change to the working copy + active state.
+
+        Translates the displayed percentage ``label`` back to the raw
+        float, writes ``_working["accessibility"]["font_scale"]``, flips
+        :func:`accessibility.set_active_font_scale` (which live-rescales
+        the Tk named fonts), marks the Accessibility tab dirty, and
+        fires :meth:`_apply_changes_live`.
+
+        ``_suspend_writes`` skips during widget-refresh passes so
+        Reset/Factory Reset don't loop back through here.
+
+        Phase 4ba CS-79 recipe.
+        """
+        if self._suspend_writes:
+            return
+        value = _FONT_SCALE_VALUE_BY_LABEL.get(label, 1.0)
+        accessibility = self._working.setdefault("accessibility", {})
+        accessibility["font_scale"] = value
+        set_active_font_scale(value)
         self._mark_tab_modified("accessibility")
         self._apply_changes_live()
 
@@ -1231,11 +1371,11 @@ class PlotConfigDialog(tk.Toplevel):
         header.pack(fill=tk.X)
         tk.Label(
             header, text=f"Axis: {_TAB_TITLES[role]}",
-            font=("", 10, "bold"),
+            font=("", scale_font_size(10), "bold"),
         ).pack(side=tk.LEFT)
         tk.Label(
             header, text=_AXIS_TAB_PLACEHOLDER_BADGE.get(role, ""),
-            font=("", 9, "italic"), fg="#666666",
+            font=("", scale_font_size(9), "italic"), fg="#666666",
         ).pack(side=tk.RIGHT)
 
         ttk.Separator(parent, orient=tk.HORIZONTAL).pack(
@@ -1290,7 +1430,7 @@ class PlotConfigDialog(tk.Toplevel):
             tk.Label(
                 parent,
                 text="(no plots on this axis)",
-                font=("", 9, "italic"), fg="#888888",
+                font=("", scale_font_size(9), "italic"), fg="#888888",
             ).pack(anchor="w")
             return
         is_y_axis_tab = role in _Y_AXIS_TAB_KEYS
@@ -1300,7 +1440,7 @@ class PlotConfigDialog(tk.Toplevel):
         height = max(1, min(6, len(labels)))
         listbox = tk.Listbox(
             parent, height=height, exportselection=False,
-            activestyle="none", font=("", 9),
+            activestyle="none", font=("", scale_font_size(9)),
         )
         for label in labels:
             listbox.insert(tk.END, str(label))
@@ -1342,7 +1482,7 @@ class PlotConfigDialog(tk.Toplevel):
         row = tk.Frame(parent)
         row.pack(fill=tk.X, anchor="w", pady=(4, 0))
         tk.Label(
-            row, text="Move selected to:", font=("", 9),
+            row, text="Move selected to:", font=("", scale_font_size(9)),
         ).pack(side=tk.LEFT)
         var = tk.StringVar(value="")
         combo = ttk.Combobox(
@@ -1456,10 +1596,10 @@ class PlotConfigDialog(tk.Toplevel):
             ("Legend:",       "legend_font_size",      False,  ""),
         )
         for r, (label, size_key, has_bold, bold_key) in enumerate(rows):
-            tk.Label(parent, text=label, font=("", 9, "bold")).grid(
+            tk.Label(parent, text=label, font=("", scale_font_size(9), "bold")).grid(
                 row=r, column=0, sticky="w", pady=2,
             )
-            tk.Label(parent, text="Size", font=("", 9)).grid(
+            tk.Label(parent, text="Size", font=("", scale_font_size(9))).grid(
                 row=r, column=1, sticky="w", padx=(8, 2),
             )
             self._make_int_spinbox(parent, r, 2, size_key, lo=4, hi=36)
@@ -1477,15 +1617,15 @@ class PlotConfigDialog(tk.Toplevel):
             sticky="ew", pady=(8, 2),
         )
         tk.Button(
-            btns, text="Save as Default", font=("", 8),
+            btns, text="Save as Default", font=("", scale_font_size(8)),
             command=self._do_save_as_default,
         ).pack(side=tk.LEFT, padx=2)
         tk.Button(
-            btns, text="Reset Defaults", font=("", 8),
+            btns, text="Reset Defaults", font=("", scale_font_size(8)),
             command=self._do_reset_defaults,
         ).pack(side=tk.LEFT, padx=2)
         tk.Button(
-            btns, text="Factory Reset", font=("", 8),
+            btns, text="Factory Reset", font=("", scale_font_size(8)),
             command=self._do_factory_reset,
         ).pack(side=tk.LEFT, padx=2)
 
@@ -1495,7 +1635,7 @@ class PlotConfigDialog(tk.Toplevel):
 
     def _build_section_appearance(self, parent: tk.Widget) -> None:
         # Grid checkbox.
-        tk.Label(parent, text="Grid:", font=("", 9, "bold")).grid(
+        tk.Label(parent, text="Grid:", font=("", scale_font_size(9), "bold")).grid(
             row=0, column=0, sticky="w", pady=2,
         )
         self._make_bool_checkbox(
@@ -1504,13 +1644,13 @@ class PlotConfigDialog(tk.Toplevel):
 
         # Grid colour swatch (CS-56). Click → colorchooser. Plot-wide;
         # the StyleDialog per-style override stays carry-forward.
-        tk.Label(parent, text="Grid colour:", font=("", 9, "bold")).grid(
+        tk.Label(parent, text="Grid colour:", font=("", scale_font_size(9), "bold")).grid(
             row=1, column=0, sticky="w", pady=2,
         )
         self._make_colour_swatch(parent, 1, 1, "grid_color")
 
         # Background colour swatch (click → colorchooser).
-        tk.Label(parent, text="Background:", font=("", 9, "bold")).grid(
+        tk.Label(parent, text="Background:", font=("", scale_font_size(9), "bold")).grid(
             row=2, column=0, sticky="w", pady=2,
         )
         self._make_colour_swatch(parent, 2, 1, "background_color")
@@ -1529,7 +1669,7 @@ class PlotConfigDialog(tk.Toplevel):
         # 0.01 step is fine enough for visual tuning; bounds picked from
         # practical use rather than matplotlib's full numerical range.
         tk.Label(
-            parent, text="Tertiary axis offset:", font=("", 9, "bold"),
+            parent, text="Tertiary axis offset:", font=("", scale_font_size(9), "bold"),
         ).grid(row=3, column=0, sticky="w", pady=2)
         off_var = tk.DoubleVar(
             value=float(self._working.get(
@@ -1591,7 +1731,7 @@ class PlotConfigDialog(tk.Toplevel):
         tick_row = tk.Frame(parent)
         tick_row.pack(fill=tk.X, anchor="w", pady=2)
         tk.Label(
-            tick_row, text="Tick direction:", font=("", 9, "bold"),
+            tick_row, text="Tick direction:", font=("", scale_font_size(9), "bold"),
         ).pack(side=tk.LEFT)
 
         tick_var = self._make_axis_string_var(role, "tick_direction")
@@ -1613,7 +1753,7 @@ class PlotConfigDialog(tk.Toplevel):
         label_row = tk.Frame(parent)
         label_row.pack(fill=tk.X, anchor="w", pady=(8, 2))
         tk.Label(
-            label_row, text="Axis label override:", font=("", 9, "bold"),
+            label_row, text="Axis label override:", font=("", scale_font_size(9), "bold"),
         ).pack(side=tk.LEFT)
         # The Global-tab mirror section reads this var by key so the
         # two surfaces stay in lockstep without a callback hop.
@@ -1625,13 +1765,13 @@ class PlotConfigDialog(tk.Toplevel):
         self._defer_apply_axis_keys.add((role, "axis_label_override"))
         override_var = self._make_axis_string_var(role, "axis_label_override")
         override_entry = tk.Entry(
-            label_row, textvariable=override_var, width=22, font=("", 9),
+            label_row, textvariable=override_var, width=22, font=("", scale_font_size(9)),
         )
         override_entry.pack(side=tk.LEFT, padx=(8, 0), fill=tk.X, expand=True)
         self._bind_entry_live_commit(override_entry)
         tk.Label(
             label_row, text="(empty = auto)",
-            font=("", 8, "italic"), fg="#888888",
+            font=("", scale_font_size(8), "italic"), fg="#888888",
         ).pack(side=tk.LEFT, padx=(6, 0))
 
         # ---- Range row (CS-64 Phase 4am) ----
@@ -1652,7 +1792,7 @@ class PlotConfigDialog(tk.Toplevel):
         range_row = tk.Frame(parent)
         range_row.pack(fill=tk.X, anchor="w", pady=(8, 2))
         tk.Label(
-            range_row, text="Range:", font=("", 9, "bold"),
+            range_row, text="Range:", font=("", scale_font_size(9), "bold"),
         ).pack(side=tk.LEFT)
         self._defer_apply_axis_keys.add((role, "range_lo"))
         lo_var = self._make_axis_string_var(role, "range_lo")
@@ -1661,7 +1801,7 @@ class PlotConfigDialog(tk.Toplevel):
                 value=""
             )
         lo_entry = tk.Entry(
-            range_row, textvariable=lo_var, width=8, font=("", 9),
+            range_row, textvariable=lo_var, width=8, font=("", scale_font_size(9)),
         )
         lo_entry.pack(side=tk.LEFT, padx=(8, 2))
         self._bind_entry_live_commit(lo_entry)
@@ -1672,7 +1812,7 @@ class PlotConfigDialog(tk.Toplevel):
         self._make_axis_apply_to_all_button(
             range_row, role, "range_lo",
         ).pack(side=tk.LEFT, padx=(2, 4))
-        tk.Label(range_row, text="to", font=("", 9)).pack(side=tk.LEFT)
+        tk.Label(range_row, text="to", font=("", scale_font_size(9))).pack(side=tk.LEFT)
         self._defer_apply_axis_keys.add((role, "range_hi"))
         hi_var = self._make_axis_string_var(role, "range_hi")
         if role != "secondary_x":
@@ -1680,7 +1820,7 @@ class PlotConfigDialog(tk.Toplevel):
                 value=""
             )
         hi_entry = tk.Entry(
-            range_row, textvariable=hi_var, width=8, font=("", 9),
+            range_row, textvariable=hi_var, width=8, font=("", scale_font_size(9)),
         )
         hi_entry.pack(side=tk.LEFT, padx=(2, 0))
         self._bind_entry_live_commit(hi_entry)
@@ -1692,7 +1832,7 @@ class PlotConfigDialog(tk.Toplevel):
         ).pack(side=tk.LEFT, padx=(2, 0))
         tk.Label(
             range_row, text="(empty = no bound)",
-            font=("", 8, "italic"), fg="#888888",
+            font=("", scale_font_size(8), "italic"), fg="#888888",
         ).pack(side=tk.LEFT, padx=(6, 0))
 
         # ---- Autoscale row (CS-64 Phase 4am) ----
@@ -1719,7 +1859,7 @@ class PlotConfigDialog(tk.Toplevel):
         # ``secondary_x`` (CS-69 / CS-70 own that role's range).
         autoscale_cb = tk.Checkbutton(
             autoscale_row, text="Autoscale", variable=autoscale_var,
-            font=("", 9, "bold"),
+            font=("", scale_font_size(9), "bold"),
             command=lambda r=role: self._on_axis_autoscale_toggle(r),
         )
         autoscale_cb.pack(side=tk.LEFT)
@@ -1732,7 +1872,7 @@ class PlotConfigDialog(tk.Toplevel):
         tk.Label(
             autoscale_row,
             text="(off = use Range bounds above)",
-            font=("", 8, "italic"), fg="#888888",
+            font=("", scale_font_size(8), "italic"), fg="#888888",
         ).pack(side=tk.LEFT, padx=(6, 0))
 
         # ---- Scale row (CS-64 Phase 4am) ----
@@ -1742,13 +1882,13 @@ class PlotConfigDialog(tk.Toplevel):
         scale_row = tk.Frame(parent)
         scale_row.pack(fill=tk.X, anchor="w", pady=(8, 2))
         tk.Label(
-            scale_row, text="Scale:", font=("", 9, "bold"),
+            scale_row, text="Scale:", font=("", scale_font_size(9), "bold"),
         ).pack(side=tk.LEFT)
         scale_var = self._make_axis_string_var(role, "scale")
         scale_combo = ttk.Combobox(
             scale_row, textvariable=scale_var,
             values=list(_AXIS_SCALE_OPTIONS),
-            state="readonly", width=8, font=("", 9),
+            state="readonly", width=8, font=("", scale_font_size(9)),
         )
         scale_combo.pack(side=tk.LEFT, padx=(8, 0))
         self._axis_control_widgets[(role, "scale")] = scale_combo
@@ -1770,16 +1910,16 @@ class PlotConfigDialog(tk.Toplevel):
         tick_spacing_row = tk.Frame(parent)
         tick_spacing_row.pack(fill=tk.X, anchor="w", pady=(8, 2))
         tk.Label(
-            tick_spacing_row, text="Tick spacing:", font=("", 9, "bold"),
+            tick_spacing_row, text="Tick spacing:", font=("", scale_font_size(9), "bold"),
         ).pack(side=tk.LEFT)
         tk.Label(
-            tick_spacing_row, text="major", font=("", 9),
+            tick_spacing_row, text="major", font=("", scale_font_size(9)),
         ).pack(side=tk.LEFT, padx=(8, 2))
         # CS-68: typed Entries — defer per-keystroke commit.
         self._defer_apply_axis_keys.add((role, "tick_major"))
         major_var = self._make_axis_string_var(role, "tick_major")
         major_entry = tk.Entry(
-            tick_spacing_row, textvariable=major_var, width=6, font=("", 9),
+            tick_spacing_row, textvariable=major_var, width=6, font=("", scale_font_size(9)),
         )
         major_entry.pack(side=tk.LEFT, padx=(2, 2))
         self._bind_entry_live_commit(major_entry)
@@ -1788,12 +1928,12 @@ class PlotConfigDialog(tk.Toplevel):
             tick_spacing_row, role, "tick_major",
         ).pack(side=tk.LEFT, padx=(2, 6))
         tk.Label(
-            tick_spacing_row, text="minor", font=("", 9),
+            tick_spacing_row, text="minor", font=("", scale_font_size(9)),
         ).pack(side=tk.LEFT, padx=(0, 2))
         self._defer_apply_axis_keys.add((role, "tick_minor"))
         minor_var = self._make_axis_string_var(role, "tick_minor")
         minor_entry = tk.Entry(
-            tick_spacing_row, textvariable=minor_var, width=6, font=("", 9),
+            tick_spacing_row, textvariable=minor_var, width=6, font=("", scale_font_size(9)),
         )
         minor_entry.pack(side=tk.LEFT, padx=(2, 0))
         self._bind_entry_live_commit(minor_entry)
@@ -1803,7 +1943,7 @@ class PlotConfigDialog(tk.Toplevel):
         ).pack(side=tk.LEFT, padx=(2, 0))
         tk.Label(
             tick_spacing_row, text="(empty = auto)",
-            font=("", 8, "italic"), fg="#888888",
+            font=("", scale_font_size(8), "italic"), fg="#888888",
         ).pack(side=tk.LEFT, padx=(6, 0))
 
         # ---- Custom tick positions row (CS-69 Phase 4aq) ----
@@ -1825,13 +1965,13 @@ class PlotConfigDialog(tk.Toplevel):
         custom_ticks_row = tk.Frame(parent)
         custom_ticks_row.pack(fill=tk.X, anchor="w", pady=(8, 2))
         tk.Label(
-            custom_ticks_row, text="Custom ticks:", font=("", 9, "bold"),
+            custom_ticks_row, text="Custom ticks:", font=("", scale_font_size(9), "bold"),
         ).pack(side=tk.LEFT)
         self._defer_apply_axis_keys.add((role, "custom_ticks"))
         custom_ticks_var = self._make_axis_string_var(role, "custom_ticks")
         custom_ticks_entry = tk.Entry(
             custom_ticks_row, textvariable=custom_ticks_var,
-            width=22, font=("", 9),
+            width=22, font=("", scale_font_size(9)),
         )
         custom_ticks_entry.pack(
             side=tk.LEFT, padx=(8, 0), fill=tk.X, expand=True,
@@ -1845,7 +1985,7 @@ class PlotConfigDialog(tk.Toplevel):
         tk.Label(
             custom_ticks_row,
             text="(e.g. 300, 400, 500; empty = use major)",
-            font=("", 8, "italic"), fg="#888888",
+            font=("", scale_font_size(8), "italic"), fg="#888888",
         ).pack(side=tk.LEFT, padx=(6, 0))
 
         # ---- Grid row (CS-65 Phase 4an) ----
@@ -1861,7 +2001,7 @@ class PlotConfigDialog(tk.Toplevel):
         grid_var = self._make_axis_bool_var(role, "grid_show")
         tk.Checkbutton(
             grid_row, text="Show gridlines", variable=grid_var,
-            font=("", 9, "bold"),
+            font=("", scale_font_size(9), "bold"),
         ).pack(side=tk.LEFT)
         # CS-73 (Phase 4at): ∀ for grid_show.
         self._make_axis_apply_to_all_button(
@@ -1871,7 +2011,7 @@ class PlotConfigDialog(tk.Toplevel):
             tk.Label(
                 grid_row,
                 text="(twin axes share the primary grid)",
-                font=("", 8, "italic"), fg="#888888",
+                font=("", scale_font_size(8), "italic"), fg="#888888",
             ).pack(side=tk.LEFT, padx=(6, 0))
 
         # ---- Axis colour row (CS-65 Phase 4an) ----
@@ -1888,7 +2028,7 @@ class PlotConfigDialog(tk.Toplevel):
         color_row = tk.Frame(parent)
         color_row.pack(fill=tk.X, anchor="w", pady=(8, 2))
         tk.Label(
-            color_row, text="Axis colour:", font=("", 9, "bold"),
+            color_row, text="Axis colour:", font=("", scale_font_size(9), "bold"),
         ).pack(side=tk.LEFT)
         color_var = self._make_axis_string_var(role, "axis_color")
         initial_color = color_var.get() or "#000000"
@@ -1914,7 +2054,7 @@ class PlotConfigDialog(tk.Toplevel):
 
         tk.Button(
             color_row, text="Choose…", command=_open_color_picker,
-            font=("", 9),
+            font=("", scale_font_size(9)),
         ).pack(side=tk.LEFT, padx=(0, 4))
         # CS-73 (Phase 4at): ∀ for axis_color. Broadcasts the current
         # hex colour to all other axes' colour swatches + working vars.
@@ -1953,7 +2093,7 @@ class PlotConfigDialog(tk.Toplevel):
                       "primary axis while the wavelength secondary "
                       "axis is shown — use Custom ticks above to "
                       "name explicit nm positions."),
-                font=("", 8, "italic"), fg="#666666",
+                font=("", scale_font_size(8), "italic"), fg="#666666",
                 wraplength=420, justify="left",
             )
             self._apply_secondary_x_link_greying()
@@ -1986,7 +2126,7 @@ class PlotConfigDialog(tk.Toplevel):
         can disable it alongside the widget it sits next to (D8).
         """
         btn = tk.Button(
-            parent, text="∀", font=("", 8), relief=tk.FLAT,
+            parent, text="∀", font=("", scale_font_size(8)), relief=tk.FLAT,
             padx=4, pady=0,
             command=lambda r=role, k=key: self._on_axis_apply_to_all(r, k),
         )
@@ -2478,7 +2618,7 @@ class PlotConfigDialog(tk.Toplevel):
         for r, role in enumerate(_AXIS_ROLE_TAB_KEYS):
             tk.Label(
                 parent, text=f"{_TAB_TITLES[role]}:",
-                font=("", 9, "bold"),
+                font=("", scale_font_size(9), "bold"),
             ).grid(row=r, column=0, sticky="w", pady=2)
             # CS-68 (Phase 4ap): mirror Entry on Global; the per-axis
             # tab's builder may register the same key earlier in the
@@ -2488,7 +2628,7 @@ class PlotConfigDialog(tk.Toplevel):
             self._defer_apply_axis_keys.add((role, "axis_label_override"))
             var = self._make_axis_string_var(role, "axis_label_override")
             mirror_entry = tk.Entry(
-                parent, textvariable=var, width=24, font=("", 9),
+                parent, textvariable=var, width=24, font=("", scale_font_size(9)),
             )
             mirror_entry.grid(row=r, column=1, sticky="ew", padx=4)
             self._bind_entry_live_commit(mirror_entry)
@@ -2500,7 +2640,7 @@ class PlotConfigDialog(tk.Toplevel):
 
     def _build_section_legend(self, parent: tk.Widget) -> None:
         # Show legend checkbox.
-        tk.Label(parent, text="Show legend:", font=("", 9, "bold")).grid(
+        tk.Label(parent, text="Show legend:", font=("", scale_font_size(9), "bold")).grid(
             row=0, column=0, sticky="w", pady=2,
         )
         self._make_bool_checkbox(
@@ -2508,7 +2648,7 @@ class PlotConfigDialog(tk.Toplevel):
         )
 
         # Position combobox.
-        tk.Label(parent, text="Position:", font=("", 9, "bold")).grid(
+        tk.Label(parent, text="Position:", font=("", scale_font_size(9), "bold")).grid(
             row=1, column=0, sticky="w", pady=2,
         )
         var = tk.StringVar(
@@ -2517,7 +2657,7 @@ class PlotConfigDialog(tk.Toplevel):
         self._control_vars["legend_position"] = var
         cb = ttk.Combobox(
             parent, textvariable=var, values=list(_LEGEND_POSITIONS),
-            state="readonly", width=14, font=("", 9),
+            state="readonly", width=14, font=("", scale_font_size(9)),
         )
         cb.grid(row=1, column=1, sticky="w", padx=4)
         var.trace_add(
@@ -2548,7 +2688,7 @@ class PlotConfigDialog(tk.Toplevel):
             ("Y label:", "ylabel_text", "ylabel_mode",  False),
         )
         for r, (label, text_key, mode_key, offer_none) in enumerate(rows):
-            tk.Label(parent, text=label, font=("", 9, "bold")).grid(
+            tk.Label(parent, text=label, font=("", scale_font_size(9), "bold")).grid(
                 row=r, column=0, sticky="w", pady=2,
             )
             self._make_label_row(
@@ -2598,20 +2738,20 @@ class PlotConfigDialog(tk.Toplevel):
         def _set_auto(_mv=mode_var):
             _mv.set("auto")
         tk.Button(
-            parent, text="Auto", font=("", 8), command=_set_auto,
+            parent, text="Auto", font=("", scale_font_size(8)), command=_set_auto,
         ).grid(row=row, column=2, sticky="w", padx=2)
 
         if offer_none:
             def _set_none(_mv=mode_var):
                 _mv.set("none")
             tk.Button(
-                parent, text="None", font=("", 8), command=_set_none,
+                parent, text="None", font=("", scale_font_size(8)), command=_set_none,
             ).grid(row=row, column=3, sticky="w", padx=2)
 
         # Mode indicator label (small, follows the mode_var).
         mode_lbl = tk.Label(
             parent, text=f"({mode_var.get()})",
-            fg="#666666", font=("", 8),
+            fg="#666666", font=("", scale_font_size(8)),
         )
         col = 4 if offer_none else 3
         mode_lbl.grid(row=row, column=col, sticky="w", padx=4)
@@ -3210,6 +3350,13 @@ class PlotConfigDialog(tk.Toplevel):
             "accessibility", {}
         ).get("palette", "default")
         node_styles.set_active_palette(restored_palette)
+        # CS-79 / Phase 4ba (sub-axis D): re-flip the active font scale
+        # too, so a Reset/Factory Reset that restores a different scale
+        # live-rescales the named fonts. Idempotent when unchanged.
+        restored_font_scale = self._working.get(
+            "accessibility", {}
+        ).get("font_scale", 1.0)
+        set_active_font_scale(restored_font_scale)
         # CS-71 (Phase 4as): re-grey after the silent var refresh.
         # secondary_x is omitted — CS-69 / CS-70 own that role's
         # range Entry state via the wavelength↔energy link greying.
