@@ -226,37 +226,78 @@ _FACTORY_DEFAULTS: dict[str, Any] = {
     #     x`` make uniform-spacing ``MultipleLocator(value)`` ticks
     #     unrepresentative — users want named wavelengths in nm.
     #     Schema key is uniform across every per-axis role (D6b lock).
+    # CS-80 (Phase 4bb): per-axis LABEL font customization with twin-axis
+    # inherit defaulting. Four more keys per role (registry 11 → 15):
+    #   * axis_label_font_inherit   BooleanVar. Only meaningful for the
+    #     three non-primary roles (secondary_x, secondary_y, tertiary_y),
+    #     which default True — "inherit my twin/parent axis's label
+    #     font" (secondary_x→primary_x, secondary_y/tertiary_y→primary_y,
+    #     see :data:`_AXIS_LABEL_FONT_INHERIT_PARENT`). The two primary
+    #     roles default False and own no inherit widget — their label
+    #     font is the Global-tab ``xlabel_font_size`` / ``ylabel_font_size``
+    #     control (the renderer bridges primary roles to those flat keys
+    #     so the long-standing Global font controls stay authoritative).
+    #   * axis_label_font_size      StringVar-friendly point size (the
+    #     Spinbox stores the integer as a string, mirroring the CS-79
+    #     readonly-Spinbox idiom). Read only when inherit is False.
+    #   * axis_label_font_bold      BooleanVar.
+    #   * axis_label_font_italic    BooleanVar.
+    # The renderer composes the resolved point size with the CS-79 global
+    # ``font_scale`` multiplier via ``scale_font_size`` at every
+    # ``set_xlabel`` / ``set_ylabel`` site (identity at scale 1.0). Schema
+    # key set is uniform across every per-axis role (the _AXIS_KEYS parity
+    # lock); the two primary roles carry inert size/bold/italic defaults.
     "axes": {
         "primary_x":   {"tick_direction": "in", "axis_label_override": "",
                         "range_lo": "", "range_hi": "",
                         "autoscale": True, "scale": "linear",
                         "tick_major": "", "tick_minor": "",
                         "grid_show": True, "axis_color": "#000000",
-                        "custom_ticks": ""},
+                        "custom_ticks": "",
+                        "axis_label_font_inherit": False,
+                        "axis_label_font_size": 10,
+                        "axis_label_font_bold": True,
+                        "axis_label_font_italic": False},
         "secondary_x": {"tick_direction": "in", "axis_label_override": "",
                         "range_lo": "", "range_hi": "",
                         "autoscale": True, "scale": "linear",
                         "tick_major": "", "tick_minor": "",
                         "grid_show": False, "axis_color": "#000000",
-                        "custom_ticks": ""},
+                        "custom_ticks": "",
+                        "axis_label_font_inherit": True,
+                        "axis_label_font_size": 10,
+                        "axis_label_font_bold": True,
+                        "axis_label_font_italic": False},
         "primary_y":   {"tick_direction": "in", "axis_label_override": "",
                         "range_lo": "", "range_hi": "",
                         "autoscale": True, "scale": "linear",
                         "tick_major": "", "tick_minor": "",
                         "grid_show": True, "axis_color": "#000000",
-                        "custom_ticks": ""},
+                        "custom_ticks": "",
+                        "axis_label_font_inherit": False,
+                        "axis_label_font_size": 10,
+                        "axis_label_font_bold": True,
+                        "axis_label_font_italic": False},
         "secondary_y": {"tick_direction": "in", "axis_label_override": "",
                         "range_lo": "", "range_hi": "",
                         "autoscale": True, "scale": "linear",
                         "tick_major": "", "tick_minor": "",
                         "grid_show": False, "axis_color": "#000000",
-                        "custom_ticks": ""},
+                        "custom_ticks": "",
+                        "axis_label_font_inherit": True,
+                        "axis_label_font_size": 10,
+                        "axis_label_font_bold": True,
+                        "axis_label_font_italic": False},
         "tertiary_y":  {"tick_direction": "in", "axis_label_override": "",
                         "range_lo": "", "range_hi": "",
                         "autoscale": True, "scale": "linear",
                         "tick_major": "", "tick_minor": "",
                         "grid_show": False, "axis_color": "#000000",
-                        "custom_ticks": ""},
+                        "custom_ticks": "",
+                        "axis_label_font_inherit": True,
+                        "axis_label_font_size": 10,
+                        "axis_label_font_bold": True,
+                        "axis_label_font_italic": False},
     },
     # CS-75 D2 / Phase 4ay (sub-axis B): accessibility settings nested
     # under a dedicated sub-dict so future Phase 4ba (font scale) +
@@ -285,12 +326,29 @@ _FACTORY_DEFAULTS: dict[str, Any] = {
 # tick-spacing / grid / axis-colour polish keys.
 # CS-69 (Phase 4aq): registry grew from 10 → 11 with ``custom_ticks``
 # (comma-separated explicit tick positions, FixedLocator-painted).
+# CS-80 (Phase 4bb): registry grew from 11 → 15 with the per-axis label
+# font keys (inherit toggle + size + bold + italic).
 _AXIS_KEYS: tuple[str, ...] = (
     "tick_direction", "axis_label_override",
     "range_lo", "range_hi", "autoscale", "scale",
     "tick_major", "tick_minor", "grid_show", "axis_color",
     "custom_ticks",
+    "axis_label_font_inherit", "axis_label_font_size",
+    "axis_label_font_bold", "axis_label_font_italic",
 )
+
+# CS-80 (Phase 4bb): twin-axis label-font inherit graph. The three
+# non-primary roles default to inheriting their parent axis's resolved
+# label font (the user's wavelength↔energy scenario: the secondary X
+# axis matches the primary X by default). The two primary roles are
+# roots — absent from this map — and own no inherit widget; their label
+# font is the Global-tab ``xlabel_font_size`` / ``ylabel_font_size``
+# control, which the renderer bridges to in ``_resolve_axis_label_font``.
+_AXIS_LABEL_FONT_INHERIT_PARENT: dict[str, str] = {
+    "secondary_x": "primary_x",
+    "secondary_y": "primary_y",
+    "tertiary_y":  "primary_y",
+}
 
 # Valid scale-type values; surfaced by the per-axis "Scale" Combobox.
 _AXIS_SCALE_OPTIONS: tuple[str, ...] = ("linear", "log")

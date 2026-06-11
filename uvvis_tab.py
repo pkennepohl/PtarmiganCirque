@@ -46,6 +46,7 @@ from operation_hash import compute_implementation_hash
 from scan_tree_widget import ScanTreeWidget, _SIDEBAR_MIN_WIDTH_PX
 from style_dialog import open_style_dialog
 from tooltip import Tooltip
+from accessibility import scale_font_size
 import plot_settings_dialog
 import node_styles_dialog
 import plot_axis_hit_test
@@ -374,6 +375,103 @@ def _per_axis_tick_direction(cfg: Mapping[str, Any], tab_role: str) -> str:
             "tick_direction"
         ]
     )
+
+
+def _coerce_font_pt(value: Any, fallback: int) -> int:
+    """Coerce a per-axis label-font size to a positive int point size.
+
+    CS-80 (Phase 4bb): the per-axis ``axis_label_font_size`` is stored
+    StringVar-style (the Spinbox commits the integer as a string), but
+    legacy / factory values may arrive as ints. Parse defensively and
+    fall back to ``fallback`` on empty / non-numeric / non-positive
+    input so the renderer never hands matplotlib an illegal size.
+    """
+    try:
+        pt = int(round(float(value)))
+    except (TypeError, ValueError):
+        return int(fallback)
+    return pt if pt >= 1 else int(fallback)
+
+
+def _resolve_axis_label_font(
+    cfg: Mapping[str, Any], tab_role: str,
+) -> "Tuple[int, bool, bool]":
+    """Resolve ``(size_pt, bold, italic)`` for an axis role's LABEL.
+
+    CS-80 (Phase 4bb): per-axis label-font customization with twin-axis
+    inherit defaulting. Returns the RAW point size (pre-scale); the
+    caller composes it with the CS-79 global ``font_scale`` multiplier
+    via :func:`scale_font_size` at the ``set_xlabel`` / ``set_ylabel``
+    site (identity at scale 1.0).
+
+    Resolution:
+
+    * The two primary roles bridge to the long-standing Global-tab font
+      keys — ``xlabel_font_size`` / ``xlabel_font_bold`` for
+      ``primary_x``, ``ylabel_font_size`` / ``ylabel_font_bold`` for
+      ``primary_y`` — so the Global font controls stay authoritative.
+      Italic is always False for the primaries (no Global italic
+      control).
+    * The three non-primary roles follow
+      :data:`plot_settings_dialog._AXIS_LABEL_FONT_INHERIT_PARENT`:
+      when ``axis_label_font_inherit`` is True (the factory default)
+      they resolve to their parent's font; when False they use their
+      own per-axis ``axis_label_font_size`` / ``_bold`` / ``_italic``.
+
+    Defensive against sparse / legacy configs (missing ``axes`` sub-dict
+    or keys) — every read falls through to the factory default.
+    """
+    factory_axes = plot_settings_dialog._FACTORY_DEFAULTS["axes"]
+    inherit_parent = plot_settings_dialog._AXIS_LABEL_FONT_INHERIT_PARENT
+
+    axes = cfg.get("axes")
+    axes = axes if isinstance(axes, dict) else {}
+
+    # Walk the inherit chain to the resolving role. The ``seen`` guard is
+    # purely defensive — the map is acyclic by construction.
+    seen: set[str] = set()
+    role = tab_role
+    while role in inherit_parent and role not in seen:
+        seen.add(role)
+        role_dict = axes.get(role)
+        role_dict = role_dict if isinstance(role_dict, dict) else {}
+        inherit = role_dict.get(
+            "axis_label_font_inherit",
+            factory_axes[role]["axis_label_font_inherit"],
+        )
+        if not bool(inherit):
+            break
+        role = inherit_parent[role]
+
+    # Primary roles bridge to the Global-tab flat font keys.
+    if role == "primary_x":
+        return (
+            _coerce_font_pt(cfg.get("xlabel_font_size", 10), 10),
+            bool(cfg.get("xlabel_font_bold", True)),
+            False,
+        )
+    if role == "primary_y":
+        return (
+            _coerce_font_pt(cfg.get("ylabel_font_size", 10), 10),
+            bool(cfg.get("ylabel_font_bold", True)),
+            False,
+        )
+
+    # A non-primary role with inherit=False reads its own per-axis font.
+    role_dict = axes.get(role)
+    role_dict = role_dict if isinstance(role_dict, dict) else {}
+    factory = factory_axes[role]
+    size = _coerce_font_pt(
+        role_dict.get("axis_label_font_size", factory["axis_label_font_size"]),
+        factory["axis_label_font_size"],
+    )
+    bold = bool(
+        role_dict.get("axis_label_font_bold", factory["axis_label_font_bold"])
+    )
+    italic = bool(
+        role_dict.get("axis_label_font_italic", factory["axis_label_font_italic"])
+    )
+    return (size, bold, italic)
 
 
 def _parse_tick_str(text: str) -> "Optional[float]":
