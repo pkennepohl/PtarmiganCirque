@@ -350,6 +350,14 @@ _AXIS_LABEL_FONT_INHERIT_PARENT: dict[str, str] = {
     "tertiary_y":  "primary_y",
 }
 
+# CS-80 (Phase 4bb): discrete point sizes offered by the per-axis Font
+# LabelFrame's readonly Spinbox (mirrors the Global font Spinbox 4–36
+# range). Stored StringVar-style — the integer as a string; the renderer
+# coerces via ``uvvis_tab._coerce_font_pt``.
+_AXIS_LABEL_FONT_SIZE_VALUES: tuple[str, ...] = tuple(
+    str(n) for n in range(4, 37)
+)
+
 # Valid scale-type values; surfaced by the per-axis "Scale" Combobox.
 _AXIS_SCALE_OPTIONS: tuple[str, ...] = ("linear", "log")
 
@@ -1455,6 +1463,82 @@ class PlotConfigDialog(tk.Toplevel):
         )
         settings_frame.pack(fill=tk.X)
         self._build_axis_tab_settings(settings_frame, role)
+
+        # CS-80 (Phase 4bb): the three non-primary roles grow a "Font"
+        # LabelFrame with twin-axis inherit defaulting. The two primary
+        # roots own no Font frame — their label font is the Global tab's
+        # xlabel / ylabel control (the renderer bridges to it).
+        if role in _AXIS_LABEL_FONT_INHERIT_PARENT:
+            ttk.Separator(parent, orient=tk.HORIZONTAL).pack(
+                fill=tk.X, pady=(8, 4),
+            )
+            font_frame = tk.LabelFrame(parent, text="Font", padx=8, pady=6)
+            font_frame.pack(fill=tk.X)
+            self._build_axis_font_labelframe(font_frame, role)
+
+    def _build_axis_font_labelframe(self, parent: tk.Widget, role: str) -> None:
+        """Populate a non-primary axis tab's "Font" LabelFrame (CS-80).
+
+        Twin-axis label-font customization (Phase 4bb). The role inherits
+        its parent axis's resolved label font by default — the "Inherit
+        font from <Parent>" checkbox, reflecting
+        :data:`_AXIS_LABEL_FONT_INHERIT_PARENT`. Unchecking it enables
+        the per-axis size (readonly Spinbox, StringVar-backed, mirroring
+        the CS-79 idiom) + Bold + Italic controls. The renderer composes
+        the resolved point size with the global ``font_scale`` multiplier
+        at the ``set_xlabel`` / ``set_ylabel`` site.
+
+        ``role`` is one of the three non-primary tab keys (``secondary_x``,
+        ``secondary_y``, ``tertiary_y``); callers gate on membership in
+        :data:`_AXIS_LABEL_FONT_INHERIT_PARENT`.
+        """
+        parent_role = _AXIS_LABEL_FONT_INHERIT_PARENT[role]
+        parent_title = _TAB_TITLES[parent_role]
+
+        # ---- Inherit checkbox ----
+        inherit_var = self._make_axis_bool_var(role, "axis_label_font_inherit")
+        inherit_row = tk.Frame(parent)
+        inherit_row.pack(fill=tk.X, anchor="w", pady=2)
+        tk.Checkbutton(
+            inherit_row,
+            text=f"Inherit font from {parent_title}",
+            variable=inherit_var,
+        ).pack(side=tk.LEFT)
+
+        # ---- Size / bold / italic controls ----
+        controls = tk.Frame(parent)
+        controls.pack(fill=tk.X, anchor="w", pady=(4, 2))
+        tk.Label(
+            controls, text="Size", font=("", scale_font_size(9), "bold"),
+        ).pack(side=tk.LEFT)
+        size_var = self._make_axis_string_var(role, "axis_label_font_size")
+        size_spin = ttk.Spinbox(
+            controls, values=_AXIS_LABEL_FONT_SIZE_VALUES,
+            textvariable=size_var, width=4, state="readonly",
+        )
+        size_spin.pack(side=tk.LEFT, padx=(4, 10))
+        bold_var = self._make_axis_bool_var(role, "axis_label_font_bold")
+        bold_cb = tk.Checkbutton(controls, text="Bold", variable=bold_var)
+        bold_cb.pack(side=tk.LEFT, padx=2)
+        italic_var = self._make_axis_bool_var(role, "axis_label_font_italic")
+        italic_cb = tk.Checkbutton(controls, text="Italic", variable=italic_var)
+        italic_cb.pack(side=tk.LEFT, padx=2)
+
+        # ---- Inherit toggle greys out the per-axis controls ----
+        # The closure re-runs on every inherit-var write — including the
+        # Reset / Factory Reset refresh path, which sets the var through
+        # ``_axis_control_refresh`` — so the enabled state always tracks
+        # the committed inherit value.
+        def _sync_enabled(*_args, _spin=size_spin, _b=bold_cb, _i=italic_cb,
+                          _v=inherit_var):
+            inherit = bool(_v.get())
+            _spin.config(state=("disabled" if inherit else "readonly"))
+            cb_state = "disabled" if inherit else "normal"
+            _b.config(state=cb_state)
+            _i.config(state=cb_state)
+
+        inherit_var.trace_add("write", _sync_enabled)
+        _sync_enabled()
 
     def _build_axis_tab_plots(self, parent: tk.Widget, role: str) -> None:
         """Populate the "Plots on this axis" LabelFrame (CS-62, Phase 4ak).
