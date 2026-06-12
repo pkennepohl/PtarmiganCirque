@@ -1778,12 +1778,16 @@ class TestPlotConfigDialogPerAxisSchemaPhase4ak(unittest.TestCase):
         # CS-69 (Phase 4aq) grew it from 10 → 11 with ``custom_ticks``
         # (comma-separated FixedLocator positions for the B-005
         # wavelength axis fix).
+        # CS-80 (Phase 4bb) grew it from 11 → 15 with the per-axis label
+        # font keys (inherit toggle + size + bold + italic).
         self.assertEqual(
             tuple(self.psd._AXIS_KEYS),
             ("tick_direction", "axis_label_override",
              "range_lo", "range_hi", "autoscale", "scale",
              "tick_major", "tick_minor", "grid_show", "axis_color",
-             "custom_ticks"),
+             "custom_ticks",
+             "axis_label_font_inherit", "axis_label_font_size",
+             "axis_label_font_bold", "axis_label_font_italic"),
         )
         # Every per-axis role's sub-dict carries exactly these keys.
         for role in self._AXIS_TAB_KEYS:
@@ -2776,7 +2780,11 @@ class TestPlotConfigDialogPerAxisPolishSchemaPhase4an(unittest.TestCase):
         # ladder (tick_major / tick_minor / grid_show / axis_color).
         # CS-69 (Phase 4aq) added the eleventh — ``custom_ticks`` —
         # for the B-005 wavelength axis FixedLocator path.
-        self.assertEqual(len(self.psd._AXIS_KEYS), 11)
+        # CS-80 (Phase 4bb) grew it to fifteen with the per-axis label
+        # font keys; this Phase-4an guard still asserts the polish keys
+        # are present (the exact length is owned by the 4bb registry
+        # parity test below).
+        self.assertGreaterEqual(len(self.psd._AXIS_KEYS), 11)
         for k in ("tick_major", "tick_minor", "grid_show", "axis_color",
                   "custom_ticks"):
             self.assertIn(k, self.psd._AXIS_KEYS)
@@ -5919,6 +5927,95 @@ class TestFontLiteralRoutingSentinelPhase4ba(unittest.TestCase):
                 f"{filename} routes font literals but does not import "
                 f"scale_font_size",
             )
+
+
+class TestPerAxisLabelFontSchemaPhase4bb(unittest.TestCase):
+    """CS-80 (Phase 4bb) — per-axis label-font schema growth.
+
+    Four additive keys per role (registry 11 -> 15):
+    ``axis_label_font_inherit`` / ``_size`` / ``_bold`` / ``_italic``.
+    Uniform key set across all five roles (the ``_AXIS_KEYS`` parity
+    lock); the inherit defaults encode the twin-axis graph (non-primary
+    roles default True, the two primary roots default False). No Tk
+    display needed — pure schema assertions.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import plot_settings_dialog
+        cls.psd = plot_settings_dialog
+
+    _AXIS_TAB_KEYS = (
+        "primary_x", "secondary_x", "primary_y", "secondary_y", "tertiary_y",
+    )
+    _FONT_KEYS = (
+        "axis_label_font_inherit", "axis_label_font_size",
+        "axis_label_font_bold", "axis_label_font_italic",
+    )
+
+    def test_axis_keys_registry_length_is_fifteen(self):
+        self.assertEqual(len(self.psd._AXIS_KEYS), 15)
+        for k in self._FONT_KEYS:
+            self.assertIn(k, self.psd._AXIS_KEYS)
+
+    def test_every_role_carries_the_font_keys_with_parity(self):
+        for role in self._AXIS_TAB_KEYS:
+            slot = self.psd._FACTORY_DEFAULTS["axes"][role]
+            for k in self._FONT_KEYS:
+                self.assertIn(k, slot)
+            # Uniform key set == _AXIS_KEYS (the parity lock).
+            self.assertEqual(set(slot.keys()), set(self.psd._AXIS_KEYS))
+
+    def test_font_key_value_defaults(self):
+        for role in self._AXIS_TAB_KEYS:
+            slot = self.psd._FACTORY_DEFAULTS["axes"][role]
+            self.assertEqual(slot["axis_label_font_size"], 10)
+            self.assertIs(slot["axis_label_font_bold"], True)
+            self.assertIs(slot["axis_label_font_italic"], False)
+
+    def test_inherit_defaults_encode_twin_graph(self):
+        defaults = self.psd._FACTORY_DEFAULTS["axes"]
+        # Non-primary roles default to inherit; the two primaries are
+        # roots (own no inherit widget; their label font is the Global
+        # tab's xlabel/ylabel control).
+        self.assertIs(defaults["secondary_x"]["axis_label_font_inherit"], True)
+        self.assertIs(defaults["secondary_y"]["axis_label_font_inherit"], True)
+        self.assertIs(defaults["tertiary_y"]["axis_label_font_inherit"], True)
+        self.assertIs(defaults["primary_x"]["axis_label_font_inherit"], False)
+        self.assertIs(defaults["primary_y"]["axis_label_font_inherit"], False)
+
+    def test_inherit_parent_map_is_the_twin_graph(self):
+        self.assertEqual(
+            self.psd._AXIS_LABEL_FONT_INHERIT_PARENT,
+            {"secondary_x": "primary_x",
+             "secondary_y": "primary_y",
+             "tertiary_y":  "primary_y"},
+        )
+        # The two primary roots are absent from the inherit map.
+        self.assertNotIn(
+            "primary_x", self.psd._AXIS_LABEL_FONT_INHERIT_PARENT,
+        )
+        self.assertNotIn(
+            "primary_y", self.psd._AXIS_LABEL_FONT_INHERIT_PARENT,
+        )
+
+    def test_migrate_fills_font_keys_on_sparse_config(self):
+        # A pre-4bb config with a bare axes sub-dict gains the new keys
+        # from the factory defaults (CS-46 additive migration).
+        cfg = {"axes": {"secondary_x": {}}}
+        self.psd.migrate_plot_config(cfg)
+        slot = cfg["axes"]["secondary_x"]
+        for k in self._FONT_KEYS:
+            self.assertIn(k, slot)
+        self.assertIs(slot["axis_label_font_inherit"], True)
+        self.assertEqual(slot["axis_label_font_size"], 10)
+
+    def test_migrate_is_idempotent_with_font_keys(self):
+        cfg: dict = {}
+        self.psd.migrate_plot_config(cfg)
+        once = copy.deepcopy(cfg)
+        self.psd.migrate_plot_config(cfg)
+        self.assertEqual(cfg, once)
 
 
 if __name__ == "__main__":
