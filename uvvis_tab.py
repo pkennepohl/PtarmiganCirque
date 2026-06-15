@@ -46,6 +46,7 @@ from operation_hash import compute_implementation_hash
 from scan_tree_widget import ScanTreeWidget, _SIDEBAR_MIN_WIDTH_PX
 from style_dialog import open_style_dialog
 from tooltip import Tooltip
+from accessibility import scale_font_size
 import plot_settings_dialog
 import node_styles_dialog
 import plot_axis_hit_test
@@ -374,6 +375,124 @@ def _per_axis_tick_direction(cfg: Mapping[str, Any], tab_role: str) -> str:
             "tick_direction"
         ]
     )
+
+
+def _coerce_font_pt(value: Any, fallback: int) -> int:
+    """Coerce a per-axis label-font size to a positive int point size.
+
+    CS-80 (Phase 4bb): the per-axis ``axis_label_font_size`` is stored
+    StringVar-style (the Spinbox commits the integer as a string), but
+    legacy / factory values may arrive as ints. Parse defensively and
+    fall back to ``fallback`` on empty / non-numeric / non-positive
+    input so the renderer never hands matplotlib an illegal size.
+    """
+    try:
+        pt = int(round(float(value)))
+    except (TypeError, ValueError):
+        return int(fallback)
+    return pt if pt >= 1 else int(fallback)
+
+
+def _resolve_axis_label_font(
+    cfg: Mapping[str, Any], tab_role: str,
+) -> "Tuple[int, bool, bool]":
+    """Resolve ``(size_pt, bold, italic)`` for an axis role's LABEL.
+
+    CS-80 (Phase 4bb): per-axis label-font customization with twin-axis
+    inherit defaulting. Returns the RAW point size (pre-scale); the
+    caller composes it with the CS-79 global ``font_scale`` multiplier
+    via :func:`scale_font_size` at the ``set_xlabel`` / ``set_ylabel``
+    site (identity at scale 1.0).
+
+    Resolution:
+
+    * The two primary roles bridge to the long-standing Global-tab font
+      keys — ``xlabel_font_size`` / ``xlabel_font_bold`` for
+      ``primary_x``, ``ylabel_font_size`` / ``ylabel_font_bold`` for
+      ``primary_y`` — so the Global font controls stay authoritative.
+      Italic is always False for the primaries (no Global italic
+      control).
+    * The three non-primary roles follow
+      :data:`plot_settings_dialog._AXIS_LABEL_FONT_INHERIT_PARENT`:
+      when ``axis_label_font_inherit`` is True (the factory default)
+      they resolve to their parent's font; when False they use their
+      own per-axis ``axis_label_font_size`` / ``_bold`` / ``_italic``.
+
+    Defensive against sparse / legacy configs (missing ``axes`` sub-dict
+    or keys) — every read falls through to the factory default.
+    """
+    factory_axes = plot_settings_dialog._FACTORY_DEFAULTS["axes"]
+    inherit_parent = plot_settings_dialog._AXIS_LABEL_FONT_INHERIT_PARENT
+
+    axes = cfg.get("axes")
+    axes = axes if isinstance(axes, dict) else {}
+
+    # Walk the inherit chain to the resolving role. The ``seen`` guard is
+    # purely defensive — the map is acyclic by construction.
+    seen: set[str] = set()
+    role = tab_role
+    while role in inherit_parent and role not in seen:
+        seen.add(role)
+        role_dict = axes.get(role)
+        role_dict = role_dict if isinstance(role_dict, dict) else {}
+        inherit = role_dict.get(
+            "axis_label_font_inherit",
+            factory_axes[role]["axis_label_font_inherit"],
+        )
+        if not bool(inherit):
+            break
+        role = inherit_parent[role]
+
+    # Primary roles bridge to the Global-tab flat font keys.
+    if role == "primary_x":
+        return (
+            _coerce_font_pt(cfg.get("xlabel_font_size", 10), 10),
+            bool(cfg.get("xlabel_font_bold", True)),
+            False,
+        )
+    if role == "primary_y":
+        return (
+            _coerce_font_pt(cfg.get("ylabel_font_size", 10), 10),
+            bool(cfg.get("ylabel_font_bold", True)),
+            False,
+        )
+
+    # A non-primary role with inherit=False reads its own per-axis font.
+    role_dict = axes.get(role)
+    role_dict = role_dict if isinstance(role_dict, dict) else {}
+    factory = factory_axes[role]
+    size = _coerce_font_pt(
+        role_dict.get("axis_label_font_size", factory["axis_label_font_size"]),
+        factory["axis_label_font_size"],
+    )
+    bold = bool(
+        role_dict.get("axis_label_font_bold", factory["axis_label_font_bold"])
+    )
+    italic = bool(
+        role_dict.get("axis_label_font_italic", factory["axis_label_font_italic"])
+    )
+    return (size, bold, italic)
+
+
+def _axis_label_font_kwargs(
+    cfg: Mapping[str, Any], tab_role: str,
+) -> "dict[str, Any]":
+    """matplotlib ``set_xlabel`` / ``set_ylabel`` font kwargs for a role.
+
+    CS-80 (Phase 4bb): resolves the per-axis label font via
+    :func:`_resolve_axis_label_font` and composes the raw point size
+    with the CS-79 global ``font_scale`` multiplier via
+    :func:`scale_font_size` (identity at scale 1.0, so the default
+    render is byte-for-byte the pre-4bb behaviour for every role except
+    the secondary X axis, whose previously-hardcoded 9pt/normal label
+    now inherits the primary X axis's font by twin-axis default).
+    """
+    size, bold, italic = _resolve_axis_label_font(cfg, tab_role)
+    return {
+        "fontsize": scale_font_size(size),
+        "fontweight": "bold" if bold else "normal",
+        "fontstyle": "italic" if italic else "normal",
+    }
 
 
 def _parse_tick_str(text: str) -> "Optional[float]":
@@ -2916,10 +3035,12 @@ class UVVisTab(tk.Frame):
         primary_x_override = _axis_label_override(cfg, "primary_x")
         if primary_x_override:
             xlabel_text = primary_x_override
+        # CS-80 (Phase 4bb): the primary X label font resolves through
+        # ``_axis_label_font_kwargs`` (primary roles bridge to the
+        # Global-tab xlabel keys) and composes the global font_scale.
         ax.set_xlabel(
             xlabel_text,
-            fontsize=cfg.get("xlabel_font_size", 10),
-            fontweight=("bold" if cfg.get("xlabel_font_bold", True) else "normal"),
+            **_axis_label_font_kwargs(cfg, "primary_x"),
         )
 
         # Phase 4ad (CS-55): the renderer routes the y-axis label
@@ -2935,12 +3056,14 @@ class UVVisTab(tk.Frame):
         # than the pre-Phase-4ad behaviour, which hard-coded primary's
         # ylabel from y-unit even when primary held a derivative or
         # was empty entirely.
-        ylabel_mode      = cfg.get("ylabel_mode", "auto")
-        ylabel_font_size = cfg.get("ylabel_font_size", 10)
-        ylabel_bold      = cfg.get("ylabel_font_bold", True)
-        ylabel_fontweight = "bold" if ylabel_bold else "normal"
+        ylabel_mode = cfg.get("ylabel_mode", "auto")
         y_unit = self._y_unit.get()
 
+        # CS-80 (Phase 4bb): each Y label resolves its font per axis-role
+        # via ``_axis_label_font_kwargs``. The primary_y override / custom
+        # paths use the primary_y resolution; the per-role loop resolves
+        # each role's own tab (secondary_y / tertiary_y inherit primary_y
+        # by twin-axis default, or use their own font when opted out).
         # Phase 4ak (CS-62): per-axis label overrides take precedence
         # over both the custom-text mode and the auto y-axis label
         # resolution. The primary Y override slots in here so a user
@@ -2950,26 +3073,24 @@ class UVVisTab(tk.Frame):
         if primary_y_override:
             ax.set_ylabel(
                 primary_y_override,
-                fontsize=ylabel_font_size,
-                fontweight=ylabel_fontweight,
+                **_axis_label_font_kwargs(cfg, "primary_y"),
             )
         elif ylabel_mode == "custom":
             ax.set_ylabel(
                 cfg.get("ylabel_text", ""),
-                fontsize=ylabel_font_size,
-                fontweight=ylabel_fontweight,
+                **_axis_label_font_kwargs(cfg, "primary_y"),
             )
 
         for role, first_ntype in first_node_type_per_role.items():
             tab_role = _Y_AXIS_ROLE_TO_TAB.get(role)
+            font_kwargs = _axis_label_font_kwargs(cfg, tab_role or "primary_y")
             override = (
                 _axis_label_override(cfg, tab_role) if tab_role else ""
             )
             if override:
                 self._axes_by_role[role].set_ylabel(
                     override,
-                    fontsize=ylabel_font_size,
-                    fontweight=ylabel_fontweight,
+                    **font_kwargs,
                 )
                 continue
             if role == "primary" and (primary_y_override or ylabel_mode == "custom"):
@@ -2979,8 +3100,7 @@ class UVVisTab(tk.Frame):
                 continue
             self._axes_by_role[role].set_ylabel(
                 label_text,
-                fontsize=ylabel_font_size,
-                fontweight=ylabel_fontweight,
+                **font_kwargs,
             )
 
         # Title: "auto" has no UV/Vis-derivable default so it falls
@@ -3055,7 +3175,14 @@ class UVVisTab(tk.Frame):
             # outright. Empty (factory default) keeps the canonical
             # "λ (nm)" string.
             sec_x_override = _axis_label_override(cfg, "secondary_x")
-            sec.set_xlabel(sec_x_override or "λ (nm)", fontsize=9)
+            # CS-80 (Phase 4bb): the secondary X label font resolves
+            # through ``_axis_label_font_kwargs`` — by twin-axis default
+            # it inherits the primary X axis (the user's wavelength↔energy
+            # scenario), replacing the previously-hardcoded 9pt/normal.
+            sec.set_xlabel(
+                sec_x_override or "λ (nm)",
+                **_axis_label_font_kwargs(cfg, "secondary_x"),
+            )
             # Phase 4al: the previously-hardcoded ``direction="in"`` now
             # reads from the ``secondary_x`` per-axis slot so the user's
             # Plot Settings choice on the Secondary X tab applies. The

@@ -226,37 +226,78 @@ _FACTORY_DEFAULTS: dict[str, Any] = {
     #     x`` make uniform-spacing ``MultipleLocator(value)`` ticks
     #     unrepresentative — users want named wavelengths in nm.
     #     Schema key is uniform across every per-axis role (D6b lock).
+    # CS-80 (Phase 4bb): per-axis LABEL font customization with twin-axis
+    # inherit defaulting. Four more keys per role (registry 11 → 15):
+    #   * axis_label_font_inherit   BooleanVar. Only meaningful for the
+    #     three non-primary roles (secondary_x, secondary_y, tertiary_y),
+    #     which default True — "inherit my twin/parent axis's label
+    #     font" (secondary_x→primary_x, secondary_y/tertiary_y→primary_y,
+    #     see :data:`_AXIS_LABEL_FONT_INHERIT_PARENT`). The two primary
+    #     roles default False and own no inherit widget — their label
+    #     font is the Global-tab ``xlabel_font_size`` / ``ylabel_font_size``
+    #     control (the renderer bridges primary roles to those flat keys
+    #     so the long-standing Global font controls stay authoritative).
+    #   * axis_label_font_size      StringVar-friendly point size (the
+    #     Spinbox stores the integer as a string, mirroring the CS-79
+    #     readonly-Spinbox idiom). Read only when inherit is False.
+    #   * axis_label_font_bold      BooleanVar.
+    #   * axis_label_font_italic    BooleanVar.
+    # The renderer composes the resolved point size with the CS-79 global
+    # ``font_scale`` multiplier via ``scale_font_size`` at every
+    # ``set_xlabel`` / ``set_ylabel`` site (identity at scale 1.0). Schema
+    # key set is uniform across every per-axis role (the _AXIS_KEYS parity
+    # lock); the two primary roles carry inert size/bold/italic defaults.
     "axes": {
         "primary_x":   {"tick_direction": "in", "axis_label_override": "",
                         "range_lo": "", "range_hi": "",
                         "autoscale": True, "scale": "linear",
                         "tick_major": "", "tick_minor": "",
                         "grid_show": True, "axis_color": "#000000",
-                        "custom_ticks": ""},
+                        "custom_ticks": "",
+                        "axis_label_font_inherit": False,
+                        "axis_label_font_size": 10,
+                        "axis_label_font_bold": True,
+                        "axis_label_font_italic": False},
         "secondary_x": {"tick_direction": "in", "axis_label_override": "",
                         "range_lo": "", "range_hi": "",
                         "autoscale": True, "scale": "linear",
                         "tick_major": "", "tick_minor": "",
                         "grid_show": False, "axis_color": "#000000",
-                        "custom_ticks": ""},
+                        "custom_ticks": "",
+                        "axis_label_font_inherit": True,
+                        "axis_label_font_size": 10,
+                        "axis_label_font_bold": True,
+                        "axis_label_font_italic": False},
         "primary_y":   {"tick_direction": "in", "axis_label_override": "",
                         "range_lo": "", "range_hi": "",
                         "autoscale": True, "scale": "linear",
                         "tick_major": "", "tick_minor": "",
                         "grid_show": True, "axis_color": "#000000",
-                        "custom_ticks": ""},
+                        "custom_ticks": "",
+                        "axis_label_font_inherit": False,
+                        "axis_label_font_size": 10,
+                        "axis_label_font_bold": True,
+                        "axis_label_font_italic": False},
         "secondary_y": {"tick_direction": "in", "axis_label_override": "",
                         "range_lo": "", "range_hi": "",
                         "autoscale": True, "scale": "linear",
                         "tick_major": "", "tick_minor": "",
                         "grid_show": False, "axis_color": "#000000",
-                        "custom_ticks": ""},
+                        "custom_ticks": "",
+                        "axis_label_font_inherit": True,
+                        "axis_label_font_size": 10,
+                        "axis_label_font_bold": True,
+                        "axis_label_font_italic": False},
         "tertiary_y":  {"tick_direction": "in", "axis_label_override": "",
                         "range_lo": "", "range_hi": "",
                         "autoscale": True, "scale": "linear",
                         "tick_major": "", "tick_minor": "",
                         "grid_show": False, "axis_color": "#000000",
-                        "custom_ticks": ""},
+                        "custom_ticks": "",
+                        "axis_label_font_inherit": True,
+                        "axis_label_font_size": 10,
+                        "axis_label_font_bold": True,
+                        "axis_label_font_italic": False},
     },
     # CS-75 D2 / Phase 4ay (sub-axis B): accessibility settings nested
     # under a dedicated sub-dict so future Phase 4ba (font scale) +
@@ -285,11 +326,36 @@ _FACTORY_DEFAULTS: dict[str, Any] = {
 # tick-spacing / grid / axis-colour polish keys.
 # CS-69 (Phase 4aq): registry grew from 10 → 11 with ``custom_ticks``
 # (comma-separated explicit tick positions, FixedLocator-painted).
+# CS-80 (Phase 4bb): registry grew from 11 → 15 with the per-axis label
+# font keys (inherit toggle + size + bold + italic).
 _AXIS_KEYS: tuple[str, ...] = (
     "tick_direction", "axis_label_override",
     "range_lo", "range_hi", "autoscale", "scale",
     "tick_major", "tick_minor", "grid_show", "axis_color",
     "custom_ticks",
+    "axis_label_font_inherit", "axis_label_font_size",
+    "axis_label_font_bold", "axis_label_font_italic",
+)
+
+# CS-80 (Phase 4bb): twin-axis label-font inherit graph. The three
+# non-primary roles default to inheriting their parent axis's resolved
+# label font (the user's wavelength↔energy scenario: the secondary X
+# axis matches the primary X by default). The two primary roles are
+# roots — absent from this map — and own no inherit widget; their label
+# font is the Global-tab ``xlabel_font_size`` / ``ylabel_font_size``
+# control, which the renderer bridges to in ``_resolve_axis_label_font``.
+_AXIS_LABEL_FONT_INHERIT_PARENT: dict[str, str] = {
+    "secondary_x": "primary_x",
+    "secondary_y": "primary_y",
+    "tertiary_y":  "primary_y",
+}
+
+# CS-80 (Phase 4bb): discrete point sizes offered by the per-axis Font
+# LabelFrame's readonly Spinbox (mirrors the Global font Spinbox 4–36
+# range). Stored StringVar-style — the integer as a string; the renderer
+# coerces via ``uvvis_tab._coerce_font_pt``.
+_AXIS_LABEL_FONT_SIZE_VALUES: tuple[str, ...] = tuple(
+    str(n) for n in range(4, 37)
 )
 
 # Valid scale-type values; surfaced by the per-axis "Scale" Combobox.
@@ -1397,6 +1463,82 @@ class PlotConfigDialog(tk.Toplevel):
         )
         settings_frame.pack(fill=tk.X)
         self._build_axis_tab_settings(settings_frame, role)
+
+        # CS-80 (Phase 4bb): the three non-primary roles grow a "Font"
+        # LabelFrame with twin-axis inherit defaulting. The two primary
+        # roots own no Font frame — their label font is the Global tab's
+        # xlabel / ylabel control (the renderer bridges to it).
+        if role in _AXIS_LABEL_FONT_INHERIT_PARENT:
+            ttk.Separator(parent, orient=tk.HORIZONTAL).pack(
+                fill=tk.X, pady=(8, 4),
+            )
+            font_frame = tk.LabelFrame(parent, text="Font", padx=8, pady=6)
+            font_frame.pack(fill=tk.X)
+            self._build_axis_font_labelframe(font_frame, role)
+
+    def _build_axis_font_labelframe(self, parent: tk.Widget, role: str) -> None:
+        """Populate a non-primary axis tab's "Font" LabelFrame (CS-80).
+
+        Twin-axis label-font customization (Phase 4bb). The role inherits
+        its parent axis's resolved label font by default — the "Inherit
+        font from <Parent>" checkbox, reflecting
+        :data:`_AXIS_LABEL_FONT_INHERIT_PARENT`. Unchecking it enables
+        the per-axis size (readonly Spinbox, StringVar-backed, mirroring
+        the CS-79 idiom) + Bold + Italic controls. The renderer composes
+        the resolved point size with the global ``font_scale`` multiplier
+        at the ``set_xlabel`` / ``set_ylabel`` site.
+
+        ``role`` is one of the three non-primary tab keys (``secondary_x``,
+        ``secondary_y``, ``tertiary_y``); callers gate on membership in
+        :data:`_AXIS_LABEL_FONT_INHERIT_PARENT`.
+        """
+        parent_role = _AXIS_LABEL_FONT_INHERIT_PARENT[role]
+        parent_title = _TAB_TITLES[parent_role]
+
+        # ---- Inherit checkbox ----
+        inherit_var = self._make_axis_bool_var(role, "axis_label_font_inherit")
+        inherit_row = tk.Frame(parent)
+        inherit_row.pack(fill=tk.X, anchor="w", pady=2)
+        tk.Checkbutton(
+            inherit_row,
+            text=f"Inherit font from {parent_title}",
+            variable=inherit_var,
+        ).pack(side=tk.LEFT)
+
+        # ---- Size / bold / italic controls ----
+        controls = tk.Frame(parent)
+        controls.pack(fill=tk.X, anchor="w", pady=(4, 2))
+        tk.Label(
+            controls, text="Size", font=("", scale_font_size(9), "bold"),
+        ).pack(side=tk.LEFT)
+        size_var = self._make_axis_string_var(role, "axis_label_font_size")
+        size_spin = ttk.Spinbox(
+            controls, values=_AXIS_LABEL_FONT_SIZE_VALUES,
+            textvariable=size_var, width=4, state="readonly",
+        )
+        size_spin.pack(side=tk.LEFT, padx=(4, 10))
+        bold_var = self._make_axis_bool_var(role, "axis_label_font_bold")
+        bold_cb = tk.Checkbutton(controls, text="Bold", variable=bold_var)
+        bold_cb.pack(side=tk.LEFT, padx=2)
+        italic_var = self._make_axis_bool_var(role, "axis_label_font_italic")
+        italic_cb = tk.Checkbutton(controls, text="Italic", variable=italic_var)
+        italic_cb.pack(side=tk.LEFT, padx=2)
+
+        # ---- Inherit toggle greys out the per-axis controls ----
+        # The closure re-runs on every inherit-var write — including the
+        # Reset / Factory Reset refresh path, which sets the var through
+        # ``_axis_control_refresh`` — so the enabled state always tracks
+        # the committed inherit value.
+        def _sync_enabled(*_args, _spin=size_spin, _b=bold_cb, _i=italic_cb,
+                          _v=inherit_var):
+            inherit = bool(_v.get())
+            _spin.config(state=("disabled" if inherit else "readonly"))
+            cb_state = "disabled" if inherit else "normal"
+            _b.config(state=cb_state)
+            _i.config(state=cb_state)
+
+        inherit_var.trace_add("write", _sync_enabled)
+        _sync_enabled()
 
     def _build_axis_tab_plots(self, parent: tk.Widget, role: str) -> None:
         """Populate the "Plots on this axis" LabelFrame (CS-62, Phase 4ak).

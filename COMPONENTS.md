@@ -12326,7 +12326,96 @@ within a session) at the step-2 decision lock.
 
 ---
 
-*Document version: 1.53 — May 2026*
+## CS-80 — Per-axis label font customization (twin-axis inherit) (Phase 4bb)
+
+The first realisation of the long-standing USER-FLAGGED "per-axis
+font" request (Phase 4ay friction #4 → 4az #7 → 4ba #6). Each
+axis's LABEL font becomes independently customizable, with the
+secondary/twin axes defaulting to inherit the primary axis's font
+("for the wavelength axis tied to an energy axis … the font …
+should by default be the same as the other axis"). Composes with —
+does NOT replace — the CS-79 global `font_scale`: the resolved
+per-axis point size is multiplied by the global scale at render
+time. Tier-1 scope (user-chosen at the decision lock): the axis
+LABEL only (size + bold + italic); title, tick labels and the
+legend stay global.
+
+### Schema (additive, CS-46-clean)
+
+* Four keys per axis role under `_FACTORY_DEFAULTS["axes"][role]`
+  (`_AXIS_KEYS` registry 11 → 15, uniform across all five roles —
+  the parity lock): `axis_label_font_inherit` (BooleanVar),
+  `axis_label_font_size` (StringVar-style point size, mirroring the
+  CS-79 readonly-Spinbox idiom), `axis_label_font_bold`,
+  `axis_label_font_italic`.
+* `_AXIS_LABEL_FONT_INHERIT_PARENT = {secondary_x: primary_x,
+  secondary_y: primary_y, tertiary_y: primary_y}` — the twin-axis
+  inherit graph. The two primary roles are roots (absent from the
+  map); they default `inherit=False` and own no inherit widget.
+* Non-primary roles default `inherit=True`; size/bold/italic
+  default 10/True/False (the values surfaced when inherit is
+  unchecked). **PTMG_FORMAT_VERSION unchanged**; `migrate_plot_config`
+  auto-fills the keys (it already loops the factory axes keys).
+
+### Resolver + renderer (`uvvis_tab.py`)
+
+* `_resolve_axis_label_font(cfg, role) -> (size_pt, bold, italic)` —
+  walks the inherit chain. **Primary roles bridge to the
+  long-standing Global-tab flat font keys** (`xlabel_font_size` /
+  `xlabel_font_bold` for primary_x, `ylabel_*` for primary_y) so the
+  Global font controls stay authoritative and the existing
+  global-font tests pass untouched. Non-primary roles inherit their
+  parent or, when opted out, read their own per-axis keys. Returns
+  the RAW (pre-scale) size; defensive against sparse/legacy configs.
+* `_coerce_font_pt(value, fallback)` — tolerant string/float/floor
+  coercion of the StringVar-stored size.
+* `_axis_label_font_kwargs(cfg, role)` — composes the resolved size
+  with `accessibility.scale_font_size` (the CS-79 global multiplier,
+  identity at 1.0) and maps bold/italic to matplotlib
+  `fontweight`/`fontstyle`. Applied at every `set_xlabel` /
+  `set_ylabel` site (primary_x, primary_y override/custom, the
+  per-role Y loop, and the secondary X label).
+* **Behaviour change at defaults:** the secondary X (wavelength)
+  axis label was previously hardcoded `fontsize=9` / normal; it now
+  inherits the primary X axis (10 / bold) by twin-axis default — the
+  exact wavelength↔energy scenario the user described. Every other
+  role is byte-for-byte identity at scale 1.0.
+
+### UI (`plot_settings_dialog.py`)
+
+* `_build_axis_font_labelframe(parent, role)` — a "Font" LabelFrame
+  (singular; distinct from the Global tab's "Fonts" section) on the
+  three non-primary axis tabs only, packed after "Settings" in
+  `_build_axis_tab_shell`. An "Inherit font from {Primary X/Y}"
+  Checkbutton plus size (readonly `ttk.Spinbox` over
+  `_AXIS_LABEL_FONT_SIZE_VALUES`, 4–36) / Bold / Italic controls that
+  grey out while inherit is on. Vars route through the existing
+  `_make_axis_string_var` / `_make_axis_bool_var` registry, so
+  commit + live-preview + Reset/Factory-Reset refresh come for free.
+
+### Lock decisions (CS-80)
+
+* The schema keys, the inherit-parent graph, the
+  primary-bridges-to-Global resolver semantics, and the "Font frame
+  on non-primary tabs only" placement are locked. A future phase MAY
+  extend per-axis font control to the primary roots and/or add
+  family/style additively (USER-FLAGGED at the 4bb step-5: "should be
+  able to change as many font settings as is reasonable" — Phase 4bb
+  friction below).
+* Composition (per-axis points × global `font_scale`) is the locked
+  contract; the renderer routes EVERY axis label through
+  `_axis_label_font_kwargs`. Title / tick / legend stay global and
+  un-scaled (tier-1 boundary, user-confirmed).
+
+23 net new tests (7 in `TestPerAxisLabelFontSchemaPhase4bb` + 9 in
+`test_uvvis_tab.TestResolveAxisLabelFontPhase4bb` + 5 in
+`TestPerAxisFontLabelFramePhase4bb` + 2 in
+`TestPerAxisFontRenderPhase4bb`). 1716 tests green (1693 baseline +
+23 new).
+
+---
+
+*Document version: 1.54 — June 2026*
 *1.1: CS-13 implementation notes added in Phase 4a.*
 *1.2: CS-14 Plot Settings Dialog added in Phase 4b.*
 *1.3: CS-15 UV/Vis Baseline Correction + CS-04 implementation
@@ -13834,5 +13923,27 @@ tests in test_node_styles + source-level inventory
 sentinels in test_accessibility.TestPalettePhase4ayInventory).
 1620 tests, all green (1584 baseline + 36 new). Two code
 commits + bookkeeping.*
+*1.52: CS-78 added in Phase 4az. Third sub-batch of the CS-75
+Accessibility umbrella (sub-axis C — keyboard shortcuts).
+`accessibility` shortcut registry (`SHORTCUT_REGISTRY` /
+`ShortcutEntry` / `register_shortcut` / `bind_shortcut` /
+`_reset_shortcut_registry`) + four scan-tree bindings +
+`KEYBINDINGS.md` and its parity sentinel. See the CS-78 section.*
+*1.53: CS-79 added in Phase 4ba. Fourth and final sub-batch of the
+CS-75 Accessibility umbrella (sub-axis D — font-scale multiplier),
+closing the A–D ladder. `accessibility.scale_font_size` +
+`active_font_scale` / `set_active_font_scale` (live-reconfigures the
+nine Tk named fonts) + 126-literal routing + the "Display font
+scale" Accessibility-tab LabelFrame. See the CS-79 section.*
+*1.54: CS-80 added in Phase 4bb. Per-axis label font customization
+with twin-axis inherit defaulting. Four additive per-axis keys
+(`_AXIS_KEYS` 11 → 15) + `_AXIS_LABEL_FONT_INHERIT_PARENT` twin
+graph + `uvvis_tab._resolve_axis_label_font` / `_axis_label_font_kwargs`
+(per-axis points × the CS-79 global `font_scale`) + a "Font"
+LabelFrame on the three non-primary axis tabs. Primary roles bridge
+to the Global-tab xlabel/ylabel control. Secondary X label now
+inherits primary X by default (was hardcoded 9pt). Schema-additive;
+PTMG_FORMAT_VERSION unchanged. 23 net new tests; 1716 green
+(1693 baseline + 23 new). Four code/test commits + bookkeeping.*
 *To be updated as Open Questions are resolved and new components
 are specified.*
