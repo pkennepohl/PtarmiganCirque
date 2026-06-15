@@ -854,6 +854,11 @@ class TestPlotConfigDialogNotebookPhase4ai(unittest.TestCase):
     def test_axis_tabs_do_not_contain_section_label_frames(self):
         dlg = self.PlotConfigDialog(self.host, self.config)
         dlg.update_idletasks()
+        # CS-80 (Phase 4bb): the three non-primary tabs grow a per-axis
+        # "Font" LabelFrame (singular — distinct from the Global tab's
+        # "Fonts" section). The two primary roots keep only the shell's
+        # two placeholders.
+        global_sections = {"Fonts", "Appearance", "Legend", "Title and labels"}
         for key in ("primary_x", "secondary_x",
                     "primary_y", "secondary_y", "tertiary_y"):
             frame = dlg._tab_frames[key]
@@ -862,11 +867,16 @@ class TestPlotConfigDialogNotebookPhase4ai(unittest.TestCase):
                 for c in _all_descendants(frame)
                 if isinstance(c, tk.LabelFrame)
             }
-            # No "Fonts" / "Appearance" / "Legend" / "Title and labels"
-            # — only the per-axis shell's "Plots on this axis" and
-            # "Settings" placeholders.
+            # No Global section frames ever leak onto an axis tab.
             self.assertEqual(
-                titles, {"Plots on this axis", "Settings"},
+                titles & global_sections, set(),
+                f"axis tab {key!r} leaked a Global section: {titles}",
+            )
+            expected = {"Plots on this axis", "Settings"}
+            if key in self.psd._AXIS_LABEL_FONT_INHERIT_PARENT:
+                expected.add("Font")
+            self.assertEqual(
+                titles, expected,
                 f"axis tab {key!r} has unexpected LabelFrames: {titles}",
             )
 
@@ -6016,6 +6026,116 @@ class TestPerAxisLabelFontSchemaPhase4bb(unittest.TestCase):
         once = copy.deepcopy(cfg)
         self.psd.migrate_plot_config(cfg)
         self.assertEqual(cfg, once)
+
+
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestPerAxisFontLabelFramePhase4bb(unittest.TestCase):
+    """CS-80 (Phase 4bb) — per-axis "Font" LabelFrame on non-primary tabs.
+
+    The three non-primary axis tabs grow a Font LabelFrame with an
+    inherit checkbox + size / bold / italic controls. The two primary
+    roots get none (their label font is the Global-tab control). The
+    inherit toggle greys the per-axis controls while it is on.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import plot_settings_dialog
+        cls.psd = plot_settings_dialog
+        cls.PlotConfigDialog = plot_settings_dialog.PlotConfigDialog
+
+    def setUp(self):
+        self.psd._open_dialogs.clear()
+        self.psd._USER_DEFAULTS.clear()
+        self.host = tk.Frame(_root)
+        self.host.pack()
+        self.config: dict = {}
+        self.dlg = self.PlotConfigDialog(self.host, self.config)
+        self.dlg.update_idletasks()
+
+    def tearDown(self):
+        for dlg in list(self.psd._open_dialogs.values()):
+            try:
+                dlg.destroy()
+            except Exception:
+                pass
+        self.psd._open_dialogs.clear()
+        self.psd._USER_DEFAULTS.clear()
+        try:
+            self.dlg.destroy()
+        except Exception:
+            pass
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    def _font_labelframes(self):
+        return [
+            w for w in _all_descendants(self.dlg)
+            if isinstance(w, tk.LabelFrame) and w.cget("text") == "Font"
+        ]
+
+    def _size_spinbox(self, role: str):
+        size_var = self.dlg._axis_control_vars[(role, "axis_label_font_size")]
+        for w in _all_descendants(self.dlg):
+            if (
+                isinstance(w, ttk.Spinbox)
+                and str(w.cget("textvariable")) == str(size_var)
+            ):
+                return w
+        self.fail(f"no Font size Spinbox for role {role!r}")
+
+    def test_font_labelframe_on_nonprimary_only(self):
+        self.assertEqual(len(self._font_labelframes()), 3)
+        # Non-primary roles built per-axis font vars; primaries did not.
+        for role in ("secondary_x", "secondary_y", "tertiary_y"):
+            self.assertIn(
+                (role, "axis_label_font_inherit"),
+                self.dlg._axis_control_vars,
+            )
+        for role in ("primary_x", "primary_y"):
+            self.assertNotIn(
+                (role, "axis_label_font_inherit"),
+                self.dlg._axis_control_vars,
+            )
+
+    def test_inherit_checkbox_defaults_on(self):
+        for role in ("secondary_x", "secondary_y", "tertiary_y"):
+            var = self.dlg._axis_control_vars[(role, "axis_label_font_inherit")]
+            self.assertTrue(bool(var.get()), f"{role} inherit should default on")
+
+    def test_inherit_on_disables_controls(self):
+        spin = self._size_spinbox("secondary_x")
+        # Default inherit=True -> the Spinbox is disabled.
+        self.assertEqual(str(spin.cget("state")), "disabled")
+
+    def test_inherit_off_enables_controls(self):
+        var = self.dlg._axis_control_vars[("secondary_x", "axis_label_font_inherit")]
+        var.set(False)
+        self.dlg.update_idletasks()
+        spin = self._size_spinbox("secondary_x")
+        self.assertEqual(str(spin.cget("state")), "readonly")
+        # Re-checking inherit greys it back out.
+        var.set(True)
+        self.dlg.update_idletasks()
+        self.assertEqual(str(spin.cget("state")), "disabled")
+
+    def test_editing_font_commits_to_working_copy(self):
+        self.dlg._axis_control_vars[
+            ("secondary_x", "axis_label_font_inherit")
+        ].set(False)
+        self.dlg._axis_control_vars[
+            ("secondary_x", "axis_label_font_size")
+        ].set("20")
+        self.dlg._axis_control_vars[
+            ("secondary_x", "axis_label_font_italic")
+        ].set(True)
+        self.dlg.update_idletasks()
+        slot = self.dlg._working["axes"]["secondary_x"]
+        self.assertIs(slot["axis_label_font_inherit"], False)
+        self.assertEqual(slot["axis_label_font_size"], "20")
+        self.assertIs(slot["axis_label_font_italic"], True)
 
 
 if __name__ == "__main__":

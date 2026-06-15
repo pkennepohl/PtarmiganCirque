@@ -8662,6 +8662,102 @@ class TestResolveAxisLabelFontPhase4bb(unittest.TestCase):
             (10, True, False),
         )
 
+    def test_kwargs_compose_global_scale_and_map_styles(self):
+        import accessibility
+        try:
+            accessibility.set_active_font_scale(2.0)
+            cfg = self._factory_cfg()
+            cfg["xlabel_font_size"] = 12
+            cfg["xlabel_font_bold"] = False
+            kw = self.uv._axis_label_font_kwargs(cfg, "primary_x")
+            # 12 * 2.0 = 24; bold False -> "normal"; primary italic False.
+            self.assertEqual(kw["fontsize"], 24)
+            self.assertEqual(kw["fontweight"], "normal")
+            self.assertEqual(kw["fontstyle"], "normal")
+        finally:
+            accessibility._reset_font_scale()
+
+
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestPerAxisFontRenderPhase4bb(unittest.TestCase):
+    """CS-80 (Phase 4bb) — per-axis label font reaches matplotlib.
+
+    End-to-end: a real UVVisTab redraw routes the primary X label
+    through ``_axis_label_font_kwargs`` (identity at the default global
+    scale) and composes the CS-79 ``font_scale`` multiplier. Every test
+    resets the module-level font scale on tearDown so a non-1.0 value
+    cannot bleed into the named-font metrics other tests measure
+    (Phase 4ba friction #3 discipline).
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from uvvis_tab import UVVisTab
+        import plot_settings_dialog
+        import accessibility
+        cls.UVVisTab = UVVisTab
+        cls.psd = plot_settings_dialog
+        cls.accessibility = accessibility
+
+    def setUp(self):
+        self.psd._open_dialogs.clear()
+        self.psd._USER_DEFAULTS.clear()
+        self.host = tk.Frame(_root)
+        self.host.pack()
+        self.graph = ProjectGraph()
+        self.tab = self.UVVisTab(self.host, graph=self.graph)
+
+    def tearDown(self):
+        # MANDATORY: drop any non-1.0 font scale before the next test.
+        self.accessibility._reset_font_scale()
+        for dlg in list(self.psd._open_dialogs.values()):
+            try:
+                dlg.destroy()
+            except Exception:
+                pass
+        self.psd._open_dialogs.clear()
+        self.psd._USER_DEFAULTS.clear()
+        try:
+            self.tab.destroy()
+        except Exception:
+            pass
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    def _add_uvvis(self, nid: str = "u1") -> None:
+        wl = np.linspace(300, 600, 10)
+        absorb = np.linspace(0.1, 0.9, 10)
+        self.graph.add_node(DataNode(
+            id=nid,
+            type=NodeType.UVVIS,
+            arrays={"wavelength_nm": wl, "absorbance": absorb},
+            metadata={"source_file": "synthetic"},
+            label=nid,
+            state=NodeState.COMMITTED,
+            style={"color": "#1f77b4", "linestyle": "solid",
+                   "linewidth": 1.5, "alpha": 0.9, "visible": True,
+                   "in_legend": True, "fill": False, "fill_alpha": 0.08},
+        ))
+
+    def test_primary_x_label_identity_at_default_scale(self):
+        self._add_uvvis()
+        self.tab._redraw()
+        # Factory default xlabel size 10, scale 1.0 -> 10 (no regression).
+        self.assertAlmostEqual(
+            self.tab._ax.xaxis.label.get_fontsize(), 10.0,
+        )
+
+    def test_global_font_scale_doubles_primary_x_label(self):
+        self._add_uvvis()
+        self.accessibility.set_active_font_scale(2.0)
+        self.tab._redraw()
+        # 10 * 2.0 = 20: the global multiplier composes at the renderer.
+        self.assertAlmostEqual(
+            self.tab._ax.xaxis.label.get_fontsize(), 20.0,
+        )
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
