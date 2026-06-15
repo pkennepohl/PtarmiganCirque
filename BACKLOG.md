@@ -5411,8 +5411,15 @@ until the relevant subsequent Phase 4 session.**
    discussion. No register entry yet — surface as a candidate
    in the next session's intent pick.
 
-4. 🟡 **USER-FLAGGED — Per-axis font customization with
+4. 🟢 **USER-FLAGGED — Per-axis font customization with
    twin-axis defaulting (Phase 4ay step-5 elicitation).**
+   ✅ **Resolved in Phase 4bb (CS-80).** The architecture
+   proposal below was realised almost verbatim (compose with
+   sub-axis D; Font LabelFrame + inherit toggle; renderer
+   resolves at `set_xlabel`/`set_ylabel`). Tier-1 scope chosen
+   at the 4bb decision lock: axis LABEL size+bold+italic; title
+   and tick labels stayed global; font family deferred. Retained
+   here for the realised-design lineage.
    User: "font size should be a parameter that can be
    changed for each axis independently — for the wavelength
    axis tied to an energy axis, the font, font size (and
@@ -5643,15 +5650,13 @@ relevant subsequent Phase 4 session.**
    — surface as a candidate in the next session's intent
    pick.
 
-7. 🟡 **USER-FLAGGED — Per-axis font customization with
+7. 🟢 ~~**USER-FLAGGED — Per-axis font customization with
    twin-axis defaulting (continued from Phase 4ay friction
-   #4).** No work in Phase 4az; still open. Cross-cuts
-   `_FACTORY_DEFAULTS["axes"]` schema + per-axis tab Font
-   LabelFrame + renderer at `set_xlabel` / `set_ylabel` /
-   `tick_params` sites. Likely composes with (not replaces)
-   sub-axis D's global font-scale — per-axis size in points
-   × global scale multiplier. Better as a 4bb+ slot after
-   sub-axis D ships. Reasoning level: **high**.
+   #4).** No work in Phase 4az; still open.~~ ✅ **Resolved in
+   Phase 4bb (CS-80)** — see the Phase 4ba friction #6
+   resolution breadcrumb. Composed with sub-axis D's global
+   font-scale exactly as anticipated (per-axis points ×
+   global multiplier).
 
 8. 🟢 **Out-of-scope Toplevel inventory carry-forward
    (continued from Phase 4ay friction #6 / Phase 4ax
@@ -5789,14 +5794,21 @@ the relevant subsequent Phase 4 session.**
    4bb candidate. No register entry yet — surface at the next intent
    pick.
 
-6. 🟡 **USER-FLAGGED — Per-axis font customization with twin-axis
+6. 🟢 ~~**USER-FLAGGED — Per-axis font customization with twin-axis
    defaulting (continued from Phase 4az friction #7 / Phase 4ay #4).**
    No work in Phase 4ba; still open — but now CLEANLY COMPOSABLE with
    the shipped sub-axis D: a per-axis font size in points × the global
    `font_scale` multiplier. Cross-cuts `_FACTORY_DEFAULTS["axes"]`
    schema + per-axis tab Font LabelFrame + renderer at `set_xlabel` /
    `set_ylabel` / `tick_params`. Reasoning level: **high**. Good 4bb+
-   slot now that the global scale exists.
+   slot now that the global scale exists.~~ ✅ **Resolved in Phase 4bb
+   (CS-80)** — tier-1 slice shipped: per-axis axis-LABEL size + bold +
+   italic with twin-axis inherit defaulting, composing per-axis points
+   × the global `font_scale`. Non-primary tabs grew a "Font" LabelFrame;
+   primary roles bridge to the Global-tab xlabel/ylabel control;
+   secondary X now inherits primary X by default. Title/tick/legend
+   stayed global (tier-1 boundary). Follow-on (extend to primaries +
+   family/style) carried forward as Phase 4bb friction #1 below.
 
 7. 🟡 **USER-FLAGGED — Escape-dismiss expansion follow-on (continued
    from Phase 4az friction #8 / Phase 4ay #6).** No work in Phase 4ba.
@@ -5829,6 +5841,104 @@ the relevant subsequent Phase 4 session.**
     style presets (cross-ref Phase 4aj; **high** — user has reference
     Jupyter notebook code, paths TBD at session start). All three are
     register-table entries; none touched in Phase 4ba.
+
+### Friction points carried forward from Phase 4bb
+
+These are concrete obstacles the next Phase 4 session will hit.
+Phase 4bb landed CS-80 — per-axis label-font customization with
+twin-axis inherit defaulting, the first realisation of the
+long-standing USER-FLAGGED per-axis font request (Phase 4ay #4 →
+4az #7 → 4ba #6, now struck through above). Tier-1 scope (axis
+LABEL size + bold + italic, non-primary tabs, composing per-axis
+points × the CS-79 global `font_scale`). Four code/test commits +
+this bookkeeping. 1716 tests, all green (1693 baseline + 23 net
+new). PTMG_FORMAT_VERSION unchanged — additive under the existing
+`axes[role]` sub-dict. **Do not fix until the relevant subsequent
+Phase 4 session.**
+
+1. 🟡 **USER-FLAGGED — extend per-axis font control to the primary
+   axes + "as many font settings as is reasonable" (Phase 4bb
+   step-5).** When asked whether primaries should get a Font frame
+   too, the user said font settings should be as richly controllable
+   as reasonable. The shipped tier-1 slice gives the three
+   non-primary tabs a Font LabelFrame; the two PRIMARY roles bridge
+   to the Global-tab `xlabel_font_size` / `ylabel_font_size` control
+   and so can change size + bold but NOT italic, and have no per-axis
+   Font frame. A follow-on (strong Phase 4bc candidate) would: (a)
+   give primary_x / primary_y their own Font LabelFrame (activating
+   their currently-inert per-axis font keys — see #3 — and likely
+   sharing a Tk var with the Global control à la
+   `_build_section_axis_labels`); (b) add the deferred font FAMILY
+   and remaining style controls (the original 4ay proposal's
+   `font_family` / `font_weight` / `font_style`). Family needs a
+   matplotlib-availability picker + graceful fallback. Cross-cuts
+   the same surfaces as CS-80. Reasoning level: **high**.
+
+2. 🟡 **Plot title / tick labels / legend do not honour the global
+   `font_scale` (Claude-surfaced, CS-80 tier-1 boundary).** CS-80
+   routes every axis LABEL through `scale_font_size`, so under a
+   non-default global scale the axis labels grow but the title, tick
+   labels and legend (still raw `cfg.get(...)` sizes) do not — a
+   half-scaled plot. Deliberately out of tier-1 scope (user-confirmed
+   title/tick/legend stay global). A future phase could wrap those
+   three render sites in `scale_font_size` too (identity at 1.0, so
+   no regression) for whole-plot scale consistency — OR keep the plot
+   renderer deliberately independent of the UI accessibility zoom (an
+   export-fidelity argument). Decide at a future step-5. Reasoning
+   level: **low-medium**.
+
+3. 🟢 **Primary roles carry inert per-axis font keys (Claude-surfaced,
+   CS-80 artifact).** The `_AXIS_KEYS` parity lock forces all five
+   roles to carry `axis_label_font_inherit` / `_size` / `_bold` /
+   `_italic`, but the resolver bridges the two primary roles to the
+   flat Global font keys, so their per-axis font keys are never read
+   or edited (no widget builds them). Harmless (defaults agree with
+   the Global control at 10/bold), and they are exactly the slots a
+   "extend to primaries" phase (#1) would activate. No bookkeeping
+   action; flagged so the next implementer knows the schema is
+   already in place.
+
+4. 🟢 **Secondary-X tick label still hardcoded 8pt (Claude-surfaced,
+   CS-80 scope boundary).** CS-80 lifted the secondary-X *label* font
+   from hardcoded 9pt into twin-axis inheritance, but the
+   secondary-X *tick* label size stays hardcoded at 8pt (ticks are
+   out of the label-only tier-1 scope). A per-axis tick-size sub-batch
+   (the tier-2 option the user declined this round) would absorb it.
+   No register entry.
+
+5. 🟡 **USER-FLAGGED — `[engine engine_version]` provenance bracket
+   display when uniform across rows (continued from Phase 4ba friction
+   #5 / 4az #6 / 4ay #3).** No work in Phase 4bb; still open. (a)
+   suppress the bracket when uniform across visible rows; (b)
+   version-bump policy. Two render sites in `scan_tree_widget.py`
+   (~lines 2081 + 2099) + a uniform-detection helper. Reasoning level:
+   **low-medium**. Strong 4bc candidate.
+
+6. 🟡 **USER-FLAGGED — Escape-dismiss expansion follow-on (continued
+   from Phase 4ba friction #7 / 4az #8 / 4ay #6).** No work in Phase
+   4bb. Remaining CS-76 Escape-recipe sites: `plot_widget.py` 7,
+   `xas_analysis_tab.py` 2, `ledge_normalizer.py` 1 (`nbo_viewer_app.py`
+   13 are a sibling app, out of scope). ~10 wirings + 1 source-inventory
+   sentinel. Reasoning level: **low-medium**.
+
+7. 🟢 **Phase 4av carry-forward items #2 / #3 / #4 still open
+   (continued from Phase 4ba friction #8).** (#2) "Reset" button label
+   semantics; (#3) `_set_universal_disabled` root readonly-Combobox
+   latent bug; (#4) DISCARDED glyph distinguishability. A low-reasoning
+   "Phase 4av polish follow-through" mini-phase closes the queue.
+
+8. 🟢 **`_toggle_row_selection` focus_set retrofit + `event_generate`
+   test caveat (continued from Phase 4ba friction #9).** Both still
+   open. The CS-80 per-axis Font tests likewise assert via direct
+   var.set + state inspection (no synthetic key events) for the same
+   determinism reason. No bookkeeping action.
+
+9. 🟡 **USER-FLAGGED long-running items continue.** Axis nomenclature
+   rename (**extra-high**); Rich-text / mathtext axis labels
+   (**medium** — note: now interacts with CS-80, since a rich-text
+   label and a per-axis font both feed `set_xlabel`); External-output
+   plot style presets (**high** — user has reference Jupyter notebook,
+   paths TBD). All three register-table entries; none touched in 4bb.
 
 ---
 
@@ -6045,7 +6155,7 @@ the resolving phase + commit SHA appended to the row.
 
 ---
 
-*Document version: 1.51 — May 2026*
+*Document version: 1.52 — June 2026*
 *1.1: Known Bugs register added 2026-04-27 after Phase 4b manual testing.*
 *1.2: Phase 4c — baseline correction lands; B-001 / B-003 / B-004
 resolved; Phase 4c friction points logged.*
@@ -7117,4 +7227,6 @@ registration (`f1868f5`) + this bookkeeping.*
 *1.48: Phase 4aw scope pass — first scope-only phase in the Phase 4 series. Decomposed the canonical Accessibility features umbrella row (USER-FLAGGED Phase 4al) into seven sub-axis rows (A Escape-dismiss audit, B colour-blind palette opt-in, C keyboard shortcuts first batch, D font-scale multiplier — all four implementable; E screen-reader, F high-contrast, G dyslexia font — all three deferred). Subsumed the Phase 4af keyboard shortcuts whole-interface evaluation pass row into sub-axis C (inline annotation kept on the original row). Walked the Accessibility umbrella friction chain across phases 4al → 4av — every prior cross-ref gained a Phase 4aw scope-lock annotation; Phase 4av friction #1 (Ctrl+↑/↓ discoverability) folded into Phase 4ax sub-axis A bundle. Two doc commits (COMPONENTS CS-75 + BACKLOG sub-axis decomposition) + this bookkeeping. 1567 tests, all green — zero deltas vs Phase 4av baseline. PTMG_FORMAT_VERSION unchanged.*
 *1.49: Phase 4ax — first sub-batch of the CS-75 Accessibility umbrella (sub-axis A — Escape-dismiss audit). New `accessibility.py` module shell hosts `bind_escape_to_close(toplevel, handler)` (returns the bound callback for test determinism) + `attach_shortcut_tooltip(widget, text)` (thin delegate over CS-42 `Tooltip`); CS-76 added in COMPONENTS.md. Escape recipe wired into ten Toplevels: three primary dialogs (NodeStyles / PlotConfig / Style — all routing through `_on_close_requested`) plus seven binah.py app dialogs (FEFF Setup / Load Spectrum / SXRMB / BioXAS / Athena / No-Data / Impl Drift — all binding to `win.destroy`); user-elicited at step 5 — the binah.py expansion grew CS-75 D3's audit scope beyond the original three-primary-dialogs enumeration. Phase 4av friction #1 (Ctrl+↑/↓ discoverability) closed via retroactive `attach_shortcut_tooltip` on the NodeStylesDialog Combobox. Sub-axis A canonical register row marked ✅. Phase 4aw friction items 1 / 6 / 7 / 8 struck through (sub-axis A canonical entry / bundling-risk / D6 retroactive-only-in-4ax / module shell lock drift — all resolved); Phase 4av friction #1 upgraded from "Folded into" to ✅ Resolved. Four code commits (b586982 / f7c41f1 / 9c7b177 / 2e8f97a) + this bookkeeping. 1584 tests, all green (1567 baseline + 17 net new: 10 unit in test_accessibility including a source-level binah.py inventory sentinel; 7 integration across the three primary dialog tests; 1 Tooltip-presence sentinel in TestNodeStylesDialogKeyboardNavPhase4av). PTMG_FORMAT_VERSION unchanged — no schema keys added.*
 *1.50: Phase 4ay — second sub-batch of the CS-75 Accessibility umbrella (sub-axis B — Colour-blind palette opt-in). CS-77 added in COMPONENTS.md. New `node_styles.SPECTRUM_PALETTE_NAMES` tuple + module-level `_active_palette_name` + `active_palette() -> tuple[str, ...]` getter + `set_active_palette(name)` setter; new `WONG_2011_PALETTE` (8-colour deuteranopia-safe). `pick_default_color` rewritten to consult `active_palette()` internally — CS-21 D3 three-caller list becomes palette-aware "for free"; `SPECTRUM_PALETTE` constant retained for backwards compatibility (additive relaxation). New "Accessibility" Notebook tab inserted second in `PlotConfigDialog` (after "Global", before the axis tabs) — first surface of the CS-75 D1 lock. Palette `ttk.Combobox` (readonly) with commit-on-click semantics (CS-75 D2 / CS-68 live-preview): flip writes through `_working["accessibility"]["palette"]`, calls `node_styles.set_active_palette`, marks the Accessibility tab dirty (CS-60), and fires `_apply_changes_live`. `_FACTORY_DEFAULTS` / `_UNIVERSAL_DEFAULTS` schema-additive with `accessibility: {"palette": "default"}`; `migrate_plot_config` fills the slot on legacy load. `binah.py` _USER_DEFAULTS save/load extends to round-trip the sub-dict via CS-46's `manifest["plot_defaults"]` slot — PTMG_FORMAT_VERSION unchanged (additive). Sub-axis B canonical register row marked ✅. Phase 4ax friction #1 (sub-axis B canonical breadcrumb) struck through ✅ Resolved-in-Phase-4ay; Phase 4ax friction #11 (D3 lock relaxation precedent) struck through ✅ Reinforced-in-Phase-4ay (CS-21 D3 additive relaxation + CS-75 D1 first surface). Two code commits (`0f29320` / `7bd2b2c`) + this bookkeeping. **Claude-surfaced fix:** intermittent `ttk.Combobox` readonly initial-value clear under full-suite Tk state — defensive `cb.set(current_label)` immediately after construction (carried forward as Phase 4ay friction #5). **USER-FLAGGED at step 5:** two new carry-forward items — (a) `[engine engine_version]` provenance bracket display when uniform across rows (Phase 4ay friction #3); (b) per-axis font customization with twin-axis defaulting (Phase 4ay friction #4). 1620 tests, all green (1584 baseline + 36 net new: 16 in TestPlotConfigDialogAccessibilityTabPhase4ay; 4 round-trip tests in test_persistence_phase_a; module-surface tests in test_node_styles; source-level inventory sentinels in test_accessibility.TestPalettePhase4ayInventory). PTMG_FORMAT_VERSION unchanged — schema-additive only.*
+*1.51: Phase 4ba — fourth and final sub-batch of the CS-75 Accessibility umbrella (sub-axis D — font-scale multiplier), closing the A–D ladder. CS-79 added in COMPONENTS.md. New `accessibility.scale_font_size(base_pt)` (half-up, floored-at-1, identity-at-1.0) every explicit `font=("", N, ...)` literal routes through + `active_font_scale()` / `set_active_font_scale(value)` (coerces via `_coerce_font_scale` [0.5,3.0] clamp, THEN live-reconfigures the nine Tk named fonts from lazily-captured base sizes) + `_reset_font_scale()` test reset. 126 literals across plot_settings_dialog / node_styles_dialog / style_dialog / binah routed through `scale_font_size`. Schema-additive `accessibility.font_scale = 1.0`; "Display font scale" readonly ttk.Spinbox as the THIRD Accessibility-tab LabelFrame (palette → shortcuts → font scale). Four code/test commits + bookkeeping; merge `cc7c7dc`. 1693 tests, all green (1662 baseline + 31 net new). PTMG_FORMAT_VERSION unchanged.*
+*1.52: Phase 4bb — per-axis label font customization with twin-axis inherit defaulting (CS-80 in COMPONENTS.md), the first realisation of the long-standing USER-FLAGGED per-axis font request (Phase 4ay #4 → 4az #7 → 4ba #6, struck through above). Four additive per-axis keys (`_AXIS_KEYS` 11 → 15, uniform across all five roles) — `axis_label_font_inherit` / `_size` / `_bold` / `_italic` — + `_AXIS_LABEL_FONT_INHERIT_PARENT` twin graph (secondary_x→primary_x, secondary_y/tertiary_y→primary_y). `uvvis_tab._resolve_axis_label_font` (primary roles bridge to the Global xlabel/ylabel flat keys; non-primary inherit-or-own) + `_axis_label_font_kwargs` composing per-axis points × the CS-79 global `font_scale` (`scale_font_size`, identity at 1.0) at every `set_xlabel` / `set_ylabel` site. New "Font" LabelFrame (inherit checkbox + size/bold/italic, greyed while inheriting) on the three non-primary axis tabs only. Secondary X label now inherits primary X (was hardcoded 9pt). Tier-1 scope (axis label only; title/tick/legend stay global) chosen at the 4bb decision lock. Four code/test commits + bookkeeping. 1716 tests, all green (1693 baseline + 23 net new: 7 schema + 9 resolver + 5 LabelFrame + 2 render). PTMG_FORMAT_VERSION unchanged — additive under `axes[role]`. **USER-FLAGGED at step 5:** extend per-axis font to the primary axes + "as many font settings as is reasonable" (Phase 4bb friction #1).*
 *Supersedes: BACKLOG.md (original)*
