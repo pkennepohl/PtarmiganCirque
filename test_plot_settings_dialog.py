@@ -1790,6 +1790,7 @@ class TestPlotConfigDialogPerAxisSchemaPhase4ak(unittest.TestCase):
         # wavelength axis fix).
         # CS-80 (Phase 4bb) grew it from 11 → 15 with the per-axis label
         # font keys (inherit toggle + size + bold + italic).
+        # CS-81 (Phase 4bc) grew it from 15 → 16 with ``axis_label_font_family``.
         self.assertEqual(
             tuple(self.psd._AXIS_KEYS),
             ("tick_direction", "axis_label_override",
@@ -1797,7 +1798,8 @@ class TestPlotConfigDialogPerAxisSchemaPhase4ak(unittest.TestCase):
              "tick_major", "tick_minor", "grid_show", "axis_color",
              "custom_ticks",
              "axis_label_font_inherit", "axis_label_font_size",
-             "axis_label_font_bold", "axis_label_font_italic"),
+             "axis_label_font_bold", "axis_label_font_italic",
+             "axis_label_font_family"),
         )
         # Every per-axis role's sub-dict carries exactly these keys.
         for role in self._AXIS_TAB_KEYS:
@@ -5963,10 +5965,13 @@ class TestPerAxisLabelFontSchemaPhase4bb(unittest.TestCase):
         "axis_label_font_bold", "axis_label_font_italic",
     )
 
-    def test_axis_keys_registry_length_is_fifteen(self):
-        self.assertEqual(len(self.psd._AXIS_KEYS), 15)
+    def test_axis_keys_registry_length(self):
+        # CS-80 grew the registry to 15; CS-81 (Phase 4bc) appended
+        # ``axis_label_font_family`` for 16.
+        self.assertEqual(len(self.psd._AXIS_KEYS), 16)
         for k in self._FONT_KEYS:
             self.assertIn(k, self.psd._AXIS_KEYS)
+        self.assertIn("axis_label_font_family", self.psd._AXIS_KEYS)
 
     def test_every_role_carries_the_font_keys_with_parity(self):
         for role in self._AXIS_TAB_KEYS:
@@ -6026,6 +6031,76 @@ class TestPerAxisLabelFontSchemaPhase4bb(unittest.TestCase):
         once = copy.deepcopy(cfg)
         self.psd.migrate_plot_config(cfg)
         self.assertEqual(cfg, once)
+
+
+class TestPerAxisLabelFontFamilySchemaPhase4bc(unittest.TestCase):
+    """CS-81 (Phase 4bc) — per-axis label-font FAMILY schema growth.
+
+    One additive key per role (registry 15 -> 16):
+    ``axis_label_font_family``. Uniform across all five roles (the
+    ``_AXIS_KEYS`` parity lock); factory default is the ``"(default)"``
+    sentinel meaning "no fontfamily override" (identity render). Pure
+    schema / module assertions — no Tk display needed.
+    """
+
+    _AXIS_TAB_KEYS = (
+        "primary_x", "secondary_x", "primary_y", "secondary_y", "tertiary_y",
+    )
+
+    @classmethod
+    def setUpClass(cls):
+        import plot_settings_dialog
+        cls.psd = plot_settings_dialog
+
+    def test_family_key_in_registry(self):
+        self.assertIn("axis_label_font_family", self.psd._AXIS_KEYS)
+        self.assertEqual(len(self.psd._AXIS_KEYS), 16)
+
+    def test_every_role_carries_family_default_sentinel(self):
+        for role in self._AXIS_TAB_KEYS:
+            slot = self.psd._FACTORY_DEFAULTS["axes"][role]
+            self.assertIn("axis_label_font_family", slot)
+            self.assertEqual(
+                slot["axis_label_font_family"],
+                self.psd._AXIS_LABEL_FONT_FAMILY_DEFAULT,
+            )
+
+    def test_sentinel_value_is_default_literal(self):
+        # Drift guard: the constant must match the literal stored in the
+        # factory schema so the resolver's "no override" check is correct.
+        self.assertEqual(self.psd._AXIS_LABEL_FONT_FAMILY_DEFAULT, "(default)")
+
+    def test_primary_flat_font_key_bridge_map(self):
+        self.assertEqual(
+            self.psd._PRIMARY_AXIS_FLAT_FONT_KEYS,
+            {"primary_x": ("xlabel_font_size", "xlabel_font_bold"),
+             "primary_y": ("ylabel_font_size", "ylabel_font_bold")},
+        )
+
+    def test_available_font_families_returns_sorted_unique_tuple(self):
+        fams = self.psd.available_font_families()
+        self.assertIsInstance(fams, tuple)
+        # Sorted + de-duplicated (set -> sorted tuple).
+        self.assertEqual(list(fams), sorted(set(fams)))
+        # The sentinel is NOT a real family name.
+        self.assertNotIn(
+            self.psd._AXIS_LABEL_FONT_FAMILY_DEFAULT, fams,
+        )
+
+    def test_available_font_families_is_cached(self):
+        self.assertIs(
+            self.psd.available_font_families(),
+            self.psd.available_font_families(),
+        )
+
+    def test_migrate_fills_family_key_on_sparse_config(self):
+        cfg = {"axes": {"primary_x": {}}}
+        self.psd.migrate_plot_config(cfg)
+        slot = cfg["axes"]["primary_x"]
+        self.assertEqual(
+            slot["axis_label_font_family"],
+            self.psd._AXIS_LABEL_FONT_FAMILY_DEFAULT,
+        )
 
 
 @unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
