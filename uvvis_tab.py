@@ -393,33 +393,22 @@ def _coerce_font_pt(value: Any, fallback: int) -> int:
     return pt if pt >= 1 else int(fallback)
 
 
-def _resolve_axis_label_font(
-    cfg: Mapping[str, Any], tab_role: str,
-) -> "Tuple[int, bool, bool]":
-    """Resolve ``(size_pt, bold, italic)`` for an axis role's LABEL.
+def _resolve_label_font_role(cfg: Mapping[str, Any], tab_role: str) -> str:
+    """Walk the twin-axis label-font inherit chain to the owning role.
 
-    CS-80 (Phase 4bb): per-axis label-font customization with twin-axis
-    inherit defaulting. Returns the RAW point size (pre-scale); the
-    caller composes it with the CS-79 global ``font_scale`` multiplier
-    via :func:`scale_font_size` at the ``set_xlabel`` / ``set_ylabel``
-    site (identity at scale 1.0).
+    CS-80 (Phase 4bb) / CS-81 (Phase 4bc): shared by both
+    :func:`_resolve_axis_label_font` and :func:`_resolve_axis_label_family`
+    so the size/bold/italic resolution and the family resolution follow
+    one identical inheritance walk (a non-primary role that inherits its
+    font inherits its family too). Returns the role whose own font slots
+    own the resolved value: a primary root (``primary_x`` / ``primary_y``)
+    when the chain bubbles up to one, or a non-primary role that has opted
+    out of inheritance (``axis_label_font_inherit`` False).
 
-    Resolution:
-
-    * The two primary roles bridge to the long-standing Global-tab font
-      keys — ``xlabel_font_size`` / ``xlabel_font_bold`` for
-      ``primary_x``, ``ylabel_font_size`` / ``ylabel_font_bold`` for
-      ``primary_y`` — so the Global font controls stay authoritative.
-      Italic is always False for the primaries (no Global italic
-      control).
-    * The three non-primary roles follow
-      :data:`plot_settings_dialog._AXIS_LABEL_FONT_INHERIT_PARENT`:
-      when ``axis_label_font_inherit`` is True (the factory default)
-      they resolve to their parent's font; when False they use their
-      own per-axis ``axis_label_font_size`` / ``_bold`` / ``_italic``.
-
-    Defensive against sparse / legacy configs (missing ``axes`` sub-dict
-    or keys) — every read falls through to the factory default.
+    The ``seen`` guard is purely defensive — the inherit map is acyclic
+    by construction. Defensive against sparse / legacy configs (missing
+    ``axes`` sub-dict or keys) — every read falls through to the factory
+    default.
     """
     factory_axes = plot_settings_dialog._FACTORY_DEFAULTS["axes"]
     inherit_parent = plot_settings_dialog._AXIS_LABEL_FONT_INHERIT_PARENT
@@ -427,8 +416,6 @@ def _resolve_axis_label_font(
     axes = cfg.get("axes")
     axes = axes if isinstance(axes, dict) else {}
 
-    # Walk the inherit chain to the resolving role. The ``seen`` guard is
-    # purely defensive — the map is acyclic by construction.
     seen: set[str] = set()
     role = tab_role
     while role in inherit_parent and role not in seen:
@@ -442,19 +429,59 @@ def _resolve_axis_label_font(
         if not bool(inherit):
             break
         role = inherit_parent[role]
+    return role
 
-    # Primary roles bridge to the Global-tab flat font keys.
-    if role == "primary_x":
+
+def _resolve_axis_label_font(
+    cfg: Mapping[str, Any], tab_role: str,
+) -> "Tuple[int, bool, bool]":
+    """Resolve ``(size_pt, bold, italic)`` for an axis role's LABEL.
+
+    CS-80 (Phase 4bb): per-axis label-font customization with twin-axis
+    inherit defaulting. Returns the RAW point size (pre-scale); the
+    caller composes it with the CS-79 global ``font_scale`` multiplier
+    via :func:`scale_font_size` at the ``set_xlabel`` / ``set_ylabel``
+    site (identity at scale 1.0).
+
+    Resolution:
+
+    * The two primary roles bridge their SIZE + BOLD to the long-standing
+      Global-tab font keys — ``xlabel_font_size`` / ``xlabel_font_bold``
+      for ``primary_x``, ``ylabel_font_size`` / ``ylabel_font_bold`` for
+      ``primary_y`` — so the Global font controls stay authoritative.
+      CS-81 (Phase 4bc): the primaries' ITALIC now activates their
+      formerly-inert per-axis ``axis_label_font_italic`` slot (the new
+      primary "Font" LabelFrame's Italic checkbox), instead of the
+      pre-4bc hard-coded False.
+    * The three non-primary roles follow
+      :data:`plot_settings_dialog._AXIS_LABEL_FONT_INHERIT_PARENT`:
+      when ``axis_label_font_inherit`` is True (the factory default)
+      they resolve to their parent's font; when False they use their
+      own per-axis ``axis_label_font_size`` / ``_bold`` / ``_italic``.
+
+    Defensive against sparse / legacy configs (missing ``axes`` sub-dict
+    or keys) — every read falls through to the factory default.
+    """
+    factory_axes = plot_settings_dialog._FACTORY_DEFAULTS["axes"]
+    axes = cfg.get("axes")
+    axes = axes if isinstance(axes, dict) else {}
+
+    role = _resolve_label_font_role(cfg, tab_role)
+
+    # Primary roles bridge size + bold to the Global-tab flat font keys;
+    # italic reads the per-axis primary slot (CS-81).
+    if role in ("primary_x", "primary_y"):
+        prim = axes.get(role)
+        prim = prim if isinstance(prim, dict) else {}
+        size_key = "xlabel_font_size" if role == "primary_x" else "ylabel_font_size"
+        bold_key = "xlabel_font_bold" if role == "primary_x" else "ylabel_font_bold"
         return (
-            _coerce_font_pt(cfg.get("xlabel_font_size", 10), 10),
-            bool(cfg.get("xlabel_font_bold", True)),
-            False,
-        )
-    if role == "primary_y":
-        return (
-            _coerce_font_pt(cfg.get("ylabel_font_size", 10), 10),
-            bool(cfg.get("ylabel_font_bold", True)),
-            False,
+            _coerce_font_pt(cfg.get(size_key, 10), 10),
+            bool(cfg.get(bold_key, True)),
+            bool(prim.get(
+                "axis_label_font_italic",
+                factory_axes[role]["axis_label_font_italic"],
+            )),
         )
 
     # A non-primary role with inherit=False reads its own per-axis font.
@@ -474,6 +501,42 @@ def _resolve_axis_label_font(
     return (size, bold, italic)
 
 
+def _resolve_axis_label_family(cfg: Mapping[str, Any], tab_role: str) -> str:
+    """Resolve the matplotlib font family for an axis role's LABEL (CS-81).
+
+    Phase 4bc: walks the same twin-axis inherit chain as
+    :func:`_resolve_axis_label_font` (via :func:`_resolve_label_font_role`)
+    — a non-primary role that inherits its font inherits its family too,
+    and a role that bubbles up to a primary picks up that primary's family.
+
+    Returns "" (meaning "no ``fontfamily`` kwarg — defer to matplotlib's
+    rcParams default") when the resolved family is the ``"(default)"``
+    sentinel / empty, OR when the configured family is not installed on
+    this host (friction #1b graceful fallback — no matplotlib findfont
+    warning). Otherwise returns the family name verbatim.
+
+    Defensive against sparse / legacy configs (missing ``axes`` sub-dict
+    or key) — every read falls through to the factory sentinel default.
+    """
+    factory_axes = plot_settings_dialog._FACTORY_DEFAULTS["axes"]
+    sentinel = plot_settings_dialog._AXIS_LABEL_FONT_FAMILY_DEFAULT
+    axes = cfg.get("axes")
+    axes = axes if isinstance(axes, dict) else {}
+
+    role = _resolve_label_font_role(cfg, tab_role)
+    role_dict = axes.get(role)
+    role_dict = role_dict if isinstance(role_dict, dict) else {}
+    family = str(role_dict.get(
+        "axis_label_font_family",
+        factory_axes[role]["axis_label_font_family"],
+    )).strip()
+    if not family or family == sentinel:
+        return ""
+    if family not in plot_settings_dialog.available_font_families():
+        return ""
+    return family
+
+
 def _axis_label_font_kwargs(
     cfg: Mapping[str, Any], tab_role: str,
 ) -> "dict[str, Any]":
@@ -486,13 +549,23 @@ def _axis_label_font_kwargs(
     render is byte-for-byte the pre-4bb behaviour for every role except
     the secondary X axis, whose previously-hardcoded 9pt/normal label
     now inherits the primary X axis's font by twin-axis default).
+
+    CS-81 (Phase 4bc): adds the resolved ``fontfamily`` (via
+    :func:`_resolve_axis_label_family`) ONLY when non-empty, so a role
+    left on the ``"(default)"`` sentinel — or one whose configured family
+    is not installed — omits the kwarg entirely and matplotlib falls back
+    to its rcParams default (keeping the default render unchanged).
     """
     size, bold, italic = _resolve_axis_label_font(cfg, tab_role)
-    return {
+    kwargs: "dict[str, Any]" = {
         "fontsize": scale_font_size(size),
         "fontweight": "bold" if bold else "normal",
         "fontstyle": "italic" if italic else "normal",
     }
+    family = _resolve_axis_label_family(cfg, tab_role)
+    if family:
+        kwargs["fontfamily"] = family
+    return kwargs
 
 
 def _parse_tick_str(text: str) -> "Optional[float]":

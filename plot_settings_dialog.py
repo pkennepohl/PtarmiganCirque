@@ -247,6 +247,23 @@ _FACTORY_DEFAULTS: dict[str, Any] = {
     # ``set_xlabel`` / ``set_ylabel`` site (identity at scale 1.0). Schema
     # key set is uniform across every per-axis role (the _AXIS_KEYS parity
     # lock); the two primary roles carry inert size/bold/italic defaults.
+    # CS-81 (Phase 4bc): per-axis label-font customization extended to the
+    # two primary tabs + a font FAMILY picker. One more key per role
+    # (registry 15 → 16):
+    #   * axis_label_font_family    StringVar-friendly matplotlib font
+    #     family name. The sentinel ``"(default)"`` (also the factory
+    #     default) means "no ``fontfamily`` kwarg — defer to matplotlib's
+    #     rcParams default", so the default render is byte-identical to
+    #     pre-4bc. Picked from :func:`available_font_families` (a cached,
+    #     lazily-imported matplotlib scan); a configured family absent on
+    #     the host resolves to "" (graceful fallback, no warning) in
+    #     ``uvvis_tab._resolve_axis_label_family``.
+    # The two primary roles now own a "Font" LabelFrame too: their Size /
+    # Bold controls SHARE the Global-tab ``xlabel/ylabel_font_size`` /
+    # ``_bold`` Tk vars (lockstep — the flat keys stay authoritative, so
+    # the primary ``axis_label_font_size`` / ``_bold`` slots stay inert),
+    # while Italic + Family activate the formerly-inert per-axis primary
+    # ``axis_label_font_italic`` / ``axis_label_font_family`` slots.
     "axes": {
         "primary_x":   {"tick_direction": "in", "axis_label_override": "",
                         "range_lo": "", "range_hi": "",
@@ -257,7 +274,8 @@ _FACTORY_DEFAULTS: dict[str, Any] = {
                         "axis_label_font_inherit": False,
                         "axis_label_font_size": 10,
                         "axis_label_font_bold": True,
-                        "axis_label_font_italic": False},
+                        "axis_label_font_italic": False,
+                        "axis_label_font_family": "(default)"},
         "secondary_x": {"tick_direction": "in", "axis_label_override": "",
                         "range_lo": "", "range_hi": "",
                         "autoscale": True, "scale": "linear",
@@ -267,7 +285,8 @@ _FACTORY_DEFAULTS: dict[str, Any] = {
                         "axis_label_font_inherit": True,
                         "axis_label_font_size": 10,
                         "axis_label_font_bold": True,
-                        "axis_label_font_italic": False},
+                        "axis_label_font_italic": False,
+                        "axis_label_font_family": "(default)"},
         "primary_y":   {"tick_direction": "in", "axis_label_override": "",
                         "range_lo": "", "range_hi": "",
                         "autoscale": True, "scale": "linear",
@@ -277,7 +296,8 @@ _FACTORY_DEFAULTS: dict[str, Any] = {
                         "axis_label_font_inherit": False,
                         "axis_label_font_size": 10,
                         "axis_label_font_bold": True,
-                        "axis_label_font_italic": False},
+                        "axis_label_font_italic": False,
+                        "axis_label_font_family": "(default)"},
         "secondary_y": {"tick_direction": "in", "axis_label_override": "",
                         "range_lo": "", "range_hi": "",
                         "autoscale": True, "scale": "linear",
@@ -287,7 +307,8 @@ _FACTORY_DEFAULTS: dict[str, Any] = {
                         "axis_label_font_inherit": True,
                         "axis_label_font_size": 10,
                         "axis_label_font_bold": True,
-                        "axis_label_font_italic": False},
+                        "axis_label_font_italic": False,
+                        "axis_label_font_family": "(default)"},
         "tertiary_y":  {"tick_direction": "in", "axis_label_override": "",
                         "range_lo": "", "range_hi": "",
                         "autoscale": True, "scale": "linear",
@@ -297,7 +318,8 @@ _FACTORY_DEFAULTS: dict[str, Any] = {
                         "axis_label_font_inherit": True,
                         "axis_label_font_size": 10,
                         "axis_label_font_bold": True,
-                        "axis_label_font_italic": False},
+                        "axis_label_font_italic": False,
+                        "axis_label_font_family": "(default)"},
     },
     # CS-75 D2 / Phase 4ay (sub-axis B): accessibility settings nested
     # under a dedicated sub-dict so future Phase 4ba (font scale) +
@@ -328,6 +350,8 @@ _FACTORY_DEFAULTS: dict[str, Any] = {
 # (comma-separated explicit tick positions, FixedLocator-painted).
 # CS-80 (Phase 4bb): registry grew from 11 → 15 with the per-axis label
 # font keys (inherit toggle + size + bold + italic).
+# CS-81 (Phase 4bc): registry grew from 15 → 16 with ``axis_label_font_family``
+# (the matplotlib font-family picker, sentinel ``"(default)"`` = no override).
 _AXIS_KEYS: tuple[str, ...] = (
     "tick_direction", "axis_label_override",
     "range_lo", "range_hi", "autoscale", "scale",
@@ -335,6 +359,7 @@ _AXIS_KEYS: tuple[str, ...] = (
     "custom_ticks",
     "axis_label_font_inherit", "axis_label_font_size",
     "axis_label_font_bold", "axis_label_font_italic",
+    "axis_label_font_family",
 )
 
 # CS-80 (Phase 4bb): twin-axis label-font inherit graph. The three
@@ -357,6 +382,62 @@ _AXIS_LABEL_FONT_INHERIT_PARENT: dict[str, str] = {
 _AXIS_LABEL_FONT_SIZE_VALUES: tuple[str, ...] = tuple(
     str(n) for n in range(4, 37)
 )
+
+# CS-81 (Phase 4bc): the per-axis label-font FAMILY sentinel. Stored as
+# the factory default for ``axis_label_font_family`` and surfaced as the
+# first ("(default)") entry of the family Combobox. The renderer treats
+# this value — and the empty string — as "no ``fontfamily`` override":
+# the label uses matplotlib's rcParams default, so the out-of-the-box
+# render is byte-identical to pre-4bc. MUST match the literal stored in
+# ``_FACTORY_DEFAULTS["axes"][role]["axis_label_font_family"]`` (a test
+# guards the agreement).
+_AXIS_LABEL_FONT_FAMILY_DEFAULT: str = "(default)"
+
+# CS-81 (Phase 4bc): the two primary roots get a "Font" LabelFrame whose
+# Size / Bold controls SHARE the long-standing Global-tab flat font Tk
+# vars (lockstep — editing either surface moves both). This map names the
+# flat (size_key, bold_key) pair each primary role bridges to; it mirrors
+# the resolver's primary bridge in ``uvvis_tab._resolve_axis_label_font``.
+_PRIMARY_AXIS_FLAT_FONT_KEYS: dict[str, tuple[str, str]] = {
+    "primary_x": ("xlabel_font_size", "xlabel_font_bold"),
+    "primary_y": ("ylabel_font_size", "ylabel_font_bold"),
+}
+
+# CS-81 (Phase 4bc): cache for :func:`available_font_families`. ``None``
+# until the first call; thereafter a (possibly empty) tuple. The matplotlib
+# font scan is lazy so importing this module stays free of a heavy
+# matplotlib import (the dialog is otherwise pure-Tk).
+_FONT_FAMILY_CACHE: "tuple[str, ...] | None" = None
+
+
+def available_font_families() -> "tuple[str, ...]":
+    """Sorted matplotlib font-family names installed on this host (CS-81).
+
+    Lazily imports :mod:`matplotlib.font_manager` (kept out of the module
+    import path so the otherwise pure-Tk dialog does not pull in
+    matplotlib at import time) and caches the result. The per-axis "Font"
+    LabelFrame's family Combobox offers ``("(default)",) + this`` and the
+    renderer's :func:`uvvis_tab._resolve_axis_label_family` consults it to
+    drop a configured-but-uninstalled family back to "no override" (the
+    friction #1b graceful fallback). Returns ``()`` on any failure — the
+    family picker then degrades to just the ``"(default)"`` sentinel.
+    """
+    global _FONT_FAMILY_CACHE
+    if _FONT_FAMILY_CACHE is not None:
+        return _FONT_FAMILY_CACHE
+    names: set[str] = set()
+    try:
+        from matplotlib import font_manager
+        try:
+            names = set(font_manager.get_font_names())
+        except Exception:
+            # matplotlib < 3.6 has no get_font_names(); fall back to the
+            # registered TTF list.
+            names = {f.name for f in font_manager.fontManager.ttflist}
+    except Exception:
+        names = set()
+    _FONT_FAMILY_CACHE = tuple(sorted(names))
+    return _FONT_FAMILY_CACHE
 
 # Valid scale-type values; surfaced by the per-axis "Scale" Combobox.
 _AXIS_SCALE_OPTIONS: tuple[str, ...] = ("linear", "log")
