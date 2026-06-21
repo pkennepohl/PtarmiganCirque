@@ -854,10 +854,10 @@ class TestPlotConfigDialogNotebookPhase4ai(unittest.TestCase):
     def test_axis_tabs_do_not_contain_section_label_frames(self):
         dlg = self.PlotConfigDialog(self.host, self.config)
         dlg.update_idletasks()
-        # CS-80 (Phase 4bb): the three non-primary tabs grow a per-axis
+        # CS-80 (Phase 4bb): the three non-primary tabs grew a per-axis
         # "Font" LabelFrame (singular — distinct from the Global tab's
-        # "Fonts" section). The two primary roots keep only the shell's
-        # two placeholders.
+        # "Fonts" section). CS-81 (Phase 4bc): the two primary roots get
+        # the "Font" frame too, so every axis tab now carries it.
         global_sections = {"Fonts", "Appearance", "Legend", "Title and labels"}
         for key in ("primary_x", "secondary_x",
                     "primary_y", "secondary_y", "tertiary_y"):
@@ -872,9 +872,7 @@ class TestPlotConfigDialogNotebookPhase4ai(unittest.TestCase):
                 titles & global_sections, set(),
                 f"axis tab {key!r} leaked a Global section: {titles}",
             )
-            expected = {"Plots on this axis", "Settings"}
-            if key in self.psd._AXIS_LABEL_FONT_INHERIT_PARENT:
-                expected.add("Font")
+            expected = {"Plots on this axis", "Settings", "Font"}
             self.assertEqual(
                 titles, expected,
                 f"axis tab {key!r} has unexpected LabelFrames: {titles}",
@@ -6161,9 +6159,11 @@ class TestPerAxisFontLabelFramePhase4bb(unittest.TestCase):
                 return w
         self.fail(f"no Font size Spinbox for role {role!r}")
 
-    def test_font_labelframe_on_nonprimary_only(self):
-        self.assertEqual(len(self._font_labelframes()), 3)
-        # Non-primary roles built per-axis font vars; primaries did not.
+    def test_font_labelframe_on_every_tab(self):
+        # CS-81 (Phase 4bc): all five tabs carry a Font frame (was 3).
+        self.assertEqual(len(self._font_labelframes()), 5)
+        # Non-primary roles own an inherit var; the two primary roots do
+        # not (they are the inherit roots — no inherit checkbox).
         for role in ("secondary_x", "secondary_y", "tertiary_y"):
             self.assertIn(
                 (role, "axis_label_font_inherit"),
@@ -6211,6 +6211,154 @@ class TestPerAxisFontLabelFramePhase4bb(unittest.TestCase):
         self.assertIs(slot["axis_label_font_inherit"], False)
         self.assertEqual(slot["axis_label_font_size"], "20")
         self.assertIs(slot["axis_label_font_italic"], True)
+
+
+@unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
+class TestPrimaryAxisFontFramePhase4bc(unittest.TestCase):
+    """CS-81 (Phase 4bc) — primary "Font" frame + family Combobox.
+
+    The two primary roots now get a Font frame: Size / Bold SHARE the
+    Global Fonts section's flat vars (lockstep), Italic + Family activate
+    the per-axis primary slots, and there is no inherit checkbox. Every
+    tab (primary + non-primary) carries a family Combobox.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import plot_settings_dialog
+        cls.psd = plot_settings_dialog
+        cls.PlotConfigDialog = plot_settings_dialog.PlotConfigDialog
+
+    def setUp(self):
+        self.psd._open_dialogs.clear()
+        self.psd._USER_DEFAULTS.clear()
+        self.host = tk.Frame(_root)
+        self.host.pack()
+        self.config: dict = {}
+        self.dlg = self.PlotConfigDialog(self.host, self.config)
+        self.dlg.update_idletasks()
+
+    def tearDown(self):
+        for dlg in list(self.psd._open_dialogs.values()):
+            try:
+                dlg.destroy()
+            except Exception:
+                pass
+        self.psd._open_dialogs.clear()
+        self.psd._USER_DEFAULTS.clear()
+        try:
+            self.dlg.destroy()
+        except Exception:
+            pass
+        try:
+            self.host.destroy()
+        except Exception:
+            pass
+
+    def _family_combobox(self, role: str):
+        fam_var = self.dlg._axis_control_vars[(role, "axis_label_font_family")]
+        for w in _all_descendants(self.dlg):
+            if (
+                isinstance(w, ttk.Combobox)
+                and str(w.cget("textvariable")) == str(fam_var)
+            ):
+                return w
+        self.fail(f"no family Combobox for role {role!r}")
+
+    # ---- primary roots own italic + family but no inherit/size/bold ----
+
+    def test_primary_has_italic_and_family_vars(self):
+        for role in ("primary_x", "primary_y"):
+            self.assertIn(
+                (role, "axis_label_font_italic"), self.dlg._axis_control_vars,
+            )
+            self.assertIn(
+                (role, "axis_label_font_family"), self.dlg._axis_control_vars,
+            )
+
+    def test_primary_has_no_per_axis_size_bold_inherit_vars(self):
+        # Size / Bold bridge to the flat Global vars (not per-axis); the
+        # roots have no inherit widget.
+        for role in ("primary_x", "primary_y"):
+            for key in ("axis_label_font_inherit", "axis_label_font_size",
+                        "axis_label_font_bold"):
+                self.assertNotIn(
+                    (role, key), self.dlg._axis_control_vars,
+                    f"{role}/{key} should not be a per-axis var",
+                )
+
+    # ---- lockstep: primary Size / Bold share the Global flat var ----
+
+    def test_primary_size_shares_global_flat_var(self):
+        # primary_x Size spinbox is bound to the same Tk var as the Global
+        # xlabel_font_size control.
+        flat = self.dlg._control_vars["xlabel_font_size"]
+        flat.set(23)
+        self.dlg.update_idletasks()
+        self.assertEqual(self.dlg._working["xlabel_font_size"], 23)
+        # And the per-axis primary size slot stays inert (untouched).
+        self.assertEqual(
+            self.dlg._working["axes"]["primary_x"]["axis_label_font_size"], 10,
+        )
+
+    def test_primary_bold_shares_global_flat_var(self):
+        flat = self.dlg._control_vars["ylabel_font_bold"]
+        flat.set(False)
+        self.dlg.update_idletasks()
+        self.assertIs(self.dlg._working["ylabel_font_bold"], False)
+
+    def test_primary_italic_and_family_commit(self):
+        self.dlg._axis_control_vars[
+            ("primary_x", "axis_label_font_italic")
+        ].set(True)
+        self.dlg.update_idletasks()
+        self.assertIs(
+            self.dlg._working["axes"]["primary_x"]["axis_label_font_italic"],
+            True,
+        )
+        fams = self.psd.available_font_families()
+        if fams:
+            self.dlg._axis_control_vars[
+                ("primary_x", "axis_label_font_family")
+            ].set(fams[0])
+            self.dlg.update_idletasks()
+            self.assertEqual(
+                self.dlg._working["axes"]["primary_x"]["axis_label_font_family"],
+                fams[0],
+            )
+
+    # ---- family Combobox on every tab ----
+
+    def test_family_combobox_on_every_tab(self):
+        for role in ("primary_x", "secondary_x", "primary_y",
+                     "secondary_y", "tertiary_y"):
+            combo = self._family_combobox(role)
+            values = combo.cget("values")
+            # First offered value is the "(default)" sentinel.
+            self.assertEqual(
+                str(values[0]), self.psd._AXIS_LABEL_FONT_FAMILY_DEFAULT,
+            )
+
+    def test_family_default_value_is_sentinel(self):
+        var = self.dlg._axis_control_vars[("primary_x", "axis_label_font_family")]
+        self.assertEqual(var.get(), self.psd._AXIS_LABEL_FONT_FAMILY_DEFAULT)
+
+    # ---- non-primary family Combobox greys with inherit ----
+
+    def test_nonprimary_family_greyed_while_inheriting(self):
+        combo = self._family_combobox("secondary_x")
+        # Default inherit=True -> disabled.
+        self.assertEqual(str(combo.cget("state")), "disabled")
+        self.dlg._axis_control_vars[
+            ("secondary_x", "axis_label_font_inherit")
+        ].set(False)
+        self.dlg.update_idletasks()
+        self.assertEqual(str(combo.cget("state")), "readonly")
+
+    def test_primary_family_combobox_always_enabled(self):
+        # Roots have no inherit toggle, so the family picker is live.
+        combo = self._family_combobox("primary_x")
+        self.assertEqual(str(combo.cget("state")), "readonly")
 
 
 if __name__ == "__main__":

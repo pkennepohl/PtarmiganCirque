@@ -8892,6 +8892,35 @@ class TestPerAxisFontRenderPhase4bb(unittest.TestCase):
             self.tab._ax.xaxis.label.get_fontsize(), 20.0,
         )
 
+    # ---- CS-81 (Phase 4bc): primary italic + family reach matplotlib ----
+
+    def test_primary_x_italic_reaches_label(self):
+        self._add_uvvis()
+        cfg = self.tab._plot_config
+        cfg.setdefault("axes", {}).setdefault("primary_x", {})[
+            "axis_label_font_italic"
+        ] = True
+        self.tab._redraw()
+        self.assertEqual(
+            self.tab._ax.xaxis.label.get_fontstyle(), "italic",
+        )
+
+    def test_primary_x_family_reaches_label(self):
+        fams = self.psd.available_font_families()
+        if not fams:
+            self.skipTest("no matplotlib font families available")
+        fam = fams[0]
+        self._add_uvvis()
+        cfg = self.tab._plot_config
+        cfg.setdefault("axes", {}).setdefault("primary_x", {})[
+            "axis_label_font_family"
+        ] = fam
+        self.tab._redraw()
+        # matplotlib resolves the requested family into the label's font.
+        self.assertEqual(
+            self.tab._ax.xaxis.label.get_fontname(), fam,
+        )
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
