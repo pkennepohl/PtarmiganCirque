@@ -12415,7 +12415,91 @@ legend stay global.
 
 ---
 
-*Document version: 1.54 — June 2026*
+## CS-81 — Per-axis font: primary tabs + font family picker (Phase 4bc)
+
+The additive extension CS-80 anticipated. USER-FLAGGED at the 4bb
+step-5 ("should be able to change as many font settings as is
+reasonable"): (a) the two PRIMARY axis tabs gain their own "Font"
+LabelFrame, and (b) a font FAMILY picker lands on every axis tab.
+Cross-cuts the same CS-80 schema / resolver / renderer / Font-frame
+surfaces; **PTMG_FORMAT_VERSION unchanged**, default render
+byte-identical to pre-4bc.
+
+### Schema (additive, CS-46-clean)
+
+* One key per axis role under `_FACTORY_DEFAULTS["axes"][role]`
+  (`_AXIS_KEYS` registry 15 → 16, uniform across all five roles —
+  the parity lock): `axis_label_font_family` (StringVar-style
+  matplotlib family name).
+* `_AXIS_LABEL_FONT_FAMILY_DEFAULT = "(default)"` — the factory
+  default and the "no `fontfamily` override" sentinel (the renderer
+  treats it, and the empty string, as "defer to matplotlib's rcParams
+  default"). A drift-guard test pins the constant to the schema
+  literal. `migrate_plot_config` auto-fills the key.
+* `_PRIMARY_AXIS_FLAT_FONT_KEYS = {primary_x: (xlabel_font_size,
+  xlabel_font_bold), primary_y: (ylabel_font_size, ylabel_font_bold)}`
+  — names the flat Global keys each primary Font frame's Size/Bold
+  bridges to (mirrors the resolver's primary bridge).
+* `available_font_families()` — lazily imports `matplotlib.font_manager`
+  (kept off the otherwise pure-Tk dialog's import path), returns a
+  sorted/unique tuple, cached module-level. `()` on any failure.
+
+### Resolver + renderer (`uvvis_tab.py`)
+
+* `_resolve_label_font_role(cfg, role)` — the CS-80 inherit-chain walk
+  extracted into a shared helper so font and family resolution follow
+  one identical walk.
+* `_resolve_axis_label_font` keeps its locked 3-tuple
+  `(size, bold, italic)` arity; the only semantic change is **primary
+  ITALIC now activates the per-axis `axis_label_font_italic` slot**
+  (pre-4bc it was hardcoded False). Size + bold still bridge to the
+  flat Global keys. Existing 3-tuple tests stay green (factory primary
+  italic default is False).
+* `_resolve_axis_label_family(cfg, role) -> str` — walks the same
+  chain; returns "" for the sentinel / empty / **uninstalled** family
+  (friction #1b graceful fallback — no matplotlib findfont warning),
+  else the family verbatim. `_axis_label_font_kwargs` adds
+  `fontfamily` **only when non-empty**, so every `set_xlabel` /
+  `set_ylabel` site (all already routed through it) picks up family.
+
+### UI (`plot_settings_dialog.py`)
+
+* `_ensure_flat_int_var` / `_ensure_flat_bool_var` — idempotent
+  fetch-or-create accessors extracted from `_make_int_spinbox` /
+  `_make_bool_checkbox` so the primary Font frame can SHARE the Global
+  Fonts section's flat vars (true lockstep; build order irrelevant).
+  Existing single-call callers unaffected.
+* `_build_axis_tab_shell` builds the "Font" LabelFrame on **all five**
+  tabs (was non-primary only).
+* `_build_axis_font_labelframe` dispatches:
+  `_build_nonprimary_axis_font_controls` (CS-80 inherit + size/bold/
+  italic, now + family, all greyed while inheriting) vs
+  `_build_primary_axis_font_controls` (CS-81: shared-flat-var Size/Bold
+  + per-axis Italic + Family, no inherit checkbox / no greying — the
+  roots never inherit). Shared `_build_axis_font_family_row` builds the
+  readonly family Combobox over `("(default)",) + available_font_families()`.
+
+### Lock decisions (CS-81)
+
+* The family key + sentinel, the `_PRIMARY_AXIS_FLAT_FONT_KEYS` bridge
+  map, the **primaries-keep-flat-authoritative-size/bold** rule (the
+  primary per-axis `axis_label_font_size`/`_bold` slots stay inert —
+  Size/Bold lockstep is via the shared flat var, NOT per-axis storage),
+  and the "Font frame on every tab" placement are locked. Family
+  resolution drops uninstalled families to "" — locked graceful-fallback
+  semantics. Primary italic now reads the per-axis slot — locked.
+* Title / tick / legend stay global and family-less (the CS-80 tier-1
+  boundary is unchanged; family was not extended to them this phase).
+
+30 net new tests (7 in `TestPerAxisLabelFontFamilySchemaPhase4bc` + 12
+in `test_uvvis_tab.TestResolveAxisLabelFontFamilyPhase4bc` + 9 in
+`TestPrimaryAxisFontFramePhase4bc` + 2 added to
+`TestPerAxisFontRenderPhase4bb`). 1746 tests green (1716 baseline +
+30 new).
+
+---
+
+*Document version: 1.55 — June 2026*
 *1.1: CS-13 implementation notes added in Phase 4a.*
 *1.2: CS-14 Plot Settings Dialog added in Phase 4b.*
 *1.3: CS-15 UV/Vis Baseline Correction + CS-04 implementation
@@ -13945,5 +14029,18 @@ to the Global-tab xlabel/ylabel control. Secondary X label now
 inherits primary X by default (was hardcoded 9pt). Schema-additive;
 PTMG_FORMAT_VERSION unchanged. 23 net new tests; 1716 green
 (1693 baseline + 23 new). Four code/test commits + bookkeeping.*
+*1.55: CS-81 added in Phase 4bc. Per-axis font extended to the two
+primary tabs + a font FAMILY picker on every tab (the additive
+extension CS-80 anticipated; USER-FLAGGED). One additive per-axis key
+(`axis_label_font_family`, `_AXIS_KEYS` 15 → 16) + sentinel
+`"(default)"` + `available_font_families()` (cached lazy matplotlib
+scan, graceful fallback for uninstalled families) +
+`_PRIMARY_AXIS_FLAT_FONT_KEYS`. Primary Size/Bold share the Global
+flat vars (lockstep via idempotent `_ensure_flat_*_var`); primary
+Italic + Family activate the per-axis primary slots. Primary italic
+now reads its per-axis slot (was hardcoded False); `_resolve_axis_label_family`
+sibling resolver. Schema-additive; PTMG_FORMAT_VERSION unchanged. 30
+net new tests; 1746 green (1716 baseline + 30 new). Four code/test
+commits + bookkeeping.*
 *To be updated as Open Questions are resolved and new components
 are specified.*
