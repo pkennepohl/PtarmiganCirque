@@ -247,6 +247,23 @@ _FACTORY_DEFAULTS: dict[str, Any] = {
     # ``set_xlabel`` / ``set_ylabel`` site (identity at scale 1.0). Schema
     # key set is uniform across every per-axis role (the _AXIS_KEYS parity
     # lock); the two primary roles carry inert size/bold/italic defaults.
+    # CS-81 (Phase 4bc): per-axis label-font customization extended to the
+    # two primary tabs + a font FAMILY picker. One more key per role
+    # (registry 15 → 16):
+    #   * axis_label_font_family    StringVar-friendly matplotlib font
+    #     family name. The sentinel ``"(default)"`` (also the factory
+    #     default) means "no ``fontfamily`` kwarg — defer to matplotlib's
+    #     rcParams default", so the default render is byte-identical to
+    #     pre-4bc. Picked from :func:`available_font_families` (a cached,
+    #     lazily-imported matplotlib scan); a configured family absent on
+    #     the host resolves to "" (graceful fallback, no warning) in
+    #     ``uvvis_tab._resolve_axis_label_family``.
+    # The two primary roles now own a "Font" LabelFrame too: their Size /
+    # Bold controls SHARE the Global-tab ``xlabel/ylabel_font_size`` /
+    # ``_bold`` Tk vars (lockstep — the flat keys stay authoritative, so
+    # the primary ``axis_label_font_size`` / ``_bold`` slots stay inert),
+    # while Italic + Family activate the formerly-inert per-axis primary
+    # ``axis_label_font_italic`` / ``axis_label_font_family`` slots.
     "axes": {
         "primary_x":   {"tick_direction": "in", "axis_label_override": "",
                         "range_lo": "", "range_hi": "",
@@ -257,7 +274,8 @@ _FACTORY_DEFAULTS: dict[str, Any] = {
                         "axis_label_font_inherit": False,
                         "axis_label_font_size": 10,
                         "axis_label_font_bold": True,
-                        "axis_label_font_italic": False},
+                        "axis_label_font_italic": False,
+                        "axis_label_font_family": "(default)"},
         "secondary_x": {"tick_direction": "in", "axis_label_override": "",
                         "range_lo": "", "range_hi": "",
                         "autoscale": True, "scale": "linear",
@@ -267,7 +285,8 @@ _FACTORY_DEFAULTS: dict[str, Any] = {
                         "axis_label_font_inherit": True,
                         "axis_label_font_size": 10,
                         "axis_label_font_bold": True,
-                        "axis_label_font_italic": False},
+                        "axis_label_font_italic": False,
+                        "axis_label_font_family": "(default)"},
         "primary_y":   {"tick_direction": "in", "axis_label_override": "",
                         "range_lo": "", "range_hi": "",
                         "autoscale": True, "scale": "linear",
@@ -277,7 +296,8 @@ _FACTORY_DEFAULTS: dict[str, Any] = {
                         "axis_label_font_inherit": False,
                         "axis_label_font_size": 10,
                         "axis_label_font_bold": True,
-                        "axis_label_font_italic": False},
+                        "axis_label_font_italic": False,
+                        "axis_label_font_family": "(default)"},
         "secondary_y": {"tick_direction": "in", "axis_label_override": "",
                         "range_lo": "", "range_hi": "",
                         "autoscale": True, "scale": "linear",
@@ -287,7 +307,8 @@ _FACTORY_DEFAULTS: dict[str, Any] = {
                         "axis_label_font_inherit": True,
                         "axis_label_font_size": 10,
                         "axis_label_font_bold": True,
-                        "axis_label_font_italic": False},
+                        "axis_label_font_italic": False,
+                        "axis_label_font_family": "(default)"},
         "tertiary_y":  {"tick_direction": "in", "axis_label_override": "",
                         "range_lo": "", "range_hi": "",
                         "autoscale": True, "scale": "linear",
@@ -297,7 +318,8 @@ _FACTORY_DEFAULTS: dict[str, Any] = {
                         "axis_label_font_inherit": True,
                         "axis_label_font_size": 10,
                         "axis_label_font_bold": True,
-                        "axis_label_font_italic": False},
+                        "axis_label_font_italic": False,
+                        "axis_label_font_family": "(default)"},
     },
     # CS-75 D2 / Phase 4ay (sub-axis B): accessibility settings nested
     # under a dedicated sub-dict so future Phase 4ba (font scale) +
@@ -328,6 +350,8 @@ _FACTORY_DEFAULTS: dict[str, Any] = {
 # (comma-separated explicit tick positions, FixedLocator-painted).
 # CS-80 (Phase 4bb): registry grew from 11 → 15 with the per-axis label
 # font keys (inherit toggle + size + bold + italic).
+# CS-81 (Phase 4bc): registry grew from 15 → 16 with ``axis_label_font_family``
+# (the matplotlib font-family picker, sentinel ``"(default)"`` = no override).
 _AXIS_KEYS: tuple[str, ...] = (
     "tick_direction", "axis_label_override",
     "range_lo", "range_hi", "autoscale", "scale",
@@ -335,6 +359,7 @@ _AXIS_KEYS: tuple[str, ...] = (
     "custom_ticks",
     "axis_label_font_inherit", "axis_label_font_size",
     "axis_label_font_bold", "axis_label_font_italic",
+    "axis_label_font_family",
 )
 
 # CS-80 (Phase 4bb): twin-axis label-font inherit graph. The three
@@ -357,6 +382,62 @@ _AXIS_LABEL_FONT_INHERIT_PARENT: dict[str, str] = {
 _AXIS_LABEL_FONT_SIZE_VALUES: tuple[str, ...] = tuple(
     str(n) for n in range(4, 37)
 )
+
+# CS-81 (Phase 4bc): the per-axis label-font FAMILY sentinel. Stored as
+# the factory default for ``axis_label_font_family`` and surfaced as the
+# first ("(default)") entry of the family Combobox. The renderer treats
+# this value — and the empty string — as "no ``fontfamily`` override":
+# the label uses matplotlib's rcParams default, so the out-of-the-box
+# render is byte-identical to pre-4bc. MUST match the literal stored in
+# ``_FACTORY_DEFAULTS["axes"][role]["axis_label_font_family"]`` (a test
+# guards the agreement).
+_AXIS_LABEL_FONT_FAMILY_DEFAULT: str = "(default)"
+
+# CS-81 (Phase 4bc): the two primary roots get a "Font" LabelFrame whose
+# Size / Bold controls SHARE the long-standing Global-tab flat font Tk
+# vars (lockstep — editing either surface moves both). This map names the
+# flat (size_key, bold_key) pair each primary role bridges to; it mirrors
+# the resolver's primary bridge in ``uvvis_tab._resolve_axis_label_font``.
+_PRIMARY_AXIS_FLAT_FONT_KEYS: dict[str, tuple[str, str]] = {
+    "primary_x": ("xlabel_font_size", "xlabel_font_bold"),
+    "primary_y": ("ylabel_font_size", "ylabel_font_bold"),
+}
+
+# CS-81 (Phase 4bc): cache for :func:`available_font_families`. ``None``
+# until the first call; thereafter a (possibly empty) tuple. The matplotlib
+# font scan is lazy so importing this module stays free of a heavy
+# matplotlib import (the dialog is otherwise pure-Tk).
+_FONT_FAMILY_CACHE: "tuple[str, ...] | None" = None
+
+
+def available_font_families() -> "tuple[str, ...]":
+    """Sorted matplotlib font-family names installed on this host (CS-81).
+
+    Lazily imports :mod:`matplotlib.font_manager` (kept out of the module
+    import path so the otherwise pure-Tk dialog does not pull in
+    matplotlib at import time) and caches the result. The per-axis "Font"
+    LabelFrame's family Combobox offers ``("(default)",) + this`` and the
+    renderer's :func:`uvvis_tab._resolve_axis_label_family` consults it to
+    drop a configured-but-uninstalled family back to "no override" (the
+    friction #1b graceful fallback). Returns ``()`` on any failure — the
+    family picker then degrades to just the ``"(default)"`` sentinel.
+    """
+    global _FONT_FAMILY_CACHE
+    if _FONT_FAMILY_CACHE is not None:
+        return _FONT_FAMILY_CACHE
+    names: set[str] = set()
+    try:
+        from matplotlib import font_manager
+        try:
+            names = set(font_manager.get_font_names())
+        except Exception:
+            # matplotlib < 3.6 has no get_font_names(); fall back to the
+            # registered TTF list.
+            names = {f.name for f in font_manager.fontManager.ttflist}
+    except Exception:
+        names = set()
+    _FONT_FAMILY_CACHE = tuple(sorted(names))
+    return _FONT_FAMILY_CACHE
 
 # Valid scale-type values; surfaced by the per-axis "Scale" Combobox.
 _AXIS_SCALE_OPTIONS: tuple[str, ...] = ("linear", "log")
@@ -1465,32 +1546,52 @@ class PlotConfigDialog(tk.Toplevel):
         self._build_axis_tab_settings(settings_frame, role)
 
         # CS-80 (Phase 4bb): the three non-primary roles grow a "Font"
-        # LabelFrame with twin-axis inherit defaulting. The two primary
-        # roots own no Font frame — their label font is the Global tab's
-        # xlabel / ylabel control (the renderer bridges to it).
-        if role in _AXIS_LABEL_FONT_INHERIT_PARENT:
-            ttk.Separator(parent, orient=tk.HORIZONTAL).pack(
-                fill=tk.X, pady=(8, 4),
-            )
-            font_frame = tk.LabelFrame(parent, text="Font", padx=8, pady=6)
-            font_frame.pack(fill=tk.X)
-            self._build_axis_font_labelframe(font_frame, role)
+        # LabelFrame with twin-axis inherit defaulting. CS-81 (Phase 4bc):
+        # the two primary roots get a "Font" frame too — Size / Bold share
+        # the Global-tab xlabel/ylabel vars (lockstep), plus new Italic +
+        # Family controls. Every tab now carries the frame.
+        ttk.Separator(parent, orient=tk.HORIZONTAL).pack(
+            fill=tk.X, pady=(8, 4),
+        )
+        font_frame = tk.LabelFrame(parent, text="Font", padx=8, pady=6)
+        font_frame.pack(fill=tk.X)
+        self._build_axis_font_labelframe(font_frame, role)
 
     def _build_axis_font_labelframe(self, parent: tk.Widget, role: str) -> None:
-        """Populate a non-primary axis tab's "Font" LabelFrame (CS-80).
+        """Populate an axis tab's "Font" LabelFrame (CS-80 / CS-81).
 
-        Twin-axis label-font customization (Phase 4bb). The role inherits
-        its parent axis's resolved label font by default — the "Inherit
-        font from <Parent>" checkbox, reflecting
-        :data:`_AXIS_LABEL_FONT_INHERIT_PARENT`. Unchecking it enables
-        the per-axis size (readonly Spinbox, StringVar-backed, mirroring
-        the CS-79 idiom) + Bold + Italic controls. The renderer composes
-        the resolved point size with the global ``font_scale`` multiplier
-        at the ``set_xlabel`` / ``set_ylabel`` site.
+        Dispatches on role kind:
 
-        ``role`` is one of the three non-primary tab keys (``secondary_x``,
-        ``secondary_y``, ``tertiary_y``); callers gate on membership in
-        :data:`_AXIS_LABEL_FONT_INHERIT_PARENT`.
+        * Non-primary roles (``secondary_x`` / ``secondary_y`` /
+          ``tertiary_y``, members of :data:`_AXIS_LABEL_FONT_INHERIT_PARENT`)
+          get the CS-80 inherit checkbox + per-axis size / bold / italic,
+          plus the CS-81 family Combobox — all greyed while inheriting.
+        * Primary roots (``primary_x`` / ``primary_y``) get the CS-81
+          Font frame: Size / Bold SHARE the Global-tab flat font vars
+          (lockstep), Italic + Family activate the per-axis primary slots,
+          and there is no inherit checkbox (the roots never inherit).
+        """
+        if role in _AXIS_LABEL_FONT_INHERIT_PARENT:
+            self._build_nonprimary_axis_font_controls(parent, role)
+        else:
+            self._build_primary_axis_font_controls(parent, role)
+
+    def _build_nonprimary_axis_font_controls(
+        self, parent: tk.Widget, role: str,
+    ) -> None:
+        """Non-primary "Font" controls: inherit + size/bold/italic/family.
+
+        Twin-axis label-font customization (CS-80, Phase 4bb). The role
+        inherits its parent axis's resolved label font by default — the
+        "Inherit font from <Parent>" checkbox, reflecting
+        :data:`_AXIS_LABEL_FONT_INHERIT_PARENT`. Unchecking it enables the
+        per-axis size (readonly Spinbox, StringVar-backed) + Bold + Italic
+        + (CS-81) Family (readonly Combobox) controls. The renderer
+        composes the resolved point size with the global ``font_scale``
+        multiplier at the ``set_xlabel`` / ``set_ylabel`` site.
+
+        ``role`` is one of the three non-primary tab keys; callers gate on
+        membership in :data:`_AXIS_LABEL_FONT_INHERIT_PARENT`.
         """
         parent_role = _AXIS_LABEL_FONT_INHERIT_PARENT[role]
         parent_title = _TAB_TITLES[parent_role]
@@ -1524,21 +1625,95 @@ class PlotConfigDialog(tk.Toplevel):
         italic_cb = tk.Checkbutton(controls, text="Italic", variable=italic_var)
         italic_cb.pack(side=tk.LEFT, padx=2)
 
+        # ---- Family row (CS-81) ----
+        family_combo = self._build_axis_font_family_row(parent, role)
+
         # ---- Inherit toggle greys out the per-axis controls ----
         # The closure re-runs on every inherit-var write — including the
         # Reset / Factory Reset refresh path, which sets the var through
         # ``_axis_control_refresh`` — so the enabled state always tracks
-        # the committed inherit value.
+        # the committed inherit value. CS-81 folded the family Combobox in.
         def _sync_enabled(*_args, _spin=size_spin, _b=bold_cb, _i=italic_cb,
-                          _v=inherit_var):
+                          _fam=family_combo, _v=inherit_var):
             inherit = bool(_v.get())
             _spin.config(state=("disabled" if inherit else "readonly"))
             cb_state = "disabled" if inherit else "normal"
             _b.config(state=cb_state)
             _i.config(state=cb_state)
+            _fam.config(state=("disabled" if inherit else "readonly"))
 
         inherit_var.trace_add("write", _sync_enabled)
         _sync_enabled()
+
+    def _build_primary_axis_font_controls(
+        self, parent: tk.Widget, role: str,
+    ) -> None:
+        """Primary-root "Font" controls (CS-81, Phase 4bc).
+
+        ``role`` is ``primary_x`` or ``primary_y`` (the inherit roots —
+        absent from :data:`_AXIS_LABEL_FONT_INHERIT_PARENT`, so there is no
+        inherit checkbox and nothing greys). Size + Bold SHARE the Global
+        Fonts section's flat ``xlabel/ylabel_font_size`` / ``_bold`` Tk
+        vars via the idempotent ``_ensure_flat_*_var`` accessors — editing
+        either surface moves both (the flat keys stay authoritative, so the
+        primary ``axis_label_font_size`` / ``_bold`` slots stay inert).
+        Italic + Family activate the per-axis primary
+        ``axis_label_font_italic`` / ``axis_label_font_family`` slots.
+        """
+        size_key, bold_key = _PRIMARY_AXIS_FLAT_FONT_KEYS[role]
+
+        controls = tk.Frame(parent)
+        controls.pack(fill=tk.X, anchor="w", pady=(2, 2))
+        tk.Label(
+            controls, text="Size", font=("", scale_font_size(9), "bold"),
+        ).pack(side=tk.LEFT)
+        # Shared flat Size Spinbox (lockstep with the Global Fonts tab).
+        size_var = self._ensure_flat_int_var(size_key)
+        size_spin = tk.Spinbox(
+            controls, from_=4, to=36, increment=1,
+            textvariable=size_var, width=4,
+        )
+        size_spin.pack(side=tk.LEFT, padx=(4, 10))
+        # Shared flat Bold checkbox.
+        bold_var = self._ensure_flat_bool_var(bold_key)
+        tk.Checkbutton(
+            controls, text="Bold", variable=bold_var,
+        ).pack(side=tk.LEFT, padx=2)
+        # Per-axis Italic (CS-81 activation of the formerly-inert slot).
+        italic_var = self._make_axis_bool_var(role, "axis_label_font_italic")
+        tk.Checkbutton(
+            controls, text="Italic", variable=italic_var,
+        ).pack(side=tk.LEFT, padx=2)
+
+        # ---- Family row (CS-81) — always enabled (no inherit on roots) ----
+        self._build_axis_font_family_row(parent, role)
+
+    def _build_axis_font_family_row(
+        self, parent: tk.Widget, role: str,
+    ) -> ttk.Combobox:
+        """Build the per-axis "Family" Combobox row (CS-81, Phase 4bc).
+
+        A readonly Combobox over ``(_AXIS_LABEL_FONT_FAMILY_DEFAULT,) +
+        available_font_families()`` bound to the per-axis
+        ``axis_label_font_family`` StringVar. The sentinel ``"(default)"``
+        (the factory default) means "no ``fontfamily`` override". Returns
+        the Combobox so the non-primary builder can fold it into the
+        inherit-greying closure.
+        """
+        row = tk.Frame(parent)
+        row.pack(fill=tk.X, anchor="w", pady=(4, 2))
+        tk.Label(
+            row, text="Family", font=("", scale_font_size(9), "bold"),
+        ).pack(side=tk.LEFT)
+        family_var = self._make_axis_string_var(role, "axis_label_font_family")
+        combo = ttk.Combobox(
+            row,
+            textvariable=family_var,
+            values=(_AXIS_LABEL_FONT_FAMILY_DEFAULT,) + available_font_families(),
+            state="readonly", width=20,
+        )
+        combo.pack(side=tk.LEFT, padx=(4, 0))
+        return combo
 
     def _build_axis_tab_plots(self, parent: tk.Widget, role: str) -> None:
         """Populate the "Plots on this axis" LabelFrame (CS-62, Phase 4ak).
@@ -2916,22 +3091,22 @@ class PlotConfigDialog(tk.Toplevel):
     # Widget factories
     # ------------------------------------------------------------
 
-    def _make_int_spinbox(
-        self,
-        parent: tk.Widget,
-        row: int,
-        column: int,
-        key: str,
-        lo: int = 1,
-        hi: int = 99,
-    ) -> tk.Spinbox:
+    def _ensure_flat_int_var(self, key: str) -> tk.IntVar:
+        """Fetch-or-create the flat ``IntVar`` for ``key`` (CS-81).
+
+        Idempotent like :meth:`_make_axis_string_var`: the first caller
+        builds the var (+ trace + refresh closure) from the working copy;
+        later callers reuse it. The CS-81 (Phase 4bc) primary "Font"
+        LabelFrame uses this to SHARE the Global Fonts section's
+        ``xlabel/ylabel_font_size`` var so the two surfaces stay in
+        lockstep (build order between the Global tab and the per-axis
+        tabs is irrelevant — whichever runs first creates the var).
+        """
+        existing = self._control_vars.get(key)
+        if isinstance(existing, tk.IntVar):
+            return existing
         var = tk.IntVar(value=int(self._working.get(key, _FACTORY_DEFAULTS[key])))
         self._control_vars[key] = var
-        spin = tk.Spinbox(
-            parent, from_=lo, to=hi, increment=1, textvariable=var,
-            width=4,
-        )
-        spin.grid(row=row, column=column, sticky="w", padx=2)
         var.trace_add(
             "write",
             lambda *_, k=key, v=var: self._on_int_var_write(k, v),
@@ -2943,6 +3118,46 @@ class PlotConfigDialog(tk.Toplevel):
             except (tk.TclError, ValueError):
                 pass
         self._control_refresh[key] = _refresh
+        return var
+
+    def _ensure_flat_bool_var(self, key: str) -> tk.BooleanVar:
+        """Fetch-or-create the flat ``BooleanVar`` for ``key`` (CS-81).
+
+        Bool sibling of :meth:`_ensure_flat_int_var`; backs the primary
+        "Font" frame's Bold checkbox sharing the Global
+        ``xlabel/ylabel_font_bold`` var.
+        """
+        existing = self._control_vars.get(key)
+        if isinstance(existing, tk.BooleanVar):
+            return existing
+        var = tk.BooleanVar(value=bool(self._working.get(key, _FACTORY_DEFAULTS[key])))
+        self._control_vars[key] = var
+        var.trace_add(
+            "write",
+            lambda *_, k=key, v=var:
+                self._on_var_write(k, bool(v.get())),
+        )
+
+        def _refresh(value, _v=var):
+            _v.set(bool(value))
+        self._control_refresh[key] = _refresh
+        return var
+
+    def _make_int_spinbox(
+        self,
+        parent: tk.Widget,
+        row: int,
+        column: int,
+        key: str,
+        lo: int = 1,
+        hi: int = 99,
+    ) -> tk.Spinbox:
+        var = self._ensure_flat_int_var(key)
+        spin = tk.Spinbox(
+            parent, from_=lo, to=hi, increment=1, textvariable=var,
+            width=4,
+        )
+        spin.grid(row=row, column=column, sticky="w", padx=2)
         return spin
 
     def _make_bool_checkbox(
@@ -2953,19 +3168,9 @@ class PlotConfigDialog(tk.Toplevel):
         key: str,
         label_text: str = "",
     ) -> tk.Checkbutton:
-        var = tk.BooleanVar(value=bool(self._working.get(key, _FACTORY_DEFAULTS[key])))
-        self._control_vars[key] = var
+        var = self._ensure_flat_bool_var(key)
         cb = tk.Checkbutton(parent, text=label_text, variable=var)
         cb.grid(row=row, column=column, sticky="w", padx=2)
-        var.trace_add(
-            "write",
-            lambda *_, k=key, v=var:
-                self._on_var_write(k, bool(v.get())),
-        )
-
-        def _refresh(value, _v=var):
-            _v.set(bool(value))
-        self._control_refresh[key] = _refresh
         return cb
 
     def _make_colour_swatch(

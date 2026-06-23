@@ -8678,6 +8678,140 @@ class TestResolveAxisLabelFontPhase4bb(unittest.TestCase):
             accessibility._reset_font_scale()
 
 
+class TestResolveAxisLabelFontFamilyPhase4bc(unittest.TestCase):
+    """CS-81 (Phase 4bc) — primary italic activation + font FAMILY resolver.
+
+    Pure logic (no Tk display). Phase 4bc activates the formerly-inert
+    per-axis primary ``axis_label_font_italic`` slot in
+    ``_resolve_axis_label_font`` (3-tuple arity unchanged) and adds the
+    sibling ``_resolve_axis_label_family`` (walks the same twin-axis
+    inherit chain; drops the ``"(default)"`` sentinel / empty / uninstalled
+    family to "").
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import plot_settings_dialog
+        import uvvis_tab
+        cls.psd = plot_settings_dialog
+        cls.uv = uvvis_tab
+
+    def _factory_cfg(self) -> dict:
+        return self.psd.migrate_plot_config({})
+
+    def _an_installed_family(self):
+        fams = self.psd.available_font_families()
+        return fams[0] if fams else None
+
+    # ---- primary italic now activates the per-axis slot ----
+
+    def test_primary_x_italic_reads_per_axis_slot(self):
+        cfg = self._factory_cfg()
+        cfg["axes"]["primary_x"]["axis_label_font_italic"] = True
+        self.assertEqual(
+            self.uv._resolve_axis_label_font(cfg, "primary_x"),
+            (10, True, True),
+        )
+
+    def test_primary_y_italic_reads_per_axis_slot(self):
+        cfg = self._factory_cfg()
+        cfg["axes"]["primary_y"]["axis_label_font_italic"] = True
+        self.assertEqual(
+            self.uv._resolve_axis_label_font(cfg, "primary_y"),
+            (10, True, True),
+        )
+
+    def test_primary_italic_defaults_false(self):
+        # Pre-4bc behaviour preserved: factory default italic is False.
+        cfg = self._factory_cfg()
+        self.assertEqual(
+            self.uv._resolve_axis_label_font(cfg, "primary_x")[2], False,
+        )
+
+    def test_secondary_x_inherits_primary_x_italic(self):
+        # A non-primary that inherits its font now inherits the primary's
+        # activated italic too (true inheritance — pre-4bc forced False).
+        cfg = self._factory_cfg()
+        cfg["axes"]["primary_x"]["axis_label_font_italic"] = True
+        self.assertEqual(
+            self.uv._resolve_axis_label_font(cfg, "secondary_x"),
+            (10, True, True),
+        )
+
+    # ---- family resolution ----
+
+    def test_family_default_sentinel_resolves_empty(self):
+        cfg = self._factory_cfg()
+        for role in ("primary_x", "primary_y", "secondary_x",
+                     "secondary_y", "tertiary_y"):
+            self.assertEqual(
+                self.uv._resolve_axis_label_family(cfg, role), "",
+                f"{role} default family should resolve to ''",
+            )
+
+    def test_family_sparse_config_resolves_empty(self):
+        self.assertEqual(
+            self.uv._resolve_axis_label_family({}, "primary_x"), "",
+        )
+
+    def test_installed_family_resolves_verbatim(self):
+        fam = self._an_installed_family()
+        if fam is None:
+            self.skipTest("no matplotlib font families available")
+        cfg = self._factory_cfg()
+        cfg["axes"]["primary_x"]["axis_label_font_family"] = fam
+        self.assertEqual(
+            self.uv._resolve_axis_label_family(cfg, "primary_x"), fam,
+        )
+
+    def test_uninstalled_family_falls_back_to_empty(self):
+        cfg = self._factory_cfg()
+        cfg["axes"]["primary_x"]["axis_label_font_family"] = "NoSuchFont-XYZ-99"
+        self.assertEqual(
+            self.uv._resolve_axis_label_family(cfg, "primary_x"), "",
+        )
+
+    def test_nonprimary_inherits_primary_family(self):
+        fam = self._an_installed_family()
+        if fam is None:
+            self.skipTest("no matplotlib font families available")
+        cfg = self._factory_cfg()
+        cfg["axes"]["primary_x"]["axis_label_font_family"] = fam
+        # secondary_x inherits primary_x by twin-axis default.
+        self.assertEqual(
+            self.uv._resolve_axis_label_family(cfg, "secondary_x"), fam,
+        )
+
+    def test_nonprimary_own_family_when_inherit_off(self):
+        fam = self._an_installed_family()
+        if fam is None:
+            self.skipTest("no matplotlib font families available")
+        cfg = self._factory_cfg()
+        slot = cfg["axes"]["secondary_x"]
+        slot["axis_label_font_inherit"] = False
+        slot["axis_label_font_family"] = fam
+        # primary_x left on the sentinel — must NOT bleed through.
+        self.assertEqual(
+            self.uv._resolve_axis_label_family(cfg, "secondary_x"), fam,
+        )
+
+    # ---- kwargs compose fontfamily only when non-empty ----
+
+    def test_kwargs_omit_fontfamily_at_default(self):
+        cfg = self._factory_cfg()
+        kw = self.uv._axis_label_font_kwargs(cfg, "primary_x")
+        self.assertNotIn("fontfamily", kw)
+
+    def test_kwargs_include_installed_fontfamily(self):
+        fam = self._an_installed_family()
+        if fam is None:
+            self.skipTest("no matplotlib font families available")
+        cfg = self._factory_cfg()
+        cfg["axes"]["primary_x"]["axis_label_font_family"] = fam
+        kw = self.uv._axis_label_font_kwargs(cfg, "primary_x")
+        self.assertEqual(kw["fontfamily"], fam)
+
+
 @unittest.skipUnless(_HAS_DISPLAY, "Tk display not available")
 class TestPerAxisFontRenderPhase4bb(unittest.TestCase):
     """CS-80 (Phase 4bb) — per-axis label font reaches matplotlib.
@@ -8756,6 +8890,35 @@ class TestPerAxisFontRenderPhase4bb(unittest.TestCase):
         # 10 * 2.0 = 20: the global multiplier composes at the renderer.
         self.assertAlmostEqual(
             self.tab._ax.xaxis.label.get_fontsize(), 20.0,
+        )
+
+    # ---- CS-81 (Phase 4bc): primary italic + family reach matplotlib ----
+
+    def test_primary_x_italic_reaches_label(self):
+        self._add_uvvis()
+        cfg = self.tab._plot_config
+        cfg.setdefault("axes", {}).setdefault("primary_x", {})[
+            "axis_label_font_italic"
+        ] = True
+        self.tab._redraw()
+        self.assertEqual(
+            self.tab._ax.xaxis.label.get_fontstyle(), "italic",
+        )
+
+    def test_primary_x_family_reaches_label(self):
+        fams = self.psd.available_font_families()
+        if not fams:
+            self.skipTest("no matplotlib font families available")
+        fam = fams[0]
+        self._add_uvvis()
+        cfg = self.tab._plot_config
+        cfg.setdefault("axes", {}).setdefault("primary_x", {})[
+            "axis_label_font_family"
+        ] = fam
+        self.tab._redraw()
+        # matplotlib resolves the requested family into the label's font.
+        self.assertEqual(
+            self.tab._ax.xaxis.label.get_fontname(), fam,
         )
 
 
