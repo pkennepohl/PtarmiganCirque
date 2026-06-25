@@ -2900,7 +2900,10 @@ class UVVisTab(tk.Frame):
         # ``"in"``. The helper's fallback chain still covers
         # pre-migration ``_plot_config`` shapes via the legacy flat
         # ``cfg["tick_direction"]`` key.
-        tick_size = cfg.get("tick_label_font_size", 9)
+        # CS-82 (Phase 4bd): the tick-label size composes the CS-79 global
+        # ``font_scale`` (identity at 1.0) so the primary X/Y and twin-Y
+        # ticks scale with the whole plot, matching the axis labels.
+        tick_size = scale_font_size(cfg.get("tick_label_font_size", 9))
         tertiary_offset = float(
             cfg.get("tertiary_axis_offset", _TERTIARY_AXIS_OFFSET_FRAC))
 
@@ -3183,7 +3186,10 @@ class UVVisTab(tk.Frame):
         if title_mode == "custom":
             ax.set_title(
                 cfg.get("title_text", ""),
-                fontsize=cfg.get("title_font_size", 12),
+                # CS-82 (Phase 4bd): title size composes the CS-79 global
+                # ``font_scale`` (identity at 1.0) for whole-plot zoom
+                # consistency with the axis labels.
+                fontsize=scale_font_size(cfg.get("title_font_size", 12)),
                 fontweight=("bold" if cfg.get("title_font_bold", True) else "normal"),
             )
 
@@ -3448,7 +3454,10 @@ class UVVisTab(tk.Frame):
         if all_handles and cfg.get("legend_show", True):
             ax.legend(
                 all_handles, all_labels,
-                fontsize=cfg.get("legend_font_size", 8),
+                # CS-82 (Phase 4bd): legend size composes the CS-79 global
+                # ``font_scale`` (identity at 1.0) for whole-plot zoom
+                # consistency with the axis labels.
+                fontsize=scale_font_size(cfg.get("legend_font_size", 8)),
                 loc=cfg.get("legend_position", "best"),
                 framealpha=0.7,
             )
