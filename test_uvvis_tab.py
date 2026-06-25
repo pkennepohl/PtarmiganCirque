@@ -8922,5 +8922,64 @@ class TestPerAxisFontRenderPhase4bb(unittest.TestCase):
         )
 
 
+    # ---- CS-82 (Phase 4bd): whole-plot font scaling reaches matplotlib ----
+    # Title, tick labels and legend compose the CS-79 global ``font_scale``
+    # at the renderer (identity at 1.0, so the default render is unchanged),
+    # matching the axis labels. ``tearDown`` resets the scale (mandatory).
+
+    def test_title_identity_at_default_scale(self):
+        self._add_uvvis()
+        cfg = self.tab._plot_config
+        cfg["title_mode"] = "custom"
+        cfg["title_text"] = "Spectrum"
+        self.tab._redraw()
+        # Factory default title size 12, scale 1.0 -> 12 (no regression).
+        self.assertAlmostEqual(self.tab._ax.title.get_fontsize(), 12.0)
+
+    def test_global_font_scale_doubles_title(self):
+        self._add_uvvis()
+        cfg = self.tab._plot_config
+        cfg["title_mode"] = "custom"
+        cfg["title_text"] = "Spectrum"
+        self.accessibility.set_active_font_scale(2.0)
+        self.tab._redraw()
+        # 12 * 2.0 = 24: the global multiplier composes at the renderer.
+        self.assertAlmostEqual(self.tab._ax.title.get_fontsize(), 24.0)
+
+    def test_tick_labels_identity_at_default_scale(self):
+        self._add_uvvis()
+        self.tab._redraw()
+        labels = self.tab._ax.get_xticklabels()
+        self.assertTrue(labels)
+        # Factory default tick size 9, scale 1.0 -> 9 (no regression).
+        self.assertAlmostEqual(labels[0].get_fontsize(), 9.0)
+
+    def test_global_font_scale_doubles_tick_labels(self):
+        self._add_uvvis()
+        self.accessibility.set_active_font_scale(2.0)
+        self.tab._redraw()
+        labels = self.tab._ax.get_xticklabels()
+        self.assertTrue(labels)
+        # 9 * 2.0 = 18: primary tick labelsize composes the global scale.
+        self.assertAlmostEqual(labels[0].get_fontsize(), 18.0)
+
+    def test_legend_identity_at_default_scale(self):
+        self._add_uvvis()
+        self.tab._redraw()
+        legend = self.tab._ax.get_legend()
+        self.assertIsNotNone(legend)
+        # Factory default legend size 8, scale 1.0 -> 8 (no regression).
+        self.assertAlmostEqual(legend.get_texts()[0].get_fontsize(), 8.0)
+
+    def test_global_font_scale_doubles_legend(self):
+        self._add_uvvis()
+        self.accessibility.set_active_font_scale(2.0)
+        self.tab._redraw()
+        legend = self.tab._ax.get_legend()
+        self.assertIsNotNone(legend)
+        # 8 * 2.0 = 16: legend fontsize composes the global scale.
+        self.assertAlmostEqual(legend.get_texts()[0].get_fontsize(), 16.0)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
