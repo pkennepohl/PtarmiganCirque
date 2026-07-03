@@ -43,3 +43,8 @@ $RECYCLE.BIN/
 
 # Local upstream checkout used to vendor sgmanalysis into this repo
 SGMPython/
+
+# ── Test-run scratch + local launcher (not for sharing) ──────────────────────
+# run_tests.py output tees (_phaseNN_baseline/full, _baseline_test_run) + launcher
+_*.txt
+run_SpecTRACE_working.bat
