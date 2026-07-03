@@ -1,7 +1,21 @@
 {
   "permissions": {
     "allow": [
-      "Bash(git fetch *)"
+      "Bash(git fetch *)",
+      "Bash(git pull *)",
+      "Bash(git checkout *)",
+      "Bash(git branch *)",
+      "Bash(\"C:/Users/pierre.kennepohl/Projects/Ptarmigan/venv/Scripts/python.exe\" -c \"import accessibility as a; print\\('default', a.active_font_scale\\(\\)\\); print\\('id@1.0', a.scale_font_size\\(9\\)\\); a._active_font_scale=1.5; print\\('1.5x9', a.scale_font_size\\(9\\), '1.5x8', a.scale_font_size\\(8\\)\\); a._active_font_scale=2.0; print\\('2.0x9', a.scale_font_size\\(9\\)\\); a._active_font_scale=0.75; print\\('0.75x12', a.scale_font_size\\(12\\), 'floor', a.scale_font_size\\(1\\)\\); print\\('coerce bad', a._coerce_font_scale\\('x'\\), 'coerce hi', a._coerce_font_scale\\(99\\), 'coerce lo', a._coerce_font_scale\\(0.0\\)\\); a.set_active_font_scale\\(1.0\\); print\\('reset ok', a.active_font_scale\\(\\)\\)\")",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(\"C:/Users/pierre.kennepohl/Projects/Ptarmigan/venv/Scripts/python.exe\" -)",
+      "PowerShell(Set-Location \"C:/Users/pierre.kennepohl/Projects/Ptarmigan/.claude/worktrees/redesign-main\"; git push origin redesign/main 2>&1; Write-Output \"=== push exit: $LASTEXITCODE ===\"; Write-Output \"=== local vs origin \\(should match\\) ===\"; git rev-parse HEAD; git rev-parse origin/redesign/main)",
+      "PowerShell(git fetch origin 2>&1)",
+      "PowerShell(git -C $INTEG checkout redesign/main 2>&1)",
+      "PowerShell(git -C $INTEG pull --ff-only origin redesign/main 2>&1)",
+      "PowerShell($INTEG=\"C:/Users/pierre.kennepohl/Projects/Ptarmigan/.claude/worktrees/redesign-main\")",
+      "Bash(/usr/bin/grep -n \"import uvvis_tab\\\\|from uvvis_tab\\\\|^class \\\\|if __name__\" test_uvvis_tab.py)",
+      "Bash(/usr/bin/tail -8)"
     ]
   }
 }
