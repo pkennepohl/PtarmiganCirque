@@ -12499,7 +12499,50 @@ in `test_uvvis_tab.TestResolveAxisLabelFontFamilyPhase4bc` + 9 in
 
 ---
 
-*Document version: 1.55 — June 2026*
+## CS-82 — Whole-plot font scaling: title/tick/legend compose global font_scale (Phase 4bd)
+
+The "whole-plot font consistency" follow-on to CS-79/80/81 (4bc
+friction #1 + #2). Pre-4bd the per-axis LABELS composed the CS-79
+global `font_scale` (CS-80/81), but the plot TITLE, TICK labels and
+LEGEND read flat `cfg.get(...)` sizes raw — so a non-default
+`font_scale` grew the labels while those three stayed put. Phase 4bd
+routes the three render sites through `accessibility.scale_font_size`
+so the whole plot scales uniformly. **Scale-only** (step-2 decision
+lock): a font FAMILY was deliberately NOT extended to title/tick/legend
+this phase (export-fidelity / schema-growth trade-off deferred — see
+the Phase 4bd friction section in BACKLOG). **No schema change,
+PTMG_FORMAT_VERSION unchanged, default render byte-identical**
+(`scale_font_size` is identity at the factory scale 1.0).
+
+### Renderer (`uvvis_tab.py`)
+
+* `tick_size` — the shared local feeding the primary-X, primary-Y and
+  twin-Y `tick_params(labelsize=…)` sites — is now
+  `scale_font_size(cfg.get("tick_label_font_size", 9))`; one edit at the
+  value source scales all three tick sites.
+* `ax.set_title(..., fontsize=scale_font_size(cfg.get("title_font_size", 12)))`.
+* `ax.legend(..., fontsize=scale_font_size(cfg.get("legend_font_size", 8)))`.
+
+### Lock decisions (CS-82)
+
+* The three render sites (title, primary/twin ticks, legend) compose the
+  global `font_scale` via `scale_font_size` — locked; a future phase must
+  not silently revert them to raw sizes. Identity at scale 1.0 keeps the
+  default render byte-identical.
+* Title / tick / legend remain **family-less** and own no new schema keys
+  — the scale-only boundary. Extending a font family to them stays the
+  canonical additive follow-on (carried friction).
+* The secondary-X tick label (hardcoded 8pt) stays raw / unscaled this
+  phase — carried forward; scaling it cleanly needs the cm⁻¹/eV
+  linked-axis test harness (`sec` is a renderer local).
+
+6 net new tests in `test_uvvis_tab.TestPerAxisFontRenderPhase4bb`
+(identity at scale 1.0 + doubling at scale 2.0 for title / tick /
+legend). 1752 tests green (1746 baseline + 6 new).
+
+---
+
+*Document version: 1.56 — June 2026*
 *1.1: CS-13 implementation notes added in Phase 4a.*
 *1.2: CS-14 Plot Settings Dialog added in Phase 4b.*
 *1.3: CS-15 UV/Vis Baseline Correction + CS-04 implementation
@@ -14042,5 +14085,6 @@ now reads its per-axis slot (was hardcoded False); `_resolve_axis_label_family`
 sibling resolver. Schema-additive; PTMG_FORMAT_VERSION unchanged. 30
 net new tests; 1746 green (1716 baseline + 30 new). Four code/test
 commits + bookkeeping.*
+*1.56: Phase 4bd — whole-plot font scaling (CS-82 in COMPONENTS.md). The plot title, primary/twin tick labels and legend now compose the CS-79 global `font_scale` via `scale_font_size` (identity at 1.0, so the default render is byte-identical), closing the scale half of Phase 4bc friction #1 + #2. **Scale-only** by the step-2 decision lock — a font family was deliberately NOT extended to title/tick/legend (export-fidelity / schema-growth trade-off deferred); the secondary-X tick (hardcoded 8pt) is left unscaled, carried forward. Two code/test commits + bookkeeping. 1752 tests, all green (1746 baseline + 6 net new in `TestPerAxisFontRenderPhase4bb`). PTMG_FORMAT_VERSION unchanged — no schema keys added.*
 *To be updated as Open Questions are resolved and new components
 are specified.*

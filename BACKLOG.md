@@ -5974,16 +5974,19 @@ bookkeeping. 1746 tests, all green (1716 baseline + 30 net new).
    A future "whole-plot font" phase would extend the per-axis (or a new
    global) family/style to those three render sites. Folds together
    with carried friction #2 below. Reasoning level: **medium**.
+   **Partially resolved-in-4bd (CS-82):** the `font_scale` gap is closed
+   (title / tick / legend now scale with the global multiplier); the
+   family / style extension remains open, carried into the Phase 4bd
+   friction section below.
 
-2. 🟡 **Plot title / tick labels / legend do not honour the global
-   `font_scale` NOR the new family (continued from Phase 4bb friction
-   #2, now also a family gap).** Unchanged from 4bb: under a non-default
-   `font_scale` the axis labels grow but title/tick/legend do not; and
-   as of CS-81 those three also never pick up a font family. A single
-   future phase could wrap the three render sites in `scale_font_size`
-   AND route a family through them — OR keep the renderer deliberately
-   independent of UI zoom (export-fidelity argument). Decide at a future
-   step-5. Reasoning level: **low-medium**.
+2. ✅ ~~**Plot title / tick labels / legend do not honour the global
+   `font_scale`**~~ **Resolved-in-4bd (CS-82).** The three render sites
+   now compose the global `font_scale` via `scale_font_size` (step-2
+   decision: **scale-only**; identity at 1.0, default render
+   byte-identical). The **family** half is NOT resolved — title / tick /
+   legend remain family-less by design (export-fidelity / schema-growth
+   trade-off deferred); carried into the Phase 4bd friction section below
+   as the lead item.
 
 3. 🟢 **Family picker offers all installed families, unfiltered + no
    preview (Claude-surfaced, CS-81 artifact).** The family Combobox
@@ -6034,6 +6037,79 @@ bookkeeping. 1746 tests, all green (1716 baseline + 30 net new).
    and a per-axis font+family both feed `set_xlabel`); External-output
    plot style presets (**high** — user has reference Jupyter notebook,
    paths TBD). All three register-table entries; none touched in 4bc.
+
+### Friction points carried forward from Phase 4bd
+
+These are concrete obstacles the next Phase 4 session will hit.
+Phase 4bd landed CS-82 — whole-plot font scaling: the plot title,
+primary/twin tick labels and legend now compose the CS-79 global
+`font_scale` via `scale_font_size` (closing the scale half of Phase
+4bc friction #1 + #2). **Scale-only** by the step-2 decision lock —
+a font family was NOT extended to those three sites. No schema change;
+PTMG_FORMAT_VERSION unchanged; default render byte-identical. Two
+code/test commits + this bookkeeping. 1752 tests green (1746 baseline
++ 6 net new). **No step-5 changes requested** (user: proceed).
+**Do not fix until the relevant subsequent Phase 4 session.**
+
+1. 🟡 **USER-FLAGGED — font FAMILY / style still not extended to plot
+   title / tick labels / legend (continued from Phase 4bc friction
+   #1 + #2, family half).** Phase 4bd closed the `font_scale` gap (CS-82)
+   but, by the step-2 scale-only decision, did NOT give title / tick /
+   legend a font family (nor bold/italic beyond the existing title
+   bold). The canonical additive follow-on: three new flat
+   `*_font_family` keys (or one global) + a `(default)`-sentinel resolver
+   mirroring `_resolve_axis_label_family` + family pickers in the
+   existing dialog Fonts frame. Note the tick FAMILY needs
+   `plt.setp(ax.get_xticklabels(), fontfamily=…)` — it is not a
+   `tick_params` kwarg (size is). Reasoning level: **medium**.
+
+2. 🟢 **Secondary-X tick label hardcoded 8pt AND now unscaled (continued
+   from Phase 4bc friction #5 / 4bb #4).** Phase 4bd scaled the
+   primary/twin ticks but deliberately left the secondary-X `labelsize=8`
+   literal raw, so under a non-default `font_scale` it is now the one
+   tick that does not track the others. Scaling it is a one-liner
+   (`scale_font_size(8)`); a clean test needs the cm⁻¹/eV linked-axis
+   harness (`TestSecondaryXAxisLinkPhase4aq`) since `sec` is a renderer
+   local. No register entry.
+
+3. 🟢 **Family picker offers all installed families, unfiltered + no
+   preview (continued from Phase 4bc friction #3).** Unchanged. A future
+   polish could add a curated common-fonts head + a live preview Label.
+   No register entry.
+
+4. 🟢 **Primary size/bold stay flat-key authoritative (continued from
+   Phase 4bc friction #4 / CS-81 lock).** Unchanged. Making the per-axis
+   primary size/bold authoritative would relax the flat-bridge + need a
+   flat→per-axis migration; not requested.
+
+5. 🟡 **USER-FLAGGED — `[engine engine_version]` provenance bracket
+   display when uniform across rows (continued from Phase 4bc friction
+   #6 / 4bb #5 / 4ba #5 / 4az #6 / 4ay #3).** No work in 4bd; still open.
+   (a) suppress the bracket when uniform across visible rows; (b)
+   version-bump policy. Two render sites in `scan_tree_widget.py`
+   (~lines 2081 + 2099) + a uniform-detection helper. Reasoning level:
+   **low-medium**. Strong next-phase candidate.
+
+6. 🟡 **USER-FLAGGED — Escape-dismiss expansion follow-on (continued
+   from Phase 4bc friction #7 / 4bb #6 / 4ba #7 / 4az #8 / 4ay #6).** No
+   work in 4bd. Remaining CS-76 Escape-recipe sites: `plot_widget.py` 7,
+   `xas_analysis_tab.py` 2, `ledge_normalizer.py` 1. ~10 wirings + 1
+   source-inventory sentinel. Reasoning level: **low-medium**.
+
+7. 🟢 **Phase 4av carry-forward items #2 / #3 / #4 + `_toggle_row_
+   selection` focus_set retrofit still open (continued from Phase 4bc
+   friction #8).** Unchanged — Reset label semantics, `_set_universal_
+   disabled` root readonly-Combobox latent bug, DISCARDED glyph
+   distinguishability, and the synthetic-key-event test caveat. A
+   low-reasoning polish mini-phase closes the queue.
+
+8. 🟡 **USER-FLAGGED long-running items continue (continued from Phase
+   4bc friction #9).** Axis nomenclature rename (**extra-high**);
+   Rich-text / mathtext axis labels (**medium** — now interacts with
+   CS-80 / CS-81 / CS-82, since rich-text + per-axis font + family + the
+   whole-plot scale all feed `set_xlabel` / `set_title`); External-output
+   plot style presets (**high** — user has a reference Jupyter notebook,
+   paths TBD). All three register-table entries; none touched in 4bd.
 
 ---
 
@@ -6250,7 +6326,7 @@ the resolving phase + commit SHA appended to the row.
 
 ---
 
-*Document version: 1.53 — June 2026*
+*Document version: 1.54 — June 2026*
 *1.1: Known Bugs register added 2026-04-27 after Phase 4b manual testing.*
 *1.2: Phase 4c — baseline correction lands; B-001 / B-003 / B-004
 resolved; Phase 4c friction points logged.*
@@ -7325,4 +7401,5 @@ registration (`f1868f5`) + this bookkeeping.*
 *1.51: Phase 4ba — fourth and final sub-batch of the CS-75 Accessibility umbrella (sub-axis D — font-scale multiplier), closing the A–D ladder. CS-79 added in COMPONENTS.md. New `accessibility.scale_font_size(base_pt)` (half-up, floored-at-1, identity-at-1.0) every explicit `font=("", N, ...)` literal routes through + `active_font_scale()` / `set_active_font_scale(value)` (coerces via `_coerce_font_scale` [0.5,3.0] clamp, THEN live-reconfigures the nine Tk named fonts from lazily-captured base sizes) + `_reset_font_scale()` test reset. 126 literals across plot_settings_dialog / node_styles_dialog / style_dialog / binah routed through `scale_font_size`. Schema-additive `accessibility.font_scale = 1.0`; "Display font scale" readonly ttk.Spinbox as the THIRD Accessibility-tab LabelFrame (palette → shortcuts → font scale). Four code/test commits + bookkeeping; merge `cc7c7dc`. 1693 tests, all green (1662 baseline + 31 net new). PTMG_FORMAT_VERSION unchanged.*
 *1.52: Phase 4bb — per-axis label font customization with twin-axis inherit defaulting (CS-80 in COMPONENTS.md), the first realisation of the long-standing USER-FLAGGED per-axis font request (Phase 4ay #4 → 4az #7 → 4ba #6, struck through above). Four additive per-axis keys (`_AXIS_KEYS` 11 → 15, uniform across all five roles) — `axis_label_font_inherit` / `_size` / `_bold` / `_italic` — + `_AXIS_LABEL_FONT_INHERIT_PARENT` twin graph (secondary_x→primary_x, secondary_y/tertiary_y→primary_y). `uvvis_tab._resolve_axis_label_font` (primary roles bridge to the Global xlabel/ylabel flat keys; non-primary inherit-or-own) + `_axis_label_font_kwargs` composing per-axis points × the CS-79 global `font_scale` (`scale_font_size`, identity at 1.0) at every `set_xlabel` / `set_ylabel` site. New "Font" LabelFrame (inherit checkbox + size/bold/italic, greyed while inheriting) on the three non-primary axis tabs only. Secondary X label now inherits primary X (was hardcoded 9pt). Tier-1 scope (axis label only; title/tick/legend stay global) chosen at the 4bb decision lock. Four code/test commits + bookkeeping. 1716 tests, all green (1693 baseline + 23 net new: 7 schema + 9 resolver + 5 LabelFrame + 2 render). PTMG_FORMAT_VERSION unchanged — additive under `axes[role]`. **USER-FLAGGED at step 5:** extend per-axis font to the primary axes + "as many font settings as is reasonable" (Phase 4bb friction #1).*
 *1.53: Phase 4bc — per-axis font extended to the two PRIMARY tabs + a font FAMILY picker on every axis tab (CS-81 in COMPONENTS.md); the additive extension CS-80 anticipated, satisfying USER-FLAGGED Phase 4bb friction #1 (struck through above). One additive per-axis key (`axis_label_font_family`, `_AXIS_KEYS` 15 → 16, uniform across all five roles) + sentinel `_AXIS_LABEL_FONT_FAMILY_DEFAULT = "(default)"` (= no `fontfamily` override) + `available_font_families()` (cached lazy `matplotlib.font_manager` scan; graceful fallback drops uninstalled families to "") + `_PRIMARY_AXIS_FLAT_FONT_KEYS` bridge map. The two primary tabs got their own "Font" LabelFrame: Size/Bold SHARE the Global flat `xlabel/ylabel_font_size`/`_bold` Tk vars (lockstep via idempotent `_ensure_flat_int_var` / `_ensure_flat_bool_var` extracted from `_make_int_spinbox` / `_make_bool_checkbox`), new Italic + Family activate the per-axis primary slots, no inherit checkbox. `uvvis_tab._resolve_axis_label_font` keeps its locked 3-tuple — only primary italic now activates its per-axis slot (was hardcoded False); new sibling `_resolve_axis_label_family` + shared `_resolve_label_font_role` walk; `_axis_label_font_kwargs` adds `fontfamily` only when non-empty. Default render byte-identical to pre-4bc. Four code/test commits + bookkeeping. 1746 tests, all green (1716 baseline + 30 net new: 7 schema + 12 resolver/family + 9 primary-frame + 2 render). PTMG_FORMAT_VERSION unchanged — additive under `axes[role]`. **No step-5 changes requested** (user: proceed to merge).*
+*1.54: Phase 4bd — whole-plot font scaling (CS-82 in COMPONENTS.md). The plot title, primary/twin tick labels and legend now compose the CS-79 global `font_scale` via `scale_font_size` (identity at 1.0; default render byte-identical), closing the scale half of Phase 4bc friction #1 + #2. **Scale-only** by the step-2 decision lock — a font family was NOT extended to those three sites (deferred); the secondary-X tick (hardcoded 8pt) is left unscaled, carried forward. Two code/test commits + bookkeeping. 1752 tests, all green (1746 baseline + 6 net new). PTMG_FORMAT_VERSION unchanged. **No step-5 changes requested** (user: proceed).*
 *Supersedes: BACKLOG.md (original)*
